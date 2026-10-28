@@ -633,6 +633,25 @@ fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
 }
 
 #[test]
+fn the_login_screen_learns_whether_a_secret_is_a_pin() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.leave_proof();
+    let daemon = m.daemon();
+    let kind = |peer: Peer, user: &str| {
+        reply(daemon.handle(peer, Request::SecretKind { user: user.into() }))
+    };
+    // Not enrolled yet: the record does not say.
+    assert_eq!(kind(GREETER, "ada"), Reply::success());
+
+    assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
+    for peer in [ROOT, ADA, GREETER] {
+        assert_eq!(kind(peer, "ada").secret, Some(SecretKind::Pin));
+    }
+    assert_eq!(kind(BOB, "ada"), refused(Refusal::NotPermitted));
+    assert_eq!(kind(GREETER, "nobody"), refused(Refusal::NotEnrolled));
+}
+
+#[test]
 fn people_may_only_ask_about_themselves() {
     let m = machine!(false, &[("ada", "correct horse battery staple")]);
     let daemon = m.daemon();

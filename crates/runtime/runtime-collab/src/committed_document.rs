@@ -158,6 +158,8 @@ pub enum Request {
     /// was granted, so reads behind it are served. Answered
     /// [`Reply::Cancelled`]; an active capture is untouched.
     Leave,
+    /// How this channel's writes travel: answered [`Reply::Writes`].
+    Writes,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -218,6 +220,13 @@ pub enum Reply {
     /// read's turn has come, and the next Open captures. A caller that
     /// stops reading on the channel sends [`Request::Leave`].
     Busy,
+    /// The answer to [`Request::Writes`]. `sealed`: the record's room seals
+    /// every write under its channel's keys, so the app encrypts each one
+    /// and a write it cannot encrypt is refused, never sent as written.
+    /// Otherwise the room's owner commits the writes as they are.
+    Writes {
+        sealed: bool,
+    },
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -251,6 +260,7 @@ impl Request {
         match self {
             Self::Open { .. }
             | Self::ConnectionSnapshot
+            | Self::Writes
             | Self::PrivateWindowBinding
             | Self::Await { .. }
             | Self::OpenChanges { .. }

@@ -63,7 +63,7 @@ prove transport and insertion behavior, not spoken correction recognition accura
 
 ## Reproduction and limits
 
-Use `tools/release/qualify_whistle_v8_scope.py` in the existing admitted transient
+Use [`qualify_whistle_v8_scope.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/qualify_whistle_v8_scope.py) in the existing admitted transient
 scope, with the authenticated artifact bundle and public manifest. `--mode
 endpoint` is the default; `--mode lifecycle` runs the four resident sessions.
 `--name-cues` is admitted only for the existing German public fixture. Bundle

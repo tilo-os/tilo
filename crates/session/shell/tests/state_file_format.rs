@@ -6,9 +6,8 @@
 use std::path::PathBuf;
 
 use shell::shell::state::{
-    Access, AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId,
-    Scope, Strip, StripId, Subject, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceTree,
+    Access, AppKind, CapOverride, NativeDocumentReference, RoomId, Scope, Strip, StripId, Subject,
+    Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 
 const FIXTURE: &str = "tests/fixtures/state_v1.json";
@@ -65,7 +64,12 @@ fn populated_tree() -> WorkspaceTree {
         .with_id("cap-fixed"),
     );
     ws.share_surface(7, 42);
-    (ws.shortcuts, ws.schedule_claims) = saved_shortcuts();
+    let (shortcuts, claims) = saved_shortcuts();
+    ws.shortcuts = shortcuts
+        .iter()
+        .map(tilo_automation::SavedShortcut::encode)
+        .collect();
+    ws.schedule_claims = claims;
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
         id: 3,
@@ -120,18 +124,34 @@ fn populated_tree() -> WorkspaceTree {
         .active_strip
         .insert(WorkspaceId(9), StripId(10));
     tree.desktop.active_group.insert(StripId(2), 6);
-    tree.room_authority.insert(
-        room(2),
-        RoomAuthority::Peer(PeerOrigin::peer_id("peer-endpoint")),
-    );
-    tree.room_authority.insert(room(3), RoomAuthority::Unpinned);
-    tree.room_peer_names
-        .entry(room(2))
-        .or_default()
-        .insert("peer-endpoint".into(), "Ada".into());
-    tree.room_share_floor.insert(room(2), 11);
+    // What the shell's own room engine kept: no longer read, still written
+    // back exactly as the file had it.
+    for (key, value) in [
+        (
+            "room_authority",
+            serde_json::json!({
+                room(2).to_string(): { "Peer": "iroh:peer-endpoint" },
+                room(3).to_string(): "Unpinned",
+            }),
+        ),
+        (
+            "room_peer_names",
+            serde_json::json!({ room(2).to_string(): { "peer-endpoint": "Ada" } }),
+        ),
+        ("room_peer_identities", serde_json::json!({})),
+        (
+            "room_share_floor",
+            serde_json::json!({ room(2).to_string(): 11 }),
+        ),
+        // Rooms another device's continuation once made workspaces for.
+        (
+            "continuation_rooms",
+            serde_json::json!([room(3).to_string()]),
+        ),
+    ] {
+        tree.retired_fields.insert(key.into(), value);
+    }
     tree.continuation_tabs.insert(5);
-    tree.continuation_rooms.insert(room(3));
     tree.continuation_owned_tabs.insert(5, room(3));
     tree.continuation_closed_tabs.insert(12, room(3));
     tree.native_document_tabs.insert(
@@ -177,12 +197,13 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
         assert_eq!(canonical(&rewritten), canonical(&fixture));
     }
 
-    // Phase `a_file_from_when_workspaces_kept_tasks_loads_without_them`.
+    // Phase `a_file_from_when_workspaces_kept_tasks_loads_and_keeps_them`:
+    // the tree no longer reads a workspace's tasks, but a stored field it
+    // does not read is kept exactly as it was, so saving loses nothing.
     {
-        let fixture = canonical(
+        let mut old = canonical(
             &std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"),
         );
-        let mut old = fixture.clone();
         old["workspaces"][0]["tasks"] = serde_json::json!([{
             "id": "task-1",
             "title": "Review",
@@ -195,8 +216,8 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
             "updated_at": 20,
             "audit": []
         }]);
-        let tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
-        assert_eq!(serde_json::to_value(&tree).expect("serialize"), fixture);
+        let tree: WorkspaceTree = serde_json::from_value(old.clone()).expect("an older file loads");
+        assert_eq!(serde_json::to_value(&tree).expect("serialize"), old);
     }
 }
 

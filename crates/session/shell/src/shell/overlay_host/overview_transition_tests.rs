@@ -394,7 +394,7 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
 
     let fast = ui::tokens::Motion::default().durations.fast();
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.append_empty_workspace("Second");
+    tree.create_hosted_workspace("Second");
     let chrome = ChromeState::new(tree);
     let mut h = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());

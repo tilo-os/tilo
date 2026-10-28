@@ -33,6 +33,7 @@ pub mod retained_replacement;
 pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
+pub mod tilolang_host;
 pub mod tools;
 pub mod windows;
 
@@ -43,7 +44,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 10;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 11;
 
 use std::env;
 use std::io;
@@ -164,6 +165,11 @@ pub struct CapnpClient {
 }
 
 #[cfg(feature = "rpc")]
+/// Resolves once a [`CapnpClient`]'s connection has ended (see
+/// [`CapnpClient::bootstrap_until_closed`]); either outcome means it ended.
+pub type ConnectionEnd = tokio::sync::oneshot::Receiver<()>;
+
+#[cfg(feature = "rpc")]
 /// Compatibility name for clients using launcher-provided Unix descriptors.
 pub type UnixCapnpClient = CapnpClient;
 
@@ -235,18 +241,32 @@ impl CapnpClient {
     /// futures, so callers must run this from a `LocalSet`-aware context).
     /// Service availability must be established by a service call: capability
     /// resolution alone is not a health or admission check.
-    pub fn bootstrap<C>(mut self) -> C
+    pub fn bootstrap<C>(self) -> C
+    where
+        C: capnp::capability::FromClientHook,
+    {
+        self.bootstrap_until_closed().0
+    }
+
+    /// [`Self::bootstrap`], with what resolves once the connection has
+    /// ended: the peer hung up or the transport failed. Every later call on
+    /// the client then fails with Disconnected, so a caller holding one
+    /// long-lived connection learns of its end here instead of from each
+    /// call it goes on making.
+    pub fn bootstrap_until_closed<C>(mut self) -> (C, ConnectionEnd)
     where
         C: capnp::capability::FromClientHook,
     {
         let client: C = self.rpc_system.bootstrap(self.bootstrap_side);
+        let (ended, end) = tokio::sync::oneshot::channel();
         // capnp-rpc futures are !Send, so the driver is spawned via `spawn_local`.
         tokio::task::spawn_local(async move {
             // Resolves when the connection closes; higher layers observe a
             // Disconnected error on outstanding or subsequent service calls.
             let _ = self.rpc_system.await;
+            let _ = ended.send(());
         });
-        client
+        (client, end)
     }
 }
 

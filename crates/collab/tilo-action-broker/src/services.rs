@@ -33,9 +33,10 @@ pub trait LocalPersonServices: Send + Sync {
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub use crate::collab_broker_capnp::{
-    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
-    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
-    NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere, PreparingElsewhere,
+    AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
+    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
+    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere,
+    PreparingElsewhere, RecordRead,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact
@@ -134,6 +135,14 @@ pub trait WorkspaceAuthority: Send + Sync {
     fn history_agents(&self, _room: &str) -> Vec<collab_types::history::RosterAgent> {
         Vec::new()
     }
+
+    /// The device revocations `room`'s document records, against which who
+    /// saved a shortcut is proven ([`tilo_peer_state::room::proven_saver`]).
+    /// `None` (the default) when this host holds no document of the room:
+    /// no shortcut there is anyone's.
+    fn room_revocations(&self, _room: &str) -> Option<tilo_user_identity::RevocationList> {
+        None
+    }
 }
 
 const UNANSWERED: &str = "workspace authority did not answer";
@@ -202,6 +211,10 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+/// A room's status once it changed ([`WorkspaceMemberships::room_status_change`]).
+pub type RoomStatusFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::RoomStatus> + Send>>;
+
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
@@ -229,11 +242,61 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn requires_room(&self, room: &str) -> bool;
 
+    /// Whether this device keeps `room`'s checkpoints. They are its
+    /// governor's custody, so a room this device governs offers them
+    /// whichever model its records follow, and a room governed elsewhere
+    /// does not.
+    fn keeps_checkpoints(&self, room: &str) -> bool {
+        self.requires_room(room)
+    }
+
+    /// Where `room` stands for the apps on this device: ready, waiting for
+    /// its join or its placement on its host, or refused, as when no host
+    /// holds it and it has no documents to open. A join is held while it
+    /// waits and refused with the reason, in place of a failure further in.
+    fn room_status(&self, _room: &str) -> runtime_collab::RoomStatus {
+        runtime_collab::RoomStatus::Ready
+    }
+
+    /// `room`'s status once it is no longer `seen`, woken by the change that
+    /// ends it rather than by asking again.
+    fn room_status_change(&self, room: &str, seen: runtime_collab::RoomStatus) -> RoomStatusFuture {
+        let now = self.room_status(room);
+        if now == seen {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(std::future::ready(now))
+        }
+    }
+
+    /// Whether an app opening `room` as `certificate`'s person first has
+    /// the room let `app` author there: the room does not let it yet, and
+    /// that person may grant it. Every opening of an app asks this, the
+    /// launch of one and the join of a tab the session restored alike, and
+    /// grants through [`WorkspaceMembershipCommand::GrantAppAuthorship`].
+    ///
+    /// [`WorkspaceMembershipCommand::GrantAppAuthorship`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship
+    fn app_opens_by_granting(
+        &self,
+        _room: &str,
+        _app: &str,
+        _certificate: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        false
+    }
+
     /// Whether `room` is held here but governed by the node that stewards
     /// it, where this device asks that host to commit the room's own
     /// membership changes, decided by the room's governance as they are
     /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
+        false
+    }
+
+    /// Whether `room`'s host is this device's own, so the authorship an app
+    /// opening there needs is recorded here rather than asked of another
+    /// device.
+    fn hosted_here(&self, _room: &str) -> bool {
         false
     }
 
@@ -662,6 +725,9 @@ pub trait LauncherServices: Send + Sync {
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool;
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.
+    /// `window_instance` is the window the connection says it was made for:
+    /// a host that makes connections for its own windows keys their launch
+    /// records by it; a launched process's record names its own.
     ///
     /// # Errors
     /// The original launch facts changed or cannot be read.
@@ -670,7 +736,9 @@ pub trait LauncherServices: Send + Sync {
         pid: u32,
         app: &str,
         room: &str,
+        window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        let _ = window_instance;
         if !self.attest_process(pid, app, room) {
             return Ok(None);
         }
@@ -800,15 +868,21 @@ pub trait WorkspaceGovernanceServices: Send + Sync {
     }
 }
 /// One checked change to a workspace's saved shortcuts. The broker mints
-/// `invocation` and has checked the change against what `actor` is offered.
-pub struct ShortcutLibraryRequest<'a> {
-    pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
-    pub change: &'a crate::automation::ShortcutChange,
+/// `invocation` and has checked the change against what `actor` (a policy
+/// id) is offered.
+pub struct ShortcutLibraryRequest {
+    pub room: String,
+    pub actor: String,
+    pub change: crate::automation::ShortcutChange,
     /// The provenance the change leaves in workspace activity.
     pub context: tilo_actions::ActionContext,
     pub invocation: tilo_actions::InvocationId,
 }
+
+/// A shortcut change on its way into its workspace: done once the room's
+/// governor committed it and this device holds it, or failed with why.
+pub type ShortcutStore =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 /// A host that stores a workspace's shortcuts and runs them. The broker
 /// publishes the shortcut library and each saved shortcut's `run` only
@@ -818,12 +892,10 @@ pub trait ShortcutLibraryServices: Send + Sync {
     /// trigger may not take.
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig;
     /// Store one checked change in workspace `request.room` and record its
-    /// effect in workspace activity.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace cannot take the change.
-    fn store(&self, request: &ShortcutLibraryRequest<'_>) -> Result<(), String>;
+    /// effect in workspace activity. The broker awaits it on [`Self::runtime`],
+    /// never on the thread that admitted the change; it fails with why the
+    /// workspace cannot take the change.
+    fn store(&self, request: ShortcutLibraryRequest) -> ShortcutStore;
     /// The runtime shortcut runs execute on.
     fn runtime(&self) -> Result<tokio::runtime::Handle, String>;
     /// What the desktop calls its fixed shortcut `fixed`, in the person's
@@ -1583,6 +1655,10 @@ pub trait FileClipboardServices: Send + Sync {
         Err("write attribution is unavailable".into())
     }
 }
+/// A grant being recorded ([`AppActionGrants::record`]): its id once it is
+/// in force, or why it is not.
+pub type GrantRecording =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
@@ -1591,14 +1667,16 @@ pub trait AppActionGrants: Send + Sync {
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
     /// Record `grant` in `request.room` as given by `request.person`, and
-    /// note `answer` in the workspace's history. The recorded grant's id, or
-    /// `None` when it could not be recorded.
+    /// note `answer` in the workspace's history. Resolves to the recorded
+    /// grant's id once the grant is in force here, so the call it was given
+    /// for is admitted with it in place. Otherwise it resolves to why
+    /// nothing was granted, worded for the person.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
-    ) -> Option<String>;
+    ) -> GrantRecording;
     /// Remove the grant `grant` from `room`: a grant given once, now that
     /// its call was decided.
     fn revoke(&self, room: &str, grant: &str);

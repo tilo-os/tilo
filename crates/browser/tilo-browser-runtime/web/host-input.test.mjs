@@ -285,6 +285,42 @@ test('persistence flushes credential custody before publishing document writes',
  await f.host.cleanup();
  assert.deepEqual(order,['custody','custody','document'],'close must also persist custody first');
 });
+test('frames without writes neither flush nor commit, and a burst coalesces into one round trip',async()=>{
+ const f=await fixture();let commits=0,flushes=0,fileFlushes=0,blocked=null;
+ const storage=globalThis.__hostFixture.storage;
+ storage.status={pendingWrites:0};
+ const committed=[];
+ storage.commit=async writes=>{commits++;committed.push(...writes);if(blocked)await blocked.wait;};
+ storage.flush=async()=>{flushes++;};
+ let queued=[];
+ f.runtime.pending_writes=()=>queued.splice(0);
+ f.runtime.files_dirty=()=>false;
+ f.runtime.flush_files=async()=>{fileFlushes++;};
+ await tick();
+ const idle={commits,flushes,fileFlushes};
+ for(let frame=2;frame<40;frame++)f.update({phase:'presented',frames:frame});
+ await tick();
+ assert.deepEqual({commits,flushes,fileFlushes},idle,'frames with nothing to write must not commit, flush storage or flush files');
+ // A frame with a write starts a persist, held inside its commit.
+ blocked={};blocked.wait=new Promise(done=>{blocked.release=done;});
+ queued.push({revision:1n,key:'one'});
+ f.update({phase:'presented',frames:40});
+ for(let i=0;i<50&&commits===idle.commits;i++)await Promise.resolve();
+ assert.equal(commits,idle.commits+1,'the frame with a write started one commit');
+ // Eighty more frames, each leaving a write, arrive while it is held.
+ for(let frame=41;frame<121;frame++){queued.push({revision:BigInt(frame),key:`record-${frame}`});f.update({phase:'presented',frames:frame});}
+ await tick();
+ assert.equal(commits,idle.commits+1,'frames during a persist do not start their own');
+ const released=blocked;blocked=null;released.release();
+ await f.host.flush();await tick();
+ assert.equal(commits,idle.commits+2,'a burst is the running persist and one more, not one per frame');
+ assert.equal(committed.length,81,'every write of the burst was committed');
+ assert.equal(queued.length,0);
+ // An explicit flush with nothing pending still resolves, and commits nothing.
+ await f.host.flush();
+ assert.equal(commits,idle.commits+2);
+ await f.host.cleanup();
+});
 test('mounted semantic watch latches with pixels and preserves input through disposal',async()=>{
  const f=await fixture({standalone:true});const requests=[];f.runtime.close=()=>[];
  f.runtime.request_component_locus=(_id,target,observe)=>requests.push({target:JSON.parse(target),observe});

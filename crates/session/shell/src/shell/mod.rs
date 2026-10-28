@@ -47,7 +47,6 @@ pub mod collab_history;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub(crate) mod collaborator_versions;
-pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
 pub mod crash_notice;
@@ -99,12 +98,12 @@ pub mod frame;
 pub mod fs_authority;
 pub mod gpu_frames;
 pub mod graphics_notice;
-pub mod hdr_display;
-pub mod hdr_surface;
-pub mod hdr_tonemap;
+#[cfg(feature = "hosted-test-control")]
+pub mod heap_profile;
 pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;
+pub(crate) mod home_relay_hosting;
 pub mod host_apps;
 pub(crate) mod host_runtime;
 pub mod host_shell_allow;
@@ -183,7 +182,6 @@ pub mod render;
 pub mod room_activity;
 pub(crate) mod room_app_versions;
 pub mod room_records;
-pub(crate) mod room_sync;
 pub(crate) mod room_task_import;
 pub mod scanout_candidate;
 pub mod screenshot_send;
@@ -198,7 +196,6 @@ pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod shots_keyboard;
 pub mod sign_in_comforts;
-pub mod software_dim;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;
@@ -1322,6 +1319,17 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
                 ctx.register_presence(&key, UserId(c.id.clone()));
             }
         }
+        // A window someone shared with the room wears their presence while
+        // they are here: the share says whose it is, whatever they let out
+        // of where they are.
+        for (tab, sharer) in shared_window_sharers(tree, ws, tilo_clock::unix_now_ms()) {
+            ctx.register_presence(
+                &PresenceKey::Tab {
+                    id: format!("{tab:x}"),
+                },
+                UserId(sharer),
+            );
+        }
     }
     // Tree-level roster too (top-bar avatar stack); only the colour
     // override applies since tab attribution lives on the workspace.
@@ -1330,6 +1338,70 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
             ctx.set_color_override(UserId(c.id.clone()), hex);
         }
     }
+}
+
+/// Keep the tabs of the workspace in front that show a window shared with
+/// its room marked with their sharer's presence, as
+/// [`sync_tab_presence_from_tree`] marks them, every frame: `held` are the
+/// marks this made last time, taken off once their share or sharer is gone.
+/// Reports whether any mark changed.
+pub(crate) fn mark_shared_windows(
+    tree: &WorkspaceTree,
+    ctx: &mut ui::presence::PresenceCtx,
+    held: &mut Vec<(u64, String)>,
+) -> bool {
+    use ui::permissions::UserId;
+    use ui::presence::PresenceKey;
+    let now: Vec<(u64, String)> = tree
+        .desktop
+        .active_workspace()
+        .map(|ws| shared_window_sharers(tree, ws, tilo_clock::unix_now_ms()))
+        .unwrap_or_default();
+    if now == *held {
+        return false;
+    }
+    let key = |tab: u64| PresenceKey::Tab {
+        id: format!("{tab:x}"),
+    };
+    for (tab, sharer) in held.iter().filter(|mark| !now.contains(mark)) {
+        ctx.remove_presence(&key(*tab), &UserId(sharer.clone()));
+    }
+    for (tab, sharer) in &now {
+        ctx.register_presence(&key(*tab), UserId(sharer.clone()));
+    }
+    *held = now;
+    true
+}
+
+/// Each tab of `ws` showing a window shared with its room, with the roster
+/// id of the person who shared it, while they are here: the member whose
+/// session is the device hosting the window.
+pub(crate) fn shared_window_sharers(
+    tree: &WorkspaceTree,
+    ws: &crate::shell::state::Workspace,
+    now_ms: u64,
+) -> Vec<(u64, String)> {
+    shared_window_people(tree, ws, now_ms)
+        .map(|(tab, sharer)| (tab, sharer.id.clone()))
+        .collect()
+}
+
+/// Each tab of `ws` showing a window shared with its room, with the member
+/// who shared it, while they are here: the member whose session is the
+/// device hosting the window.
+pub(crate) fn shared_window_people<'a>(
+    tree: &'a WorkspaceTree,
+    ws: &'a crate::shell::state::Workspace,
+    now_ms: u64,
+) -> impl Iterator<Item = (u64, &'a crate::shell::state::Collaborator)> + 'a {
+    tree.shared_windows(ws.room(), now_ms).filter_map(|share| {
+        let session = crate::shell::state::host_handle(&share.host)?;
+        let sharer = ws
+            .collaborators
+            .iter()
+            .find(|c| c.session == Some(session) && !c.invited)?;
+        Some((share.tab, sharer))
+    })
 }
 
 #[cfg(test)]

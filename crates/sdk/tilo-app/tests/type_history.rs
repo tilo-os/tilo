@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! What History answers for one version, per resource type, through the read
-//! door every app publishes: the type's own adapter when it renders text, the
-//! exact bytes it holds when it does not, and the three distinct refusals —
-//! unsupported, unavailable, incompatible — never a silent empty.
+//! door every app publishes: the type's own adapter, exactly as it answers the
+//! live record, and the three distinct refusals — unsupported, unavailable,
+//! incompatible — never a silent empty.
 //!
 //! The app's own history machinery is the one under test: the same root,
 //! dispatch, storage and history verbs a person's window uses.
@@ -18,21 +18,24 @@ use ui_core::automerge::ROOT;
 use super::history_actions::BoardApp;
 
 /// A file: bytes with no text rendering of their own, and a name beside them.
-/// Its read adapter answers the metadata; the bytes are named by content
-/// address, because a type that declares no text rendering has none to show.
+/// Its read adapter answers the name and names the bytes by content address.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Blob {
     pub name: String,
     pub content: Bytes,
 }
 
-/// The type's own read of the record: the name, never the bytes as text.
+/// The type's own read of the record: the name, and the bytes by address,
+/// never as text.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a read adapter answers a Result, as every type's must"
 )]
 fn read_blob(blob: &Blob, _item: Option<&Id>) -> Result<Value, String> {
-    Ok(json!({ "name": blob.name }))
+    Ok(json!({
+        "name": blob.name,
+        "binary": { "address": blob.content.address(), "len": blob.content.len() },
+    }))
 }
 
 #[resource(kind = "test.blob", label = "File", read_content = read_blob)]
@@ -76,7 +79,7 @@ fn newest<A: ResourceApp>(app: &TestApp<A>) -> String {
 }
 
 #[test]
-fn a_text_type_reads_each_version_through_its_own_adapter() {
+fn a_type_reads_each_version_through_its_own_adapter() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
     app.call("rename", json!({"title": "Draft"})).unwrap();
     app.call("checkpoint", json!({"name": "draft"})).unwrap();
@@ -164,7 +167,7 @@ fn a_delete_is_a_version_like_any_other_and_keeps_its_identity() {
 }
 
 #[test]
-fn a_binary_type_names_the_exact_bytes_a_version_holds() {
+fn a_binary_type_names_the_exact_bytes_a_version_holds_through_its_adapter() {
     let mut app = TestApp::<BlobApp>::new().unwrap();
     let first = vec![0u8, 159, 146, 150, 0, 1, 2];
     let second = b"a later picture".to_vec();
@@ -193,6 +196,9 @@ fn a_binary_type_names_the_exact_bytes_a_version_holds() {
         past["content"].get("content").is_none(),
         "binary content is never rendered as text: {past}"
     );
+    // The version reads exactly as the type's own adapter answers it: the
+    // name beside the bytes is part of it.
+    assert_eq!(past["content"]["name"], "");
 
     // The live record still holds the later bytes: history never moves it.
     assert_eq!(app.state().content, Bytes::of(&second));

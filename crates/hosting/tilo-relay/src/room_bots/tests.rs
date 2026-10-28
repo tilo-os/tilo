@@ -7,7 +7,7 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::rooms::tests::{governor, restricted_until, view_read_relay};
+use crate::rooms::fixtures::{governor, restricted_until, test_host};
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -25,11 +25,11 @@ pub(super) async fn bot_host(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
-) -> crate::Relay {
+) -> crate::rooms::fixtures::TestHost {
     // The native apps name their surfaces as the host first runs them.
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
-    view_read_relay(state, key, cert).await
+    test_host(state, key, cert).await
 }
 
 /// `bot`'s runner in `room`, the bot installed as a member first, as the
@@ -283,7 +283,7 @@ async fn a_report_filed_in_the_room_restricts_and_undoes_the_flood_as_the_bot() 
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Plaza").await.unwrap().room;
     let catalogue = AppCatalogue::native();
     rooms
@@ -372,6 +372,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     // Exactly what its steps and triggers need, as a room admits a bot.
     let shortcut = Shortcut {
@@ -402,7 +403,7 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Plaza").await.unwrap().room;
     let catalogue = AppCatalogue::native();
     rooms
@@ -518,7 +519,7 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let state = scratch.path().join("greeter.json");
     let start = || {
@@ -559,7 +560,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let state = scratch.path().join("greeter.json");
     // Its answer goes to a channel the chat does not have.
@@ -598,7 +599,7 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let mut bot = greeter(general.as_str());
     bot.installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into();
@@ -652,7 +653,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let trigger = TriggerSpec::RecordChanged {
         kind: "chat.messages".into(),
@@ -678,6 +679,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     let shortcut = Shortcut {
         grant: tilo_automation::grant::derived_rules(
@@ -722,7 +724,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let mut bridge = greeter(general.as_str());
     let mut shortcut = bridge.shortcut().unwrap();
@@ -785,7 +787,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let bot = greeter(general.as_str());
     let certifier = membership::HostRootCertifier::new(owner_root());
@@ -930,6 +932,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
         grant: Vec::new(),
         triggers: vec![trigger],
         saved_by: None,
+        saved_proof: None,
     };
     let armed = [Armed {
         firer: Firer::Bot { installation: "b1" },
@@ -956,13 +959,13 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
     reason = "the relay and its room stay live for the whole test"
 )]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
-    use crate::rooms::sealed_records::tests::{SealingMember, governor_published, member_device};
+    use crate::rooms::sealed_fixtures::{SealingMember, governor_published, member_device};
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = crate::rooms::tests::governor_with(
+    let (key, cert) = crate::rooms::fixtures::governor_with(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let (guest, guest_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
     let guest = SealingMember::join(&rooms, &room, (CHAT, ""), guest).await;
@@ -1127,7 +1130,7 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let blobs =
         std::sync::Arc::new(installed::FsBlobs::new(scratch.path().join("blobs"), None).unwrap());
@@ -1345,7 +1348,7 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
     bridged_lounge(&rooms, &room, &cert).await;
     let catalogue = AppCatalogue::native();
@@ -1475,7 +1478,7 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, _) = chat_room(&rooms, &cert).await;
     let file = scratch.path().join("discord-bridge.json");
     let entry = file.to_str().unwrap();
@@ -1542,7 +1545,7 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, general) = chat_room(&rooms, &cert).await;
     let first = greeter(general.as_str()).program;
     let second = first.replace("welcome!", "welcome, again!");

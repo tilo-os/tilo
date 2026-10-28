@@ -710,6 +710,7 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: None,
+            saved_proof: None,
         };
         let scenario = Scenario::from_shortcut(&shortcut).unwrap();
         assert_eq!(scenario.id, "tidy");
@@ -758,6 +759,7 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: None,
+            saved_proof: None,
         };
         let refused = Scenario::from_shortcut(&shortcut).unwrap_err();
         assert_eq!(refused.path, "0");

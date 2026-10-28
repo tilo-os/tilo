@@ -233,9 +233,6 @@ fn publication_of(value: &serde_json::Value, room: RoomId) -> Result<Publication
     })
 }
 
-/// What a person sees when the workspace they want to make public has no
-/// host to move to.
-const NO_HOST: &str = "Public workspaces are listed by the host they live on, and you have no host yet. Add a home server in Settings, under Devices & sync.";
 /// What a person sees about a workspace someone else runs.
 const NOT_YOURS: &str = "Only the person who runs this workspace can make it public.";
 
@@ -245,7 +242,6 @@ impl ShellNetwork {
     /// asked too. A site out of reach is left out quietly, as long as any
     /// answered. Blocks on the sites: call it off the frame loop.
     pub(crate) fn directory(&self, typed: Option<&str>) -> Result<Vec<DirectoryListing>, String> {
-        let runtime = self.runtime_handle()?;
         let mut sites = Vec::new();
         if let Some(typed) = typed.map(str::trim).filter(|typed| !typed.is_empty()) {
             sites.push(hosted_sites::site_entry(typed).map_err(|error| error.to_string())?);
@@ -257,12 +253,22 @@ impl ShellNetwork {
         let mut failures = Vec::new();
         let mut directories = std::collections::BTreeSet::new();
         for site in &sites {
-            match runtime.block_on(hosted_sites::read_site(site)) {
+            let read = {
+                let site = site.clone();
+                self.wait_on(async move { hosted_sites::read_site(&site).await })?
+            };
+            match read {
                 Ok(read) => {
                     let mut listed = Vec::new();
                     if let Some(directory) = &read.directory {
                         directories.insert(directory.to_string());
-                        match runtime.block_on(hosted_sites::fetch_directory(directory)) {
+                        let fetched = {
+                            let directory = directory.clone();
+                            self.wait_on(
+                                async move { hosted_sites::fetch_directory(&directory).await },
+                            )?
+                        };
+                        match fetched {
                             Ok(page) => listed = listings_of(page, directory, Some(site)),
                             Err(error) => failures.push(error.to_string()),
                         }
@@ -288,7 +294,11 @@ impl ShellNetwork {
             if !directories.insert(directory.to_string()) {
                 continue;
             }
-            if let Ok(page) = runtime.block_on(hosted_sites::fetch_directory(&directory)) {
+            let fetched = {
+                let directory = directory.clone();
+                self.wait_on(async move { hosted_sites::fetch_directory(&directory).await })?
+            };
+            if let Ok(page) = fetched {
                 listings.extend(listings_of(page, &directory, None));
             }
         }
@@ -344,31 +354,27 @@ impl ShellNetwork {
             .filter(|site| site.path().contains("/directory/"))
             .ok_or("only a workspace joined from a directory can be reported to its host")?;
         let (user, _) = self.site_person().map_err(|error| error.to_string())?;
-        let runtime = self.runtime_handle()?;
-        runtime
-            .block_on(hosted_sites::report_at_door(&door, user, reason))
+        let reason = reason.to_owned();
+        self.wait_on(async move { hosted_sites::report_at_door(&door, user, &reason).await })?
             .map_err(|error| error.to_string())
     }
 
-    /// Whether `room` is public, and with what: as its host answers when
-    /// a host of this person governs it; a workspace only this computer
-    /// governs is private until making it public moves it to their host.
+    /// Whether `room` is public, and with what, as the host it lives on
+    /// answers.
     pub(crate) fn publication(&self, room: RoomId) -> Result<Publication, String> {
-        match self.administered_room(room) {
-            Some(held) => publication_of(
-                &self.govern(&held, "publication", serde_json::Map::new())?,
-                held.room(),
-            ),
-            None if self.governs_here(room) => Ok(Publication::private(room)),
+        let answer = match self.administered_room(room) {
+            Some(held) => self
+                .govern(&held, "publication", serde_json::Map::new())
+                .and_then(|answer| publication_of(&answer, held.room())),
             None => Err(NOT_YOURS.into()),
-        }
+        };
+        self.note_publication(room, &answer);
+        answer
     }
 
     /// Make `room` public with `listing`, or private again with `None`, on
-    /// the host that governs it. A workspace only this computer governs is
-    /// moved onto the person's home relay first, in the same slot, and is
-    /// listed there (`moved`). Blocks on the host and the move: call it off
-    /// the frame loop.
+    /// the host it lives on. Blocks on the host: call it off the frame
+    /// loop.
     pub(crate) fn publish(
         &self,
         room: RoomId,
@@ -377,13 +383,7 @@ impl ShellNetwork {
         let listing = listing
             .map(|listing| listing.checked().map_err(|error| error.to_string()))
             .transpose()?;
-        let (held, moved) = match (self.administered_room(room), &listing) {
-            (Some(held), _) => (held, false),
-            // Private already, and nowhere to take it out of.
-            (None, None) if self.governs_here(room) => return Ok(Publication::private(room)),
-            (None, Some(_)) if self.governs_here(room) => (self.move_to_host(room)?, true),
-            (None, _) => return Err(NOT_YOURS.into()),
-        };
+        let held = self.administered_room(room).ok_or(NOT_YOURS)?;
         let answer = match listing {
             Some(listing) => {
                 let mut arguments = serde_json::Map::new();
@@ -396,55 +396,13 @@ impl ShellNetwork {
             }
             None => self.govern(&held, "unpublish", serde_json::Map::new())?,
         };
-        let mut publication = publication_of(&answer, held.room())?;
-        publication.moved = moved;
-        Ok(publication)
-    }
-
-    /// Whether this computer governs `room` itself, as the person who runs
-    /// it: a workspace that lives only here.
-    fn governs_here(&self, room: RoomId) -> bool {
-        self.replica
-            .lock()
-            .is_ok_and(|replica| replica.tree.read().governs_room(room))
-    }
-
-    /// Move the workspace showing `room` onto this person's home relay and
-    /// wait until this device holds it there, as the room's administrator.
-    fn move_to_host(&self, room: RoomId) -> Result<super::relay_rooms::HeldRoom, String> {
-        let (local, name) = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room() == room)
-            .map(|workspace| (workspace.id, workspace.name.clone()))
-            .ok_or("that workspace is not on this computer")?;
-        let moved = self
-            .move_to_home_relay(local, room, &name, None)?
-            .ok_or(NO_HOST)?;
-        // The enrollment's own exchange decides when it is done or failed;
-        // the room is administered here once it is installed.
-        if let Some(id) = moved.enrollment {
-            while let crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
-                ..
-            } = self.poll_enrollment(id)?
-            {
-                std::thread::sleep(MOVE_POLL);
-            }
+        let answer = publication_of(&answer, held.room());
+        if answer.is_ok() {
+            self.note_publication(room, &answer);
         }
-        tracing::info!(from = %room, to = %moved.room, "a workspace moved to its person's host to be made public");
-        self.administered_room(moved.room)
-            .ok_or_else(|| "the workspace moved to your host, but it does not answer yet; try again in a moment".into())
+        answer
     }
 }
-
-/// How often moving a workspace to make it public looks at its enrollment.
-const MOVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(test)]
 mod tests {

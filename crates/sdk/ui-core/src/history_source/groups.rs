@@ -32,17 +32,13 @@ use tilo_automerge::ReadTyped as _;
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
+use automerge::{AutoCommit, ObjType, ReadDoc, Value};
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{GroupNameRequest, NamedRange, from_hex16, hex16};
+pub use collaboration::history_source::{GROUPS_KEY, is_group_marker};
 use tilo_automerge::read::int_at;
-
-/// Namespaced so it cannot collide with an app's own schema: `tilo-doc` uses
-/// `content` / `comments` / `props`, and the shell's room document uses
-/// `workspaces` / `active`.
-pub const GROUPS_KEY: &str = "tilo:group:";
 
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's
@@ -293,25 +289,6 @@ fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<Strin
         return None;
     };
     doc.str_at(&rec, field)
-}
-
-/// True when every patch in `patches` lands inside the named-range map — used
-/// by the producer to keep naming out of the row list. An empty patch set is
-/// **not** a marker: a change that did nothing visible is still a change, and
-/// hiding it would be incorrect behaviour.
-pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
-    !patches.is_empty()
-        && patches.iter().all(|p| match p.path.first() {
-            Some((_, Prop::Map(k))) => k.starts_with(GROUPS_KEY),
-            Some(_) => false,
-            // A patch at the root: the creation (or removal) of a record itself.
-            None => match &p.action {
-                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key, .. } => {
-                    key.starts_with(GROUPS_KEY)
-                }
-                _ => false,
-            },
-        })
 }
 
 #[cfg(test)]

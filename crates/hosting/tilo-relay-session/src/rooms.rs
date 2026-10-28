@@ -61,6 +61,33 @@ pub const ENTER_ROOM: &str = "room.enter";
 /// room's `generation` that carries it.
 pub const GRANT_APP_AUTHORSHIP: &str = "room.grant-app-authorship";
 
+/// Serve a room a device of the host's own person governs, as that governor
+/// asks: arguments `room`, `workspace_id`, `governor_hint` (the governor's
+/// signed address) and `bootstrap` (the room as a joining member gets it,
+/// the host's device admitted), each signed value postcard in hex. Only a
+/// certified host serves rooms this way. Answers a [`HostedRoom`].
+pub const HOST_ROOM: &str = "room.host";
+/// Stop serving `room` for its governor. Answers `{"stopped": bool}`.
+pub const UNHOST_ROOM: &str = "room.unhost";
+/// Have the certified host `host` (its device key, 64 hex) of the person,
+/// reachable at `host_addr` (an endpoint address), serve the room `room`
+/// governed here as well: admitted as one of the owner's devices, handed the
+/// room with [`HOST_ROOM`], and named among the room's hosts. Answers a
+/// [`HostedRoom`].
+pub const ATTACH_HOST: &str = "room.attach-host";
+/// Stop having the host `host` serve `room`: it is no longer named among the
+/// room's hosts, and is asked to stop at `host_addr` when given, else at the
+/// address it last answered. Answers `{"confirmed": bool}`, whether the host
+/// confirmed it stopped.
+pub const DETACH_HOST: &str = "room.detach-host";
+
+/// What [`HOST_ROOM`] and [`ATTACH_HOST`] answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRoom {
+    /// The serving host's own signed address for the room, postcard in hex.
+    pub host_hint: String,
+}
+
 /// The provider a relay answers a room member's own business under, on the
 /// room's workspace: what they do for themselves, never governance.
 pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
@@ -69,6 +96,11 @@ pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
 /// and `redacted`, its canonical redacted public receipt as JSON text.
 /// Answers the room's `generation` that carries it.
 pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
+/// Save or remove one shortcut of the room as the caller: `change`, a
+/// shortcut change as JSON text, whose saved shortcut names as its saver
+/// nobody or the caller, by their device's proof. Answers the room's
+/// `generation` that carries it.
+pub const SAVE_SHORTCUT: &str = "shortcut.save";
 /// Have the host governing the room create the record `record` (`""` for
 /// the app's primary) of `app`, empty and signed by the host: what opening
 /// an app there for the first time asks when the room does not hold its

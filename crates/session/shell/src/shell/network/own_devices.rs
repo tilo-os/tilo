@@ -148,42 +148,4 @@ impl ShellNetwork {
             peers.invalidate_recipients();
         }
     }
-
-    /// Keep a room's archive another device of this person sent on the
-    /// person's own lane. Returns `true` for every archive, kept or refused,
-    /// so none falls through to room authorization.
-    pub(super) fn dispatch_room_archive(
-        &self,
-        ws: u64,
-        origin: &crate::shell::state::PeerOrigin,
-        msg: &crate::network::protocol::NeighbourMsg,
-    ) -> bool {
-        let crate::network::protocol::NeighbourMsg::RoomArchive {
-            user_public_key,
-            room,
-            documents,
-        } = msg
-        else {
-            return false;
-        };
-        let Some(local_user) = self.personal_continuity_user else {
-            return true;
-        };
-        if ws != super::personal_continuity_topic_id(user_public_key)
-            || user_public_key != &local_user
-            || self
-                .peer_identities
-                .get(origin)
-                .is_none_or(|peer| !peer.is_same_user(&local_user))
-        {
-            tracing::warn!(peer = %origin, "dropping a room archive from a different identity");
-            return true;
-        }
-        if let Some(room) = crate::shell::state::RoomId::parse(room).filter(|room| !room.is_nil())
-            && let Ok(replica) = self.replica.lock()
-        {
-            replica.tree.write().keep_room_archive(room, documents);
-        }
-        true
-    }
 }

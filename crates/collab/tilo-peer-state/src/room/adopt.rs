@@ -61,7 +61,7 @@ pub fn adopt_room(
     claims.retain(|claim| {
         shortcuts
             .iter()
-            .any(|shortcut| shortcut.id == claim.shortcut)
+            .any(|shortcut| shortcut.id() == claim.shortcut)
     });
     claims.sort_by_key(tilo_automation::ScheduleClaim::key);
     changed |= replace(&mut workspace.shortcuts, shortcuts);
@@ -113,8 +113,8 @@ mod tests {
     use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
     use tilo_desktop_model::{Workspace, WorkspaceId, projection};
 
-    fn shortcut(id: &str) -> tilo_automation::Shortcut {
-        tilo_automation::Shortcut {
+    fn shortcut(id: &str) -> tilo_automation::SavedShortcut {
+        tilo_automation::SavedShortcut::encode(&tilo_automation::Shortcut {
             id: id.into(),
             name: id.into(),
             inputs: Vec::new(),
@@ -124,7 +124,8 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: None,
-        }
+            saved_proof: None,
+        })
     }
 
     fn room_doc(workspace: &Workspace) -> AutoCommit {
@@ -148,7 +149,7 @@ mod tests {
             workspace
                 .shortcuts
                 .iter()
-                .map(|shortcut| shortcut.id.as_str())
+                .map(tilo_automation::SavedShortcut::id)
                 .collect::<Vec<_>>(),
             ["water"]
         );

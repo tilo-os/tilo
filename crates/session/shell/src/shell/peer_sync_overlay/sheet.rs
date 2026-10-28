@@ -31,8 +31,7 @@ use ui::widget::{
 
 use super::{
     InviteRecipientPath, PeerSyncSnapshot, PendingInvitationSummary, RememberedInvitee,
-    elide_token, identity_fingerprint, parse_invite, peer_fingerprint, role_and_expiry, role_label,
-    short_pairing_link,
+    elide_token, identity_fingerprint, role_and_expiry, role_label, short_pairing_link,
 };
 use crate::network::invite::InviteRole;
 use crate::shell::i18n::{t, t_args};
@@ -199,19 +198,23 @@ impl JoinDetail {
         if typed.trim().is_empty() {
             return Self::Hint;
         }
-        if let Some(invite) = parse_invite(typed) {
+        if let Ok(invitation) = tilo_peer_state::join::decode_and_verify_invitation_text(
+            typed.trim(),
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        ) {
+            let grant = invitation.grant();
             return Self::Invite {
-                workspace: match invite.invitee_name.clone() {
+                workspace: match grant.invitee_name.clone() {
                     Some(name) => t_args("peer-sync-invite-for", &[("name", name.into())]),
                     None => t("peer-sync-invite-workspace"),
                 },
-                invited: invite.invitee_name.clone(),
-                access: role_and_expiry(
-                    "peer-sync-received-role-expires",
-                    invite.role,
-                    invite.expiry_unix_seconds,
-                ),
-                code: peer_fingerprint(&invite.owner_peer_id),
+                invited: grant.invitee_name.clone(),
+                access: received_access(grant.role, grant.expires_at_ns / 1_000_000_000),
+                // The device that signed it, which the person who invited
+                // them sees as theirs.
+                code: identity_fingerprint(&grant.issuer.device_public_key),
             };
         }
         crate::shell::network::join_field::describe(typed).map_or_else(
@@ -614,37 +617,19 @@ impl Sheet {
         .push(Box::new(pending))
     }
 
-    /// The invite just made: who it is for, what it gives, and the code
-    /// they will see.
+    /// The invite just made: who it is for.
     fn created_body(&self, state: &PeerSyncSnapshot) -> Column {
-        let parsed = state.invite_token.as_deref().and_then(parse_invite);
         let anyone = t("peer-sync-invite-anyone");
         let who = state.invite_for.clone().unwrap_or(anyone);
-        let mut row = ListRow::new("peer-sync-created-for", who.clone());
-        if let Some(invite) = parsed.as_ref() {
-            row = row.secondary(role_and_expiry(
-                "peer-sync-role-expires",
-                invite.role,
-                invite.expiry_unix_seconds,
-            ));
-        }
-        row = if state.invite_for.is_some() {
+        let row = ListRow::new("peer-sync-created-for", who.clone());
+        let row = if state.invite_for.is_some() {
             row.avatar(who.clone(), who)
         } else {
             row.icon(ui::icons::Icon::Link)
         };
-        let mut body = column().push(Box::new(row));
-        if let Some(invite) = parsed {
-            body = body.push(Box::new(
-                ListRow::new(
-                    "peer-sync-created-code",
-                    peer_fingerprint(&invite.owner_peer_id),
-                )
-                .icon(ui::icons::Icon::Shield)
-                .secondary(t("peer-sync-code-hint")),
-            ));
-        }
-        body.push(Box::new(Banner::from_state(&self.error)))
+        column()
+            .push(Box::new(row))
+            .push(Box::new(Banner::from_state(&self.error)))
             .push(self.status_line())
     }
 
@@ -948,18 +933,30 @@ fn pending_section(pending: &[PendingInvitationSummary], presses: &Presses) -> E
 }
 
 /// Under the join field: what was typed, in the person's terms.
+/// What an invitation received gives, and until when: "Editor access,
+/// expires in 2 days".
+fn received_access(role: tilo_peer_state::join::MemberRole, expiry: u64) -> String {
+    use tilo_peer_state::join::MemberRole;
+    let role = match role {
+        MemberRole::Viewer => role_label(InviteRole::Viewer),
+        MemberRole::Commenter => role_label(InviteRole::Commenter),
+        MemberRole::Editor => role_label(InviteRole::Editor),
+        MemberRole::Moderator => t("peer-sync-role-moderator"),
+    };
+    let (unit, count) = super::time_until(expiry);
+    t_args(
+        "peer-sync-received-role-expires",
+        &[
+            ("role", role.into()),
+            ("unit", unit.into()),
+            ("count", count.into()),
+        ],
+    )
+}
+
 fn join_detail(detail: &JoinDetail) -> Element {
     match detail {
         JoinDetail::Hint => caption(t("peer-sync-paste-token")),
-        JoinDetail::Understood(line) => caption(line.clone()),
-        JoinDetail::Incomplete(summary) => Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_rhythm(Rhythm::Related)
-                .push(caption(t("peer-sync-token-incomplete")))
-                .push(caption(summary.clone())),
-        ),
         JoinDetail::Invite {
             workspace,
             invited,
@@ -987,6 +984,15 @@ fn join_detail(detail: &JoinDetail) -> Element {
                     )),
             )
         }
+        JoinDetail::Understood(line) => caption(line.clone()),
+        JoinDetail::Incomplete(summary) => Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_rhythm(Rhythm::Related)
+                .push(caption(t("peer-sync-token-incomplete")))
+                .push(caption(summary.clone())),
+        ),
     }
 }
 

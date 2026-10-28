@@ -121,7 +121,7 @@ impl App {
             .collaboration
             .manager
             .primary_route()
-            .is_some_and(|w| &w.route == route)
+            .is_some_and(|w| w.route() == route)
         {
             if let Some(records) = &mut self.persistence.records {
                 return records.record_active_private_action(action);
@@ -176,7 +176,7 @@ impl App {
             .collaboration
             .manager
             .primary_route()
-            .is_some_and(|w| &w.route == route)
+            .is_some_and(|w| w.route() == route)
         {
             if let Some(records) = &self.persistence.records {
                 records.active_private_actions(&self.state.doc)?

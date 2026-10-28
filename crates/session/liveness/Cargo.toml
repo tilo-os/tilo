@@ -15,6 +15,11 @@ backtrace.workspace = true
 calloop = "0.14"
 durable-store = { path = "../../system/durable-store" }
 libc.workspace = true
+# A dump names its frames from the executable's symbol table, read on the
+# spot: resolving them through the debug information took longer than a hung
+# compositor's watchdog can wait (src/symtab.rs).
+object = { version = "0.39", default-features = false, features = ["elf", "read_core", "std"] }
+rustc-demangle = "0.1"
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

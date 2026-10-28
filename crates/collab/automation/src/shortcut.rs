@@ -57,7 +57,27 @@ pub struct Shortcut {
     /// behalf only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_by: Option<String>,
+    /// The saver's device signing this shortcut, as saved in one room
+    /// ([`Self::saved_signing_digest`]). Who saved a shortcut is authority (its
+    /// triggers fire on that person's behalf), so `saved_by` counts only with
+    /// a proof that verifies under that person's root. A shortcut without one
+    /// runs by hand but never arms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_proof: Option<SavedProof>,
 }
+
+/// A device's signature over one saved shortcut in one room.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedProof {
+    /// The signing device's certificate, as its identity layer encodes it.
+    pub device_cert: serde_json::Value,
+    /// The device's Ed25519 signature over [`Shortcut::saved_signing_digest`],
+    /// lowercase hex.
+    pub signature: String,
+}
+
+/// Domain of [`Shortcut::saved_signing_digest`].
+pub const SAVED_SHORTCUT_DOMAIN: &str = "tilo-shortcut-saved-v1";
 
 impl Shortcut {
     /// The address that runs this shortcut through the action door.
@@ -65,6 +85,30 @@ impl Shortcut {
     pub fn action_address(&self) -> ActionAddress {
         crate::shortcut_run_address(&self.id)
     }
+
+    /// What the saver's device signs: the room the shortcut is saved in and
+    /// the shortcut itself, `saved_by` included and the proof left out, so a
+    /// proof neither moves to another room nor covers a changed shortcut.
+    #[must_use]
+    pub fn saved_signing_digest(&self, room: &str) -> [u8; 32] {
+        let mut unsigned = self.clone();
+        unsigned.saved_proof = None;
+        let mut hasher = blake3::Hasher::new_derive_key(SAVED_SHORTCUT_DOMAIN);
+        hasher.update(&(room.len() as u64).to_le_bytes());
+        hasher.update(room.as_bytes());
+        // Writing a shortcut to a Vec cannot fail.
+        hasher.update(&serde_json::to_vec(&unsigned).unwrap_or_default());
+        *hasher.finalize().as_bytes()
+    }
+}
+
+/// A shortcut to store, or remove, in one workspace.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutChange {
+    Save(Box<Shortcut>),
+    /// Remove the saved shortcut with this id.
+    Delete(String),
 }
 
 /// One step, named so later steps can refer to its output.

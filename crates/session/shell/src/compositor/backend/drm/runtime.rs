@@ -71,10 +71,10 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
-use crate::shell::render::icc_lut::IccLut;
 pub use keyboard::KeyboardXkb;
 #[cfg(test)]
 use keyboard::{KeyOutcome, keyboard_input_event, keysym_to_winit_key, text_for};
+use tilo_output_passes::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -4303,13 +4303,13 @@ pub struct ScanoutEntry {
     pub direct_calibration: Option<u64>,
     /// The share of linear light software dimming lets through on this
     /// output, `1.0` when it is not dimmed
-    /// ([`crate::shell::software_dim`]).
+    /// ([`tilo_color_pipeline::software_dim`]).
     pub software_dim: f32,
     /// The final-pass dimming (`f32` bits) the direct path last rendered
     /// this output with: when it changes, the next frame renders in full.
     pub direct_dim: Option<u32>,
     /// The readback presenter's dimming tables, for the level in use.
-    pub cpu_dim: Option<crate::shell::software_dim::CpuDim>,
+    pub cpu_dim: Option<tilo_color_pipeline::software_dim::CpuDim>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
@@ -4399,10 +4399,10 @@ impl ScanoutEntry {
         if self
             .cpu_dim
             .as_ref()
-            .map(crate::shell::software_dim::CpuDim::light)
+            .map(tilo_color_pipeline::software_dim::CpuDim::light)
             != dim
         {
-            self.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
+            self.cpu_dim = dim.map(tilo_color_pipeline::software_dim::CpuDim::new);
         }
         dim
     }
@@ -4410,7 +4410,7 @@ impl ScanoutEntry {
     /// The dimming this output's final pass applies: only where the CRTC
     /// cannot dim it itself.
     pub fn final_pass_dim(&self) -> Option<f32> {
-        crate::shell::software_dim::final_pass_dim(
+        tilo_color_pipeline::software_dim::final_pass_dim(
             self.software_dim,
             self.scanout.software_dim_in_crtc(),
         )
@@ -4508,7 +4508,7 @@ fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
 #[cfg(test)]
 mod color_calibration_tests {
     use super::color_calibration;
-    use crate::shell::render::icc_lut::tests::lut16;
+    use tilo_output_passes::icc_lut::tests::lut16;
 
     #[test]
     fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {

@@ -1201,3 +1201,37 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A past version reads through the `read` door and draws in the project's
+/// own view with the report it held then.
+#[test]
+fn a_past_version_reads_and_shows_its_report() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    let report = REPORT.replace("Synthetic/Contract-Example", "Kumquat/Parade-Example");
+    app.call("import-report", serde_json::json!({"json": report}))
+        .unwrap();
+    let past = app.versions().pop().unwrap().hash;
+    let child = crate::resource::report_resource_id(&crate::model::report_id(&report));
+    app.call_on(&child, "remove-report", serde_json::json!({}))
+        .unwrap();
+    assert!(app.parsed().reports.is_empty());
+
+    let read = app
+        .call("read", serde_json::json!({"version": past.to_string()}))
+        .unwrap()
+        .unwrap();
+    assert!(
+        read["content"]
+            .to_string()
+            .contains("Kumquat/Parade-Example"),
+        "{read}"
+    );
+
+    let texts = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Kumquat/Parade-Example")),
+        "{texts:?}"
+    );
+}

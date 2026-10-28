@@ -85,13 +85,6 @@ impl DisplayControlServices for NativeDisplayControl {
             .tree
             .upgrade()
             .ok_or("The current desktop owner has retired.")?;
-        if !tree.read().requires_native_owner(room) {
-            let person =
-                tilo_action_broker::collab_broker_capnp::principal_id_for_root(context.root());
-            return super::action_authority::with_ordinary_person_admin(
-                &tree, room, &person, execute,
-            );
-        }
         let owner = tree
             .read()
             .installed_native_owner()

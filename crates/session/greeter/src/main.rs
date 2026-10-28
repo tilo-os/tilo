@@ -7,6 +7,9 @@
 //         cage -s -- /usr/libexec/tilo/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
+//   * `--boot --link-fd N --card-fd N [--input FD:PATH]...` — the sign-in
+//     screen of the initramfs, started by tilo-boot-signin (see
+//     `greeter::boot_screen`).
 //   * `--shots <PATH> [--scenario <name>] [--direction split|poster]
 //     [--displays WxH+WxH] [--input touch]` plus
 //     the standard capture options (`--viewport`, `--text-scale`, `--theme`,
@@ -35,6 +38,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tilo_startup_metrics::mark("greeter-main-start");
     let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
+
+    if greeter::boot_screen::requested(std::env::args().skip(1)) {
+        return greeter::boot_screen::run(std::env::args().skip(1));
+    }
 
     let args = ui::launch::LaunchArgs::from_env(&["--direction", "--displays", "--input"])?;
     if let Some(out) = &args.shots {
@@ -112,7 +119,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_sign_in_comforts(
             comforts.as_ref().is_some_and(|c| c.screen_reader),
             greeter::comforts::Changes::to(socket.to_owned()),
-        );
+        )
+        .with_keyboard_probe();
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .without_native_document_chrome();
@@ -147,15 +155,33 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tilo_startup_metrics::mark("greeter-run-start");
     app.run_with_setup(move |proxy| {
         serve_console(&console, proxy.clone());
-        let outputs = proxy.clone();
-        displays.set_wake(move || {
-            let _ = outputs.send_event(UserEvent::External(
-                greeter::output_scale::OUTPUTS_WAKE.to_owned(),
-            ));
-        });
+        wake_on_device_changes(&displays, &proxy);
         let _ = proxy_slot.set(proxy);
     });
     Ok(())
+}
+
+/// Wake the screen when a display is plugged, removed or rescaled, and when
+/// a keyboard comes or goes, which shows or hides the on-screen one.
+fn wake_on_device_changes(
+    displays: &greeter::output_scale::Displays,
+    proxy: &EventLoopProxy<UserEvent>,
+) {
+    let outputs = proxy.clone();
+    displays.set_wake(move || {
+        let _ = outputs.send_event(UserEvent::External(
+            greeter::output_scale::OUTPUTS_WAKE.to_owned(),
+        ));
+    });
+    let keyboards = proxy.clone();
+    greeter::keyboards::watch(
+        std::path::Path::new(greeter::keyboards::DEV_INPUT),
+        move || {
+            let _ = keyboards.send_event(UserEvent::External(
+                greeter::keyboards::KEYBOARDS_WAKE.to_owned(),
+            ));
+        },
+    );
 }
 
 /// Start the console endpoints that exist here: the greeter user's private
@@ -192,7 +218,7 @@ fn shot_displays(spec: &str) -> Result<greeter::output_scale::Arrangement, Strin
 }
 
 /// Every `--scenario` name and the login-card state it captures.
-const SCENARIOS: [(&str, AuthScenario); 22] = [
+const SCENARIOS: [(&str, AuthScenario); 23] = [
     ("form", AuthScenario::Form),
     ("error", AuthScenario::Error),
     ("authenticating", AuthScenario::Authenticating),
@@ -230,6 +256,7 @@ const SCENARIOS: [(&str, AuthScenario); 22] = [
         AuthScenario::PersonalRepeatedError,
     ),
     ("accounts", AuthScenario::Accounts),
+    ("personal-pin", AuthScenario::PersonalPin),
 ];
 
 /// The login-card state a `--scenario` name captures; an unknown name's error
@@ -281,6 +308,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
+        AuthScenario::PersonalPin => Some(("kai", "2580")),
         _ => Some(("kai", "hunter2")),
     }
 }

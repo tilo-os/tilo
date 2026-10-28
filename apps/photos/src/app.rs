@@ -562,6 +562,9 @@ pub struct PhotosApp {
     /// path (a browser page).
     contents_picker: Option<ui::portal::ContentsChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
+    /// The host's Save chooser while it decides where the edited photograph
+    /// goes, with the invocation its answer settles, if one asked.
+    save_chooser: Option<(ui::portal::SaveChannel, Option<tilo_actions::InvocationId>)>,
     directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
     /// Last completed local job remains visible until the next one begins.
@@ -985,6 +988,7 @@ impl PhotosApp {
             picker: None,
             contents_picker: None,
             directory_picker: None,
+            save_chooser: None,
             directory_picker_retain_exif_location: true,
             directory_import: None,
             directory_import_receipt: None,
@@ -1456,39 +1460,81 @@ impl PhotosApp {
         ok
     }
 
-    /// Write what is shown to `path` as a PNG.
+    /// Write what is shown to `path` as a PNG. `path` must be absolute: a
+    /// relative one would land wherever this process happens to run.
     pub fn save_to(&mut self, path: &str) -> bool {
-        let Some(bytes) = self.edited_pixels().and_then(pixels::encode_png) else {
+        let saved = std::path::Path::new(path).is_absolute()
+            && self.edited_png().is_some_and(|bytes| {
+                tilo_files::file_at(std::path::Path::new(path))
+                    .and_then(|(dir, name)| {
+                        tilo_files::blocking::save_document(&dir, &name, &bytes)
+                    })
+                    .is_ok()
+            });
+        self.notice = Some(if saved {
+            format!("{} {path}", tr("photos-saved"))
+        } else {
+            tr("photos-save-failed")
+        });
+        saved
+    }
+
+    /// Ask the host's Save chooser where the photograph shown goes, as every
+    /// app's Save does; the chooser picks the folder. `false` when no
+    /// photograph is shown.
+    pub fn save_with_chooser(&mut self) -> bool {
+        self.shown_photo()
+            .is_some_and(|photo| self.choose_save_destination(&photo.image, None))
+    }
+
+    /// Whether a Save is still waiting for the chooser's answer.
+    pub fn is_saving(&self) -> bool {
+        self.save_chooser.is_some()
+    }
+
+    /// [`Self::save_with_chooser`] for `open`, whose answer settles
+    /// `invocation`. `false` while an earlier Save still waits for its
+    /// answer.
+    pub(crate) fn choose_save_destination(
+        &mut self,
+        open: &OpenImage,
+        invocation: Option<tilo_actions::InvocationId>,
+    ) -> bool {
+        if self.save_chooser.is_some() {
+            return false;
+        }
+        let Some(bytes) = self.edited_png() else {
             self.notice = Some(tr("photos-save-failed"));
             return false;
         };
-        let saved = tilo_files::file_at(std::path::Path::new(path))
-            .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes));
-        if saved.is_ok() {
-            self.notice = Some(format!("{} {path}", tr("photos-saved")));
-            true
-        } else {
-            self.notice = Some(tr("photos-save-failed"));
-            false
-        }
+        let filter = ui::portal::FileFilter::new(&tr("photos-filter-images")).mimetype("image/png");
+        let chooser = ui::portal::PickRequest::save(
+            &tr("photos-save-title"),
+            &tr("photos-save"),
+            &Self::suggested_save_name(open),
+        )
+        .thread_name("photos-portal-save")
+        .filter(filter)
+        .send_save_contents(bytes);
+        self.save_chooser = Some((chooser, invocation));
+        true
     }
 
-    /// Default save destination: the source file with `-edited` before the
-    /// extension, so Save never silently overwrites the original.
-    pub fn suggested_save_path(open: &OpenImage) -> String {
-        let p = std::path::Path::new(&open.name);
-        let stem = p
+    /// What is shown, encoded as a PNG.
+    fn edited_png(&self) -> Option<Vec<u8>> {
+        self.edited_pixels().and_then(pixels::encode_png)
+    }
+
+    /// The file name the Save chooser suggests: the photograph's own name
+    /// with `-edited` before a `.png` extension, so Save never suggests
+    /// overwriting the original. Only a name; the chooser picks the folder.
+    pub fn suggested_save_name(open: &OpenImage) -> String {
+        let stem = std::path::Path::new(&open.name)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let parent = p
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
-        parent
-            .join(format!("{stem}-edited.png"))
-            .to_string_lossy()
-            .into_owned()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "photo".to_owned());
+        format!("{stem}-edited.png")
     }
 
     /// Submit `edit` of the photograph this window shows, as an undoable

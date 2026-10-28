@@ -798,7 +798,7 @@ mod tests {
             });
             // The helper keeps running after reporting: completion must not
             // wait for its exit or parse anything it prints.
-            let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep 30");
+            let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
             let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn polling_a_pairing_never_reads_its_status_file_on_the_loop() {
         let fixture = fixture();
-        let mut pairing = helper(&fixture, "exec sleep 30", PROCESS_BOUND);
+        let mut pairing = helper(&fixture, "exec sleep infinity", PROCESS_BOUND);
         // Spawning removed any old status; the helper's file is now one
         // whose bytes have not arrived.
         let status = crate::shell::disk_sync_guard::blocking_source(
@@ -1071,9 +1071,16 @@ mod tests {
     fn pairing_final_look_has_a_bounded_grace() {
         for exited in [false, true] {
             let fixture = fixture();
+            // A helper that is still running ends only when the attempt
+            // stops it: a fixed sleep can end by itself on a loaded machine,
+            // and then the attempt reads as one that exited.
             let mut pairing = helper(
                 &fixture,
-                if exited { "exit 7" } else { "exec sleep 30" },
+                if exited {
+                    "exit 7"
+                } else {
+                    "exec sleep infinity"
+                },
                 PROCESS_BOUND,
             );
             let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);

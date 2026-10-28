@@ -84,6 +84,9 @@ impl Checker<'_> {
                 }
             };
         }
+        if let Some(ex) = self.program_builtin(name, args, span) {
+            return ex;
+        }
         match name {
             "outside" => return self.builtin_outside(args, span),
             "model_call" => return self.builtin_model(args, span),
@@ -111,11 +114,20 @@ impl Checker<'_> {
             .map(|c| c.name.as_str())
             .collect();
         names.sort_unstable();
+        let mut known = names.clone();
+        for word in prims::BUILTINS
+            .iter()
+            .copied()
+            .chain(self.program_builtins())
+        {
+            known.push(word);
+        }
+        let hint = crate::diag::suggestion(name, known);
         self.err(
             "E014",
             name_span,
             format!(
-                "unknown function `{name}`; declared here: {}",
+                "unknown function `{name}`{hint}; declared here: {}",
                 names.join(", ")
             ),
         );
@@ -151,9 +163,10 @@ impl Checker<'_> {
             "E014",
             name.span,
             format!(
-                "package `{}` has no `{}`; it declares: {}",
+                "package `{}` has no `{}`{}; it declares: {}",
                 import.alias,
                 name.name,
+                crate::diag::suggestion(&name.name, names.iter().copied()),
                 names.join(", ")
             ),
         );
@@ -1005,6 +1018,7 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 Self::end_item(r, &elem, m == "last")
             }
+            (Ty::List(_), "of") => self.list_of(r, args, span),
             (Ty::List(t) | Ty::Collection(t), "matching") => {
                 let elem = (**t).clone();
                 self.matching(r, &elem, args, span)

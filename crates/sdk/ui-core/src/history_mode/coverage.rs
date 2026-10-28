@@ -1,77 +1,45 @@
 //! What History can honestly do with a resource type: one classification the
 //! panel, the read door and the restore review all read, so "no past version
 //! here" is never confused with "this text does not read", "written by a
-//! newer app" or "cannot be shown as text".
+//! newer app" or "this type keeps no content history".
 //!
 //! The classification is derived from what the resource type itself
 //! declared, never guessed per app: the schema history restores content
-//! with, and whether the type reads its record as text. A binary resource
-//! has no restore schema and no text rendering, so it reports
-//! [`HistoricalSupport::MetadataOnly`]: its versions, its metadata and its
-//! content addresses are real, a textual diff of it would be invented.
+//! with, and whether the type has a read adapter. A version of a type that
+//! reads its record is answered by that adapter, exactly as the live record
+//! is; one with neither a restore schema nor a read adapter has nothing of
+//! its content to show.
 
 use super::registration::HistoryScopeDefinition;
 use super::restore::HistoryRestoreSchema;
-
-/// Whether a resource type can show its past as text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TextRendering {
-    /// The type declared a read adapter that renders its record as text, so
-    /// History can show a version and diff two as strings.
-    Text,
-    /// The type reads its record but not as text (a collection of records,
-    /// a property bag): its versions are listed and compared by content
-    /// address, not as lines.
-    Structured,
-    /// The type has no read adapter: it has nothing to show as text.
-    None,
-}
-
-impl TextRendering {
-    /// The rendering a type's own declaration implies: `reads_content` says
-    /// it declared a read adapter (`Resource::READABLE`), `renders_text` that
-    /// its record shows as text (`Resource::HISTORY_READS_TEXT`).
-    #[must_use]
-    pub fn from_declaration(reads_content: bool, renders_text: bool) -> Self {
-        match (reads_content, renders_text) {
-            (true, true) => Self::Text,
-            (true, false) => Self::Structured,
-            (false, _) => Self::None,
-        }
-    }
-
-    /// Whether two versions of the type can be diffed as text.
-    #[must_use]
-    pub fn diffs_as_text(self) -> bool {
-        matches!(self, Self::Text)
-    }
-}
 
 /// What History can do with one resource type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HistoricalSupport {
     /// Every version can be shown, compared and restored by content: the
     /// type declared a restore schema.
-    Content { text: TextRendering },
-    /// A version lists with its metadata and the exact bytes it holds, and a
-    /// restore brings those bytes back byte for byte. There is no textual
-    /// diff of it, and none is invented.
-    MetadataOnly { text: TextRendering },
+    Content,
+    /// The type reads its record but declares no restore schema: a version
+    /// reads through the type's own adapter and lists with its metadata, and
+    /// a restore brings what it held back byte for byte.
+    MetadataOnly,
     /// The type declares no content it could restore or show: its versions
     /// are named by address only.
-    Unsupported { text: TextRendering },
+    Unsupported,
 }
 
 impl HistoricalSupport {
-    /// What the scope's own declaration says its resource type supports.
+    /// What the scope's own declaration says its resource type supports;
+    /// `reads_content` says the type declared a read adapter
+    /// (`Resource::READABLE`).
     #[must_use]
-    pub fn of(scope: &HistoryScopeDefinition, text: TextRendering) -> Self {
+    pub fn of(scope: &HistoryScopeDefinition, reads_content: bool) -> Self {
         if scope.content_schema.is_some() {
-            Self::Content { text }
-        } else if text == TextRendering::None {
-            Self::Unsupported { text }
+            Self::Content
+        } else if reads_content {
+            Self::MetadataOnly
         } else {
-            Self::MetadataOnly { text }
+            Self::Unsupported
         }
     }
 
@@ -79,34 +47,13 @@ impl HistoricalSupport {
     /// even when that schema cannot name what replaces what.
     #[must_use]
     pub fn declares_schema(self) -> bool {
-        matches!(self, Self::Content { .. })
+        matches!(self, Self::Content)
     }
 
     /// Whether a version of this type can be restored at all.
     #[must_use]
     pub fn restorable(self) -> bool {
-        !matches!(self, Self::Unsupported { .. })
-    }
-
-    /// Whether two versions of this type are compared as text.
-    #[must_use]
-    pub fn diffs_as_text(self) -> bool {
-        let text = match self {
-            Self::Content { text } | Self::MetadataOnly { text } | Self::Unsupported { text } => {
-                text
-            }
-        };
-        text.diffs_as_text() && !matches!(self, Self::Unsupported { .. })
-    }
-
-    /// The text rendering this support was classified with.
-    #[must_use]
-    pub fn text(self) -> TextRendering {
-        match self {
-            Self::Content { text } | Self::MetadataOnly { text } | Self::Unsupported { text } => {
-                text
-            }
-        }
+        !matches!(self, Self::Unsupported)
     }
 }
 
@@ -184,28 +131,6 @@ impl std::fmt::Display for HistoricalGap {
     }
 }
 
-/// What a version of a binary resource says about itself: enough to name it
-/// and to fetch exactly its bytes, nothing that pretends to be its content.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BinaryVersion<'a> {
-    /// The BLAKE3 hash of the bytes this version holds.
-    pub hash: &'a [u8; 32],
-    /// How many bytes it holds.
-    pub len: u64,
-}
-
-impl BinaryVersion<'_> {
-    /// The content address a person or a script fetches the exact bytes by.
-    #[must_use]
-    pub fn address(&self) -> String {
-        format!(
-            "blake3:{}:{}",
-            blake3::Hash::from_bytes(*self.hash).to_hex(),
-            self.len
-        )
-    }
-}
-
 /// What the common historical surface of a resource type answers, whatever
 /// the app: the check run when a restore schema is registered, and the
 /// per-type classification the History panel and the read door read.
@@ -218,19 +143,18 @@ pub struct TypeHistory {
 
 impl TypeHistory {
     /// Classify a resource type by what it declared. `kind` and `version`
-    /// are the type's own; the read declarations say whether it renders as
-    /// text.
+    /// are the type's own; `reads_content` says it declared a read adapter.
     #[must_use]
     pub fn of(
         kind: &'static str,
         version: u32,
         scope: &HistoryScopeDefinition,
-        text: TextRendering,
+        reads_content: bool,
     ) -> Self {
         Self {
             kind,
             version,
-            support: HistoricalSupport::of(scope, text),
+            support: HistoricalSupport::of(scope, reads_content),
         }
     }
 

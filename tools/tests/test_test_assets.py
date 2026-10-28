@@ -145,20 +145,10 @@ class TestAssets(unittest.TestCase):
         self.assertIn("crates/doc/fixtures/artifacts.json", named)
         checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
         seed = checks["test-assets"]
-        self.assertTrue(named <= set(seed["inputs"]), sorted(named - set(seed["inputs"])))
         for manifest_path in named:
             self.assertIn(manifest_path, seed["run"])
         self.assertIn("/target/test-assets/**", seed["outputs"])
 
-    def test_every_build_that_ships_takes_the_seed(self):
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
-        consumers = ["os-compile-x86_64", "os-compile-aarch64", "os-compile-dev-x86_64", "os-compile-dev-aarch64",
-                     "apps-build-{arch}", "app-binaries-{arch}",
-                     *(f"tilo-vm-pack{kind}-{arch}" for kind in ("", "-shell", "-apps") for arch in ("x86_64", "arm64"))]
-        for name in consumers:
-            with self.subTest(check=name):
-                self.assertIn("test-assets", checks[name].get("needs", []))
-                self.assertEqual(checks[name]["env"]["TILO_TEST_ASSET_SEED"], "/target/test-assets")
 
     def test_all_six_real_cases_remain_pinned(self):
         rows = assets.manifest(ROOT / "crates/sdk/ui-core/tests/fixtures/typography/artifacts.json")

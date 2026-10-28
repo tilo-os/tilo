@@ -48,17 +48,29 @@ impl Desktop {
     /// The same with `tree` as the saved session (`idle_memory` starts an
     /// empty desktop).
     pub(crate) fn start_with(tree: shell::shell::state::WorkspaceTree) -> Self {
-        Self::start_configured(tree, false)
+        Self::start_configured(tree, false, &[])
+    }
+
+    /// [`Self::start_with`], with `env` added to the compositor's environment.
+    pub(crate) fn start_with_env(
+        tree: shell::shell::state::WorkspaceTree,
+        env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_configured(tree, false, env)
     }
 
     /// [`Self::start_with`], serving the agent door at
     /// `tilo-session/agent.sock` in its runtime directory (where a client
     /// inside the login looks) when `door`.
     pub(crate) fn start_with_door(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
-        Self::start_configured(tree, door)
+        Self::start_configured(tree, door, &[])
     }
 
-    fn start_configured(tree: shell::shell::state::WorkspaceTree, door: bool) -> Self {
+    fn start_configured(
+        tree: shell::shell::state::WorkspaceTree,
+        door: bool,
+        env: &[(&str, &str)],
+    ) -> Self {
         tilo_test_env::require_isolated_desktop();
         // SUN_LEN caps a unix socket path, so the runtime dir stays short.
         // One per desktop: this module's tests run beside each other.
@@ -131,6 +143,7 @@ impl Desktop {
                 "GLIBC_TUNABLES",
                 launcher::hardening::NO_HUGE_PAGES_TUNABLES,
             );
+        command.envs(env.iter().copied());
         if door {
             command.env(
                 "TILO_AGENT_DOOR",
@@ -233,7 +246,9 @@ impl Desktop {
                     .iter()
                     .rev()
                     .map(|(_, line)| line.as_str())
-                    .filter(|line| !line.contains("paint-tick: "))
+                    .filter(|line| {
+                        !line.contains("paint-tick: ") && !line.starts_with("SLOW-CONTROL ")
+                    })
                     .take(60)
                     .collect();
                 tail.reverse();
@@ -334,6 +349,13 @@ pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
     let group = &mut home.strips[0].window_groups[0];
     group.tabs.retain(|tab| tab.title == "Notes");
     group.active_tab = group.tabs[0].id;
+    // A workspace is a room this device's host holds: the session places
+    // Home's room on its own host before its apps start, as it does a
+    // workspace made here, so the Notes tab opens its document there. Left
+    // unplaced, Home would be a workspace from before rooms had hosts, on
+    // this device only, where no app opens a document.
+    let room = home.room();
+    tree.pending_placements.insert(room);
     tree
 }
 

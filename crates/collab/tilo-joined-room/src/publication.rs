@@ -464,12 +464,8 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         MAX_BYTES,
     )
 }
-/// Room for `bytes` in the outgoing custody. A room governed here keeps
-/// none: its governor, this device, admitted the write already.
+/// Room for `bytes` in the outgoing custody.
 pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
-    if view.governed_here() {
-        return Ok(());
-    }
     let publication = state(view)?;
     let total = bounds(publication)?;
     if publication.entries.len() >= MAX_ENTRIES
@@ -638,9 +634,6 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Re
     Ok(())
 }
 pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    if view.governed_here() {
-        return Ok(());
-    }
     append(view, bytes, false)?;
     reservation::refresh(view)
 }
@@ -763,6 +756,11 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
             .effect_receipts
             .values()
             .any(|receipt| receipt.receipt.binding == entry.binding)
+        && view
+            .record
+            .shortcut_change
+            .as_ref()
+            .is_none_or(|receipt| receipt.binding != entry.binding)
     {
         return Err("native governance checkpoint lacks its owner receipt".into());
     }

@@ -2244,10 +2244,14 @@ impl MailApp {
         id
     }
 
-    /// Whether the app is at first run (no account configured) and should show
-    /// the onboarding screen rather than an empty mailbox.
+    /// Whether the app is at first run (no account configured and no mail
+    /// held) and should show the onboarding screen rather than an empty
+    /// mailbox. Mail the record holds is shown whether or not an account is
+    /// configured: a past version reads no accounts, and held mail stays
+    /// readable after its account is gone.
     fn is_first_run(&self) -> bool {
-        self.shared.borrow().accounts.is_empty()
+        let state = self.shared.borrow();
+        state.accounts.is_empty() && state.mailbox.messages.is_empty()
     }
 
     /// Tell the composer whether there is an account to send from: Send

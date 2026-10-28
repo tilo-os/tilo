@@ -73,11 +73,14 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_transformed(
 
 /// The HDR layers an output composites on the CPU, with the scene position
 /// of the source buffer's origin.
-pub type SubrectComposite<'a> = (crate::shell::hdr_surface::CpuComposite<'a>, (usize, usize));
+pub type SubrectComposite<'a> = (
+    tilo_color_pipeline::hdr_surface::CpuComposite<'a>,
+    (usize, usize),
+);
 
 /// A scene pixel HDR layers can reach, as the CPU composite needs it.
 struct CompositedPixel<'a> {
-    layers: crate::shell::hdr_surface::CpuComposite<'a>,
+    layers: tilo_color_pipeline::hdr_surface::CpuComposite<'a>,
     first: [u8; 4],
     second: [u8; 4],
     x: u32,
@@ -111,8 +114,8 @@ pub(super) fn tight_clip_rows(
 }
 
 impl CompositedPixel<'_> {
-    fn light(&self, target: crate::shell::hdr_surface::CompositeTarget) -> [f32; 3] {
-        crate::shell::hdr_surface::composite_hdr_pixel(
+    fn light(&self, target: tilo_color_pipeline::hdr_surface::CompositeTarget) -> [f32; 3] {
+        tilo_color_pipeline::hdr_surface::composite_hdr_pixel(
             self.first,
             self.second,
             self.x,
@@ -164,8 +167,8 @@ pub fn swizzle_subrect_rgba_to_xrgb8888_composited(
         transform,
         |dpix, spix, sx, sy| {
             let [sr, sg, sb] = match composited_source(composite, spix, sx, sy) {
-                Some(pixel) => crate::shell::hdr_surface::encode_srgb8(
-                    pixel.light(crate::shell::hdr_surface::CompositeTarget::Sdr),
+                Some(pixel) => tilo_color_pipeline::hdr_surface::encode_srgb8(
+                    pixel.light(tilo_color_pipeline::hdr_surface::CompositeTarget::Sdr),
                 ),
                 None => match spix {
                     [r, g, b, _] => [*r, *g, *b],
@@ -191,10 +194,10 @@ pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
     dst_pitch: usize,
     physical_size: (usize, usize),
     transform: settings_store::hardware::OutputTransform,
-    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+    encoder: &tilo_color_pipeline::color_pipeline::SdrToPqEncoder,
     composite: Option<SubrectComposite<'_>>,
 ) {
-    let target = crate::shell::hdr_surface::CompositeTarget::Pq {
+    let target = tilo_color_pipeline::hdr_surface::CompositeTarget::Pq {
         sdr_white_nits: encoder.sdr_white_nits(),
     };
     write_subrect_transformed(
@@ -206,7 +209,7 @@ pub fn encode_subrect_rgba_to_xbgr2101010_transformed(
         |dpix, spix, sx, sy| {
             let word = match composited_source(composite, spix, sx, sy) {
                 Some(pixel) => {
-                    crate::shell::hdr_surface::encode_pq_xbgr2101010(pixel.light(target))
+                    tilo_color_pipeline::hdr_surface::encode_pq_xbgr2101010(pixel.light(target))
                 }
                 None => match *spix {
                     [r, g, b, _] => encoder.encode_xbgr2101010([r, g, b]),

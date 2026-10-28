@@ -9,11 +9,9 @@
 //! tells a caller what to pass rather than leaving it to be inferred.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
 use settings_store::hardware::ShortcutAction;
 use std::rc::Rc;
-use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -632,35 +630,6 @@ fn active_identity(
     Ok((room, profile))
 }
 
-const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
-
-fn active_ownership_signer(
-    state: &ChromeState,
-    expected: collab_types::Ed25519PublicKey,
-) -> Result<runtime_identity::SigningIdentity, ActionError> {
-    let (_, profile) = active_identity(state)?;
-    if profile.user_public_key != *expected.as_bytes() {
-        return Err(ActionError::Refused(
-            "the selected certified identity is not the required transfer signer".into(),
-        ));
-    }
-    runtime_identity::load_from_path(profile.record_path)
-        .map_err(|error| ActionError::Refused(format!("cannot sign ownership transfer: {error}")))
-}
-
-fn apply_ownership_action(
-    state: &ChromeState,
-    action_id: &str,
-    arguments: &ActionArgs,
-) -> Result<(), ActionError> {
-    match action_id {
-        "ownership.propose" => apply_ownership_proposal(state, arguments),
-        "ownership.accept" => apply_ownership_acceptance(state),
-        "ownership.cancel" => apply_ownership_cancellation(state),
-        _ => Err(ActionError::Refused("unknown ownership action".into())),
-    }
-}
-
 /// Apply one of the room's governance actions, as the person at this
 /// device, from the arguments `spec` takes.
 fn apply_governance_action(
@@ -698,187 +667,12 @@ fn apply_governance_action(
     Ok(())
 }
 
-fn apply_ownership_proposal(
-    state: &ChromeState,
-    arguments: &ActionArgs,
-) -> Result<(), ActionError> {
-    let now = unix_now();
-    let workspace_id = active_workspace_id(state)?;
-    let recipient_text = arguments.text("recipient").unwrap_or_default().trim();
-    let recipient_bytes: [u8; 32] = hex::decode(recipient_text)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| {
-            ActionError::Refused(
-                "choose one certified administrator identity (64 hexadecimal characters)".into(),
-            )
-        })?;
-    let expires_unix = arguments
-        .integer("expires_unix")
-        .and_then(|value| u64::try_from(value).ok())
-        .ok_or_else(|| ActionError::Refused("choose a valid offer expiry".into()))?;
-    let latest = now.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS);
-    if expires_unix <= now || expires_unix > latest {
-        return Err(ActionError::Refused(
-            "ownership offers must expire within the next seven days".into(),
-        ));
-    }
-    let current_owner = state
-        .tree()
-        .desktop
-        .active_workspace()
-        .and_then(|workspace| workspace.owner().map(String::as_str))
-        .and_then(|owner| hex::decode(owner).ok())
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .map(collab_types::Ed25519PublicKey::from_bytes)
-        .ok_or_else(|| ActionError::Refused("workspace owner is not certified".into()))?;
-    let signer = active_ownership_signer(state, current_owner)?;
-    let mut proposal_id = [0_u8; 32];
-    rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut proposal_id);
-    let room = state
-        .tree()
-        .desktop
-        .active_workspace()
-        .map(|workspace| workspace.room().to_string())
-        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    let mut proposal = collab_types::OwnershipTransferProposalV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        workspace: room,
-        proposal_id,
-        current_owner,
-        recipient: collab_types::Ed25519PublicKey::from_bytes(recipient_bytes),
-        expires_unix,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    proposal.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&proposal.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership offer: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
-    state
-        .tree_mut()
-        .propose_workspace_ownership_transfer(workspace_id, proposal, now)
-        .map_err(|error| ActionError::Refused(error.to_string()))
-}
-
-fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
-    let now = unix_now();
-    let workspace_id = active_workspace_id(state)?;
-    let proposal = state
-        .tree()
-        .desktop
-        .active_workspace()
-        .and_then(|workspace| workspace.pending_ownership_transfer.clone())
-        .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.recipient)?;
-    let mut acceptance = collab_types::OwnershipTransferAcceptanceV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        proposal_digest: proposal
-            .digest()
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-        recipient: proposal.recipient,
-        accepted_unix: now,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    acceptance.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&acceptance.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership acceptance: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
-    let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, now)
-        .map_err(|error| ActionError::Refused(error.to_string()))?;
-    state
-        .tree_mut()
-        .accept_workspace_ownership_transfer(workspace_id, audit, now)
-        .map_err(|error| ActionError::Refused(error.to_string()))
-}
-
-fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> {
-    let now = unix_now();
-    let workspace_id = active_workspace_id(state)?;
-    let proposal = state
-        .tree()
-        .desktop
-        .active_workspace()
-        .and_then(|workspace| workspace.pending_ownership_transfer.clone())
-        .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.current_owner)?;
-    let mut cancellation = collab_types::OwnershipTransferCancellationV1 {
-        version: collab_types::OWNERSHIP_TRANSFER_VERSION,
-        proposal_digest: proposal
-            .digest()
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-        current_owner: proposal.current_owner,
-        cancelled_unix: now,
-        signature: collab_types::Signature::from_bytes([0; 64]),
-    };
-    cancellation.signature = collab_types::Signature::from_bytes(
-        signer
-            .sign(&cancellation.signing_bytes().map_err(|error| {
-                ActionError::Refused(format!("cannot encode ownership cancellation: {error}"))
-            })?)
-            .map_err(|error| ActionError::Refused(error.to_string()))?,
-    );
-    state
-        .tree_mut()
-        .cancel_workspace_ownership_transfer(workspace_id, &cancellation)
-        .map_err(|error| ActionError::Refused(error.to_string()))
-}
-
-/// The active workspace's id, room and the caller's own actor id, refusing
-/// up front if the caller may not administer it — shared by `identity.connect`
-/// and `identity.select`, which otherwise change identity via identical
-/// pre-checks. One lock scope reads and destructures the workspace
-/// (`WorkspaceId` and `RoomId` are `Copy`; `actor` is cloned out), so the
-/// tree's read guard is already gone before the caller does anything else.
-/// Let the identity `principal` govern `workspace_id` as fully as `actor`:
-/// a member of the room, granted everything in it.
-fn delegate_room_to_identity(
-    tree: &mut crate::shell::state::WorkspaceTree,
-    workspace_id: crate::shell::state::WorkspaceId,
-    actor: &String,
-    principal: &str,
-) -> Option<()> {
-    use tilo_action_policy::{Answer, Change, Grant, KindSet, Role, Subject};
-    let workspace = tree
-        .desktop
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == workspace_id)?;
-    if workspace.is_owner(principal) {
-        return Some(());
-    }
-    let mut changes = Vec::new();
-    if workspace.role_of(principal).is_none() {
-        changes.push(Change::AddMember {
-            person: principal.to_owned(),
-            role: Role::Viewer,
-        });
-    }
-    changes.push(Change::Grant(Grant::new(
-        format!("identity:{principal}"),
-        Subject::person(principal),
-        workspace.node(),
-        KindSet::ALL,
-        Answer::Allow,
-        Subject::person(actor.clone()),
-    )));
-    tree.govern_in_workspace(workspace_id, actor, changes)
-        .ok()
-        .map(drop)
-}
-
 fn active_admin_workspace(
     state: &ChromeState,
 ) -> Result<
     (
         crate::shell::state::WorkspaceId,
         crate::shell::state::RoomId,
-        String,
     ),
     ActionError,
 > {
@@ -899,7 +693,7 @@ fn active_admin_workspace(
             "{actor} may not change this workspace's identity"
         )));
     }
-    Ok((workspace_id, room, actor))
+    Ok((workspace_id, room))
 }
 
 /// The pairing steps answer through a ticket, never through a plain apply.
@@ -921,7 +715,9 @@ fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), 
     }
 }
 
-fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, ActionError> {
+/// The name `peer.invite.named` invites under: the inviter's, carried by
+/// the invitation the room's host issues, never the invitee's own claim.
+fn name_invited_peer(args: &ActionArgs) -> Result<String, ActionError> {
     let peer = args.text("peer").unwrap_or_default().trim().to_string();
     let name = args.text("name").unwrap_or_default().trim().to_string();
     if peer.is_empty() {
@@ -933,26 +729,6 @@ fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, A
         return Err(ActionError::Refused(
             "an invite has to say what to call them".into(),
         ));
-    }
-    let user = state.active_local_user();
-    let named = {
-        let mut tree = state.tree_mut();
-        let Some(room) = tree
-            .desktop
-            .active_workspace()
-            .map(crate::shell::state::Workspace::room)
-        else {
-            return Err(ActionError::Refused(
-                "there is no workspace here to invite anyone into".into(),
-            ));
-        };
-        tree.name_peer(room, &user, &peer, &name)
-    };
-    if !named {
-        return Err(ActionError::Refused(format!(
-            "{user} cannot name this collaborator in the current workspace — either \
-             this device does not administer it, or `{peer}` is not a device identity"
-        )));
     }
     Ok(name)
 }
@@ -1346,7 +1122,10 @@ fn invitation_requires_lifecycle_dispatch(
 /// Poll a tracked peer-sync request until the overlay host publishes its
 /// terminal result. A presentation request answers `Null`; a network
 /// request answers the action's output.
-fn peer_sync_ticket(chrome: Chrome, request_id: u64) -> crate::shell::search::PendingInvocation {
+pub(crate) fn peer_sync_ticket(
+    chrome: Chrome,
+    request_id: u64,
+) -> crate::shell::search::PendingInvocation {
     Rc::new(move || {
         match chrome
             .borrow_mut()
@@ -1700,7 +1479,7 @@ impl Action {
                 if path.is_empty() {
                     return Err(ActionError::Refused("identity path is required".into()));
                 }
-                let (workspace_id, room, actor) = active_admin_workspace(st)?;
+                let (workspace_id, room) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let profile = store
@@ -1715,24 +1494,6 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let enrolled = st.tree().requires_native_owner(room);
-                let delegated = if enrolled {
-                    Some(())
-                } else {
-                    let mut tree = st.tree_mut();
-                    delegate_room_to_identity(
-                        &mut tree,
-                        workspace_id,
-                        &actor,
-                        &profile.principal_id(),
-                    )
-                };
-                if delegated.is_none() {
-                    return Err(ActionError::Refused(
-                        "could not delegate workspace administration to the imported identity"
-                            .into(),
-                    ));
-                }
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -1754,7 +1515,7 @@ impl Action {
                     return request_identity_setup(st);
                 }
                 require_explicit_confirmation(args, "select this identity")?;
-                let (workspace_id, room, actor) = active_admin_workspace(st)?;
+                let (workspace_id, room) = active_admin_workspace(st)?;
                 let store = crate::identity_registry::IdentityRegistryStore::from_env()
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
                 let registry = store
@@ -1763,21 +1524,6 @@ impl Action {
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())
                 })?;
-                if !st.tree().requires_native_owner(room) {
-                    let mut tree = st.tree_mut();
-                    if delegate_room_to_identity(
-                        &mut tree,
-                        workspace_id,
-                        &actor,
-                        &profile.principal_id(),
-                    )
-                    .is_none()
-                    {
-                        return Err(ActionError::Refused(
-                            "could not delegate workspace administration to that identity".into(),
-                        ));
-                    }
-                }
                 store
                     .bind_workspace(&room.to_string(), identity_id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
@@ -2394,9 +2140,9 @@ impl Action {
         ),
         // The name must come from the inviter, not the invitee: a peer
         // announcing its own name could claim any name and have it render
-        // next to a caret this room's capabilities gate. Recorded by the
-        // inviter into the room document, the same place capability grants
-        // live; the peer id stays the identity, the name is just a label.
+        // next to a caret this room's capabilities gate. The invitation the
+        // room's host issues carries it; the peer id stays the identity,
+        // the name is just a label.
         Action {
             id: "peer.invite.named",
             label: "search-action-peer-invite-named",
@@ -2404,9 +2150,9 @@ impl Action {
             keywords: "search-kw-peer-invite-named",
             params: PEER_INVITE_NAMED_PARAMS,
             apply: |st, args| {
-                let name = name_invited_peer(st, args)?;
-                // Records the name, then opens the invite composer prefilled
-                // with it for the person to review. Nothing is minted here:
+                let name = name_invited_peer(args)?;
+                // Opens the invite composer prefilled with the name for the
+                // person to review. Nothing is minted here:
                 // `invitation.issue` is the action that mints a token.
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
@@ -4212,8 +3958,7 @@ impl ActionsProvider {
                                     crate::shell::overlay_host::PeerSyncAction::PairDevice
                                 }
                                 "peer.invite.named" => {
-                                    let name = name_invited_peer(&state, args)?;
-                                    state.bump();
+                                    let name = name_invited_peer(args)?;
                                     crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
                                         name,
                                         copy: false,
@@ -5031,54 +4776,6 @@ impl ActionsProvider {
         self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
         self.push_display_brightness_rows(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
-        let ownership_resource = {
-            let tree = ctx.chrome.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                tilo_desktop::workspace_settings::ownership_transfer_resource(workspace, &actor)
-            })
-        };
-        if let Some(resource) = ownership_resource {
-            for action in resource.actions {
-                let subtitle = action
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| t("search-action-governance-subtitle"));
-                {
-                    candidates.record(
-                        &action.label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        &action.id,
-                        action.keywords.clone(),
-                    );
-                    let score = 0;
-                    let action_id = action.id.clone();
-                    let params = action.params().to_vec();
-                    out.push(SearchResult {
-                        facts: Vec::new(),
-                        shortcut: None,
-                        kind: ResourceKind::Action,
-                        operation_kind: tilo_actions::OperationKind::Document,
-                        provider_id: self.id().to_string(),
-                        id: format!("{}#{}", resource.id.as_str(), action.id),
-                        title: action.label.clone(),
-                        subtitle: Some(subtitle),
-                        badge: None,
-                        score,
-                        params,
-                        contract: Some(action.contract.clone()),
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
-                            let mut state = chrome.borrow_mut();
-                            apply_ownership_action(&state, &action_id, arguments)?;
-                            state.bump();
-                            Ok(())
-                        }),
-                        on_invoke: None,
-                        on_begin_invoke: None,
-                        resource: None,
-                    });
-                }
-            }
-        }
         let profile_resource = {
             let tree = ctx.chrome.tree();
             tree.desktop.active_workspace().map(|workspace| {
@@ -6052,8 +5749,10 @@ mod tests {
         started.recv().unwrap();
         let ticket = begin_display_answer(&chrome_with_room(), DISPLAY_KEEP_ID);
         assert!(ticket().unwrap().is_none());
-        // Another legitimate writer reaches the desired state. This cannot
-        // turn an unsupported atomic operation into our storage receipt.
+        // Another legitimate writer reaches the desired state while the
+        // answer waits. Its write is not this answer's storage receipt: the
+        // answer is stored only over the transaction it was given, so it is
+        // refused as replaced.
         source
             .update_section(
                 "display_transaction",
@@ -6065,8 +5764,10 @@ mod tests {
             .unwrap();
         release.send(()).unwrap();
         crate::shell::durable_writer::global().flush();
+        let answered = ticket();
         assert!(
-            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("conditional settings persistence is unavailable"))
+            matches!(&answered, Err(ActionError::Refused(message)) if message.contains("replaced before the answer was recorded")),
+            "{answered:?}"
         );
         assert_eq!(
             source.load()["display_transaction"]["state"],
@@ -6081,7 +5782,6 @@ mod tests {
         use settings_store::hardware::{
             DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
         };
-        use std::os::unix::fs::PermissionsExt as _;
         for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
             let _home = tilo_test_env::TestHome::new().unwrap();
             let paths = settings_store::SessionPaths::configured().unwrap();
@@ -6094,17 +5794,14 @@ mod tests {
             transaction.state = DisplayTransactionState::AwaitingConfirmation;
             transaction.save().unwrap();
             // The copy stays readable (an unreadable copy may hold another
-            // process's edit and blocks the write), but its directory takes
-            // no new file, so only the copy's replacement fails.
-            let copy_dir = paths.copy.parent().unwrap().to_path_buf();
-            assert_ne!(Some(copy_dir.as_path()), paths.device.parent());
-            let writable = std::fs::metadata(&copy_dir).unwrap().permissions();
-            std::fs::set_permissions(&copy_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            // process's edit and blocks the write), but its replacement
+            // fails, so only the copy is left to repair.
+            let refused = settings_store::faults::refuse_copy_writes(&paths.copy);
             let stale_copy = std::fs::read(&paths.copy).unwrap();
             let ticket = begin_display_answer(&chrome_with_room(), id);
             crate::shell::durable_writer::global().flush();
             let accepted = ticket();
-            std::fs::set_permissions(&copy_dir, writable).unwrap();
+            drop(refused);
             assert!(accepted.unwrap().is_some());
             assert_eq!(std::fs::read(&paths.copy).unwrap(), stale_copy);
             let state = if id == DISPLAY_KEEP_ID {
@@ -6229,7 +5926,8 @@ mod tests {
         // Phase `collaboration_actions_enqueue_typed_requests_through_the_provider`.
         {
             let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
+            let (chrome, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             chrome.borrow_mut().peer_sync_enabled = true;
             let results = action_results(&provider, &chrome);
 
@@ -6465,7 +6163,8 @@ mod tests {
         {
             let p = ActionsProvider::new();
             // Peer-sync and agent rows included, so "everything" means the whole table.
-            let c = chrome_with_room();
+            let (c, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             c.borrow_mut().peer_sync_enabled = true;
             let cs = c.borrow();
             let doc = AutoCommit::new();
@@ -6985,20 +6684,20 @@ mod tests {
             (first_room, id, room)
         };
         assert_ne!(first_room, second_room);
-        let proposal = |provider: &ActionsProvider| {
-            rows_for(provider, &chrome, "ownership")
-                .into_iter()
-                .find(|row| row.id.ends_with("#ownership.propose"))
-                .map(|row| row.id)
+        let grant_row = |room| {
+            format!(
+                "{}#{}",
+                tilo_desktop_model::governance_resource_id(&room),
+                tilo_desktop::workspace_settings::GRANT_ACTION_ID
+            )
         };
-        assert_eq!(
-            proposal(&provider),
-            Some(format!("workspace:{first_room}#ownership.propose"))
-        );
+        let offers = |provider: &ActionsProvider, room| {
+            row(&rows_for(provider, &chrome, ""), &grant_row(room)).is_some()
+        };
+        assert!(offers(&provider, first_room));
         chrome.borrow().tree_mut().desktop.active = second;
-        assert_eq!(
-            proposal(&provider),
-            Some(format!("workspace:{second_room}#ownership.propose")),
+        assert!(
+            offers(&provider, second_room) && !offers(&provider, first_room),
             "switching workspace rebuilds its governance rows"
         );
     }
@@ -7071,52 +6770,77 @@ mod tests {
             .expect("fixture")
             .room();
         assert_ne!(other_room, workspace_room);
-        let other_proposal = rows_for(&provider, &other, "ownership")
-            .into_iter()
-            .find(|row| row.id.ends_with("#ownership.propose"))
-            .map(|row| row.id);
-        assert_eq!(
-            other_proposal,
-            Some(format!("workspace:{other_room}#ownership.propose")),
+        let other_grant = format!(
+            "{}#{}",
+            tilo_desktop_model::governance_resource_id(&other_room),
+            tilo_desktop::workspace_settings::GRANT_ACTION_ID
+        );
+        assert!(
+            row(&rows_for(&provider, &other, ""), &other_grant).is_some(),
             "one provider asked about two desktops answers for each"
         );
     }
 
     /// The palette offers the invite rows exactly where the one invitation
-    /// policy lets this device issue, as the invite composer is: not in a
-    /// room another person governs, where the issuer would refuse.
+    /// policy lets this device issue, as the invite composer is: in a room
+    /// whose host this person governs, never in one another person's host
+    /// governs, where the issuer would refuse.
     #[test]
     fn invite_rows_follow_the_invitation_policy() {
-        use crate::shell::state::{PeerOrigin, RoomAuthority};
+        use crate::shell::invite_policy::{InviteRoute, native_governor, tests::grant_invite};
+        use crate::shell::state::person_id_of;
 
+        let (_directory, owner, room, _now, _key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let governor = person_id_of(
+            native_governor(Some(owner.clone()), room)
+                .expect("the room's admitted governor")
+                .person,
+        )
+        .expect("person id");
+        let other = person_id_of(
+            ed25519_dalek::SigningKey::from_bytes(&[64; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .expect("person id");
+        let handle = crate::shell::native_workspace_owner::test_tree_of(&owner);
+        {
+            let mut tree = handle.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+                .expect("the enrolled room's workspace");
+            for person in [&governor, &other] {
+                grant_invite(workspace, person);
+            }
+            let local = workspace.id;
+            tree.desktop.active = local;
+        }
         let provider = ActionsProvider::new();
-        let chrome = chrome_with_room();
+        let chrome = ChromeState::new_with_fixture_handle(
+            handle,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
         chrome.borrow_mut().peer_sync_enabled = true;
         let offers = |id: &str| row(&rows_for(&provider, &chrome, ""), id).is_some();
         let route = || crate::shell::invite_policy::active_invite_route(&chrome.borrow());
+
+        chrome.borrow_mut().act_as(governor);
         assert_eq!(
             route(),
-            Some(crate::shell::invite_policy::InviteRoute::ShareOnRelay),
-            "the owner of a room this device governs may invite"
+            Some(InviteRoute::Host),
+            "the person governing the room's host may invite"
         );
         assert!(offers("peer.invite"), "so the palette offers the composer");
 
-        let room = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .expect("workspace")
-            .room();
-        let handle = chrome.borrow().tree_handle();
-        handle.write().room_authority.insert(
-            room,
-            RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
-        );
+        chrome.borrow_mut().act_as(other);
         assert_eq!(
             route(),
-            Some(crate::shell::invite_policy::InviteRoute::ViaGovernor),
-            "another device governs the room now"
+            Some(InviteRoute::ViaGovernor),
+            "another person's host governs the room for this one"
         );
         assert!(!offers("peer.invite"), "so no invite row is offered");
         assert!(!offers("peer.invite.named"), "named or not");
@@ -7131,9 +6855,9 @@ mod tests {
         let offers = |provider: &ActionsProvider, id: &str| {
             row(&rows_for(provider, &chrome, ""), id).is_some()
         };
-        assert!(!offers(&provider, "peer.invite"));
+        assert!(!offers(&provider, "peer.connect"));
         chrome.borrow_mut().peer_sync_enabled = true;
-        assert!(offers(&provider, "peer.invite"), "peer sync started");
+        assert!(offers(&provider, "peer.connect"), "peer sync started");
         assert!(offers(&provider, "agent.invite"));
         chrome
             .borrow_mut()
@@ -7918,7 +7642,8 @@ mod tests {
             // session has nothing to invite into. Without a broker the agent
             // row (also an "Invite …") stays out of this ranking, as it does
             // for a roomless session.
-            let on = chrome_with_room();
+            let (on, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             on.borrow_mut().peer_sync_enabled = true;
             on.borrow_mut()
                 .set_collab_unavailable("this phase ranks the peer rows alone");
@@ -8014,6 +7739,7 @@ mod tests {
                 .expect("the action is registered");
             (action.apply)(&mut c.borrow_mut(), &ActionArgs::none())
                 .expect("the room's owner may admit an agent");
+            governed(&c, FIXTURE_USER);
 
             let after = c
                 .borrow()
@@ -8056,6 +7782,11 @@ mod tests {
                 )
                 .expect("name is a declared text parameter");
                 (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
+                // The governor answers each before the next is typed, so a
+                // later spelling finds the agent already admitted.
+                c.borrow()
+                    .tree_mut()
+                    .govern_requests_here_for_test(&FIXTURE_USER.to_owned());
             }
             let members = c
                 .borrow()
@@ -8155,7 +7886,44 @@ mod tests {
             (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
 
             let state = c.borrow();
-            let tree = state.tree();
+            let user = state.active_local_user();
+            let mut tree = state.tree_mut();
+            let asked: Vec<_> = tree
+                .take_governance_requests()
+                .into_iter()
+                .filter_map(|(_, request)| match request {
+                    crate::shell::state::GovernanceRequest::Policy(
+                        tilo_action_policy::Change::Grant(grant),
+                    ) => Some(grant),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                asked
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "agent-member:operator:operator"),
+                "the admission is asked of the room's governor"
+            );
+            let ws = tree.desktop.active_workspace().expect("fixture has room");
+            assert!(
+                ws.agent_members()
+                    .into_iter()
+                    .all(|(agent, _)| agent != "operator"),
+                "nothing changes here before the room's admitted document carries it"
+            );
+            // What the governor applies and the admitted document carries.
+            let ws = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has room");
+            for grant in asked {
+                ws.govern_as_at(
+                    &user,
+                    tilo_action_policy::Change::Grant(grant),
+                    tilo_clock::unix_now(),
+                )
+                .expect("the governor admits the agent");
+            }
             let ws = tree.desktop.active_workspace().expect("fixture has room");
             assert_eq!(
                 ws.agent_members()
@@ -8164,12 +7932,6 @@ mod tests {
                     .map(|(_, kinds)| kinds),
                 Some(tilo_action_policy::KindSet::ALL),
                 "the durable admission carries the selected preset"
-            );
-            assert!(
-                ws.policy
-                    .grants
-                    .iter()
-                    .any(|grant| grant.id.as_str() == "agent-member:operator:operator")
             );
             let answer = |kind| {
                 ws.subject_authority(tilo_action_policy::Subject::agent("operator"))
@@ -8189,55 +7951,6 @@ mod tests {
                 answer(tilo_action_policy::ActionKind::Outside),
                 tilo_action_policy::Answer::Ask,
                 "and asks first before reaching outside the room"
-            );
-        }
-
-        // Phase `ownership_actions_are_typed_and_require_explicit_confirmation`.
-        {
-            let chrome = chrome_with_room();
-            let owner = chrome.borrow().active_local_user();
-            chrome
-                .borrow()
-                .tree_mut()
-                .desktop
-                .active_workspace_mut()
-                .expect("fixture has a workspace")
-                .set_owner(owner);
-            let state = chrome.borrow();
-            let doc = AutoCommit::new();
-            let results = ActionsProvider::new().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "ownership",
-                wanted: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            let proposal = results
-                .iter()
-                .find(|result| result.id.ends_with("#ownership.propose"))
-                .expect("active workspace governance resource is searchable");
-            assert!(proposal.id.starts_with("workspace:"));
-            assert_eq!(
-                proposal
-                    .params
-                    .iter()
-                    .map(|parameter| parameter.name.as_ref())
-                    .collect::<Vec<_>>(),
-                ["recipient", "expires_unix"]
-            );
-            let contract = proposal.contract.as_ref().expect("ownership contract");
-            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
-            assert_eq!(
-                contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert!(
-                Action::ALL
-                    .iter()
-                    .all(|action| !action.id.starts_with("ownership.")),
-                "the canonical resource must not have a divergent static duplicate"
             );
         }
 
@@ -8976,6 +8689,7 @@ mod tests {
             &save_args,
         )
         .unwrap();
+        governed(&chrome, FIXTURE_USER);
 
         let assign = {
             let state = chrome.borrow();
@@ -9013,6 +8727,7 @@ mod tests {
             &assign_args,
         )
         .unwrap();
+        governed(&chrome, FIXTURE_USER);
 
         let state = chrome.borrow();
         let tree = state.tree();
@@ -9235,543 +8950,10 @@ mod tests {
 
     const FIXTURE_USER: &str = "shell-fixture";
 
-    /// [`chrome_with_room`] with `member` admitted as an Editor through the
-    /// production granting path, and the room document seeded from it.
-    fn chrome_with_member(member: &str) -> Chrome {
-        let chrome = chrome_with_room();
-        {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            ws.govern_as_at(
-                FIXTURE_USER,
-                tilo_action_policy::Change::AddMember {
-                    person: member.to_owned(),
-                    role: tilo_action_policy::Role::Editor,
-                },
-                tilo_clock::unix_now(),
-            )
-            .expect("the owner may admit a member");
-            tree.seed_doc_from_cache();
-        }
-        chrome
-    }
+    mod membership;
+    use membership::governed;
+    pub(crate) use membership::invoke_shell_action;
 
-    /// Invoke one shell action the way the control socket does: resolve its
-    /// exact address in a catalog, then bind and run its JSON arguments.
-    /// Every action stays selectable, so the provider's own authority
-    /// check is the one under test.
-    pub(super) fn invoke_shell_action(
-        chrome: &Chrome,
-        id: &str,
-        args: &serde_json::Value,
-    ) -> Result<crate::shell::search::InvocationDisposition, ActionError> {
-        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
-        let mut registry = crate::shell::search::SearchRegistry::new();
-        registry.register(Rc::new(ActionsProvider::new()));
-        let mut doc = AutoCommit::new();
-        let resource = ResourceRef::new("actions", id);
-        let catalog = ActionCatalog::build_exact(
-            &registry,
-            &resource,
-            crate::shell::search::SearchScope::All,
-            None,
-            &chrome.borrow(),
-            &doc,
-            &automerge::ROOT,
-            &AllVisible,
-        );
-        let action = catalog
-            .select(&resource)
-            .ok_or_else(|| ActionError::Refused(format!("{id} is not published")))?;
-        action.invoke_json(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            chrome,
-            args.as_object().expect("arguments are an object"),
-        )
-    }
-
-    fn role_of(chrome: &Chrome, member: &str) -> Option<crate::shell::state::CapRole> {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let role = tree
-            .desktop
-            .active_workspace()
-            .and_then(|ws| ws.role_of(member));
-        drop(tree);
-        role
-    }
-
-    /// The member's role as the replicated room document records it.
-    fn replicated_role_of(chrome: &Chrome, member: &str) -> Option<crate::shell::state::CapRole> {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let mut from_doc = tilo_desktop_model::DesktopTree::default();
-        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut from_doc);
-        let active = tree.desktop.active;
-        drop(tree);
-        from_doc
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == active)
-            .and_then(|ws| ws.role_of(member))
-    }
-
-    /// The active room's whole authority: its policy and its sandbox.
-    fn capabilities(
-        chrome: &Chrome,
-    ) -> Option<(
-        tilo_action_policy::RoomPolicy,
-        Vec<crate::shell::state::CapOverride>,
-    )> {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let caps = tree
-            .desktop
-            .active_workspace()
-            .map(|ws| (ws.policy.clone(), ws.sandbox.clone()));
-        drop(tree);
-        caps
-    }
-
-    #[test]
-    fn member_role_set_action_changes_role_through_workspace_caps() {
-        use crate::shell::state::CapRole;
-        // Phase `the_owner_changes_a_members_role_in_the_cache_and_the_room_document`.
-        {
-            let chrome = chrome_with_member("bob");
-            assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Editor));
-            let disposition = invoke_shell_action(
-                &chrome,
-                MEMBER_ROLE_SET_ID,
-                &serde_json::json!({"participant_id": "bob", "role": "viewer", "confirm": true}),
-            )
-            .expect("the owner may change a member's role");
-            assert!(matches!(
-                disposition,
-                crate::shell::search::InvocationDisposition::Accepted(_)
-            ));
-            assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Viewer));
-            assert_eq!(
-                replicated_role_of(&chrome, "bob"),
-                Some(CapRole::Viewer),
-                "the change reached the replicated room document, not only the cache"
-            );
-        }
-
-        // Phase `an_unconfirmed_or_unknown_change_changes_nothing`.
-        {
-            let chrome = chrome_with_member("bob");
-            let before = capabilities(&chrome);
-            assert!(
-                invoke_shell_action(
-                    &chrome,
-                    MEMBER_ROLE_SET_ID,
-                    &serde_json::json!({"participant_id": "bob", "role": "viewer"}),
-                )
-                .is_err(),
-                "a privileged change needs explicit confirmation"
-            );
-            assert!(
-                invoke_shell_action(
-                    &chrome,
-                    MEMBER_ROLE_SET_ID,
-                    &serde_json::json!({"participant_id": "bob", "role": "owner", "confirm": true}),
-                )
-                .is_err(),
-                "ownership is not a role this action can hand out"
-            );
-            assert!(
-                invoke_shell_action(
-                    &chrome,
-                    MEMBER_ROLE_SET_ID,
-                    &serde_json::json!({"participant_id": "carol", "role": "editor", "confirm": true}),
-                )
-                .is_err(),
-                "setting a role is not a way to admit someone who was never invited"
-            );
-            assert_eq!(capabilities(&chrome), before);
-        }
-
-        // Phase `a_delegated_administrator_passes_the_same_capability_check`.
-        {
-            let chrome = chrome_with_member("bob");
-            {
-                let state = chrome.borrow();
-                let mut tree = state.tree_mut();
-                let ws = tree.desktop.active_workspace_mut().unwrap();
-                ws.set_owner("foreign-owner");
-                let now = tilo_clock::unix_now();
-                ws.govern_as_at(
-                    "foreign-owner",
-                    tilo_action_policy::Change::AddMember {
-                        person: FIXTURE_USER.to_owned(),
-                        role: tilo_action_policy::Role::Editor,
-                    },
-                    now,
-                )
-                .expect("the owner admits the delegate");
-                let set_role = tilo_action_policy::roles::governance_action(
-                    &ws.room().to_string(),
-                    tilo_action_policy::roles::governance::SET_ROLE,
-                );
-                ws.govern_as_at(
-                    "foreign-owner",
-                    tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
-                        "delegate-set-role",
-                        tilo_action_policy::Subject::person(FIXTURE_USER),
-                        set_role,
-                        tilo_action_policy::KindSet::ALL,
-                        tilo_action_policy::Answer::Allow,
-                        tilo_action_policy::Subject::person("foreign-owner"),
-                    )),
-                    now,
-                )
-                .expect("the owner delegates administration");
-                drop(tree);
-            }
-            invoke_shell_action(
-                &chrome,
-                MEMBER_ROLE_SET_ID,
-                &serde_json::json!({"participant_id": "bob", "role": "commenter", "confirm": true}),
-            )
-            .expect("administration delegated as a capability is administration");
-            assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Commenter));
-        }
-    }
-
-    #[test]
-    fn member_remove_action_refuses_non_admin_and_owner() {
-        // Phase `the_owner_removes_a_member`.
-        {
-            let chrome = chrome_with_member("bob");
-            invoke_shell_action(
-                &chrome,
-                MEMBER_REMOVE_ID,
-                &serde_json::json!({"participant_id": "bob", "confirm": true}),
-            )
-            .expect("the owner may remove a member");
-            assert_eq!(role_of(&chrome, "bob"), None);
-            assert_eq!(replicated_role_of(&chrome, "bob"), None);
-        }
-
-        // Phase `the_recorded_owner_cannot_be_removed`.
-        {
-            let chrome = chrome_with_member("bob");
-            let before = capabilities(&chrome);
-            assert!(
-                invoke_shell_action(
-                    &chrome,
-                    MEMBER_REMOVE_ID,
-                    &serde_json::json!({"participant_id": FIXTURE_USER, "confirm": true}),
-                )
-                .is_err()
-            );
-            assert_eq!(capabilities(&chrome), before);
-        }
-
-        // Phase `a_non_administrator_is_refused_by_the_action_and_by_membership`.
-        {
-            let chrome = chrome_with_member("bob");
-            chrome
-                .borrow_mut()
-                .tree_mut()
-                .desktop
-                .active_workspace_mut()
-                .unwrap()
-                .set_owner("foreign-owner");
-            let before = capabilities(&chrome);
-            assert!(matches!(
-                invoke_shell_action(
-                    &chrome,
-                    MEMBER_REMOVE_ID,
-                    &serde_json::json!({"participant_id": "bob", "confirm": true}),
-                ),
-                Err(ActionError::Refused(_))
-            ));
-            assert_eq!(
-                crate::shell::membership::remove_member(
-                    &mut chrome.borrow_mut(),
-                    &"bob".to_string()
-                ),
-                Err(crate::shell::membership::MembershipError::Unauthorized(
-                    MEMBER_REMOVE_ID
-                )),
-                "the Members tab's own entry point refuses a non-administrator too"
-            );
-            assert_eq!(
-                crate::shell::membership::set_member_role(
-                    &mut chrome.borrow_mut(),
-                    &"bob".to_string(),
-                    crate::shell::state::CapRole::Viewer,
-                ),
-                Err(crate::shell::membership::MembershipError::Unauthorized(
-                    MEMBER_ROLE_SET_ID
-                ))
-            );
-            assert_eq!(capabilities(&chrome), before);
-        }
-    }
-
-    /// The Agents tab's Remove is an action too: it revokes every grant
-    /// naming the agent, membership included, and refuses anyone who does
-    /// not administer the room, through the action and the tab alike.
-    #[test]
-    fn agent_remove_action_revokes_everything_the_agent_holds() {
-        let apply = |chrome: &Chrome, id: &str, params: &[ActionParam], name: &str| {
-            let action = Action::ALL
-                .iter()
-                .find(|action| action.id == id)
-                .expect("registered");
-            let mut values = vec![(
-                "name".to_string(),
-                crate::shell::search::action_api::ArgValue::Text(name.to_string()),
-            )];
-            if params.iter().any(|param| param.name == "confirm") {
-                values.push((
-                    "confirm".to_string(),
-                    crate::shell::search::action_api::ArgValue::Boolean(true),
-                ));
-            }
-            let args = ActionArgs::bind(params, values).expect("declared parameters");
-            (action.apply)(&mut chrome.borrow_mut(), &args)
-        };
-        let grants_of = |chrome: &Chrome, agent: &str| {
-            let subject = tilo_action_policy::Subject::agent(agent);
-            chrome
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .expect("fixture has a room")
-                .policy
-                .grants
-                .iter()
-                .filter(|grant| grant.subject == subject)
-                .count()
-        };
-
-        // Phase `the_owner_removes_an_admitted_agent`.
-        {
-            let chrome = chrome_with_room();
-            apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "Scribe").expect("owner admits");
-            assert!(grants_of(&chrome, "scribe") > 0, "admitted");
-            apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "  SCRIBE ")
-                .expect("the owner may remove the agent, named in any case");
-            assert_eq!(
-                grants_of(&chrome, "scribe"),
-                0,
-                "no grant names it any more"
-            );
-            assert!(
-                chrome
-                    .borrow()
-                    .tree()
-                    .desktop
-                    .active_workspace()
-                    .unwrap()
-                    .agent_members_at(tilo_clock::unix_now())
-                    .is_empty(),
-                "the Agents tab no longer lists it"
-            );
-            assert!(
-                matches!(
-                    apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "scribe"),
-                    Err(ActionError::Refused(_))
-                ),
-                "removing an agent that holds nothing says so"
-            );
-        }
-
-        // Phase `a_non_administrator_is_refused_by_the_action_and_by_the_tab`.
-        {
-            let chrome = chrome_with_room();
-            apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "scribe").expect("owner admits");
-            chrome
-                .borrow_mut()
-                .tree_mut()
-                .desktop
-                .active_workspace_mut()
-                .unwrap()
-                .set_owner("foreign-owner");
-            let before = capabilities(&chrome);
-            assert!(matches!(
-                apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "scribe"),
-                Err(ActionError::Refused(_))
-            ));
-            assert_eq!(
-                crate::shell::membership::remove_agent(&mut chrome.borrow_mut(), "scribe"),
-                Err(crate::shell::membership::MembershipError::Unauthorized(
-                    crate::shell::membership::AGENT_REMOVE_ACTION
-                )),
-                "the Agents tab's own entry point refuses a non-administrator too"
-            );
-            assert_eq!(capabilities(&chrome), before);
-        }
-
-        let contract = shell_action_contract("agent.remove");
-        assert_eq!(contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-    }
-
-    #[test]
-    fn invitation_params_follow_the_canonical_definitions() {
-        let definitions = tilo_action_broker::collaboration_admin::action_definitions();
-        for (id, canonical) in [
-            (MEMBER_ROLE_SET_ID, MEMBER_ROLE_SET_ID),
-            (MEMBER_REMOVE_ID, MEMBER_REMOVE_ID),
-            (INVITATION_ISSUE_ID, INVITATION_ISSUE_ID),
-            (INVITATION_CANCEL_ID, INVITATION_CANCEL_ID),
-            (INVITATION_LIST_ID, INVITATION_LIST_ID),
-            (INVITATION_RESEND_ID, INVITATION_CANCEL_ID),
-        ] {
-            let action = Action::ALL
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("{id} is published"));
-            let definition = definitions
-                .iter()
-                .find(|definition| definition.id == canonical)
-                .unwrap_or_else(|| panic!("{canonical} is canonical"));
-            let shared: Vec<_> = action
-                .params
-                .iter()
-                .filter(|param| !membership_actions::SHELL_ONLY_PARAMS.contains(&&*param.name))
-                .cloned()
-                .collect();
-            assert_eq!(
-                shared, definition.params,
-                "{id} declares the canonical parameters"
-            );
-            assert!(
-                action.params.iter().any(|param| param.name == "confirm"),
-                "{id} carries the confirmation its contract demands"
-            );
-            let contract = shell_action_contract(id);
-            assert_eq!(
-                contract.kind,
-                tilo_actions::ActionKind::Outside,
-                "{id} is administration"
-            );
-            if id != INVITATION_RESEND_ID {
-                assert_eq!(contract.risk, definition.contract.risk);
-            }
-            assert_eq!(contract.result, definition.contract.result);
-            assert_eq!(
-                contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert!(
-                contract.validate_declaration().is_empty(),
-                "{id}: {:?}",
-                contract.validate_declaration()
-            );
-            assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
-        }
-        assert!(
-            !membership_actions::INVITATION_ACTION_IDS.contains(&MEMBER_ROLE_SET_ID)
-                && !membership_actions::INVITATION_ACTION_IDS.contains(&MEMBER_REMOVE_ID)
-        );
-    }
-
-    #[test]
-    fn membership_actions_are_published_and_invitations_need_peer_sync() {
-        let provider = ActionsProvider::new();
-        let chrome = chrome_with_room();
-        let rows = rows_for(&provider, &chrome, "");
-        assert!(row(&rows, MEMBER_ROLE_SET_ID).is_some());
-        assert!(row(&rows, MEMBER_REMOVE_ID).is_some());
-        for id in membership_actions::INVITATION_ACTION_IDS {
-            assert!(row(&rows, id).is_none(), "{id} needs peer sync");
-        }
-        chrome.borrow_mut().peer_sync_enabled = true;
-        let rows = rows_for(&provider, &chrome, "");
-        for id in membership_actions::INVITATION_ACTION_IDS {
-            assert!(row(&rows, id).is_some(), "{id} is published with peer sync");
-        }
-    }
-
-    #[test]
-    fn invitation_requests_are_validated_before_anything_is_queued() {
-        use crate::shell::overlay_host::{InvitationTerms, PeerSyncRequest};
-        let bind = |id: &str, args: serde_json::Value| {
-            let action = Action::ALL.iter().find(|action| action.id == id).unwrap();
-            let args = ActionArgs::bind_json(action.params, args.as_object().unwrap()).unwrap();
-            invitation_request(id, &args)
-        };
-        let recipient = "ab".repeat(32);
-        assert_eq!(
-            bind(
-                INVITATION_ISSUE_ID,
-                serde_json::json!({
-                    "role": "commenter",
-                    "expires_in_seconds": 600,
-                    "invitee_name": "  Bob ",
-                    "recipient": format!("tilo-identity:{recipient}"),
-                    "confirm": true,
-                }),
-            )
-            .unwrap(),
-            PeerSyncRequest::IssueInvitation(InvitationTerms {
-                role: crate::network::invite::InviteRole::Commenter,
-                expires_in_seconds: 600,
-                invitee_name: Some("Bob".into()),
-                recipient_user_public_key: Some([0xab; 32]),
-            })
-        );
-        for refused in [
-            serde_json::json!({"role": "editor", "expires_in_seconds": 0, "confirm": true}),
-            serde_json::json!({
-                "role": "editor",
-                "expires_in_seconds": membership_actions::MAX_INVITATION_LIFETIME_SECONDS.saturating_add(1),
-                "confirm": true,
-            }),
-            serde_json::json!({"role": "owner", "expires_in_seconds": 60, "confirm": true}),
-            serde_json::json!({
-                "role": "editor",
-                "expires_in_seconds": 60,
-                "recipient": "not-a-key",
-                "confirm": true,
-            }),
-        ] {
-            assert!(
-                bind(INVITATION_ISSUE_ID, refused.clone()).is_err(),
-                "{refused} is refused"
-            );
-        }
-        let id = "07".repeat(32);
-        assert_eq!(
-            bind(
-                INVITATION_CANCEL_ID,
-                serde_json::json!({"invite_id": id, "confirm": true})
-            )
-            .unwrap(),
-            PeerSyncRequest::CancelInvitation([7; 32])
-        );
-        assert_eq!(
-            bind(
-                INVITATION_RESEND_ID,
-                serde_json::json!({"invite_id": id, "confirm": true})
-            )
-            .unwrap(),
-            PeerSyncRequest::ResendInvitation([7; 32])
-        );
-        assert!(
-            bind(
-                INVITATION_CANCEL_ID,
-                serde_json::json!({"invite_id": "07", "confirm": true})
-            )
-            .is_err()
-        );
-        assert_eq!(
-            bind(INVITATION_LIST_ID, serde_json::json!({"confirm": true})).unwrap(),
-            PeerSyncRequest::ListPendingInvitations
-        );
-    }
     /// The notification centre's controls are actions too: an agent or a
     /// screen reader opens the list, clears it and brings it back as a click
     /// on "Clear all" and its Undo do, by address, with nothing to click.

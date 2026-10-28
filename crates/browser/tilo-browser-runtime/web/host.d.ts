@@ -44,6 +44,10 @@ export interface MountOptions {
   /** Host-issued session for tilo-model-http; never a provider API key.
    * Bound only to this mount. No compute node or certified peer is required.
    * The service authenticates the session and authorizes the selected profile.
+   * Without it the mount is lent the page's own model service: the providers
+   * the person set up in Model Providers, asked from the page with the keys
+   * kept in this browser's encrypted secret store (a provider that refuses
+   * browsers through the workspace host's fetch proxy).
    */
   models?: {
     /** Absolute HTTPS URL ending in /model/rpc. */
@@ -55,6 +59,7 @@ export interface MountOptions {
   };
   /** Explicit host-session grant for Model Providers or native Settings only; the backend still authorizes
    * every operation. Never falls back to models.sessionToken. No provider keys.
+   * Without it Model Providers administers the page's own model service.
    */
   providerManagement?: {
     endpoint: string;

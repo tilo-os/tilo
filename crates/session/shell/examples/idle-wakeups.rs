@@ -370,11 +370,33 @@ fn settle(desktop: &Desktop) {
     }
 }
 
+/// The resident memory of process `pid`, in MiB, from `/proc`.
+fn resident_mib(pid: u32) -> f64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| {
+            value
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+        .unwrap_or(0.0);
+    kib / 1024.0
+}
+
 fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
+    let started = Instant::now();
     let desktop = Desktop::start();
     desktop.wait_for("the restored Notes notebook", |targets| {
         targets.iter().any(|name| name == "notes.first_note")
     });
+    // Startup: from launching the compositor to its restored desktop
+    // answering with the Notes tab it reopened.
+    let startup = started.elapsed();
     let reply = desktop.control(&serde_json::json!({
         "op": "actions_invoke", "provider": "actions", "id": "window.new.terminal",
     }));
@@ -392,6 +414,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     let wakeups = tilo_test_env::idle::idle_wakeups(desktop.pid(), Duration::ZERO, window())
         .expect("sample the compositor's process tree");
     let measured_until = Instant::now();
+    let shell_rss_mib = resident_mib(desktop.pid());
     let clock_turns = clock_minutes(wall_from, SystemTime::now());
     let in_window: Vec<(Instant, String)> = desktop
         .log_since(measured_from)
@@ -434,7 +457,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     // One machine-readable line for the scheduled lane's adapter
     // (tools/perf/adapters.py idle-wakeups).
     println!(
-        "IDLE-WAKEUPS total_per_s={:.3} blocking_per_s={:.3} shell_per_s={:.3} loop_ticks_per_s={:.3} cpu_percent={:.3} window_ms={} threads_started={}",
+        "IDLE-WAKEUPS total_per_s={:.3} blocking_per_s={:.3} shell_per_s={:.3} loop_ticks_per_s={:.3} cpu_percent={:.3} window_ms={} threads_started={} shell_rss_mib={shell_rss_mib:.3} startup_ms={}",
         wakeups.per_second(),
         wakeups.blocking_per_second(),
         wakeups.process_per_second("shell"),
@@ -442,6 +465,7 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
         wakeups.total_cpu_percent(),
         wakeups.window.as_millis(),
         wakeups.threads_started,
+        startup.as_millis(),
     );
     assert!(
         wakeups.blocking_per_second() <= IDLE_WAKEUP_BUDGET,

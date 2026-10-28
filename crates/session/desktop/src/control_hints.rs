@@ -363,6 +363,12 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     if frame.area.is_zero_area() {
         return None;
     }
+    // A window being answered asks the person a question of its own: no
+    // hint anchored to it stands over that (one showing leaves, its anchor
+    // gone). The strip's own hints are not the window's to keep.
+    if frame.row.asking && matches!(spec.gesture, Gesture::MoveWindow | Gesture::ResizeEdge) {
+        return None;
+    }
     let words = crate::i18n::t(
         spec.touch_words
             .filter(|_| frame.touch)
@@ -449,6 +455,7 @@ mod tests {
                     Line::new((700.0, 96.0), (700.0, 880.0)),
                     WindowEdge::Trailing,
                 )),
+                asking: false,
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],
@@ -539,6 +546,60 @@ mod tests {
         }
     }
 
+    // A window asking the person a question has no place for the hints
+    // anchored to it: the one that would stand over the question never
+    // begins, and one already showing leaves with its anchor (the layer's
+    // own rule, `ui::control_hints`). The hints that are not the window's —
+    // moving the view along the strip — are not the question's to keep.
+    #[test]
+    fn no_hint_points_at_a_window_a_person_is_answering() {
+        let mut frame = frame();
+        frame.row.windows = 2;
+        let mut asking = frame.clone();
+        asking.row.asking = true;
+        for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge] {
+            let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+            assert!(
+                place(spec, &asking).is_none(),
+                "{gesture:?} would stand over the question"
+            );
+            assert!(
+                place(spec, &frame).is_some(),
+                "{gesture:?} has its place once the question is answered"
+            );
+        }
+        let pan = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::PanView)
+            .unwrap();
+        assert!(
+            place(pan, &asking).is_some(),
+            "the strip's own hint is not the window's"
+        );
+        // And the coach never begins one over the question.
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        performed::note(Performed::HoveredWindowBar);
+        performed::note(Performed::OpenedWindow);
+        for second in [0, 1, 2, 3, 4, 5] {
+            hints.update(&asking, start + Duration::from_secs(second));
+        }
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        hints.draw(
+            &asking,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            start + Duration::from_secs(5),
+        );
+        let said = hints.accessibility().and_then(|node| node.name);
+        for words in ["control-hint-move", "control-hint-resize"] {
+            assert_ne!(said, Some(crate::i18n::t(words)), "{words} while asking");
+        }
+    }
+
     #[test]
     fn what_the_row_saw_teaches_and_the_expert_sees_nothing() {
         let mut hints = ControlHints::new(Learned::default());
@@ -620,6 +681,58 @@ mod tests {
         assert!(hints.is_showing());
         let learned = hints.take_changed().expect("shown");
         assert_eq!(learned.showings("move-window"), 1);
+    }
+
+    /// A hint asks for frames only while it moves: as it arrives and plays
+    /// its gesture, then not while it rests, and not at all once it went.
+    /// An idle desktop with a hint on it comes to rest; a hint still asking
+    /// for frames would repaint its corner of the page sixty times a second.
+    #[test]
+    fn a_hint_asks_for_frames_only_while_it_moves() {
+        use ui::control_hints::coach::{IGNORED_AFTER, MIN_GAP};
+        use ui::motion::Beckon;
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let frame = frame();
+        performed::note(Performed::OpenedWindow);
+        hints.update(&frame, start);
+        assert!(hints.is_showing());
+        let loops = Beckon::GESTURE_PERIOD
+            .mul_f64(f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
+        let gone = IGNORED_AFTER + Beckon::leaving_time(EffectiveMotion::default());
+        // A host that draws a frame whenever one is asked for, or a wake
+        // comes due, as the page does.
+        let mut now = start;
+        let mut last_asked = None;
+        while now < start + Duration::from_secs(40) {
+            let due = hints.next_wake_deadline(now).is_some_and(|at| at <= now);
+            if hints.needs_animation_frame(now) || due {
+                hints.update(&frame, now);
+                if hints.needs_animation_frame(now) {
+                    last_asked = Some(now.saturating_duration_since(start));
+                    assert!(
+                        now < start + loops + Duration::from_millis(20)
+                            || (now + Duration::from_millis(20) >= start + IGNORED_AFTER
+                                && now < start + gone + Duration::from_millis(40)),
+                        "a hint at rest, or gone, asked for a frame {:?} after it came",
+                        now.saturating_duration_since(start)
+                    );
+                }
+            }
+            now += Duration::from_millis(16);
+        }
+        assert!(!hints.is_showing(), "an unanswered hint goes");
+        assert!(
+            last_asked.is_some_and(|at| at + Duration::from_millis(20) >= IGNORED_AFTER),
+            "it faded out"
+        );
+        assert!(!hints.needs_animation_frame(now));
+        assert!(
+            hints
+                .next_wake_deadline(now)
+                .is_none_or(|at| at >= start + MIN_GAP),
+            "nothing wakes the desktop before another hint may begin"
+        );
     }
 
     /// A hint coming onto the page repaints where it painted, a part of the

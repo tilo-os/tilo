@@ -304,7 +304,7 @@ async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     let service = NativeMediaService::new(
         lifecycle.clone(),
         Arc::new(Mutex::new(capture)),
-        super::super::personal_continuity::DeviceId::new("device-audio").unwrap(),
+        tilo_network_actor::fabric::DeviceId::new("device-audio").unwrap(),
     );
     assert!(service.install_consent(grants, prompts.clone()));
     let evidence = Arc::new(Evidence::default());

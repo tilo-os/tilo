@@ -314,11 +314,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     // that end rather than racing a send against it; the refusal of a frame
     // that arrives before the audit is covered at the handler by
     // `peer::private_transport_tests::removed_member_remote_action_is_refused`.
-    relay
-        .relay
-        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
-        .await
-        .unwrap();
+    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
     while tilo_test_env::within("removed member's session to end", b_client.recv())
         .await
         .is_some()
@@ -357,11 +353,7 @@ async fn remote_action_to_removed_target_is_refused() {
     let a_client = subscribed(addr.clone(), &user, &a).await;
     let c_client = subscribed(addr, &user, &c).await;
 
-    relay
-        .relay
-        .set_workspace_membership(WS, true, vec![a.device_pubkey()], relay.state_root.clone())
-        .await
-        .unwrap();
+    crate::common::admit_members(&relay.relay, WS, &[a.device_pubkey()], &relay.state_root).await;
     a_client
         .send(directed(
             c.device_pubkey(),
@@ -479,13 +471,13 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         lifetime = lifetime.saturating_mul(2);
     };
 
-    // Just past expiry, without waiting for the access audit.
+    // Just past expiry. An access audit may already have ended the session
+    // (one is due at the expiry, and a connection's first comes a second
+    // after it connected), and then the frame is never sent.
     let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
     tokio::time::sleep(Duration::from_nanos(remaining).saturating_add(Duration::from_millis(20)))
         .await;
-    client
-        .send(to_host(frame(invoke(InvocationId::new()))))
-        .unwrap();
+    let _ = client.send(to_host(frame(invoke(InvocationId::new()))));
     let refused = refusal(&client, "agent").await;
     assert!(
         refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),

@@ -109,16 +109,37 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
 }
 
-/** Send problem reports from the home workspace to the channel its
- * entry names. The desktop does not wait for it: the owner's admission is
+/** Send problem reports to the channel the entry's home workspace names,
+ * from whichever room the page is in: through the room's own peer where it
+ * is the home workspace, else through a peer of the page's in the home
+ * workspace (`homePeer()`, resolving to one or `null`), which carries the
+ * desktop's reports there. A bridge may mirror that one channel elsewhere,
+ * so reports from the person's own desktop or another workspace reach the
+ * same people. The desktop does not wait for it: the owner's admission is
  * a round trip of its own, and the desktop takes reports up once it is in. */
-export function configureFeedback(peer, home, admittedRoom = null) {
+export function configureFeedback(peer, home, admittedRoom = null, {homePeer} = {}) {
   const channel = home?.feedback?.channel;
-  if (!peer?.room || typeof channel !== 'string' || typeof peer.configureFeedback !== 'function') return;
-  // The channel is the home workspace's: another room has no such record.
-  if (!listedAt([home], {kind: 'room', host: peer.origin, room: peer.room}, admittedRoom)) return;
-  peer.configureFeedback({room: peer.room, provider: 'record:so.tilo.chat:', channel})
-    .catch(error => console.warn('feedback:', error?.message ?? error));
+  if (!peer?.room || typeof channel !== 'string') return;
+  const destination = room => ({room, provider: 'record:so.tilo.chat:', channel});
+  const warn = error => console.warn('feedback:', error?.message ?? error);
+  if (listedAt([home], {kind: 'room', host: peer.origin, room: peer.room}, admittedRoom)) {
+    peer.configureFeedback?.(destination(peer.room))?.catch(warn);
+    return;
+  }
+  // Another room has no such channel: the home workspace's peer carries them.
+  if (typeof homePeer !== 'function' || typeof peer.sendFeedbackThrough !== 'function') return;
+  (async () => {
+    const carrier = await homePeer();
+    if (!carrier) return;
+    if (!carrier.room || typeof carrier.configureFeedback !== 'function') {
+      await carrier.dispose?.();
+      return;
+    }
+    // Named first, so a desktop already waiting takes the startup up the
+    // moment the home workspace's owner admits this page.
+    peer.sendFeedbackThrough(carrier);
+    await carrier.configureFeedback(destination(carrier.room));
+  })().catch(warn);
 }
 
 /** The embedding site's origin, when `value` is exactly an https origin. */
@@ -276,7 +297,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A link that names no room is let in through its host's door: the room
   // the door admits to is that host's listed workspace.
   const admittedRoom = peer && route.target.scope.kind === 'room' && !route.target.scope.room ? peer.room : null;
-  configureFeedback(peer, entry.home, admittedRoom);
+  configureFeedback(peer, entry.home, admittedRoom, {
+    homePeer: entry.home && deps.homePeer
+      ? () => deps.homePeer(workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home) : null,
+  });
   // The app in front (a home workspace's, or the link's) downloads once the
   // page is in, while the desktop mounts, not when the desktop first opens
   // it. Not before: admission is a run of small round trips to the host,
@@ -301,6 +325,12 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // The desktop offers Invite in a room the page can invite to.
   const invite = peer?.room && deps.onInvite ? {onInvite: deps.onInvite} : {};
   const host = scopeHost(scope, window.location?.host);
+  // Asked beside the door, not before it (`deps.rendererUnavailable`): a
+  // browser that cannot draw opens no window, and the page says what to
+  // change instead. The answer is the browser's GPU process starting, which
+  // nothing admission needs waits on.
+  const unsupported = await deps.rendererUnavailable?.();
+  if (unsupported) return {peer, rendererUnavailable: unsupported};
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),

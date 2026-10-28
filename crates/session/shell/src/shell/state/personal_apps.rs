@@ -24,15 +24,22 @@ pub fn is_personal_app(app_id: &str) -> bool {
 }
 
 impl WorkspaceTree {
-    /// Whether `workspace` is personal: this device governs it and nobody
-    /// but its owner may read it or is in it now. The person's other
-    /// devices are the person; an agent the person admitted acts for them.
+    /// Whether `workspace` is personal: the person this device acts as
+    /// owns it, and nobody but them may read it or is in it now. The
+    /// person's other devices are the person; an agent the person admitted
+    /// acts for them.
     #[must_use]
     pub fn is_personal_workspace(&self, workspace: &Workspace) -> bool {
-        if !self.governs_room(workspace.room()) {
+        let Some(owner) = workspace.owner() else {
+            return false;
+        };
+        let room = workspace.room();
+        let owned_here = self.local_person.and_then(super::person_id_of).as_ref() == Some(owner)
+            || *owner == super::local_user_id_for_room_prompt(&room);
+        if !owned_here {
             return false;
         }
-        let owner = workspace.owner();
+        let owner = Some(owner);
         let readers_are_owner = workspace
             .room_readers_at(tilo_clock::unix_now())
             .iter()
@@ -61,13 +68,15 @@ impl WorkspaceTree {
     }
 
     /// [`Self::personal_workspace`], made when the person has none: a new
-    /// workspace this device governs, owned by the person it acts as there.
+    /// workspace placed on this device's host, owned by the person it acts
+    /// as there ([`Self::create_hosted_workspace`]).
     pub fn personal_workspace_or_new(&mut self) -> WorkspaceId {
         if let Some(workspace) = self.personal_workspace() {
             return workspace;
         }
-        let made = self.append_empty_workspace(&crate::shell::i18n::t("workspace-personal-name"));
-        self.adopt_ownerless_workspaces_with(super::local_user_id_for_room);
+        let (made, _) =
+            self.create_hosted_workspace(&crate::shell::i18n::t("workspace-personal-name"));
+        self.claim_own_unhosted_rooms(super::local_user_id_for_room);
         made
     }
 
@@ -138,9 +147,9 @@ mod tests {
     /// A personal workspace and a shared one, the shared one shown.
     fn tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
         let mut tree = WorkspaceTree::default();
-        let personal = tree.append_empty_workspace("Mine");
-        let shared = tree.append_empty_workspace("Together");
-        tree.adopt_ownerless_workspaces(&"ada".to_string());
+        let (personal, _) = tree.create_hosted_workspace("Mine");
+        let (shared, _) = tree.create_hosted_workspace("Together");
+        tree.own_workspaces_for_test(super::super::local_user_id_for_room);
         tree.desktop
             .workspaces
             .iter_mut()
@@ -190,8 +199,8 @@ mod tests {
     fn a_shared_workspace_shown_does_not_become_the_personal_one() {
         let (mut tree, personal, shared) = tree();
         // A second personal workspace, shown: Settings opens right there.
-        let other = tree.append_empty_workspace("Also mine");
-        tree.adopt_ownerless_workspaces(&"ada".to_string());
+        let (other, _) = tree.create_hosted_workspace("Also mine");
+        tree.own_workspaces_for_test(super::super::local_user_id_for_room);
         tree.set_active(other);
         assert_eq!(tree.workspace_for_app(SETTINGS, other), Some(other));
         assert_eq!(tree.workspace_for_app(SETTINGS, shared), Some(other));

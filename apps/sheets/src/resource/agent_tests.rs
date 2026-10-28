@@ -413,3 +413,36 @@ fn the_workbook_exports_as_xlsx_content_that_imports_back() {
         crate::model::CellFormat::Currency(tilo_locale::Currency::USD)
     );
 }
+
+/// A past version reads with the cells it held, and History draws it with
+/// the workbook's own view, read-only.
+#[test]
+fn a_past_version_reads_and_shows_its_cells() {
+    let mut app = app();
+    call(
+        &mut app,
+        "write-cells",
+        json!({ "sheet": "Sheet1", "cells": [{ "cell": "B2", "input": "Lighthouse rent" }] }),
+    );
+    let past = app.versions().pop().unwrap().hash;
+    call(
+        &mut app,
+        "write-cells",
+        json!({ "sheet": "Sheet1", "cells": [{ "cell": "B2", "input": "Harbour fees" }] }),
+    );
+
+    let read = call(
+        &mut app,
+        "read",
+        json!({ "version": past.to_string(), "item": "Sheet1" }),
+    );
+    assert!(
+        read["content"].to_string().contains("Lighthouse rent"),
+        "{read}"
+    );
+    let shown = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        shown.iter().any(|text| text.contains("Lighthouse rent")),
+        "{shown:?}"
+    );
+}

@@ -72,7 +72,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -170,13 +170,10 @@ jobs:
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
           bash tools/ci/require-pdf-sandbox.sh
 
-      # The governed browser voice test drives two real Chromium profiles, as
-      # in check.yml. Installing it adds packages and upgrades none in the
-      # pinned image, so the renderer behind the visual goldens is unchanged.
+      # The governed browser voice test drives two real Chromium profiles of
+      # the builder's Chromium, as in check.yml.
       - name: Prepare governed browser voice fixture
         run: |
-          dnf install -y --setopt=install_weak_deps=False chromium
-          printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$GITHUB_ENV"
           npm ci --prefix scripts/moq-browser
           node scripts/moq-browser/build.mjs
 

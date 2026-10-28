@@ -1134,7 +1134,15 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
                 Err("open a file first".into())
             }
             HexEffect::SaveAs { path } => {
-                self.write_to(std::path::Path::new(&path))?;
+                let path = std::path::Path::new(&path);
+                // A relative path would land wherever this process runs.
+                if !path.is_absolute() {
+                    return Err(format!(
+                        "the path to save to must be absolute: {}",
+                        path.display()
+                    ));
+                }
+                self.write_to(path)?;
                 Ok(Effected::done())
             }
             HexEffect::Save => {

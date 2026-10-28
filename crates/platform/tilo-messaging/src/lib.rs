@@ -43,5 +43,8 @@ pub use enrollment::{
     EnrollmentReviewFuture, SimChoice, SimChoicesFuture,
 };
 
+#[cfg(feature = "room")]
+pub mod room;
+
 mod setup;
 pub use setup::{LinkedAccount, LinkingFuture, Pairing, PairingFuture, SetupClient, SetupHost};

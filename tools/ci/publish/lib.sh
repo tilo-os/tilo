@@ -108,36 +108,56 @@ registry_login() {
 }
 
 # What a copy of the OCI layout SRC (oci:DIR[:REF]) to DST (docker://REGISTRY/REPO:TAG) sends: each
-# blob its manifests name with its size, and whether DST's repository has it already (an
-# anonymous HEAD), so a push log says how many bytes were new. Other sources are not measured.
+# blob its manifests name with its size, and whether DST's repository has it already (a HEAD
+# with the anonymous pull token the registry's challenge names, as registry.tilo.so wants from
+# inside the cluster), so a push log says how many bytes were new. Other sources are not measured.
 push_plan() {
-  local src=$1 dst=$2 dir repo url digest size have new=0 new_bytes=0 old=0 old_bytes=0
+  local src=$1 dst=$2 dir repo url digest size have challenge realm service auth=() code
+  local new=0 new_bytes=0 old=0 old_bytes=0 blobs
   [[ $src == oci:* ]] || return 0
   dir=${src#oci:}
   dir=${dir%%:*}
   repo=${dst#docker://}
   repo=${repo%[:@]*}
   url="https://${repo%%/*}/v2/${repo#*/}/blobs"
+  blobs=$(layout_blobs "$dir" "$dir/index.json" | sort -u)
+  [[ -n $blobs ]] || { printf 'push: %s: no blobs found in %s\n' "$dst" "$dir"; return 0; }
+  challenge=$(curl -sSI "$url/${blobs%% *}" 2>/dev/null | tr -d '\r' | sed -n 's/^[Ww]ww-[Aa]uthenticate: *Bearer //p')
+  if [[ -n $challenge ]]; then
+    realm=$(sed -n 's/.*realm="\([^"]*\)".*/\1/p' <<< "$challenge")
+    service=$(sed -n 's/.*service="\([^"]*\)".*/\1/p' <<< "$challenge")
+    auth=(-H "Authorization: Bearer $(curl -fsS "$realm?service=$service&scope=repository:${repo#*/}:pull" 2>/dev/null \
+      | sed -n 's/.*"token" *: *"\([^"]*\)".*/\1/p')")
+  fi
   while read -r digest size; do
-    if curl -fsSI -o /dev/null "$url/$digest" 2>/dev/null; then have=present; old=$((old + 1)); old_bytes=$((old_bytes + size))
-    else have=new; new=$((new + 1)); new_bytes=$((new_bytes + size)); fi
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -I "${auth[@]}" "$url/$digest" 2>/dev/null) || code=000
+    case $code in
+      200 | 307) have=present; old=$((old + 1)); old_bytes=$((old_bytes + size)) ;;
+      *) have=new; new=$((new + 1)); new_bytes=$((new_bytes + size)) ;;
+    esac
     printf 'push: blob %s %12s %s\n' "$digest" "$size" "$have"
-  done < <(layout_blobs "$dir" "$dir/index.json" | sort -u)
+  done <<< "$blobs"
   printf 'push: %s: %s new blobs (%s MB), %s present (%s MB)\n' "$dst" "$new" "$((new_bytes / 1000000))" \
     "$old" "$((old_bytes / 1000000))"
 }
 
 # The blobs (digest and size) the manifests and indexes below the index or manifest FILE of the
-# layout DIR name, recursively; read with grep, since the skopeo image has no jq.
+# layout DIR name, recursively; read with sed, since the skopeo image has no jq. Every key order
+# occurs (podman's, Python's, sorted), and a descriptor's nested objects (annotations, platform)
+# hold none of its digest, media type and size, so splitting at braces keeps each descriptor's
+# three in one piece.
 layout_blobs() {
-  local dir=$1 file=$2 type digest size
-  while read -r type digest size; do
+  local dir=$1 file=$2 piece type digest size
+  while IFS= read -r piece; do
+    digest=$(sed -n 's/.*"digest":"\(sha256:[0-9a-f]\{64\}\)".*/\1/p' <<< "$piece")
+    size=$(sed -n 's/.*"size":\([0-9]*\).*/\1/p' <<< "$piece")
+    [[ -n $digest && -n $size ]] || continue
+    type=$(sed -n 's/.*"mediaType":"\([^"]*\)".*/\1/p' <<< "$piece")
     case $type in
       *manifest* | *index*) layout_blobs "$dir" "$dir/blobs/${digest/://}" ;;
       *) printf '%s %s\n' "$digest" "$size" ;;
     esac
-  done < <(tr -d ' \n' < "$file" | grep -oE '"mediaType":"[^"]*","digest":"sha256:[0-9a-f]{64}","size":[0-9]+' \
-    | sed -E 's/"mediaType":"([^"]*)","digest":"([^"]*)","size":([0-9]+)/\1 \2 \3/')
+  done < <(tr -d ' \n' < "$file" | tr '{}' '\n\n')
 }
 
 # skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,

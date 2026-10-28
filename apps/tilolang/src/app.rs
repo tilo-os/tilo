@@ -161,6 +161,8 @@ impl ResourceApp for TlApp {
             }
             window
         };
+        // What its runtime invokes is decided by the person's standing as the host keeps it.
+        let window = window.with_standing(cx.standing());
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {

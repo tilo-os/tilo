@@ -1,0 +1,92 @@
+[package]
+name = "tilo-room-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "The room host every Tilo device runs and the relay embeds: room governance, the member session stack, and the retained store beneath it."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_room_host"
+path = "src/lib.rs"
+
+[features]
+# The fixtures the host's tests and its embedders' tests build on: a
+# certified test host and the devices around it, plus the store's test hooks.
+test-support = ["tilo-relay-store/test-support"]
+# Agents on the host: rooms keep apps' confined replicas and steward their
+# records' channel keys for pages.
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+# Pages reach the host: the live plane's voice relay.
+web = ["tilo-relay-shell/web", "dep:tilo-moq"]
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+web-time = { version = "1", features = ["serde"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-automerge-isolate.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+tilo-relay-client = { path = "../tilo-relay-client" }
+tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
+iroh.workspace = true
+iroh-base.workspace = true
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+automerge.workspace = true
+tilo-automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+rand.workspace = true
+getrandom.workspace = true
+tilo-content = { path = "../../system/content", default-features = false }
+blake3.workspace = true
+hex.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["full"] }
+n0-future = "0.3.2"
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+app-registry = { path = "../../packaging/app-registry" }
+libc.workspace = true
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-governor = { path = "../../collab/tilo-governor" }
+collab-types = { path = "../../collab/collab-types" }
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+tilo-relay-shell = { path = "../tilo-relay-shell" }
+tilo-relay-store = { path = "../tilo-relay-store" }
+sha2.workspace = true
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-moq = { path = "../tilo-moq", features = ["relay"], optional = true }
+tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
+tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
+chat = { path = "../../../apps/chat", optional = true, default-features = false }
+tilo-automation = { path = "../../collab/automation" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
+
+[dev-dependencies]
+# The store's continuity tests count each thread's heap.
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
+tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
+# Native enrollment and the private owner in the private network tests.
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+chat = { path = "../../../apps/chat", default-features = false }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[lints]
+workspace = true

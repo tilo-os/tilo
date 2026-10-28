@@ -22,7 +22,9 @@ fn harness_in(dir: &std::path::Path) -> ui::headless::FrameHarness {
     harness
 }
 
-fn files(harness: &mut ui::headless::FrameHarness) -> &mut FileExplorerWidget {
+fn files(
+    harness: &mut ui::headless::FrameHarness,
+) -> ui::headless::RootMut<'_, FileExplorerWidget> {
     harness.root_mut::<FileExplorerWidget>()
 }
 
@@ -97,7 +99,7 @@ fn a_failed_history_change_opens_version_history() {
     let plan = dir.path().join("plan.txt");
     for (width, semantic) in WAYS {
         {
-            let w = files(&mut harness);
+            let mut w = files(&mut harness);
             w.selection.clear();
             w.history_pending_path = Some(plan.clone());
             *w.history_result.lock().unwrap() = Some(Err(t("files-conflict-request-too-large")));

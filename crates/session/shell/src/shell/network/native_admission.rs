@@ -11,9 +11,9 @@
 //! replay) are one admission: each is authorized alone, in order, and the
 //! state file is published once for them all.
 use super::ShellNetwork;
-use crate::network::actor::{HostIdentity, native_ingress};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use tilo_lock::MutexRecover as _;
+use tilo_network_actor::{HostIdentity, native_ingress};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -74,6 +74,21 @@ impl State {
 
     pub(super) fn carries(&self) -> bool {
         self.carried.lock_recover().is_some()
+    }
+
+    /// Whether held inputs taken to be admitted again are still waiting
+    /// for their turn.
+    pub(super) fn owes_again(&self) -> bool {
+        !self.held.lock_recover().again.is_empty()
+    }
+
+    /// Whether an admission handed to the worker has not come back yet: its
+    /// end wakes the loop.
+    pub(super) fn admitting(&self) -> bool {
+        matches!(
+            *self.slot.lock_recover(),
+            Slot::Pending(_) | Slot::Admitting
+        )
     }
 
     /// Keep `input` until a surface is named.

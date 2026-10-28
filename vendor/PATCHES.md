@@ -68,7 +68,8 @@ checksum-verified registry releases in the lock, each with small patches
 so an idle endpoint wakes for nothing: no re-STUN tick and no home relay
 while the relay map is empty, no 15 s wall-clock poll on Linux (a timerfd the
 kernel cancels on resume or a clock step replaces it), and no gossip cache
-sweep once a topic's caches are empty or membership shuffle without an active
+sweep once a topic's caches are empty, no address-lookup sweep while it holds
+no addresses, and no membership shuffle without an active
 neighbor. A returning neighbor rearms the shuffle once. With relays, a net
 report that keeps finding the same addresses waits longer before the next, up
 to five minutes, and paths may keep alive less often than every 5 s, which
@@ -797,3 +798,12 @@ caller's Cargo OUT_DIR is not registered as an input. All external descriptors
 remain tracked, including symlinks across the output-directory boundary.
 `vendor/buffa-build/PROVENANCE.md` records the checksum, revision and patch.
 The registry waproto source and its source/hash guards remain unchanged.
+
+## zbus blocking runtime
+
+`zbus` 5.16.0 is the checksum-verified MIT registry release. Its blocking API
+built its own tokio runtime with one worker thread per host CPU, so one
+blocking D-Bus call left hundreds of idle threads in the compositor on a large
+machine. `tilo-worker-threads.patch` gives that runtime one worker, as its
+`expect` message already says; nothing else changes. See
+`vendor/zbus/PROVENANCE.md`. Remove the copy once upstream bounds the runtime.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, rememberEntered} from './workspaces.mjs';
+import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost, rememberEntered} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -27,7 +27,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
   globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
   globalThis.history = {pushState: () => calls.push('history')};
-  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}}, createElement: tag => new Element(tag),
+  globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
   const status = {textContent: 'Loading…'};
   const calls = [];
@@ -46,6 +46,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     link: {format: route => `https://web.example/#/${route.target.scope.room}`}};
   const prepared = [];
   globalThis.__entryPageFixture = {page, mounted: [], identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+    joinViaHost,
     boot: async options => { diagnostics = options.diagnostics; return boot ? boot(options, page) : page; }};
   rememberEntered({origin: ORIGIN, room: 'other', hostDevice: 'cd'.repeat(32), name: 'Other'});
   // Rooms an earlier visit kept as they were stored, whichever host held them.
@@ -60,6 +61,8 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
+    .replace('isPublicHome, joinViaHost,', 'isPublicHome,')
+    .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
@@ -204,10 +207,59 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
 });
 
+test('the home workspace’s peer that carries reports from another room asks for a background session', async () => {
+  let homePeer;
+  await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
+  const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};
+  const joined = [];
+  const carrier = {room: 'LOUNGE'};
+  globalThis.__entryPageFixture.joinViaHost = async options => { joined.push(options); return carrier; };
+  assert.equal(await homePeer(home), null, 'a person the home never let in gets no peer there');
+  assert.deepEqual(joined, []);
+  localStorage.setItem('tilo-host-memberships', JSON.stringify({'https://lounge.example': {origin: 'https://lounge.example', room: 'LOUNGE', userPublicKey: USER}}));
+  assert.equal(await homePeer(home), carrier);
+  assert.equal(joined.length, 1);
+  // Not online by it: no seat, face or count in the home workspace; and
+  // nothing live or in calls, which only the room in front has.
+  assert.equal(joined[0].background, true);
+  assert.equal(joined[0].live, false);
+  assert.equal(joined[0].voice, false);
+  assert.equal(joined[0].workspace, home);
+  await assert.rejects(joined[0].wait({attempt: 0}), /did not let this device in/, 'it never waits at the door');
+});
+
 test('an embedded room offers no Invite it could not carry out', async () => {
   let deps;
   await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
   assert.equal(deps.onInvite, undefined);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   assert.equal(typeof deps.onInvite, 'function');
+});
+
+// A session's own status, as the peer publishes it (PeerSnapshot).
+function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
+  return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};
+}
+
+test('the bar follows the session after the mount, not the mount alone', async () => {
+  const statuses = [];
+  let session = sessionOf();
+  const r = await fixture({boot: async (options, booted) => {
+    booted.peer = {...booted.peer, mountDesktop: async () => booted.mount,
+      getSnapshot: () => session, subscribe: () => () => {}, onStatus: listener => statuses.push(listener)};
+    return booted;
+  }});
+  const {diagnostics} = r;
+  const root = document.documentElement.dataset;
+  assert.equal(statuses.length, 1, 'the page follows the session, not only the mount it made');
+  diagnostics.onStatus({phase: 'presented', frames: 1});
+  assert.equal(root.connection, undefined, 'a session that is well has nothing to say');
+  // Nothing unmounted: the desktop is still there, the session is not.
+  session = sessionOf({phase: 'incomplete', transport: 'offline'});
+  statuses[0]();
+  assert.equal(root.connection, 'offline', 'a transport that dropped after the mount is not connected');
+  // The mount never changed: the line comes from the session alone.
+  session = sessionOf();
+  statuses[0]();
+  assert.notEqual(root.connection, 'offline', 'and it clears once the transport is back');
 });

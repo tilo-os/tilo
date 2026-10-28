@@ -82,6 +82,7 @@ impl TabBar {
         self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_desktop_control_chip(scene, transform, tr, theme);
         self.draw_dev_build_chip(scene, transform, tr, theme);
+        self.draw_shared_chip(scene, transform, tr, theme, presence);
         if self.window_controls {
             self.controls.paint(
                 scene,
@@ -174,6 +175,17 @@ impl TabBar {
                     user: user.clone(),
                 });
             }
+        }
+        // The faces the share mark shows draw as their people look now.
+        for (tab, user) in self.shared.people_by_tab() {
+            seen.push(PersonSeen {
+                tab,
+                colour: presence.color_for(user),
+                dims: presence.availability_of(user).dims(),
+                agent: presence.is_agent(user),
+                name: presence.names.get(user).cloned(),
+                user: user.clone(),
+            });
         }
         seen
     }

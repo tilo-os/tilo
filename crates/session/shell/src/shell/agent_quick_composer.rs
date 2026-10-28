@@ -1551,7 +1551,7 @@ mod tests {
         // The composer waits for the agent's receipt of a request before it
         // sends another.
         composer.observe_receipt(ComposerReceipt {
-            owner: tide.clone(),
+            owner: tide,
             submission: ruled.submission,
             outcome: ComposerOutcome::Answered("Done.".into()),
         });

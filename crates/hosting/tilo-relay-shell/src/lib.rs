@@ -76,18 +76,33 @@ pub struct Checkpoint {
     pub standalone: bool,
 }
 
-/// The checkpoints host policy treats differently from the rest.
+/// What a checkpoint is, as host policy tells them apart.
+///
+/// Every kind but [`Self::Other`] is latest-wins state: each value replaces
+/// the last on its route and no delta carries what changed between them, so
+/// a live device must receive every one. [`Self::Other`] is a compaction
+/// baseline of content whose deltas a live device already holds; it reaches
+/// a live device once per session, or again when the device asks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckpointKind {
     /// A step of channel governance (a governance commit, an access request
-    /// or its acknowledgement): each replaces the last on one route, so every
-    /// one must reach a live device.
+    /// or its acknowledgement): each replaces the last on one route.
     Governance,
     /// A person's own continuity checkpoint, authored for `user`.
     Continuity {
         /// The user public key the checkpoint belongs to.
         user: [u8; 32],
     },
+    /// A device's snapshot of its person's workspace list, authored for
+    /// `user`: each replaces that device's last.
+    Directory {
+        /// The user public key the list belongs to.
+        user: [u8; 32],
+    },
+    /// A device's certificate, introducing it to the room: each replaces
+    /// that device's last.
+    Identity,
+    /// A compaction baseline: a shell tree or document checkpoint.
     Other,
 }
 

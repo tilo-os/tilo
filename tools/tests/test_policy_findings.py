@@ -106,7 +106,7 @@ class FindingsTests(unittest.TestCase):
                          ["crates/a.rs", "crates/a.rs (2)", "crates/a.rs (3)"])
 
     def test_headings_counts_and_hints_on_stderr_are_never_findings(self):
-        # The tls-stack check's heading names a file and ends in a colon; on stderr it is no
+        # A check's heading can name a file and ends in a colon; on stderr it is no
         # finding, and its findings below it are.
         tls = ("Cargo.lock: contains openssl 0.10.73\n"
                "Cargo.lock: native-tls 0.2.14 depends on openssl\n")

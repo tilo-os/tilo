@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "collaboration/native", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # X11 windows (winit's X11 backend) and the X11 clipboard, for development
 # builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
 # `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
@@ -55,13 +55,13 @@ local-daemons = ["dep:runtime-portal", "dep:runtime-identity", "collaboration/lo
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
-broker-transport = ["local-daemons", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
+broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-collab/client", "dep:capnp", "dep:capnp-rpc", "tokio/full"]
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::HeadlessApp`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-host/test-support", "dep:tilo-test-env"]
+test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:tilo-test-env"]
 # The UX benchmark runner (`ui::ux_bench`): scenarios, checks and the HTML
-# report the shell's `ux-bench` binary drives. Off by default, so the shared
+# report the `ux-bench` tool drives. Off by default, so the shared
 # runtime apps load does not ship it.
 ux-bench = []
 # Hyphenation patterns (hypher) are not linked into text layout: the program
@@ -397,6 +397,8 @@ runtime-identity-host = { package = "runtime-identity", path = "../../runtime/ru
 # enabling it here runs the integration tests that drive them whenever the
 # package is tested, not only when a dependant happens to unify the feature in.
 tilo-ui = { path = ".", features = ["test-support"] }
+# The manager's fixtures the App-driven collaboration tests drive.
+collaboration = { path = "../../collab/collaboration", features = ["test-support"] }
 # Deterministic swapchain lifecycle tests, without a display or GPU.
 wgpu = { workspace = true, features = ["custom", "noop"] }
 serial_test.workspace = true

@@ -254,11 +254,6 @@ impl Resource for Room {
     /// reads a note's text rather than a screenshot of it.
     const READABLE: bool = true;
 
-    /// A version of the past reads through the same adapter as the live room (a runtime of its
-    /// own over that version, below), so History and the read door show it as its records'
-    /// fields at that version, rather than as the bytes the room holds.
-    const HISTORY_READS_TEXT: bool = true;
-
     /// Every record and every item in one is part of the room's content (`tl:<app>:<id>`); the
     /// package's own resource (`tl:<app>`) and the host's carry only actions.
     fn document_child(_state: &RoomState, id: &str) -> bool {
@@ -283,10 +278,8 @@ impl Resource for Room {
         let host = Host::new(
             doc,
             tilolang_tilo::runtime::Principal::new("reader"),
-            |_: &tilolang_tilo::runtime::Principal, _: &tilolang_tilo::runtime::ActionInfo| {
-                // A read runs no action.
-                tilolang_tilo::runtime::Decision::Deny
-            },
+            // A read runs no action.
+            tilolang_tilo::authority::holding_nothing("reader"),
         )
         .map_err(|error| error.to_string())?;
         crate::app::load(&host);

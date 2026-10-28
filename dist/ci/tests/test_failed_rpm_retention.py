@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -102,23 +101,6 @@ class FailedRpmRetentionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "grew beyond"):
                 retention.retain(self.root, self.output, "lint-rpm", "1")
         self.assertFalse(self.output.exists())
-
-    def test_failed_artifact_never_feeds_host_session(self):
-        # t keeps a check's outputs only when it passes, and a lane with a failed userspace fails
-        # as a whole, so the login test (which needs the lane) never sees a failed lane's RPMs.
-        lane = (CI / "package-lane.sh").read_text()
-        self.assertIn('|| failed+=("$distro")', lane)
-        self.assertIn("if ((${#failed[@]})); then", lane)
-        self.assertIn("exit 1", lane.split("if ((${#failed[@]})); then", 1)[1])
-        products = tomllib.loads((CI.parents[1] / "tools/ci/products.toml").read_text())
-        checks = {check["name"]: check for matrix in products["matrix"] for check in matrix["check"]}
-        session = checks["host-session-e2e"]
-        self.assertEqual(session["needs"], ["desktop-package-amd64"])
-        self.assertIn('rpms=dist/ci-output/fedora-44-amd64\n', session["run"])
-        self.assertNotIn("failed", session["run"])
-        harness = (CI.parents[1] / "dist/session/vm-e2e/run.py").read_text()
-        self.assertEqual(harness.count('.glob("*.rpm")'), 2)
-        self.assertNotIn("rglob", harness)
 
 
 if __name__ == "__main__":

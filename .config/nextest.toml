@@ -30,10 +30,10 @@ path = "junit.xml"
 # Nextest starts tests in order and a test that needs every thread waits for
 # all running tests to finish, idling the rest of the pool. Tests that take the
 # whole pool therefore have the highest priority: they run back to back while
-# the pool is still empty. The two-wide compositor group and the longest tests
+# the pool is still empty. The four-wide compositor group and the longest tests
 # follow, so a run ends on short tests.
 [test-groups]
-compositor = { max-threads = 2 }
+compositor = { max-threads = 4 }
 desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
@@ -72,22 +72,28 @@ success-output = "final"
 filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
 
+# The native-4K, XRGB-history and GPU-target oracles render and read back
+# whole 3840x2160 frames through the software renderer. They assert pixels,
+# not time, so they need a share of the cores rather than the whole pool:
+# taking the whole pool made a shell run spend its first minute on them one
+# at a time with every other test waiting.
 [[profile.default.overrides]]
 filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions) or test(native_4k_modal_layers_match_between_dense_and_retained_frames))'
-threads-required = "num-cpus"
+threads-required = 16
 priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
-threads-required = "num-cpus"
+threads-required = 16
 priority = 100
 
-# The loopback peer-sync latency measurements (a 50 ms p95) are wall-clock
-# and run only when asked for with --ignored; sharing the runner with the
-# parallel suite would measure scheduler contention instead of the push path,
-# so they run with the pool to themselves.
+# The loopback peer-sync latency measurements (a 50 ms p95, an edit from one
+# device through the room's host to another) are wall-clock and run only when
+# asked for with --ignored; sharing the runner with the parallel suite would
+# measure scheduler contention instead of the push path, so they run with the
+# pool to themselves.
 [[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
+filter = 'package(shell) and test(=shell::network::one_host_tests::edit_latency::a_note_edit_reaches_the_other_device_within_the_interactive_budget)'
 threads-required = "num-cpus"
 priority = 100
 
@@ -110,17 +116,9 @@ filter = 'package(shell) and test(=network::native_media::audio_tests::native_op
 threads-required = "num-cpus"
 priority = 100
 
-# These four mounted Code journeys fsync a growing retained selection. Under
-# concurrent native journeys, the owner queue passed four seconds and a real
-# checkpoint refresh hit its existing deadline; serial focused runs pass.
-[[profile.default.overrides]]
-filter = 'package(shell) and test(/^network::invite::exchange_tests::mounted_code::/)'
-threads-required = "num-cpus"
-priority = 100
-
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
-threads-required = "num-cpus"
+threads-required = 16
 priority = 100
 
 [[profile.default.overrides]]

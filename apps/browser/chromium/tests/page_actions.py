@@ -103,10 +103,13 @@ GESTURES = b'''<!doctype html><title>Gestures</title>
 <style>.menu{position:relative;display:inline-block}
 .menu ul{display:none;position:absolute;background:#fff;list-style:none;padding:8px;margin:0}
 .menu:hover ul{display:block}
-li{border:1px solid #000;padding:8px;margin:4px;list-style:none}</style>
+li{border:1px solid #000;padding:8px;margin:4px;list-style:none}
+.recast span{padding:6px;display:inline-block}
+.recast span:hover{display:block;height:32px;padding:10px;background:#eef}</style>
 <h1>Gestures</h1>
 <nav class="menu"><span id="trigger" style="padding:8px;display:inline-block;border:1px solid #000">Licences menu</span>
 <ul><li><a href="#" onclick="opened(\'fishing\');return false">Fishing licence</a></li></ul></nav>
+<p class="recast"><span id="recast">Delivery notes</span></p>
 <ol id="l"><li draggable="true">Riverton office</li><li draggable="true">Porthaven office</li><li draggable="true">Central office</li></ol>
 <canvas id="c" width="400" height="150" style="border:2px solid #000" aria-label="Signature pad"></canvas>
 <button type="button" id="s" onclick="submitSignature()">Submit signature</button>
@@ -869,6 +872,15 @@ class PageActions(unittest.TestCase):
         self.assertIn('text "opened fishing"', self.outline())
         # A hover keeps the button up: it reveals a menu, it does not press.
         self.assertEqual(self.main_world('drawn()'), 0)
+
+    def test_a_hover_that_redraws_a_shown_box_takes_nothing_out_of_hiding(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        # The rule only redraws the words it hovers — a size, padding, a
+        # colour — and takes nothing out of hiding. A hand reaching for them
+        # finds what was already there, so they are not a hoverable.
+        self.assertNotIn('hoverable "Delivery notes"', outline)
+        self.assertIn('text "Delivery notes"', outline)
 
     def test_a_drag_reorders_a_draggable_list(self):
         self.h.navigate(self.url + '/gestures')

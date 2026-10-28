@@ -4,7 +4,9 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::collaboration::RouteSpec;
+pub(super) use crate::collaboration::document_routes::{
+    decode_routed_mutation, validated_route_payload_with,
+};
 
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
@@ -101,73 +103,6 @@ thread_local! {
     pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn validated_route_payload(
-    route: &RouteSpec,
-    envelope: &collab_types::SignedOp,
-) -> Option<collab_types::WholeDocumentPayload> {
-    collab_types::validate_whole_document_payload_route(
-        &route.app_id,
-        &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
-        envelope,
-    )
-    .ok()
-}
-
-/// [`validated_route_payload`] for an envelope as it reaches the endpoint:
-/// a reassembled cleartext transfer arrives on its last segment's envelope
-/// with the complete mutation beside it. The segment envelope must belong to
-/// `route`, and the complete payload must be a current-format mutation (the
-/// only format that is ever segmented).
-pub(super) fn validated_route_payload_with(
-    route: &RouteSpec,
-    envelope: &collab_types::SignedOp,
-    decrypted_payload: Option<&[u8]>,
-) -> Option<collab_types::WholeDocumentPayload> {
-    let (None, Some(complete)) = (envelope.encryption.as_ref(), decrypted_payload) else {
-        return validated_route_payload(route, envelope);
-    };
-    let segment = collab_types::validate_document_payload_route(
-        &route.app_id,
-        &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
-        envelope,
-    )
-    .ok()?;
-    if !matches!(
-        segment,
-        collab_types::RoutedDocumentPayload::CleartextSegment(_)
-    ) {
-        return None;
-    }
-    let mutation = collab_types::DocumentMutation::decode(complete).ok()?;
-    Some(collab_types::WholeDocumentPayload::Cleartext(mutation))
-}
-
-pub(super) fn decode_routed_mutation(
-    route: &RouteSpec,
-    payload: collab_types::WholeDocumentPayload,
-    decrypted_payload: Option<&[u8]>,
-) -> Result<collab_types::DocumentMutation, collab_types::DocumentMutationError> {
-    match payload {
-        collab_types::WholeDocumentPayload::Cleartext(mutation) => Ok(mutation),
-        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => {
-            let decrypted_payload =
-                decrypted_payload.ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-            let mutation = collab_types::DocumentMutation::decode(decrypted_payload)?;
-            let record = route.record.as_deref().unwrap_or("");
-            if collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id.to_string(),
-                record,
-            ) != channel
-            {
-                return Err(collab_types::DocumentMutationError::RouteMismatch);
-            }
-            Ok(mutation)
-        }
-    }
-}
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
         let _background = crate::local_document_action::suspend();
@@ -245,14 +180,28 @@ impl App {
         // A change still on its way to the history says nothing.
         let key = if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
-            // A lost connection says it is offline: reconnecting resumes it.
-            // A refused change is reported above, while still connected.
-            if self.native_document_chrome && manager.joining_late_route() {
-                // Opened on the local replica while the route is joined.
+            if !self.native_document_chrome {
+                return None;
+            }
+            // The broker refused the workspace's join: say why. The app
+            // keeps working on what this device holds.
+            if let Some(reason) = manager.join_refusal() {
+                return Some(Cow::Owned(crate::i18n::I18nManager::format(
+                    "history-sync-join-refused",
+                    &[("reason", reason.to_owned().into())],
+                )));
+            }
+            if manager.join_hold().is_some() {
+                // Joining, and the broker says what holds the join up: the
+                // room is not ready on this device yet, or the broker
+                // cannot be reached. A join that is merely under way says
+                // nothing.
                 Some("history-sync-reconnecting")
             } else {
-                (self.native_document_chrome && manager.sync_lost())
-                    .then_some("history-sync-offline")
+                // A lost connection says it is offline: reconnecting resumes
+                // it. A refused change is reported above, while still
+                // connected.
+                manager.sync_lost().then_some("history-sync-offline")
             }
         } else if !self.document_routes.primary.is_empty()
             || self
@@ -322,7 +271,7 @@ impl App {
             .document_routes
             .witness
             .iter()
-            .map(|witness| witness.route.clone())
+            .map(|witness| witness.route().clone())
             .chain(
                 self.document_routes
                     .owners
@@ -361,7 +310,7 @@ impl App {
             .document_routes
             .witness
             .as_ref()
-            .map(|witness| &witness.route);
+            .map(|witness| witness.route());
         let live = LiveOwners::of(self.root_widget.as_ref());
         live.all.iter().all(|owner| {
             self.document_routes.owners.iter().any(|entry| {
@@ -392,7 +341,7 @@ impl App {
     ) -> tilo_startup_metrics::NativeAdmissionSnapshot {
         let manager = &self.collaboration.manager;
         let witness = self.document_routes.witness.as_ref();
-        let route = witness.map(|witness| &witness.route);
+        let route = witness.map(|witness| witness.route());
         let (enqueued, counts) = manager.action_directory_observation();
         let installed = self
             .document_routes
@@ -625,7 +574,7 @@ impl App {
                 .collaboration
                 .manager
                 .primary_route()
-                .map(|witness| witness.route.clone())
+                .map(|witness| witness.route().clone())
             {
                 let _ =
                     self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
@@ -652,10 +601,10 @@ impl App {
         let Some(witness) = self.document_routes.witness.as_ref() else {
             return;
         };
-        let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
+        let primary = validated_route_payload_with(witness.route(), envelope, decrypted_payload)
             .and_then(|payload| {
-                let active = !self.document_routes.retired_route(&witness.route)
-                    && match witness.route.record.as_deref() {
+                let active = !self.document_routes.retired_route(witness.route())
+                    && match witness.route().record.as_deref() {
                         Some(record) => self
                             .persistence
                             .records
@@ -668,7 +617,7 @@ impl App {
                             .as_ref()
                             .is_none_or(|set| set.active().is_none()),
                     };
-                active.then(|| (witness.route.clone(), payload))
+                active.then(|| (witness.route().clone(), payload))
             });
         let Some((route, payload)) = primary else {
             return;
@@ -756,7 +705,10 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             };
             let request = CollabRequest::Document {
                 mutation,
-                authorization,
+                authorization: authorization.map(|authorization| {
+                    std::sync::Arc::new(authorization)
+                        as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
+                }),
             };
             sends.push((entry.route.clone(), request, heads));
         }

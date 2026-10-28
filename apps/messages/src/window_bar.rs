@@ -1,7 +1,7 @@
 //! Messages' controls, as slots in the window's bar ([`ui::window_toolbar`]):
 //! the shell's sidebar toggle and Back; where the window is as the location
-//! (the people, the person a conversation is with, the open groups or the
-//! account setup); the conversation's route as the location's choices; and
+//! (the people, the person a conversation is with, the record's open
+//! conversation, the open groups or the account setup); the conversation's route as the location's choices; and
 //! the actions: Accounts, Refresh messages, and in the groups Refresh
 //! membership and Close groups. The window draws no header row.
 
@@ -69,6 +69,14 @@ impl Bar {
             label(title)
         } else if self.setup.visible() {
             label(CATALOG.t("messages-setup-accounts"))
+        } else if let Some(with) = self
+            .sources
+            .record()
+            .conversations
+            .get(&Id::from_raw(&selected.conversation))
+            .map(|conversation| conversation.with.clone())
+        {
+            label(with)
         } else if let Some(name) = self.person_name(&selected.person) {
             if self.history.refresh(&self.sources, &selected).is_some() {
                 actions.push(ToolbarAction::new(

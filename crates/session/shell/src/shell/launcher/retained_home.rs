@@ -398,7 +398,7 @@ fn require_history_read(
             if !member.allows(&node, tilo_action_policy::ActionKind::Read, now)
                 || application
                     .decide(
-                        &node,
+                        &node.app(package),
                         tilo_action_policy::ActionKind::Read,
                         &tilo_action_policy::Context::at_time(now),
                     )
@@ -602,16 +602,7 @@ impl Registration {
                 display_name: app.display_name,
                 command,
             },
-            |held| {
-                super::start_launch(
-                    held.package_id,
-                    held.display_name,
-                    held.command,
-                    &session,
-                    held.authority,
-                    held.retained,
-                )
-            },
+            |held| super::room_hold::admit(&session, held, super::start_held),
             |event| session.push(event),
         )
     }

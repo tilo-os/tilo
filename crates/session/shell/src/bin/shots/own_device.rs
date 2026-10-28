@@ -1,16 +1,16 @@
 //! Another device of the same person, held in memory beside the shown one,
 //! so a scenario can render what one of a person's devices receives from
 //! another: the person's workspace list through the real signed directory,
-//! the workspace's content through its real room document.
+//! the workspace's content as the room's host serves it.
 #![allow(
     clippy::expect_used,
     reason = "a scene whose devices cannot be set up has nothing true to render"
 )]
 
-use shell::shell::personal_workspaces::PersonalWorkspaces;
+use shell::shell::personal_workspaces::{HeldRooms, PersonalWorkspaces};
 use shell::shell::state::{
-    AppKind, PeerOrigin, RoomAuthority, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
+    AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    WorkspaceId, WorkspaceTree,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -135,7 +135,6 @@ pub fn split_outline(tree: &mut WorkspaceTree, room: RoomId, salt: u16) {
         maximized: false,
         focus_history: Vec::new(),
     });
-    tree.sync_room_doc(room);
 }
 
 impl OwnDevice {
@@ -143,9 +142,8 @@ impl OwnDevice {
     pub fn laptop(person: &str) -> Self {
         let (key, cert) = device(&root(), 0x1A, "Laptop");
         let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(LAPTOP_SALT);
+        tree.set_peer_salt(LAPTOP_SALT);
         let room = seed_research(&mut tree, LAPTOP_SALT, person);
-        tree.sync_room_doc(room);
         let list = PersonalWorkspaces::new(cert.user_public_key, cert.device_public_key);
         Self {
             tree,
@@ -161,38 +159,44 @@ impl OwnDevice {
     /// room's content. Returns the ids of tabs that arrived.
     pub fn deliver(
         &mut self,
-        person: &str,
         shown: &mut WorkspaceTree,
         shown_list: &mut PersonalWorkspaces,
     ) -> Vec<u64> {
-        self.list.publish_local(&self.tree, person);
+        // The laptop's own host serves the room.
+        let held = HeldRooms::from([(self.room, self.cert.device_public_key)]);
+        self.list.publish_local(&self.tree, &held);
         let update = self
             .list
             .snapshot(&self.key, 1)
             .expect("the laptop signs its list");
-        shown_list.publish_local(shown, person);
+        shown_list.publish_local(shown, &HeldRooms::new());
         shown_list
             .merge(&update, &self.cert, 2)
             .expect("the same person's device");
-        shown_list.adopt_into(shown, &person.to_string());
-        let before = tab_ids(shown);
-        let changes = self
-            .tree
-            .export_room_changes_since(self.room, &[])
-            .expect("the laptop is in its room");
-        let laptop = PeerOrigin::hub(0x1A);
-        // The transport authenticates the laptop as a device of the person.
-        let root = self.cert.user_public_key;
-        shown.authenticated_persons.insert(laptop.clone(), root);
-        if shown.room_authority(self.room) != RoomAuthority::Person(root) {
-            // The scene's person is an account name, not the laptop's
-            // certified root, so the signed list cannot pin the person: pin
-            // the laptop the way an invite pins the room's governor.
-            shown.pin_room_authority(self.room, laptop.clone());
+        // The list names the laptop as the room's host; the shown device
+        // enters it there, which a scene without a network stands in for.
+        let (_, board) = device(&root(), 0xB0, "Orange Pi");
+        for entry in shown_list.adopt_into(shown, &board.device_public_key).enter {
+            let _ = shown.adopt_personal_room(entry.room, &entry.name);
         }
-        shown
-            .apply_room_changes(self.room, &changes, &laptop)
-            .expect("the room accepts its owner's device");
+        let before = tab_ids(shown);
+        // The room's content, as its host serves it to every member.
+        let content = self
+            .tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == self.room)
+            .map(|workspace| workspace.strips.clone())
+            .expect("the laptop is in its room");
+        if let Some(workspace) = shown
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == self.room)
+        {
+            workspace.strips = content;
+        }
         tab_ids(shown)
             .into_iter()
             .filter(|tab| !before.contains(tab))

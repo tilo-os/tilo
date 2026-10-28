@@ -314,10 +314,7 @@ async fn route_environment(
         Err((reason, detail)) => return refuse(send, reason, detail).await,
     };
     let forget = || async {
-        workspace
-            .lock()
-            .await
-            .compute
+        crate::compute_transport::compute_state(&mut *workspace.lock().await)
             .environments
             .sessions
             .remove(&session);
@@ -366,7 +363,7 @@ fn choose_route(
         return Err((Refusal::NotAMember, "not a member of this workspace"));
     }
     let member = member_of(peer);
-    let compute = &mut workspace.compute;
+    let compute = crate::compute_transport::compute_state(workspace);
     match request {
         SessionRequest::Open { record, .. } => {
             if record.workspace_id != workspace_id {
@@ -485,8 +482,7 @@ async fn serve_viewer(
         drop(guard);
         return refuse(send, Refusal::NotAMember, "not a member of this workspace").await;
     }
-    let viewer_id = guard
-        .compute
+    let viewer_id = crate::compute_transport::compute_state(&mut guard)
         .environments
         .add_viewer(member.user, frames_tx);
     drop(guard);
@@ -505,9 +501,8 @@ async fn serve_viewer(
                         continue;
                     }
                     let target = {
-                        let workspace = workspace.lock().await;
-                        workspace
-                            .compute
+                        let mut workspace = workspace.lock().await;
+                        crate::compute_transport::compute_state(&mut workspace)
                             .environments
                             .launches
                             .get(&input.launch)
@@ -523,7 +518,11 @@ async fn serve_viewer(
     }
     .await;
     let mut workspace = workspace.lock().await;
-    if let Some(viewers) = workspace.compute.environments.viewers.get_mut(&member.user) {
+    if let Some(viewers) = crate::compute_transport::compute_state(&mut workspace)
+        .environments
+        .viewers
+        .get_mut(&member.user)
+    {
         viewers.retain(|viewer| viewer.id != viewer_id);
     }
     drop(workspace);
@@ -556,8 +555,8 @@ async fn route_legacy_launch(
         return refused(Refusal::UnknownSession, "workspace not bound on this relay");
     };
     let (member, kvm, connection) = {
-        let workspace = workspace.lock().await;
-        let compute = &workspace.compute;
+        let mut workspace = workspace.lock().await;
+        let compute = crate::compute_transport::compute_state(&mut workspace);
         let Some(route) = compute
             .environments
             .sessions
@@ -601,13 +600,16 @@ async fn route_legacy_launch(
         return refused(Refusal::NoWorker, "the legacy worker could not be reached");
     }
     let (input_tx, input) = mpsc::channel(LAUNCH_INPUT_QUEUE);
-    workspace.lock().await.compute.environments.launches.insert(
-        launch,
-        LaunchRoute {
-            member,
-            input: input_tx,
-        },
-    );
+    crate::compute_transport::compute_state(&mut *workspace.lock().await)
+        .environments
+        .launches
+        .insert(
+            launch,
+            LaunchRoute {
+                member,
+                input: input_tx,
+            },
+        );
     tracing::debug!(
         launch = %hex::encode(launch),
         worker = %hex::encode(kvm),
@@ -688,10 +690,7 @@ async fn pump_launch(
                         break None;
                     }
                 };
-                workspace
-                    .lock()
-                    .await
-                    .compute
+                crate::compute_transport::compute_state(&mut *workspace.lock().await)
                     .environments
                     .broadcast(&member.user, &window);
             }
@@ -704,7 +703,7 @@ async fn pump_launch(
         }
     };
     let mut guard = workspace.lock().await;
-    let environments = &mut guard.compute.environments;
+    let environments = &mut crate::compute_transport::compute_state(&mut guard).environments;
     environments.launches.remove(&launch);
     environments.broadcast(&member.user, &WindowFrame::Exited { launch, code });
     drop(guard);

@@ -11,16 +11,18 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "in a test these are the assertion and the accuracy counters it adds up, not a hazard"
 )]
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_provider_config::Interaction;
 use serde_json::{Map, json};
-use tilo_agent::transform::{self, Interaction, RESPOND_TIMEOUT, TIMEOUT, TransformModel};
+use tilo_agent::transform::{self, RESPOND_TIMEOUT, TIMEOUT, TransformModel};
 use tilo_automation::AGENT_RESPOND_ACTION;
 
 /// The evaluation set, as the repository carries it.

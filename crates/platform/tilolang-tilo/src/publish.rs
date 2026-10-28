@@ -17,10 +17,10 @@ use tilo_actions::{
 
 use crate::action::DynAction;
 use crate::background::{Pending, Poll, Waker};
-use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta};
+use tilolang_runtime::meta::{ActionMeta, Meta};
 
 use crate::meta::{MetaExt as _, action_kind};
-use crate::surface::{arguments, schema_of_type};
+use crate::surface::{arguments, is_destructive, published_param};
 
 /// Who is invoking: what the door admitted of the caller, for the runtime's principal.
 ///
@@ -76,6 +76,13 @@ pub trait Committer: Send + Sync {
     /// # Errors
     /// Nothing is queued under the ticket.
     fn encoded(&self, ticket: u64) -> Result<EncodedAction, String>;
+
+    /// What committing the action queued under `ticket` needs of a room
+    /// ([`DynAction::need`]).
+    ///
+    /// # Errors
+    /// Nothing is queued under the ticket.
+    fn need(&self, ticket: u64) -> Result<tilo_actions::ActionNeed, String>;
 }
 
 /// The action id of the host action that commits a queued action.
@@ -107,47 +114,6 @@ pub fn package_resource_id(app: &str) -> String {
 /// The id of the host resource.
 pub const HOST_RESOURCE: &str = "tl:host";
 
-fn param_type(meta: &Meta, ty: &str) -> ParamType {
-    let ty = ty.trim();
-    let ty = ty
-        .strip_prefix("Option<")
-        .and_then(|rest| rest.strip_suffix('>'))
-        .map_or(ty, str::trim);
-    match ty {
-        "Int" => ParamType::Integer,
-        "Float" => ParamType::Number,
-        "Bool" => ParamType::Boolean,
-        "Text" | "Date" => ParamType::Text,
-        "Time" => ParamType::DateTime,
-        other if meta.type_named(other).is_some() => ParamType::Text,
-        // A record of another app the package uses (`so.tilo.lang.notes.Notebook`) is given by
-        // its resource id, as one of the package's own.
-        other if crate::surface::other_apps_record(meta, other).is_some() => ParamType::Text,
-        other if other.starts_with("Map<") => ParamType::Object,
-        _ => ParamType::Array,
-    }
-}
-
-fn action_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
-    let ty = param_type(meta, &param.ty);
-    // A default is the action's: what an invocation that leaves the argument out gets, computed
-    // when it is invoked, on what the invoker sees, and recorded as the argument.
-    let description = match &param.default {
-        Some(default) => format!(
-            "{}: {}; when left out, `{}` as it is when invoked",
-            param.name, param.ty, default.text
-        ),
-        None => format!("{}: {}", param.name, param.ty),
-    };
-    let optional = param.default.is_some() || param.ty.trim().starts_with("Option<");
-    let built = if optional {
-        ActionParam::optional_owned(param.name.clone(), ty, description)
-    } else {
-        ActionParam::required_owned(param.name.clone(), ty, description)
-    };
-    built.with_schema(schema_of_type(meta, &param.ty))
-}
-
 /// The type of the typed action `action` on resources of kind `kind`, whose build runs
 /// `planner` on the subject its spec is bound to: the resource id it is published on, a
 /// [`String`] [`Target`], or none for an action that takes no resource.
@@ -160,7 +126,7 @@ pub fn action_type(
 ) -> Arc<ActionType> {
     let params: Vec<ActionParam> = arguments(meta, &action.params)
         .iter()
-        .map(|param| action_param(meta, param))
+        .map(|param| published_param(meta, param))
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
     let planner = Arc::clone(planner);
@@ -226,10 +192,19 @@ pub fn action_type(
     } else {
         spec
     };
+    // In the order a native verb's declaration is made into its spec: its kind, description,
+    // icon, then whether it is destructive, which settles its confirmation.
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
         spec = spec.with_description(action.doc.clone());
     }
+    if let Some(icon) = &action.icon {
+        spec = spec.with_icon(icon.clone());
+    }
+    if is_destructive(action) {
+        spec = spec.destructive();
+    }
+    spec.type_mut().contract.settle_confirmation();
     Arc::clone(spec.action_type())
 }
 
@@ -1196,6 +1171,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
 /// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
+    let classify = Arc::clone(committer);
     let committer = Arc::clone(committer);
     let commit = ActionSpec::typed(
         COMMIT,
@@ -1218,7 +1194,17 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
                 })
         },
     )
-    .for_audience(tilo_actions::Audience::Agents);
+    .for_audience(tilo_actions::Audience::Agents)
+    // Offered as the least a commit is, a change of the record, as the host's surface declares
+    // it; each commit is what the action it carries is, so one that queues an outside effect
+    // needs what that effect needs.
+    .of_kind(tilo_actions::ActionKind::Undoable)
+    .with_need_of(move |args| {
+        args.integer("ticket")
+            .and_then(|ticket| u64::try_from(ticket).ok())
+            .and_then(|ticket| classify.need(ticket).ok())
+            .unwrap_or_else(|| tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable))
+    });
     let mut host =
         Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
     for spec in <crate::effects::HostEffect as tilo_resource::Effect>::specs() {

@@ -149,7 +149,7 @@ consent are separate decisions with explicit revocation and expiry.
 ### Receiver and source prerequisites for the next acceptance run
 
 The existing test endpoints are disposable loopback receivers, not identified
-physical devices. `cast-session-proof.py` binds `127.0.0.1` on an ephemeral port
+physical devices. [`cast-session-proof.py`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/cast-session-proof.py) binds `127.0.0.1` on an ephemeral port
 and supplies a DeviceAuth error to the production projector. Run its default
 mode to witness challenge-first rejection, no readiness/control/media URL, and
 clean disconnect. The legacy transport mode cannot qualify the current
@@ -158,7 +158,7 @@ selected receiver whose certificate proof and current signed revocation data
 satisfy the production verifier; synthetic test authorities are not a production
 receiver option.
 
-`airdrop-transfer-proof.py` starts the pinned OpenDrop wire receiver on loopback
+[`airdrop-transfer-proof.py`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/airdrop-transfer-proof.py) starts the pinned OpenDrop wire receiver on loopback
 and drives signed Files through the native headless compositor. Its exact-byte,
 wrong-pin, cancellation, decline/retry and certificate-rotation witnesses remain
 separate from physical Apple/AWDL acceptance. It requires matching prebuilt Files,
@@ -288,7 +288,7 @@ present a real frame and publish its public folder/send/cancel/retry actions.
 The independently derived receiver fingerprint is typed into the compositor's
 focused shared control through canonical `tilo-control` input operations.
 
-`scripts/headless-examples/airdrop-transfer-proof.py` observes six journeys:
+[`airdrop-transfer-proof.py`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/airdrop-transfer-proof.py) observes six journeys:
 exact extracted bytes after consent, wrong-pin metadata exclusion, cancelled
 consent with no HTTP requests, public cancellation while `/Ask` is held (no
 `/Upload`), receiver decline/generic retry without reused consent, changed
@@ -322,14 +322,6 @@ specified above. A remote source snapshot may have no `.git`; record the full so
 commit before syncing, passing it explicitly. Artifact hashes distinguish rebuilt
 candidates from that source base.
 
-```bash
-python scripts/headless-examples/airdrop-transfer-proof.py \
-  --source-commit FULL_SOURCE_COMMIT --opendrop /path/to/pinned-opendrop \
-  --runtime-bundle /path/to/tilo-runtime-bundle \
-  --libstd /path/to/exact-toolchain/libstd-HASH.so \
-  --evidence target/airdrop-native-proof.json
-```
-
 ### Cast lifetime defect and authentication boundary
 
 The native loopback Cast journey found that `connect_cast_device` returned a device
@@ -340,7 +332,7 @@ wire regression uses this production helper, rather than constructing a separate
 SDK context in the test, so the runtime-lifetime defect is observable in CI.
 Music continues to own Spotify playback; no new playback controller is introduced.
 
-`scripts/headless-examples/cast-session-proof.py` runs the prebuilt production
+[`cast-session-proof.py`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/cast-session-proof.py) runs the prebuilt production
 projector service (`tilo-projector serve` in an isolated runtime directory, driven
 by its `connect`/`disconnect` socket clients) against an independent bounded
 loopback receiver. Its default mode
@@ -349,12 +341,6 @@ disconnect without a `Connected` event, control messages or a media URL. The exp
 `--legacy-transport-only` mode retains the earlier LOAD/HLS/STOP witness for a
 baseline binary. Neither mode establishes decoded display output or physical
 receiver interoperability; the historical transport success was unauthenticated.
-
-```bash
-$CARGO build --locked -p tilo-projector --bin tilo-projector
-python3 scripts/headless-examples/cast-session-proof.py \
-  --projector target/debug/tilo-projector --evidence target/cast-session-proof.json
-```
 
 #### DeviceAuth implementation and compatibility limits
 

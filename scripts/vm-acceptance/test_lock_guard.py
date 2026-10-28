@@ -55,6 +55,10 @@ class LockingVm:
     def actions(self, query=""):
         return []
 
+    def exec(self, script, check=True, timeout=None):
+        # The session log: empty, so W21's evidence of how taps were routed is too.
+        return "0" if script.startswith("wc -l") else ""
+
     # -- input -------------------------------------------------------------------
 
     def _submit(self, unlocks):

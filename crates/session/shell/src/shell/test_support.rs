@@ -124,6 +124,8 @@ impl PopulatedShellFixture {
         theme: ui::theme::Theme,
         tree: crate::shell::state::WorkspaceTree,
     ) -> Self {
+        // The installed apps are read at startup, as the compositor does.
+        crate::shell::launcher::load_installed_apps();
         let parent = tempfile::tempdir().expect("private populated shell fixture parent");
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
             ui::font_catalog::checkout_root(),
@@ -152,6 +154,41 @@ impl PopulatedShellFixture {
                 .expect("populated fixture explicitly creates each presented tab record");
         }
         Self { frame, parent }
+    }
+
+    /// Acknowledge the startup writes of the fixture's `surfaces` Notes
+    /// windows and present that. Startup creates real records, and the
+    /// writer otherwise acknowledges them on its own thread whenever it gets
+    /// to them, flipping each window from Saving to Saved between two frames
+    /// a test compares.
+    pub(crate) fn acknowledge_notes_startup_writes(&mut self, surfaces: usize) {
+        let (apps, room) = {
+            let chrome = self.chrome();
+            let room = chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .expect("fixture workspace")
+                .room()
+                .to_string();
+            let apps = chrome
+                .hosted_inputs()
+                .in_process()
+                .expect("fixture app owner")
+                .clone();
+            (apps, room)
+        };
+        assert_eq!(
+            apps.borrow_mut()
+                .flush_fixture_records(notes::definition().app_id(), &room)
+                .expect("actual Notes startup writes acknowledged"),
+            surfaces
+        );
+        // Durability is sampled after sync; the next sync presents that sample.
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
+        assert_eq!(self.wake_mounted_components(), surfaces);
+        let _ = self.paint_with_damage();
     }
 }
 
@@ -312,6 +349,57 @@ pub(crate) fn install_settings(
 impl Drop for InstalledSettings {
     fn drop(&mut self) {
         settings_store::install_source(self.previous.take());
+    }
+}
+
+/// The active workspace's room as a session leaves it once the room is
+/// placed on this device: its own host governs it, the native owner entered
+/// it, and the person governing it is the one returned. What every app
+/// launch and invitation in one-host needs, which a room still waiting to be
+/// placed does not offer yet. The room stays held while the
+/// returned guard lives.
+#[cfg(any(test, feature = "test-support"))]
+pub struct OwnHostedRoom {
+    pub person: crate::shell::state::UserId,
+    _owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+    _directory: tempfile::TempDir,
+}
+
+/// Place the active workspace's room on this device ([`OwnHostedRoom`]).
+///
+/// # Panics
+///
+/// The room cannot be placed: a fixture that does not hold.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "a fixture whose room cannot be placed has nothing true to test"
+)]
+pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
+    {
+        let mut tree = tree.write();
+        let active = tree.desktop.active;
+        assert!(
+            tree.stand_in_room(active, room),
+            "the active workspace takes the room"
+        );
+        tree.persist_path = Some(directory.path().join("state.json"));
+    }
+    let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
+    let person_root = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+    let certificate = tilo_joined_room::testing::certificate(&person_root, &key, "This device");
+    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
+        .expect("this device's host lets its owner in");
+    assert!(tree.read().holds_room(room));
+    OwnHostedRoom {
+        person: crate::shell::state::person_id_of(person_root.verifying_key().to_bytes())
+            .expect("a person"),
+        _owner: owner,
+        _directory: directory,
     }
 }
 

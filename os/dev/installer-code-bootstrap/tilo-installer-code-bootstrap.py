@@ -66,7 +66,8 @@ def start():
     daemon.BASE.mkdir(mode=0o700, parents=True, exist_ok=True)
     (daemon.BASE / 'bootstrap.json').write_text(json.dumps(receipt, sort_keys=True) + '\n')
     (daemon.BASE / 'bootstrap.json').chmod(0o600)
-    os.environ['TILO_CODE_BOOTSTRAP_HANDSHAKE'] = '1'
+    # The receipt above is the handshake the daemon reads. Nothing goes through
+    # the environment, which every child process of the daemon would inherit.
     os.execv('/usr/bin/python3', ['/usr/bin/python3', str(ROOT / 'tilo-installer-code-refresh.py')])
 
 

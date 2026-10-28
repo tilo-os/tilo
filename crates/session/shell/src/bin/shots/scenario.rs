@@ -351,6 +351,11 @@ pub enum Action {
         app_id: &'static str,
         label: &'static str,
     },
+    /// The launch behind an [`Action::HoldLaunchPlace`] waits for a room
+    /// still being joined, as a launch into one does.
+    HoldLaunchForRoom(&'static str),
+    /// The room [`Action::HoldLaunchForRoom`] waits for is ready.
+    RoomReady,
     /// A peer's window whose app is still being fetched from the
     /// registry here, with no real install behind it.
     HoldInstallPlace {
@@ -464,6 +469,12 @@ pub enum Action {
     /// wants reviewing. This writes the same `ChromeState::osd` the key
     /// handler writes.
     SeedOsd(&'static str),
+    /// Publish Clocks' running timer with its floating overlay, the panel
+    /// the bar's clock opens: an app's own live activity, which a `--shots`
+    /// render has no app to publish.
+    SeedTimerOverlay,
+    /// Withdraw that activity, so a later scenario starts with no timer.
+    EndTimerOverlay,
     /// Open quick settings on the Wi-Fi pane with a passphrase prompt
     /// up, by preset name (`empty`, `typed`, `rejected`).
     SeedWifiPrompt(&'static str),
@@ -1355,6 +1366,13 @@ fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
     }
 }
 
+/// The room the launches of [`Action::HoldLaunchForRoom`] wait for.
+fn shots_room() -> shell::shell::state::RoomId {
+    shell::shell::state::RoomId::from(uuid::Uuid::from_u128(
+        0x5107_0000_0000_4000_8000_0000_0000_0001,
+    ))
+}
+
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
     match action {
@@ -1371,6 +1389,25 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
                     label,
                     placement,
                 );
+                st.bump();
+            });
+            return;
+        }
+        Action::HoldLaunchForRoom(app_id) => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().joining_rooms.insert(shots_room());
+                shell::shell::launcher::room_hold::hold_for_shots(
+                    st.tree_handle(),
+                    app_id,
+                    shots_room(),
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::RoomReady => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().joining_rooms.remove(&shots_room());
                 st.bump();
             });
             return;
@@ -1920,6 +1957,29 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             });
         }
         Action::SeedFilePicker(mode) => file_chooser::seed(driver, mode),
+        Action::SeedTimerOverlay => {
+            shell::shell::live_activities::board().show(
+                "so.tilo.clocks",
+                Some(serde_json::json!({
+                    "active": true,
+                    "activity_id": "timer-launch",
+                    "label": "Tea",
+                    "remaining_secs": 125,
+                    "stopwatch": false,
+                    "overlay": true,
+                })),
+            );
+            // The bar reads the activity board every
+            // `CLOCK_ACTIVITY_REFRESH` (250 ms of wall time), so the frames
+            // after this one are what puts it on screen.
+            driver.step_frames(24);
+            driver.relayout();
+        }
+        Action::EndTimerOverlay => {
+            shell::shell::live_activities::board().show("so.tilo.clocks", None);
+            driver.step_frames(24);
+            driver.relayout();
+        }
         _ => {}
     }
 }
@@ -1973,7 +2033,11 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
                 use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt};
-                st.overlays.quick_settings = true;
+                // The machine Quick Settings shows: a radio present and on,
+                // or the Wi-Fi tile is not offered and the section it opens —
+                // where the passphrase is asked — has nowhere to stand
+                // (`Root::anchor` needs `radios.wifi_available`).
+                ShellDriver::seed_laptop_quick_settings(st);
                 st.quick_settings.nav_stack = vec![QsLevel::Root];
                 st.quick_settings.section = Some(QsSection::Wifi);
                 st.quick_settings.wifi_networks = vec![
@@ -3270,6 +3334,33 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "opening_card_room_wait",
+            description: "An app asked for in a room still being joined holds its place, which \
+                          says it comes from the room, then opens once the room is ready.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::HoldLaunchPlace {
+                    app_id: "so.tilo.notes",
+                    label: "Notes",
+                },
+                Action::HoldLaunchForRoom("so.tilo.notes"),
+                Action::Wait(1),
+                Action::Relayout,
+                Action::Snapshot("room-wait"),
+                Action::RoomReady,
+                // The room's waiter starts the launch on its own thread.
+                Action::WaitWall(200),
+                Action::OpenWindow {
+                    app_id: "so.tilo.notes",
+                    surface_id: 5107,
+                },
+                Action::WaitSettled,
+                Action::Relayout,
+                Action::Snapshot("room-ready"),
+            ],
+        },
+        Scenario {
             name: "capture_screenshot_markup_full_app",
             description: "A taller-than-screen window, picked by focusing it, opens in markup whole, then zooms and pans without altering its pixels.",
             actions: vec![
@@ -3948,6 +4039,21 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "clock_overlay",
+            description: "Clocks' running timer floats over the desktop: the panel the bar's clock opens, drawn without a scenario until now.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Snapshot("00-desktop"),
+                Action::SeedTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("01-timer-overlay"),
+                Action::EndTimerOverlay,
+                Action::Wait(4),
+                Action::Snapshot("02-timer-gone"),
+            ],
+        },
+        Scenario {
             name: "overlay_edges",
             description: "Open every top-bar chip and hover its affordances so the popovers and tooltips are reviewed anchored at the top, left and right screen edges.",
             actions: vec![
@@ -3982,10 +4088,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("05-status-chip"),
                 Action::Key(Key::Named(NamedKey::Escape)),
+                // Seeding the invited person opens the roster itself
+                // (`overlays.collaborators`), so a click on the avatar stack
+                // here would close it again — four frames of it leaving at
+                // 10 % read in the sweep as "no popover at all".
                 Action::SeedInvitePending,
-                Action::Wait(3),
-                Action::ClickNamed("topbar_avatar_stack"),
-                Action::Wait(4),
+                Action::Wait(24),
                 Action::Snapshot("06-people-with-pending-invite"),
             ],
         },
@@ -5345,13 +5453,15 @@ fn build_scenarios() -> Vec<Scenario> {
             description: "Quick settings' Wi-Fi pane asking for a passphrase, empty / typed / rejected.",
             actions: vec![
                 Action::SeedWifiPrompt("empty"),
-                Action::Wait(8),
+                // The section opens in place on the disclosure motion; the
+                // passphrase is drawn once it has arrived.
+                Action::Wait(24),
                 Action::Snapshot("01-asking"),
                 Action::SeedWifiPrompt("typed"),
-                Action::Wait(4),
+                Action::Wait(8),
                 Action::Snapshot("02-typed"),
                 Action::SeedWifiPrompt("rejected"),
-                Action::Wait(4),
+                Action::Wait(8),
                 Action::Snapshot("03-rejected"),
             ],
         },

@@ -59,6 +59,17 @@ pub enum CommitOperation {
         caller: tilo_user_identity::DeviceCert,
         command: WorkspaceMembershipCommand,
     },
+    /// Save or remove one shortcut of the room for the authenticated caller,
+    /// whose device's proof names them as its saver
+    /// ([`tilo_peer_state::room::proven_saver`]); governor signing custody is
+    /// supplied out of band, as for membership. The change is its JSON
+    /// ([`tilo_automation::ShortcutChange`]): a shortcut carries
+    /// self-describing values a binary encoding does not read back.
+    ShortcutChange {
+        invocation: uuid::Uuid,
+        caller: tilo_user_identity::DeviceCert,
+        change: Vec<u8>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
@@ -86,6 +97,10 @@ pub enum CommitTarget {
     /// Signed native content root publication; not a caller-facing operation.
     NativeCheckpointRoot {
         root: [u8; 32],
+    },
+    ShortcutChange {
+        device: [u8; 32],
+        invocation: uuid::Uuid,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +170,11 @@ impl OwnerCommitRequest {
                 caller,
                 command,
             } => membership_binding(*invocation, caller, command)?,
+            CommitOperation::ShortcutChange {
+                invocation,
+                caller,
+                change,
+            } => shortcut_binding(*invocation, caller, change)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -219,6 +239,25 @@ fn membership_binding(
         postcard::to_allocvec(&(invocation, caller, command)).map_err(|error| error.to_string())?,
     ))
 }
+/// The target and committed basis of a shortcut change request.
+fn shortcut_binding(
+    invocation: uuid::Uuid,
+    caller: &tilo_user_identity::DeviceCert,
+    change: &[u8],
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    if invocation.is_nil()
+        || serde_json::from_slice::<tilo_automation::ShortcutChange>(change).is_err()
+    {
+        return Err("invalid shortcut change binding".into());
+    }
+    Ok((
+        CommitTarget::ShortcutChange {
+            device: caller.device_public_key,
+            invocation,
+        },
+        postcard::to_allocvec(&(invocation, caller, change)).map_err(|e| e.to_string())?,
+    ))
+}
 /// The target and committed basis of a document import request.
 fn import_binding(
     invocation: uuid::Uuid,
@@ -254,6 +293,12 @@ pub trait OwnerCommitService: Send + Sync {
     /// Scoped native owners retain this requirement while incomplete or fenced.
     fn requires_room(&self, _room: &str) -> bool {
         true
+    }
+    /// Whether `room`'s effect receipts cross this owner's durable boundary.
+    /// They are the room's governance, recorded by its governor whichever
+    /// model its records follow: here, or at the host that governs it.
+    fn records_effects(&self, room: &str) -> bool {
+        self.requires_room(room)
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     /// Commit a certified member's own terminal audit at the actual governor.

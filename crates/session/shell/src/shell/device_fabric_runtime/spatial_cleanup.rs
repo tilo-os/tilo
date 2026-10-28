@@ -1,8 +1,8 @@
 //! Cleanup has bounded slots independent of ordinary input congestion. It waits
 //! for older input on the same lease, and blocks re-entry until releases send.
 use super::{FabricInputEvent, InputLease, OutboundSpatialInput, SpatialInputState};
-use crate::shell::personal_continuity::DeviceId;
 use std::collections::BTreeMap;
+use tilo_network_actor::fabric::DeviceId;
 
 type LeaseKey = (DeviceId, [u8; 16]);
 type ReleaseKey = (u8, u32);

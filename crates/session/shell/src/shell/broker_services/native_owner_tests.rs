@@ -50,7 +50,8 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         drop(owner);
         let mut tree = super::super::persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        let service = NativeOwnerCommitService::new(tree.shared(), None);
+        let tree = tree.shared();
+        let service = NativeOwnerCommitService::new(tree.clone(), None);
         // Building the service only starts the owner's open, off this
         // thread: the barrier under test is the commit's, after it.
         let deadline = tilo_test_env::hang_deadline();
@@ -61,13 +62,18 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        // The fixture's governor may own workspaces, so opening projected
+        // the room sealed. The barrier under test guards the one room kind
+        // whose records the owner commits: a held room whose host stewards
+        // no channels.
+        {
+            let mut tree = tree.write();
+            tree.stewarded_rooms.remove(&room);
+            tree.committed_record_rooms.insert(room);
+        }
         assert!(OwnerCommitService::requires_room(
             &service,
             &room.to_string()
-        ));
-        assert!(!OwnerCommitService::requires_room(
-            &service,
-            &uuid::Uuid::new_v4().to_string()
         ));
         let request = OwnerCommitRequest {
             room: room.to_string(),
@@ -78,6 +84,25 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             },
         };
         let before = std::fs::read(&path).unwrap();
+        // A room this device holds no enrollment for has no records the
+        // owner commits, and a commit into it anyway is refused without
+        // touching the state file.
+        let unheld = uuid::Uuid::new_v4().to_string();
+        assert!(!OwnerCommitService::requires_room(&service, &unheld));
+        let refused = service
+            .commit(OwnerCommitRequest {
+                room: unheld,
+                ..request.clone()
+            })
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("no committed native enrollment")),
+            "a room this device holds no enrollment for commits nothing: {:?}",
+            refused.map(|_| ())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         // The commit writes on a blocking thread of its own, so the real
         // storage failure scope opens around the write on that thread.
         let failing = fail.then(|| {
@@ -99,7 +124,10 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         } else {
             result.unwrap().validate_for(&request).unwrap();
             assert_ne!(std::fs::read(&path).unwrap(), before);
+            // The tree holds the owner it opened: let both go before the
+            // state file is opened again.
             drop(service);
+            drop(tree);
             let mut reopened = super::super::persist::load_tree_from(&path).unwrap();
             reopened.persist_path = Some(path);
             let owner = super::super::native_workspace_owner::open(reopened.shared()).unwrap();

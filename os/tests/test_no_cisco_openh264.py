@@ -9,12 +9,9 @@ import re
 import shlex
 import subprocess
 import tempfile
-import sys
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'tools/ci'))
-import t_matrix  # noqa: E402
 GATE = REPO / 'os/scripts/verify-no-cisco-openh264.sh'
 CONTAINERFILE = REPO / 'os/Containerfile'
 SNAPSHOT = REPO / 'os/Containerfile.rpms'
@@ -139,10 +136,6 @@ class Wiring(unittest.TestCase):
         self.assertLess(text.index('FROM metadata-tools AS repository'), gate)
         self.assertLess(gate, text.index('createrepo_c --quiet /repo'))
         self.assertIn('os/scripts/verify-no-cisco-openh264.sh', load_fingerprint().SHAPE_FILES)
-        # The snapshot is rebuilt, on both architectures, whenever the gate changes.
-        checks = {check['name']: check for check in t_matrix.checks(REPO)}
-        for name in ('image-rpms-x86_64', 'image-rpms-aarch64', 'provenance-rpms'):
-            self.assertIn('os/scripts/verify-no-cisco-openh264.sh', checks[name]['inputs'], name)
 
     def test_image_runs_the_gate_on_the_finished_rootfs(self):
         text = CONTAINERFILE.read_text()

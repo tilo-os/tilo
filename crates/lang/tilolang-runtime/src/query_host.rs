@@ -87,7 +87,7 @@ impl Core {
 
     /// The resources of `items` that `pred` holds of, in the order `order`, each read from
     /// the store.
-    fn query_list(
+    pub(crate) fn query_list(
         &self,
         items: Vec<Value>,
         pred: &crate::store::Pred,
@@ -137,7 +137,7 @@ impl Core {
 
     /// Every resource of the type `ty` the store holds that `pred` holds of, in the order
     /// `order`: outside a view, which could not follow every resource of a type.
-    fn query_all(
+    pub(crate) fn query_all(
         &self,
         ty: &str,
         pred: &crate::store::Pred,

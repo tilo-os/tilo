@@ -108,6 +108,11 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
         (NATIVE_WIDTH, NATIVE_HEIGHT),
         theme.with_reduce_motion(true),
     );
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    frame.host_mut().rest_control_hints();
     frame.relayout();
     let _ = frame.paint();
     frame.relayout();
@@ -1023,6 +1028,11 @@ fn foreign_damage_window(
     tree.seed_doc_from_cache();
     let mut fixture =
         PopulatedShellFixture::with_tree(output, Theme::dark().with_reduce_motion(true), tree);
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    fixture.host_mut().rest_control_hints();
     let store = crate::shell::foreign::store();
     store.note_adopted(surface);
     fixture.with_chrome(|chrome| {
@@ -1374,7 +1384,13 @@ fn wide_retained_fixture_in(size: (u32, u32), theme: Theme) -> PopulatedShellFix
         }
     }
     tree.seed_doc_from_cache();
-    PopulatedShellFixture::with_tree(size, theme.with_reduce_motion(true), tree)
+    let mut fixture = PopulatedShellFixture::with_tree(size, theme.with_reduce_motion(true), tree);
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: it can land between two frames a test
+    // compares and change the chrome under them. These tests measure what
+    // else changes, so the hints keep away.
+    fixture.host_mut().rest_control_hints();
+    fixture
 }
 
 #[cfg(target_os = "linux")]
@@ -1390,6 +1406,9 @@ fn dense_capture_does_not_inherit_another_producers_canvas_policy() {
     frame.host_mut().set_strip_scroll_for_test(120.0);
     frame.relayout();
     let _ = frame.paint();
+    // The scroll brings windows on screen whose arrival runs on the clock:
+    // the two paints compared below must not fall either side of its end.
+    rest_as_the_session_does(&mut frame);
     // Compare the same production content on both draw-policy paths. A real
     // startup save acknowledgment must not change Notes' status between them.
     acknowledge_notes_saves(&mut frame);
@@ -1414,33 +1433,7 @@ fn acknowledge_notes_saves(frame: &mut PopulatedShellFixture) {
 /// Acknowledge the startup writes of the fixture's `surfaces` Notes windows.
 #[cfg(target_os = "linux")]
 fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, surfaces: usize) {
-    let (apps, room) = {
-        let chrome = frame.chrome();
-        let room = chrome
-            .tree()
-            .desktop
-            .active_workspace()
-            .expect("fixture workspace")
-            .room()
-            .to_string();
-        let apps = chrome
-            .hosted_inputs()
-            .in_process()
-            .expect("fixture app owner")
-            .clone();
-        (apps, room)
-    };
-    assert_eq!(
-        apps.borrow_mut()
-            .flush_fixture_records(notes::definition().app_id(), &room)
-            .expect("actual Notes startup writes acknowledged"),
-        surfaces
-    );
-    // Durability is sampled after sync; the next sync presents that sample.
-    assert_eq!(frame.wake_mounted_components(), surfaces);
-    let _ = frame.paint_with_damage();
-    assert_eq!(frame.wake_mounted_components(), surfaces);
-    let _ = frame.paint_with_damage();
+    frame.acknowledge_notes_startup_writes(surfaces);
 }
 
 #[cfg(target_os = "linux")]
@@ -1636,6 +1629,7 @@ fn assert_a_whole_pixel_pan_moves_only_the_strips(
     rest: &FrameCache,
     offsets: &[u32],
 ) {
+    let waking = frame.wake_deadline_owners();
     frame.host_mut().set_strip_scroll_for_test(120.0);
     frame.relayout();
     let panned = frame.paint_with_damage();
@@ -1656,7 +1650,7 @@ fn assert_a_whole_pixel_pan_moves_only_the_strips(
     );
     assert!(
         pan.layers.chrome.encoding_eq(&rest.layers.chrome),
-        "a pan leaves the chrome"
+        "a pan leaves the chrome (at rest, waiting on {waking:?})"
     );
     assert!(
         strips_drawn_alike(pan, rest),
@@ -2588,13 +2582,13 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop, theme_name: &str, theme: The
     // frame), so one oracle serves both warms.
     let mut dense = gpu_target(size);
     {
-        for stopped in [false, true] {
+        for (stopped, theme) in [(false, theme.clone()), (true, theme)] {
             let name = format!(
                 "{}, {theme_name}{}",
                 desktop.name,
                 if stopped { ", warm stopped" } else { "" }
             );
-            let mut frame = pan_fixture(desktop, theme.clone());
+            let mut frame = pan_fixture(desktop, theme);
             frame.set_strip_pan_presenter(false, true);
             let _ = acknowledged_notes_canvas_of(&mut frame, desktop.notes());
             rest_as_the_session_does(&mut frame);
@@ -2874,17 +2868,28 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
                 "{label}: a frame at rest after a pan is not rendered whole"
             );
             if painted.cache.is_some() {
-                last_layered = present(&mut layered, &painted, &label);
+                let _ = present(&mut layered, &painted, &label);
+                last_layered = layered.last_layer_work_for_test().cloned();
             } else {
                 let _ = present_or_keep(&mut layered, &painted, &label);
             }
             assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
         }
-        assert_eq!(
-            last_layered,
-            Some(0),
+        // The strip indicators show once the pan rests and go after their
+        // hold, on the clock: on a loaded machine that lands in these frames.
+        // The chrome is then rasterised where it changed, and nothing else.
+        let work = last_layered.unwrap_or_else(|| panic!("{theme_name}: frames at rest as layers"));
+        assert!(
+            !work.chrome || work.chrome_tiles.is_some(),
+            "{theme_name}: a change of the chrome at rest is bounded: {work:?}"
+        );
+        assert!(
+            !work.backdrop
+                && work.workspace == crate::shell::render::strip_layers::WorkspaceWork::Unchanged
+                && work.raster_pixels(SIZE) < output / 16,
             "{theme_name}: the first frame drawn in screen space after the pan is composited \
-             from layers that already show it"
+             from layers that already show it, rasterising at most a change of the chrome: \
+             {work:?}"
         );
         frame.relayout();
         assert!(

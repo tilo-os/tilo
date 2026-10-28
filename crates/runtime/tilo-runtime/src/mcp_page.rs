@@ -58,13 +58,15 @@ pub fn needle_words(needle: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether every word begins a word of the row's names: action id, label,
-/// description and parameters, resource label and kind, app id.
+/// Whether every word begins a word of the row's names, or is one of those
+/// words in another inflection: action id, label, description and
+/// parameters, resource label and kind, app id.
 pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
     word_score(row, words) == words.len()
 }
 
-/// How many of `words` begin a word of the row's names.
+/// How many of `words` begin a word of the row's names, or are one of those
+/// words in another inflection.
 pub fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
     let mut names = vec![
         row.resource.label.as_str(),
@@ -78,15 +80,25 @@ pub fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
             names.extend([param.name.as_ref(), param.description.as_ref()]);
         }
     }
-    let tokens = names
+    let names = names
         .iter()
         .flat_map(|name| name.split(|c: char| !c.is_alphanumeric()))
         .filter(|token| !token.is_empty())
         .map(str::to_lowercase)
         .collect::<Vec<_>>();
+    let stems = names
+        .iter()
+        .map(|name| tilo_actions::remote::stem_word(name))
+        .collect::<Vec<_>>();
     words
         .iter()
-        .filter(|word| tokens.iter().any(|token| token.starts_with(word.as_str())))
+        .filter(|word| {
+            let stemmed = tilo_actions::remote::stem_word(word);
+            // A word begins a name's word, or is that word in another
+            // inflection: "drawing" and "draw" are the same word to a
+            // caller describing what it wants to do.
+            names.iter().any(|name| name.starts_with(word.as_str())) || stems.contains(&stemmed)
+        })
         .count()
 }
 

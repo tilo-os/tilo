@@ -1033,7 +1033,7 @@ failure and exits 1. Recognition still uses two threads, fresh state,
 `best_of=1`, the default allocator and the unchanged 1 GiB cap. This identifies
 and contains one real allocation failure path; it does **not** establish the
 cause of the original intermittent abort or cover every native thread.
-`tools/release/probe_speech_fft_failure.py` makes the public-fixture regression
+[`probe_speech_fft_failure.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/probe_speech_fft_failure.py) makes the public-fixture regression
 repeatable without installing a preload or changing service confinement.
 
 The subsequent default-allocator batch completed all 21 public cases. Draft,
@@ -1773,13 +1773,13 @@ thread stacks and allocator reservations count against it. The production limit
 remains unchanged; device fitness additionally needs the compositor, OS and other
 apps measured together. Artifact admission's separate 256 MiB bound also remains.
 
-`build_asr_memory_characterization.py` builds private experimental copies against
+[`build_asr_memory_characterization.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/build_asr_memory_characterization.py) builds private experimental copies against
 the same pinned 1.8.3 archives. It checks the exact original bridge digest, adds
 public-only upstream allocation logging and `/proc` stage measurements, and
 compares supported CPU `flash_attn` initialization. It downloads or installs
 nothing. The default generated probes keep 1 GiB. The explicit
 `--include-2g-characterization` flag generates separately labeled 2 GiB probes;
-these cannot count as production qualification. `run_asr_memory_characterization.py`
+these cannot count as production qualification. [`run_asr_memory_characterization.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/run_asr_memory_characterization.py)
 rechecks available memory (minimum 8 GiB) and memory pressure (some.avg10 at most
 5%) before each serial one/two-CPU development case. Missing observations fail.
 The first matrix stopped at 5.45% pressure. After independent source analysis,
@@ -1871,7 +1871,7 @@ not a measured resident-memory ceiling or duplicate mapped weight file.
 capacity and maximum split inputs. The `65536` constant is internal to
 `Session`; the pinned public recognizer has no graph-capacity option.
 
-`characterize_nemo_scheduler.py` records a **review-only internal prototype**
+[`characterize_nemo_scheduler.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/characterize_nemo_scheduler.py) records a **review-only internal prototype**
 with graph capacity 8192. It preserves near-capacity warnings/errors, single
 stream execution and all resource guards; original source, binaries and build
 intermediates are restored and hash receipts retained. Scheduler metadata
@@ -1938,7 +1938,7 @@ the multilingual goal and is not an identified user bookmark.
 
 The remote Python adapter uses exact public `sherpa-onnx`/`sherpa-onnx-core`
 1.13.8 wheels and NumPy 2.4.2, with hashes in
-`stage_zipformer_review.py`. Apache and permissive NumPy distribution notices
+[`stage_zipformer_review.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/stage_zipformer_review.py). Apache and permissive NumPy distribution notices
 are retained in the isolated directory, with no global package install.
 The hardware-free namespace has no microphone or network, cleared environment,
 CPU provider, one/two CPU affinity, one OpenBLAS thread, 1 GiB `RLIMIT_AS` and
@@ -2012,8 +2012,8 @@ would leave normalization disabled, so no such result is claimed.
 
 `dictation-streaming-optimization.json` retains nine no-transcript receipts:
 two separate 2 GiB review runs and seven runs under the actual 1 GiB limit.
-`characterize_nemo_serial_scheduler.py` builds and restores the isolated source
-prototype; `characterize_nemo_serial_matrix.py` replays only the six exposed
+[`characterize_nemo_serial_scheduler.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/characterize_nemo_serial_scheduler.py) builds and restores the isolated source
+prototype; [`characterize_nemo_serial_matrix.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/characterize_nemo_serial_matrix.py) replays only the six exposed
 first clips plus one-CPU French. The 742090464-byte Q8 artifact still exceeds
 production's unchanged 256 MiB admission limit, and this native adapter is not
 the production worker. No model is installed or promoted. Unseen speech,
@@ -2035,7 +2035,7 @@ case stopped before decoding at 9.47%. All three stops and all eight completed
 cases remain in the ledger; six cases,
 including Arabic/Mandarin noise and both assembled transitions, are pending.
 No completed case was rerun, no guard was raised, and reserved speech remains
-untouched. `characterize_nemo_serial_stress.py --resume-from` permits only the
+untouched. [`characterize_nemo_serial_stress.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/characterize_nemo_serial_stress.py)` --resume-from` permits only the
 predeclared exposed cases and resumes missing work under the same guards.
 
 A smaller public FastConformer export was researched without downloading its
@@ -2078,8 +2078,8 @@ it compiled successfully after recovery with pressure 0.77%. Default fusion
 stopped before decoding at 6.77%, so its accuracy and false-positive behavior
 remain **unmeasured**. [`dictation-vocabulary-characterization.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/architecture/dictation-vocabulary-characterization.json) retains
 both completed cases, both pre-work stops, exact source/binary/library hashes
-and pending status. `build_nemo_vocabulary_review.py` and
-`probe_nemo_vocabulary_review.py` reproduce this isolated experiment; explicitly
+and pending status. [`build_nemo_vocabulary_review.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/build_nemo_vocabulary_review.py) and
+[`probe_nemo_vocabulary_review.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/probe_nemo_vocabulary_review.py) reproduce this isolated experiment; explicitly
 ignored/unavailable vocabulary requests fail rather than count as qualification.
 
 The already integrated shared dictionary reader remains the production
@@ -2356,7 +2356,7 @@ Frozen launchers require an explicit owned build root and immutable container im
 The current browser/worker driver requires `--container-image` with an OCI image ID
 or repository digest and records that pin in each receipt.
 
-`qualify_dictation_browser_worker.py` runs an authenticated public-audio image
+[`qualify_dictation_browser_worker.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/qualify_dictation_browser_worker.py) runs an authenticated public-audio image
 worker concurrently with a private real-browser field lease. Existing resource
 and custody checks remain intact; bounded worker replies are forwarded as they
 occur. The cases cover an original textarea final, focus-away-and-back retirement,

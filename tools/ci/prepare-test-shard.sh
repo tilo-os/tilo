@@ -69,11 +69,10 @@ if tests pdf-viewer tilo-pdf tilo-pdf-helper tilo-thumbnail; then
     bash tools/ci/require-pdf-sandbox.sh "$env_file"
 fi
 
-# Real browser voice coverage runs only with the peer package. Both
-# participants use throwaway profiles and Chromium's fake microphone.
+# Real browser voice coverage runs only with the peer package, in the builder's
+# Chromium. Both participants use throwaway profiles and Chromium's fake
+# microphone.
 if reads tilo-browser-peer; then
-    dnf install -y --setopt=install_weak_deps=False chromium
-    printf 'CHROME=%s\n' "$(command -v chromium-browser || command -v chromium)" >> "$env_file"
     npm ci --prefix scripts/moq-browser
     node scripts/moq-browser/build.mjs
 fi

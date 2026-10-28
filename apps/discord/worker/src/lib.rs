@@ -45,6 +45,10 @@ pub struct Ctx {
     guild: Mutex<Option<String>>,
     /// The threads in the one channel bridged, when there is one.
     threads: Mutex<BTreeSet<String>>,
+    /// The webhooks this worker made or adopted. What it posts through
+    /// them is its own, even before the bridge has mapped a webhook it
+    /// made in place of one gone from Discord.
+    own_webhooks: Mutex<BTreeSet<String>>,
     /// Performs not answered yet, by request, with when they arrived.
     in_flight: Mutex<BTreeMap<u64, Instant>>,
     /// The slash commands whose reply is still to say what came of them,
@@ -134,6 +138,26 @@ impl Ctx {
                     .lock()
                     .is_ok_and(|threads| threads.contains(channel))
         })
+    }
+
+    /// Note a webhook the worker made or adopted.
+    pub fn own_webhook(&self, webhook: &str) {
+        if let Ok(mut own) = self.own_webhooks.lock() {
+            own.insert(webhook.to_owned());
+        }
+    }
+
+    /// Whether gateway message `data` is one the worker posted through a
+    /// webhook of its own.
+    #[must_use]
+    pub fn posted_by_self(&self, data: &serde_json::Value) -> bool {
+        data.get("webhook_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|webhook| {
+                self.own_webhooks
+                    .lock()
+                    .is_ok_and(|own| own.contains(webhook))
+            })
     }
 
     /// Note threads that grow in the one channel bridged.
@@ -229,6 +253,7 @@ where
         out: out.clone(),
         guild: Mutex::new(None),
         threads: Mutex::new(BTreeSet::new()),
+        own_webhooks: Mutex::new(BTreeSet::new()),
         in_flight: Mutex::new(BTreeMap::new()),
         interactions: Mutex::new(BTreeMap::new()),
         audio: Arc::new(tokio::sync::Mutex::new(audio_rx)),

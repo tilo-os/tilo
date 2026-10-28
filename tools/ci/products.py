@@ -38,19 +38,11 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "tools" / "ci" / "products.toml"
 PUBLISH = "tools/ci/publish"
 PLATFORMS = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
-# What every build, signing and publishing check reads besides the product's own inputs.
-BUILD_INPUTS = [f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-build.sh", f"{PUBLISH}/oci-run.sh"]
 # The check whose outputs hold the pinned Cosign (lib.sh use_cosign), for every check that runs it.
 SIGNING_TOOLS = "signing-tools"
-COSIGN_INPUTS = ["os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh",
-                 "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub",
-                 "keys/release/**", "keys/operational/**"]
-SIGN_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-sign.sh", "os/dev/configure-cosign-kms.sh",
-               "tools/signing/sign-blob-certified.sh", *COSIGN_INPUTS]
 # Repositories installed systems verify (tools/signing/release_trust.py, lib.sh device_verified):
 # their releases also carry the certified signatures oci-sign.sh keeps in OUT/certified.
 DEVICE_VERIFIED = {"registry.tilo.so/tilo/tilo", "code.tilo.so/tilo/tilo", "registry.tilo.so/tilo/legacy-guest"}
-PUBLISH_INPUTS = [f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", f"{PUBLISH}/oci-publish.sh", *COSIGN_INPUTS]
 # Signing and publishing read only what the build produced, so they run on any architecture (as
 # micro-VM steps, since they hold credentials, booting the guest of the node they land on).
 CREDENTIAL_REQUIRES = ["arch=any"]
@@ -62,10 +54,8 @@ STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "a
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
 # The order fields appear in, as the hand-written checks of t.toml have them.
-FIELD_ORDER = ["name", "image", "run", "setup", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
-               "optional_needs", "outputs", "pointers", "id_token", "env", "git", "requires",
-               "isolation", "privileged", "writable_sources", "cost", "requirement", "timeout_secs", "on",
-               "default"]
+FIELD_ORDER = ["name", "image", "run", "setup", "needs", "optional_needs", "outputs", "pointers", "id_token",
+               "env", "git", "requires", "isolation", "cost", "requirement", "timeout_secs", "on", "default"]
 
 
 class ProductError(ValueError):
@@ -117,12 +107,6 @@ def publish_scripts(text: str, seen: set[str] | None = None) -> set[str]:
     return seen
 
 
-def with_scripts(fields: dict[str, Any]) -> dict[str, Any]:
-    """Every check reads the publishing scripts it runs, so a change to one reruns exactly those."""
-    scripts = sorted(publish_scripts(fields.get("run", "")) - set(fields.get("inputs", [])))
-    return {**fields, "inputs": [*fields.get("inputs", []), *scripts]} if scripts else fields
-
-
 def runs_cosign(run: str) -> bool:
     """Whether a command reaches lib.sh's use_cosign, which takes Cosign from SIGNING_TOOLS."""
     return any(re.search(r"^\s*use_cosign\s*$", (ROOT / s).read_text(encoding="utf-8"), re.M)
@@ -139,7 +123,7 @@ def with_signing_tools(fields: dict[str, Any]) -> dict[str, Any]:
 
 def check(fields: dict[str, Any], comment: str | None = None, matrix: dict[str, Any] | None = None) -> str:
     """A `[[check]]`, and with `matrix` the `[check.matrix]` t expands it by."""
-    fields = with_signing_tools(with_scripts(fields))
+    fields = with_signing_tools(fields)
     order = {name: i for i, name in enumerate(FIELD_ORDER)}
     lines = [f"# {line}".rstrip() for line in comment.strip().splitlines()] if comment else []
     lines.append("[[check]]")
@@ -277,7 +261,6 @@ class Product:
                 "requires": self.requires(self.arches[0], dict(fields)),
                 "default": fields.get("default", False),
             }
-            fields["inputs"] = dedupe([f"{PUBLISH}/lib.sh", f"{PUBLISH}/build-lib.sh", *fields.get("inputs", [])])
             out.append(check(fields, about))
             about = None
         out.append(per_arch([self.build(arch, context_name) for arch in self.arches],
@@ -289,7 +272,6 @@ class Product:
                 "name": f"image-{self.name}",
                 "run": f"python3 {PUBLISH}/oci-index.py {self.dir}/index "
                        + " ".join(f"{d}/image.oci.tar" for d in dirs),
-                "inputs": [f"{PUBLISH}/oci-index.py"],
                 "needs": [self.build_name(a) for a in self.arches],
                 "outputs": [f"{self.dir}/index/image.oci.tar", f"{self.dir}/index/digest"],
                 "requires": ["arch=any"],
@@ -340,7 +322,6 @@ class Product:
             "image": fields.pop("image", self.defaults["buildah"]),
             "run": run,
             **fields,
-            "inputs": dedupe([*BUILD_INPUTS, *fields.get("inputs", [])]),
             "outputs": [f"{values['out']}/image.oci.tar", f"{values['out']}/digest", *fields.get("outputs", [])],
             # `hosts` names the machine an architecture's build runs on where it isn't its own
             # (a cross-compile): `hosts = { aarch64 = "x86_64" }`.
@@ -351,7 +332,7 @@ class Product:
             result["needs"] = needs
         if not result["image"]:
             del result["image"]  # `image = ""`: t.toml's default image, the CI builder
-        elif result["image"] == self.defaults["buildah"] and not result.get("privileged"):
+        elif result["image"] == self.defaults["buildah"] and "isolation" not in result:
             # buildah needs user namespaces and mounts the job sandbox's strict tier refuses.
             result["isolation"] = "vm"
         return result
@@ -367,7 +348,6 @@ class Product:
             "image": fields.pop("image", self.defaults["buildah"]),
             "run": fill(spec["run"], values),
             **fields,
-            "inputs": dedupe([*BUILD_INPUTS, *fields.get("inputs", [])]),
             "needs": [*self.last, *fields.pop("needs", [])],
             "outputs": [f"{self.release_dir}/image.oci.tar", f"{self.release_dir}/digest",
                         *fields.get("outputs", [])],
@@ -375,7 +355,7 @@ class Product:
             "on": self.release_on,
             "default": False,
         }
-        if result["image"] == self.defaults["buildah"] and not result.get("privileged"):
+        if result["image"] == self.defaults["buildah"] and "isolation" not in result:
             result["isolation"] = "vm"
         return result
 
@@ -399,12 +379,11 @@ class Product:
         # Release consumers verify the attestation as they verify the signature, with a log entry.
         if self.release and not self.data.get("tlog"):
             raise ProductError(f"{self.name}: a release's provenance is entered in the transparency log, so needs tlog")
-        if set(spec) - {"run", "inputs", "image", "outputs", "needs"}:
-            raise ProductError(f"{self.name}: provenance takes run, inputs, outputs, needs and image")
+        if set(spec) - {"run", "image", "outputs", "needs"}:
+            raise ProductError(f"{self.name}: provenance takes run, outputs, needs and image")
         fields = {
             "name": f"provenance-{self.name}",
             "run": spec["run"],
-            "inputs": spec.get("inputs", []),
             "needs": dedupe([*self.builds, *spec.get("needs", [])]),
             "outputs": [*(f"{d}/provenance.json" for d in self.attested), *spec.get("outputs", [])],
             "requires": ["arch=any"],
@@ -455,7 +434,6 @@ class Product:
             "name": self.dev_sign_name if dev else f"sign-{self.name}",
             "image": self.defaults["skopeo"],
             "run": "\n".join(lines) + ("\n" if len(lines) > 1 else ""),
-            "inputs": [*SIGN_INPUTS, *([f"{PUBLISH}/oci-attest.sh"] if attest else [])],
             "needs": [*([self.release_build["name"]] if self.release_build and not dev else self.builds),
                       *([f"provenance-{self.name}"] if attest else []), *self.gates],
             "outputs": outputs,
@@ -468,8 +446,8 @@ class Product:
 
     def publish(self) -> dict[str, Any]:
         spec = fill(self.data.get("publish", {}), self.values(self.arches[0]))
-        if set(spec) - {"run", "inputs", "outputs", "pointers", "requirement", "requires"}:
-            raise ProductError(f"{self.name}: publish takes run, inputs, outputs, pointers, requirement and requires")
+        if set(spec) - {"run", "outputs", "pointers", "requirement", "requires"}:
+            raise ProductError(f"{self.name}: publish takes run, outputs, pointers, requirement and requires")
         if self.dev and self.release:
             channel = "any"
             on = dedupe([*self.dev_on, *self.release_on])
@@ -501,13 +479,11 @@ class Product:
             lines.insert(0, spec["run"])
         if self.data.get("after_publish"):
             lines.append(fill(self.data["after_publish"], self.values(self.arches[0])))
-        inputs = [*PUBLISH_INPUTS, *([f"{PUBLISH}/oci-anonymous.sh"] if self.data.get("anonymous") else [])]
         derived = [self.release_build["name"]] if self.release_build else []
         fields = {
             "name": f"publish-{self.name}",
             "image": self.defaults["skopeo"],
             "run": lines[0] if len(lines) == 1 else "\n".join(lines) + "\n",
-            "inputs": dedupe([*inputs, *spec.get("inputs", [])]),
             "needs": [*self.builds, *self.gates,
                       *([f"sign-{self.name}"] if channel == "release" else []),
                       *([self.dev_sign_name] if channel == "dev" and self.data.get("dev_signed") else []),
@@ -582,9 +558,9 @@ def per_variant(fields: dict[str, Any], variants: list[dict[str, str]], comment:
                  and len({v[k] for v in variants}) == len(variants)), None)
     if axis is None:
         raise ProductError(f"{fields['name']}: no placeholder of its name tells its variants apart")
-    template = with_scripts(fields)
+    template = fields
     for v in variants:
-        if t_matrix.fill(template, v) != with_scripts(placeholders(fields, v)):
+        if t_matrix.fill(template, v) != placeholders(fields, v):
             raise ProductError(f"{fields['name']}: its {v[axis]} check differs from the others beyond placeholders")
     values = [v[axis] if list(v) == [axis] else v for v in variants]
     return check(template, comment, {axis: values})
@@ -601,7 +577,7 @@ def per_arch(checks: list[dict[str, Any]], variants: list[dict[str, str]], comme
             template = placeholders_of(template, variants[0][name], "{" + name + "}")
         used = [n for n in names if "{" + n + "}" in json.dumps(template)]
         values = [{n: v[n] for n in used} for v in variants]
-        if "arch" in used and all(t_matrix.fill(with_scripts(template), v) == with_scripts(c)
+        if "arch" in used and all(t_matrix.fill(template, v) == c
                                   for v, c in zip(values, checks)):
             return check(template, comment, {"arch": [v["arch"] if list(v) == ["arch"] else v for v in values]})
     return "\n".join(check(c, comment if i == 0 else None) for i, c in enumerate(checks))

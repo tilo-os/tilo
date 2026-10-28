@@ -1,0 +1,75 @@
+[package]
+name = "tilo-network-actor"
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps the gossip topics, room host sessions, direct links and a person's private device lane."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+# The hooks the shell's tests reach the actor through: test membership
+# epochs, gossip retention, captured governance warnings, and no content-peer
+# registration with a filesystem daemon that is not running.
+test-support = ["dep:tracing-subscriber"]
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+futures-util = { workspace = true, features = ["io"] }
+getrandom.workspace = true
+hex.workspace = true
+iroh.workspace = true
+iroh-gossip.workspace = true
+media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+postcard = { workspace = true, features = ["alloc"] }
+runtime-collab = { path = "../../runtime/runtime-collab" }
+serde.workspace = true
+serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+thiserror.workspace = true
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tilo-desktop-model = { path = "../desktop-model" }
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-messaging = { path = "../../platform/tilo-messaging" }
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+tilo-room-host = { path = "../../hosting/tilo-room-host" }
+tilo-rt.workspace = true
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-window-share = { path = "../window-share" }
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+# Room sync states, as apps are told them.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+uuid.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+workspace-hack = { version = "0.1" }
+zeroize.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The ALPN of the tunnel between a person's devices.
+tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["tunnel"] }
+
+[dev-dependencies]
+fnv.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+tempfile.workspace = true
+tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true

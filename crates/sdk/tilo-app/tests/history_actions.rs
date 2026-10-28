@@ -43,7 +43,6 @@ mod reviewed;
     kind = "test.board",
     label = "Board",
     read_content = read_board,
-    history_text,
     app = "so.tilo.test-board"
 )]
 impl Board {

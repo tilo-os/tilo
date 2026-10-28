@@ -5,6 +5,13 @@ Architecture and hardware model are separate build inputs. The default
 x86-64 or ARM64. Registered profiles add model-specific firmware and an
 optional device tree without changing the common build scripts.
 
+A registered profile describes one machine, keyed on the identity its firmware
+reports, never on which device tree a kernel happened to bind. A new generation
+of a vendor's laptops is a new profile, not an edit to the old one; see
+[../docs/snapdragon-x-laptop-generation.md](../docs/snapdragon-x-laptop-generation.md)
+for the Snapdragon X generations, what a new one needs, and what has to land
+upstream first.
+
 ## Defining a hardware profile
 
 Add `os/hardware/profiles/<id>.json`, following the validated schema:

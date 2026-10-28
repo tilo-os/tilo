@@ -19,7 +19,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use publication_tests::edit as test_document_edit;
 #[cfg(test)]
-pub(crate) use tests::{test_enrolled_owner, tree_of};
+pub(crate) use tests::{test_enrolled_owner, test_owner_before_enrollment, tree_of};
 
 use super::{
     persist,
@@ -129,7 +129,7 @@ impl Store for TreeStore {
             // previous record's, and they must know its replacement is on
             // the way rather than judge it withdrawn.
             let export = matches!(change, Change::Room { .. } | Change::Released { .. })
-                .then(|| crate::shell::action_authority::Export::of(&candidate));
+                .then(|| crate::shell::action_authority::Export::at(&candidate, sequence));
             turn.write(&path, base, &candidate.native_authority, &encoded, sequence)
                 .map_err(|e| e.to_string())?;
             Ok(export)
@@ -310,10 +310,8 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 /// Take the workspace that is `room` off this device, with the room: a room
 /// the native owner holds, or is joining, leaves the owner's record in the
 /// same publication that takes its workspace off ([`Change::Released`]), so
-/// the two never part; a room of the shell's own engine is its workspace.
-/// Answers the workspace's place and value when it can be put back (an
-/// undo): only a room of the shell's own engine can, since a host's room is
-/// joined again through its host.
+/// the two never part. A room is joined again through its host, never put
+/// back here.
 ///
 /// # Errors
 ///
@@ -322,28 +320,16 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
 pub(crate) fn release_workspace_room(
     tree: &WorkspaceTreeHandle,
     room: RoomId,
-) -> Result<Option<(usize, super::state::Workspace)>, String> {
-    let (native, last) = {
-        let tree = tree.read();
-        let workspaces = &tree.desktop.workspaces;
-        (
-            tree.requires_native_owner(room),
-            workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room),
-        )
+) -> Result<(), String> {
+    let last = {
+        let held = tree.read();
+        let workspaces = &held.desktop.workspaces;
+        let last = workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room);
+        drop(held);
+        last
     };
     if last {
         return Err("the last workspace stays".into());
-    }
-    if !native {
-        let mut tree = tree.write();
-        let id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room() == room)
-            .map(|w| w.id)
-            .ok_or("no workspace is that room")?;
-        return Ok(tree.delete_workspace(id));
     }
     let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
     if !owner.release_room(room)? {
@@ -351,13 +337,12 @@ pub(crate) fn release_workspace_room(
         // is here.
         tree.write().forget_personal_room(room);
     }
-    Ok(None)
+    Ok(())
 }
 
 /// Delete the archived workspace that is `room`, with the room: a room the
 /// native owner holds or is joining leaves its record in the same
-/// publication ([`Change::Released`]); a room of the shell's own engine is
-/// its workspace, answered for an undo, which archives it again.
+/// publication ([`Change::Released`]).
 ///
 /// # Errors
 ///
@@ -366,32 +351,20 @@ pub(crate) fn release_workspace_room(
 pub(crate) fn delete_archived_workspace(
     tree: &WorkspaceTreeHandle,
     room: RoomId,
-) -> Result<Option<super::state::Workspace>, String> {
-    let native = {
-        let tree = tree.read();
-        if !tree.archived_workspaces.iter().any(|w| w.room() == room) {
-            return Err("no archived workspace is that room".into());
-        }
-        tree.requires_native_owner(room)
-    };
-    if native {
-        let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
-        if !owner.release_room(room)? {
-            tree.write().forget_personal_room(room);
-        }
-        return Ok(None);
-    }
-    let mut held = tree.write();
-    let index = held
+) -> Result<(), String> {
+    if !tree
+        .read()
         .archived_workspaces
         .iter()
-        .position(|w| w.room() == room)
-        .ok_or("no archived workspace is that room")?;
-    let removed = held.archived_workspaces.remove(index);
-    held.room_docs.remove(&room);
-    held.queue_save();
-    drop(held);
-    Ok(Some(removed))
+        .any(|w| w.room() == room)
+    {
+        return Err("no archived workspace is that room".into());
+    }
+    let owner = attached(tree).ok_or("this device's workspaces are still opening")?;
+    if !owner.release_room(room)? {
+        tree.write().forget_personal_room(room);
+    }
+    Ok(())
 }
 
 /// The owner already attached to `tree`'s writer, which an [`open`] of it
@@ -421,6 +394,46 @@ pub(crate) fn test_open_in_progress(
     });
     tilo_test_env::recv("the other open to take the writer", &holding);
     (release, holder)
+}
+
+/// What keeps [`test_chrome_governing_its_room`]'s room alive: its
+/// directory and its owner.
+#[cfg(test)]
+pub(crate) type GovernedRoomGuard = (tempfile::TempDir, NativeWorkspaceOwner);
+
+/// A chrome acting as the person who governs the active room, a room this
+/// device holds, with the room's invite action granted: where an
+/// invitation can be issued. Keep the guard alive for the test's length.
+#[cfg(test)]
+pub(crate) fn test_chrome_governing_its_room()
+-> (crate::shell::chrome_state::Chrome, GovernedRoomGuard) {
+    use crate::shell::invite_policy::{native_governor, tests::grant_invite};
+    let (directory, owner, room, _now, _key) = test_enrolled_owner();
+    let governor = crate::shell::state::person_id_of(
+        native_governor(Some(owner.clone()), room)
+            .expect("the room's admitted governor")
+            .person,
+    )
+    .expect("person id");
+    let handle = test_tree_of(&owner);
+    {
+        let mut tree = handle.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+            .expect("the enrolled room's workspace");
+        grant_invite(workspace, &governor);
+        let local = workspace.id;
+        tree.desktop.active = local;
+    }
+    let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+        handle,
+        crate::shell::hosted_inputs::HostedTileInputs::default(),
+    );
+    chrome.borrow_mut().act_as(governor);
+    (chrome, (directory, owner))
 }
 
 #[cfg(test)]

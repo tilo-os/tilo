@@ -20,7 +20,9 @@ impl ShellNetwork {
             && governor.0 != governor.1
             && let Ok(endpoint) = iroh::EndpointId::from_bytes(&governor.1)
         {
-            hosts.insert(crate::network::behaviour::peer_liveness_handle(&endpoint));
+            hosts.insert(tilo_network_actor::behaviour::peer_liveness_handle(
+                &endpoint,
+            ));
         }
         hosts
     }
@@ -91,7 +93,7 @@ mod tests {
         // The device host's `legacy_windows::peer_handle` pins the same value.
         let key = iroh::SecretKey::from_bytes(&[1; 32]);
         assert_eq!(
-            crate::network::behaviour::peer_liveness_handle(&key.public()),
+            tilo_network_actor::behaviour::peer_liveness_handle(&key.public()),
             0x90b3_65ba_582f_856f
         );
     }

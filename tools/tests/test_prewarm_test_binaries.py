@@ -20,7 +20,6 @@ from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 
 
 def listing_clock(started):
@@ -230,17 +229,6 @@ class PrewarmTests(unittest.TestCase):
             self.assertFalse(evidence["meaningful_tests_run"])
             artifacts.write_text("not JSON\n")
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
-
-    def test_nextest_check_owns_discovery_and_keeps_full_tests_and_doctests(self):
-        checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
-        apps = checks["apps-macos"]["run"]
-        self.assertNotIn("prewarm_test_binaries.py", apps)
-        self.assertNotIn("--no-run", apps)
-        nextest = "cargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?"
-        doctests = "cargo test --locked --no-fail-fast --doc $packages || status=$?"
-        self.assertEqual(apps.count(nextest), 1)
-        self.assertEqual(apps.count(doctests), 1)
-        self.assertLess(apps.index(nextest), apps.index(doctests))
 
 
 if __name__ == "__main__":

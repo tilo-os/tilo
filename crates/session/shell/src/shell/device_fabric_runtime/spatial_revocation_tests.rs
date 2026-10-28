@@ -3,9 +3,9 @@
 use super::*;
 use crate::compositor::{native::dispatch_spatial_input_batch, state::State};
 use crate::shell::network::{AuthenticatedPersonalRoute, PeerDeparture, PeerDepartureCause};
-use crate::shell::personal_continuity::DeviceId;
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use std::time::SystemTime;
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Clone, Copy, Debug)]
 enum Withdrawal {

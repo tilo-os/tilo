@@ -34,14 +34,7 @@ pub struct Record {
     pub secret: Option<SecretKind>,
 }
 
-/// Whether a secret is a PIN (digits only) or a password. A screen asks for
-/// one or the other by name and offers a number pad for a PIN.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SecretKind {
-    Pin,
-    Password,
-}
+pub use crate::protocol::SecretKind;
 
 impl SecretKind {
     pub fn of(secret: &crate::secret::Secret) -> Self {

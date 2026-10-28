@@ -2539,8 +2539,10 @@ scenario! {
             .expect("the project's frame presets reach the tree once it is open");
         d.perform_a11y_action(node, &ui::a11y::Action::Activate)
             .unwrap();
-        let (app, state) = d.root_and_state_mut::<VideoEditorApp>();
+        let mut parts = d.root_and_state_mut::<VideoEditorApp>();
+        let (app, state) = parts.split();
         settle(app, &mut state.doc);
+        drop(parts);
         let p = load(&d.state_mut().doc);
         assert_eq!(
             (p.width, p.height),
@@ -9268,7 +9270,7 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             state.doc = doc;
             let mut driver =
                 ui::headless::FrameHarness::for_root(state, app, (w, h), theme.clone());
-            let (on, off) = place(driver.root_mut::<VideoEditorApp>());
+            let (on, off) = place(&mut driver.root_mut::<VideoEditorApp>());
             driver.relayout();
             let bound = ui::time::Duration::from_secs(30);
             assert!(

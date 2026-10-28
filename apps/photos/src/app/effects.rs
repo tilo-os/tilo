@@ -185,10 +185,14 @@ impl PhotosApp {
             }
             PhotosEffect::Save { path } => {
                 if let Some(open) = self.shown_photo_in(library) {
-                    self.save_to(
-                        path.as_deref()
-                            .unwrap_or(&Self::suggested_save_path(&open.image)),
-                    );
+                    match path {
+                        Some(path) => {
+                            self.save_to(&path);
+                        }
+                        None => {
+                            self.choose_save_destination(&open.image, None);
+                        }
+                    }
                 }
             }
             PhotosEffect::ExportEditedContent { .. } => {
@@ -731,8 +735,16 @@ impl PhotosApp {
                 let open = self
                     .shown_photo_in(library)
                     .ok_or_else(|| "no photograph is open".to_string())?;
-                let destination = path.unwrap_or_else(|| Self::suggested_save_path(&open.image));
-                if !self.save_to(&destination) {
+                let Some(path) = path else {
+                    if !self.choose_save_destination(&open.image, Some(invocation)) {
+                        return Err(tr("photos-save-failed"));
+                    }
+                    return Ok(None);
+                };
+                if !std::path::Path::new(&path).is_absolute() {
+                    return Err(format!("the path to save to must be absolute: {path}"));
+                }
+                if !self.save_to(&path) {
                     return Err(tr("photos-save-failed"));
                 }
             }
@@ -866,6 +878,15 @@ impl PhotosApp {
         {
             self.pending_resource_open = None;
         }
+        if self
+            .save_chooser
+            .as_ref()
+            .is_some_and(|(_, pending)| *pending == Some(invocation))
+        {
+            // The chooser may still write what it was handed; the caller
+            // only stops waiting for its answer.
+            self.save_chooser = None;
+        }
         if self.resource_invocation == Some(invocation) {
             // Dropping the receiver closes this app's portal request channel;
             // a late response can no longer open a file after the caller
@@ -880,6 +901,53 @@ impl PhotosApp {
                 import.pending.clear();
             }
             self.resource_invocation = None;
+        }
+    }
+
+    /// Take the Save chooser's answer, if it has arrived: say how the save
+    /// went and settle the invocation that asked for it.
+    pub(super) fn drain_save_chooser(&mut self) {
+        let Some((rx, invocation)) = self.save_chooser.as_ref() else {
+            return;
+        };
+        let invocation = *invocation;
+        let outcome = match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::SaveOutcome::Failed(tr("photos-picker-failed"))
+            }
+        };
+        self.save_chooser = None;
+        let update = match outcome {
+            ui::portal::SaveOutcome::Saved => {
+                self.notice = Some(tr("photos-saved-edited"));
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                })
+            }
+            ui::portal::SaveOutcome::Cancelled => {
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some(tr("photos-save-cancelled")),
+                })
+            }
+            ui::portal::SaveOutcome::Failed(message) => {
+                self.notice = Some(format!("{}: {message}", tr("photos-save-failed")));
+                invocation.map(|invocation| tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "photos.save_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                })
+            }
+        };
+        if let Some(update) = update {
+            self.settle(update);
         }
     }
 }

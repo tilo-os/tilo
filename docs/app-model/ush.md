@@ -445,37 +445,78 @@ Tilo ships no signature database, and this runtime does not provide one.
   `/var/lib/ush/quarantine` with its executable bits cleared, so the original
   path stops resolving. No file is moved there automatically.
 
-## `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate` — actions, not syscalls
+## `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate`, `touch`, `append` — the environment's actions
 
-These are the guest's own verbs, under the names the person already types.
-Each invocation is parsed into one typed action, planned against the tree as
-it is, checked against the environment's grants **as a whole** — so a command
-with forty operands is allowed or refused in one piece, never half done — and
-then carried out by the supervisor, which is the only side that can read the
-record. It is recorded in the audit log and in the environment's recoverable
-history, and `undo file-action ID` takes it back:
+These are the guest's own verbs, under the names the person already types, and
+each is one of the environment record's published actions
+([`tilo_environment::files`](../../crates/runtime/environment/src/files.rs)):
+`copy`, `move`, `remove`, `make-dir`, `remove-dir`, `link`, `truncate`, `touch`
+and `append`. A command line parses into one of them, with its paths made
+absolute against the directory it was typed in, and the supervisor invokes it
+on the record through the record's action door, as the person whose session it
+is. It is one History entry of the environment's, attributed like any other,
+and undone from History like any other.
+
+An agent needs no shell: it invokes `move` (or any of the others) on the
+environment with the device and the paths, and gets the same check, the same
+History entry (the agent, for the person) and the same undo.
 
 ```
-$ rm ~/src/notes.md
-done (1 operation); `undo file-action 1793051200-000` puts it back
-$ undo file-action 1793051200-000
-undid 1793051200-000 (1 operation)
+$ mv draft.md final.md
+done (2 operations); undo it from the environment's History
+$ cp --json a.txt b.txt
+{"action":"copy","entry":"…","operations":1}
 ```
 
-Nothing is unlinked. `rm` renames the path into `/var/lib/tilo-recoverable`
-under the environment's own `/var`, an overwrite moves the previous contents
-aside the same way, and `rmdir` only ever removes an empty directory, so undo
-recreates it. `rm -f` is the one action that really removes — callers name it
-to the person before it runs, and undoing it has nothing to put back.
+**One permission model.** The verb itself checks every path the invocation
+names against the environment's grants, with the same `decide_capability` the
+permissions panel uses: what it writes, creates or gives up must be writable,
+what it copies must be readable. A command with forty operands is admitted or
+refused in one piece, before anything is queued. The device then plans the
+task against the tree as it is and asks the same question of every path the
+plan found (a copy into a directory writes `dir/name`), so nothing is done
+unless all of it is allowed. A source outside the grants is never read into
+them: the supervisor reads the host's filesystem, which is wider than the
+guest's.
 
-`ush history` lists what was removed or replaced, newest first. A flag this
-runtime does not implement (`-i`, `-a`, `-L`, `--preserve`) is refused by name
+**How it runs.** The verb queues one task in the record's `files` outbox for
+the device whose disk it changes, named by its machine id. That device's
+runtime carries it out and settles it with what it did, step by step; undoing
+the action queues a revert, which walks those steps back. A command typed in a
+guest is carried out at once, in the same write of the record. A task queued
+elsewhere — an undo from History, an agent's `move` — is carried out by the
+environment's session on that device as soon as the record's directory is
+written (the session watches it with inotify; nothing polls), or when the next
+session starts if none is running.
+
+**Nothing is unlinked.** `rm` renames the path into
+`/var/lib/tilo-recoverable` under the environment's own `/var`, an overwrite
+moves the previous contents aside the same way, and `rmdir` only ever removes
+an empty directory, so undo recreates it. `rm -f` is GNU's: it says nothing of
+a path that is not there, and keeps what is there like any removal. A flag
+this runtime does not implement (`-i`, `-L`, `--preserve`) is refused by name
 rather than quietly ignored, so a script that relied on it fails loudly
-instead of losing data quietly.
+instead of losing data quietly. `--json` prints one object: the action, its
+entry and how many operations it did, or `error` and why.
 
-Outside a guest the same verbs run in the host's own shell, where there is no
-environment record to check: the person's permissions are the only bound, and
-the history lives in `~/.local/share/ush/recoverable`.
+**The store is not a history.** Each entry of `/var/lib/tilo-recoverable`
+holds what was kept and names the path it came from. The record keeps its 64
+newest carried-out tasks, so recent ones undo from History; what an older one
+kept stays in the store. `history [--json]` lists every entry still holding
+something, newest first, and `history restore ID` puts one back through the
+record's `restore` action, which is itself in History and undoable. Entries an
+older runtime wrote, when it kept a history of its own and `undo file-action`
+took it back, are read the same way: what they kept is listed and restored;
+nothing is deleted.
+
+**Outside a guest.** The device's own login shell has no environment record:
+nothing to invoke an action on, no grants to check and no History to record
+in. A file verb run there (`tilo-ush cp …`) carries out the same plan with the
+person's own permissions as its only bound and still keeps what it replaces,
+under `~/.local/share/ush/recoverable`, where `history` lists it and
+`history restore` puts it back. It is not a Tilo action: the host shell is the
+owner's unconfined shell, and making its file verbs actions would need a
+record for the host that nothing else has.
 
 ## `version` — a file's own history, in the words an agent already knows
 
@@ -518,8 +559,9 @@ perm list            perm revoke ID
 scan PATH            guard status
 quarantine list | add PATH | restore PATH
 restart
-cp …  mv …  rm …  mkdir …  rmdir …  ln …  truncate …   one action each
-history [--json]     undo file-action ID
+cp …  mv …  rm …  mkdir …  rmdir …  ln …  truncate …  touch …  append …
+                     one action each on the environment; --json
+history [--json]     history restore ID
 tilo …  app …  store …  system …      brokered to the host session
 ```
 

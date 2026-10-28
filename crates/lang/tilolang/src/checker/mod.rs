@@ -11,12 +11,14 @@ mod native;
 mod outcomes;
 mod platform;
 mod pred;
+mod program;
 mod query;
 mod template;
 #[cfg(test)]
 mod tests;
 mod ui;
 
+pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
 
 use crate::abi::Imp;
@@ -70,6 +72,8 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
+    program: bool,
     /// Where the UI being lowered stands.
     ui: UiPlace,
     /// For a view made of a loop body, the declared view it was written in (for anchors).

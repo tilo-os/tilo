@@ -497,7 +497,7 @@ previously rejected Chat before generating its browser registry. No SDK macro or
 Chat definition is duplicated. A focused CLI regression covers that production
 source probe, and the actual Chat WASM bundle builds successfully.
 
-Run `node scripts/headless-examples/chat-browser-journey.mjs <chat-bundle>`
+Run [`chat-browser-journey.mjs`](https://code.tilo.so/tilo/tilo/src/commit/3b9ae2dafc28daaf2cbc67ee7a59ecfdfc0cf911/scripts/headless-examples/chat-browser-journey.mjs) with `node` and `<chat-bundle>`
 against that generated bundle with the repository browser helper's `CHROME`
 configured for an owned Chromium process. The journey serves only loopback and
 uses a throwaway browser profile. It mounts the compiled Chat, requires a real

@@ -19,14 +19,16 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-joined-room/test-support"]
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
 # The name outlived the removed `--mode hosted` loop whose input socket it
 # first gated. Disable in production builds to drop the test surface
 # (`--no-default-features --features ...`).
 default = ["hosted-test-control"]
-hosted-test-control = []
+# Also installs the sampling heap profiler as the global allocator
+# (`shell::heap_profile`), idle unless `PPROF_ALLOC_SAMPLE_RATE` is set.
+hosted-test-control = ["dep:pprof-alloc", "dep:prost", "dep:flate2"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
 # compositor from any other executable before logging into it. Non-default,
@@ -54,12 +56,6 @@ agent-control = []
 # Binaries the integration tests start, with no tests of their own: without
 # `test = false` every shell change also compiled and linked an empty test
 # harness for each, beside the binary the tests run.
-[[bin]]
-name = "click_test_client"
-path = "src/bin/click_test_client.rs"
-test = false
-bench = false
-
 [[bin]]
 name = "pressure_fixture"
 path = "src/bin/pressure_fixture.rs"
@@ -93,7 +89,6 @@ agent-provider-config = { path = "../../agent/provider-config" }
 # The model gateway connection the report review binds, made by the shell on
 # the composer's behalf as a launcher makes one for an app.
 tilo-model-client = { path = "../../agent/model-client", default-features = false, features = ["runtime-client"] }
-fnv.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-action-broker = { path = "../../collab/tilo-action-broker" }
@@ -145,6 +140,12 @@ tokio = { workspace = true, features = ["full"] }
 tilo-rt.workspace = true
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 
+# Live heap by allocating call site, for the idle-memory test and on demand
+# (`shell::heap_profile`): a sampling wrapper around glibc's allocator, its
+# gzipped pprof profile decoded here.
+pprof-alloc = { version = "0.6.0", optional = true }
+prost = { version = "0.14.4", optional = true }
+flate2 = { workspace = true, optional = true }
 serde.workspace = true
 # `raw_value`: the control socket splices a tree serialised once into its reply.
 serde_json = { workspace = true, features = ["raw_value"] }
@@ -166,7 +167,6 @@ qcms.workspace = true
 
 iroh.workspace = true
 iroh-base.workspace = true
-iroh-gossip.workspace = true
 tilo-lan-discovery = { path = "../../collab/tilo-lan-discovery" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
@@ -183,7 +183,7 @@ percent-encoding.workspace = true
 # XML escaping for the recent-files bookmarks.
 quick-xml.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import", "ux-bench"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 
 tilo-actions = { path = "../../collab/actions" }
@@ -261,7 +261,6 @@ xkeysym = "0.2.1"
 # Publishes `Xft.dpi` on each workspace's X server.
 x11rb = { version = "0.13", default-features = false, features = ["res"] }
 pollster.workspace = true
-sysinfo.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 taffy.workspace = true
@@ -303,6 +302,13 @@ fs-protocol = { path = "../../system/fs-protocol" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The color-management-v1 handlers and the EDID parsing behind them.
 tilo-wayland-ext = { path = "../wayland-ext" }
+# The colour maths: HDR encode, tone mapping, the HDR composite and dimming.
+tilo-color-pipeline = { path = "../color-pipeline" }
+# The GPU passes that put a frame on an output.
+tilo-output-passes = { path = "../output-passes" }
+# The peer-to-peer transport: gossip topics, room host sessions, direct
+# links and the person's private device lane.
+tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
@@ -388,6 +394,8 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # provider host, plus room administration and the workspace join client.
 # The relay daemon itself (`tilo-relay`) is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The room host every device runs for the rooms placed on it.
+tilo-room-host = { path = "../../hosting/tilo-room-host" }
 # The approver session that answers the questions this person's agents on
 # their hosts put to them.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
@@ -434,6 +442,12 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The hooks the network tests reach the actor through.
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+# The write faults the settings-copy repair tests inject.
+settings-store = { path = "../../system/settings-store", features = ["watch", "test-support"] }
+# The calibrated test panels the presenter tests render through.
+tilo-output-passes = { path = "../output-passes", features = ["test-support"] }
 # The radio fixture and panel hooks the chrome tests drive Quick Settings with.
 tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 # The clipboard bridge tests speak futures-io over tokio sockets (`compat`).
@@ -449,6 +463,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 store = { path = "../../../apps/store" }
 # Private feedback acceptance invokes the actual Chat action and receipt adapter.
 chat = { path = "../../../apps/chat", default-features = false }
+# A sheet made in a workspace is listed in its content list.
+sheets = { path = "../../../apps/sheets" }
 # Real native editor instances in certified multi-device continuity fixtures.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
@@ -490,7 +506,7 @@ wgpu.workspace = true
 serial_test.workspace = true
 # Scoped, restoring environment changes for tests whose interface is the
 # environment itself.
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { path = "../../dev/test-env", features = ["document"] }
 # Naga is the WGSL parser/validator wgpu already pulls in transitively.
 # `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
 # WGSL kernel at test time so a shader edit doesn't silently break the
@@ -542,10 +558,6 @@ browser-continuity = { path = "../../browser/browser-continuity", features = ["n
 tilo-ntfs-mount = { path = "../../system/ntfs-mount", default-features = false }
 tilo-secret-service = { path = "../../system/secret-service" }
 signal-hook-registry = "1.4.8"
-# Raw Vulkan for returning the device memory lavapipe freed
-# (`shell::render::software_gpu_memory`); the version wgpu-hal and ui's
-# dmabuf import use, so Vulkan handles pass between them.
-ash = "0.38"
 # Tilo owns the producer side of portal ScreenCast streams.  `pipewire-rs`
 # talks to the session daemon directly; sandboxed apps only receive a remote
 # after the portal has granted a session.

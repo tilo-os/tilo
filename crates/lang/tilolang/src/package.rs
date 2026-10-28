@@ -588,21 +588,7 @@ pub fn compile_block_for(
     visible: &[PackageMeta],
 ) -> Result<CompiledBlock, Vec<Diagnostic>> {
     let app = format!("agent.block.{run_id}");
-    let mut env = Env {
-        app: app.clone(),
-        ..Env::default()
-    };
-    env.add_import("host", &crate::host::host_meta());
-    env.add_toolkit();
-    for m in visible.iter().filter(|m| m.app != crate::host::HOST_APP) {
-        let alias = default_alias(&m.app);
-        let alias = if env.imports.iter().any(|i| i.alias == alias) {
-            m.app.clone()
-        } else {
-            alias
-        };
-        env.add_import(&alias, m);
-    }
+    let env = agent_env(&app, &crate::host::host_meta(), visible);
     let mut diags = Vec::new();
     let (expr, expr_diags) = parse_expr_source(source);
     let as_expr = expr.filter(|e| !is_ui_head(&env, e));
@@ -642,6 +628,148 @@ pub fn compile_block_for(
         kind,
         meta,
     })
+}
+
+/// The names an agent's code sees: the host as `host`, the toolkit, and every visible app by
+/// the last part of its id (by its whole id when two share that part).
+fn agent_env(app: &str, host: &PackageMeta, visible: &[PackageMeta]) -> Env {
+    let mut env = Env {
+        app: app.to_owned(),
+        ..Env::default()
+    };
+    env.add_import("host", host);
+    env.add_toolkit();
+    for m in visible.iter().filter(|m| m.app != crate::host::HOST_APP) {
+        let alias = default_alias(&m.app);
+        let alias = if env.imports.iter().any(|i| i.alias == alias) {
+            m.app.clone()
+        } else {
+            alias
+        };
+        env.add_import(&alias, m);
+    }
+    env
+}
+
+// ---- programs -----------------------------------------------------------------------------
+
+/// What an agent's program is compiled into: `app agent.program.<hash>`.
+pub const PROGRAM_APP_PREFIX: &str = "agent.program.";
+
+/// A name a session bound, and its type as metadata writes it (`List<so.tilo.lang.notes.Note>`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binding {
+    pub name: String,
+    pub ty: String,
+}
+
+/// A compiled program: a module whose one flow takes the session's bindings, in order.
+#[derive(Clone, Debug)]
+pub struct CompiledProgram {
+    pub wasm: Vec<u8>,
+    pub meta: PackageMeta,
+    /// The id of its flow.
+    pub flow: String,
+    /// What its top-level `let`s bound, to keep for the next program of the session.
+    pub lets: Vec<Binding>,
+}
+
+/// Compiles an agent's program (agents.md section 1): statements over every visible app, run
+/// as a flow whose parameters are the names a session bound before (`bound`).
+///
+/// # Errors
+/// The diagnostics, located in `source`.
+pub fn compile_program(
+    source: &str,
+    visible: &[PackageMeta],
+    bound: &[Binding],
+) -> Result<CompiledProgram, Vec<Diagnostic>> {
+    let mut fingerprint = String::from(source);
+    for b in bound {
+        fingerprint.push_str(&format!("\n{}:{}", b.name, b.ty));
+    }
+    for m in visible {
+        fingerprint.push_str(&format!("\n{}:{}", m.app, m.module_hash));
+    }
+    let key = sha256_hex(fingerprint.as_bytes());
+    let short = key.get(..16).unwrap_or(&key);
+    let app = format!("{PROGRAM_APP_PREFIX}{short}");
+    let flow = format!("program-{short}");
+    let mut host = crate::host::host_meta();
+    host.types.push(TypeMeta {
+        id: format!("host-{}", checker::RESOURCE_TYPE_NAME.to_lowercase()),
+        name: checker::RESOURCE_TYPE_NAME.to_owned(),
+        doc: "Any resource of the workspace, of whichever app: what `find` answers when its query names no type. `.of(T)` keeps those of one type.".to_owned(),
+        fields: Vec::new(),
+        search: crate::meta::SearchMeta::default(),
+    });
+    let env = agent_env(&app, &host, visible);
+    let mut diags = Vec::new();
+    let mut params = Vec::new();
+    for b in bound {
+        // A binding whose type no visible app declares any more (an app went away) cannot be
+        // seen; the program reads as if it was never bound.
+        if let Some(ty) = Ty::parse_meta(&b.ty, &app).filter(|ty| declared(&env, ty)) {
+            params.push(ParamInfo {
+                name: b.name.clone(),
+                ty,
+                default: None,
+            });
+        }
+    }
+    let (stmts, parse_diags) = crate::parser::parse_program_source(source);
+    if !parse_diags.is_empty() {
+        return Err(finish(parse_diags, source));
+    }
+    let result = checker::check_program(&env, &stmts, &params, &format!("f_{flow}"), &mut diags);
+    if !diags.is_empty() {
+        return Err(finish(diags, source));
+    }
+    let lets = result
+        .lets
+        .iter()
+        .map(|(name, ty)| Binding {
+            name: name.clone(),
+            ty: ty.meta_text(&app),
+        })
+        .collect();
+    let mut meta = PackageMeta {
+        app: app.clone(),
+        title: "Program".to_owned(),
+        flows: vec![FlowMeta {
+            id: flow.clone(),
+            name: "main".to_owned(),
+            doc: String::new(),
+            params: params_meta(&params, &app),
+            result: None,
+            class: crate::types::EffectClass::Undoable,
+            reaches: Vec::new(),
+        }],
+        ..PackageMeta::default()
+    };
+    let bare = codegen::emit(&result.module, None);
+    meta.module_hash = sha256_hex(&bare);
+    let wasm = codegen::emit(&result.module, Some(&meta.to_json_bytes()));
+    Ok(CompiledProgram {
+        wasm,
+        meta,
+        flow,
+        lets,
+    })
+}
+
+/// Whether every record and enum type `ty` names is one `env` sees.
+fn declared(env: &Env, ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(key) => env.type_info(key).is_some(),
+        Ty::Enum(key) => env.enum_info(key).is_some(),
+        Ty::List(t) | Ty::Set(t) | Ty::Map(t) | Ty::Collection(t) | Ty::Option(t) => {
+            declared(env, t)
+        }
+        Ty::Result(t, e) => declared(env, t) && declared(env, e),
+        Ty::Tuple(ts) => ts.iter().all(|t| declared(env, t)),
+        _ => true,
+    }
 }
 
 /// Whether an expression is a UI primitive or a view applied, which the block treats as a

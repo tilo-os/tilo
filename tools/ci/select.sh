@@ -4,9 +4,9 @@
 # test, so the plan always follows that tree's rules rather than those of an
 # older commit's workflow file.
 #
-# The base of a push is the main commit it was pushed onto (the event's
-# `before`), so the plan covers exactly the commits that push added; every push
-# gets its own run.
+# Every push to main runs, so the base of a push is its own `before` and the
+# plan covers exactly the commits the push added; when that is not usable the
+# plan is the full workspace.
 #
 # Environment (from the workflow):
 #   EVENT_NAME          github.event_name
@@ -16,31 +16,36 @@
 set -euo pipefail
 
 zero=0000000000000000000000000000000000000000
-base=${PULL_REQUEST_BASE:-}
 selection_args=()
+base=''
 if [ "$EVENT_NAME" = workflow_dispatch ]; then
   # Dispatch has no base commit: validate the complete workspace on both
   # native architectures instead of silently reducing the run to one diff.
   selection_args+=(--full)
-elif [ -z "$base" ] || [ "$base" = "null" ]; then
-  # A push to main: compare with the commit it landed on. When that commit is
-  # unknown or not an ancestor (a new branch, or history was rewritten), there
-  # is no diff to trust and the plan is the full one.
-  base=''
-  before=${PUSH_BEFORE:-}
-  if [ -n "$before" ] && [ "$before" != "$zero" ] \
-    && git rev-parse --verify --quiet "$before^{commit}" >/dev/null \
-    && git merge-base --is-ancestor "$before" HEAD; then
-    base=$(git rev-parse "$before^{commit}")
-  else
-    echo "::notice::no usable push base for $HEAD_SHA; planning the full workspace"
+  base=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
+else
+  # A push to main, newest base first. A base is only usable when it is a commit
+  # in this history: anything else (unknown, or not an ancestor after a rewrite)
+  # has no diff to trust.
+  for candidate in "${PULL_REQUEST_BASE:-}" "${PUSH_BEFORE:-}"; do
+    case "$candidate" in '' | null | "$zero") continue ;; esac
+    if git rev-parse --verify --quiet "$candidate^{commit}" >/dev/null \
+      && git merge-base --is-ancestor "$candidate" HEAD; then
+      base=$(git rev-parse "$candidate^{commit}")
+      break
+    fi
+  done
+  if [ -z "$base" ]; then
+    echo "::notice::no usable base for $HEAD_SHA; planning the full workspace"
     selection_args+=(--full)
   fi
 fi
-if [ -z "$base" ] || [ "$base" = "$zero" ]; then
-  # No base at all (an unborn or rewritten ref): compare with the parent.
+if [ -z "$base" ]; then
+  # No base at all (a dispatch, or an unborn or rewritten ref): compare with the
+  # parent.
   base=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
 fi
+echo "plan base: $base (before=${PUSH_BEFORE:-none})"
 echo "base=$base" >> "$GITHUB_OUTPUT"
 python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
   --github-output "$GITHUB_OUTPUT" | tee ci-plan.json

@@ -7,7 +7,7 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::{AmStore, FlowOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, FlowOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = "app so.tilo.gaps \"Gaps\"\n\
 type Item {\n    title: Text\n    rank: Int\n}\n\
@@ -30,14 +30,14 @@ view nums(b: Bag) {\n    column {\n        for x in b.nums {\n            text(x
 
     struct Gaps {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         app: App,
         bag: ResourceRef,
     }
 
     fn gaps() -> Gaps {
         let app = App::compile(SOURCE, &[]);
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         app.load(&rt);
         let bag = rt.create("Bag").unwrap();

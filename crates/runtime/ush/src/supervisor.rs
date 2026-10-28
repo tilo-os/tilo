@@ -405,6 +405,29 @@ impl Session {
         outcome
     }
 
+    /// What the session's broker holds: the environment, its audit log, and
+    /// who and where the session is.
+    fn broker_state(&self, resolved: &Resolved, egress: Arc<tilo_egress::Egress>) -> BrokerState {
+        BrokerState {
+            session_id: self.session_id.clone(),
+            environment: EnvironmentHandle {
+                var_dir: self.store.environment_var(&resolved.key),
+                records: self.records(),
+                key: resolved.key.clone(),
+                built_from: resolved.environment.clone(),
+            },
+            audit: AuditLog::at(self.store.audit_dir()),
+            restart_requested: false,
+            host_root: self.opts.host_root.clone(),
+            images: resolved.images.clone(),
+            builder: Arc::clone(&self.builder),
+            landlock: "installed by the guest at startup".into(),
+            egress: Some(egress),
+            person: crate::host::signed_in_person(),
+            device: crate::host::this_device(),
+        }
+    }
+
     fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
         // Before anything else: a guest whose network cannot be confined as
         // its record says does not start.
@@ -414,22 +437,7 @@ impl Session {
         let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
             broker_socket.clone(),
-            BrokerState {
-                session_id: self.session_id.clone(),
-                environment: EnvironmentHandle {
-                    var_dir: self.store.environment_var(&resolved.key),
-                    records: self.records(),
-                    key: resolved.key.clone(),
-                    built_from: resolved.environment.clone(),
-                },
-                audit: AuditLog::at(self.store.audit_dir()),
-                restart_requested: false,
-                host_root: self.opts.host_root.clone(),
-                images: resolved.images.clone(),
-                builder: Arc::clone(&self.builder),
-                landlock: "installed by the guest at startup".into(),
-                egress: Some(Arc::clone(&egress)),
-            },
+            self.broker_state(resolved, Arc::clone(&egress)),
         )?;
 
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;

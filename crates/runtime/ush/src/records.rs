@@ -245,6 +245,59 @@ impl Records {
     }
 }
 
+/// Who an action on a record is attributed to, in its History.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Invoker {
+    /// A person, by their principal id: what they type at a guest's shell.
+    Person(String),
+    /// An agent acting for a person.
+    Agent { agent: String, person: String },
+}
+
+impl Records {
+    /// Open the record `key` as `invoker`, let `act` apply its actions to
+    /// it, and append what they changed: one write, so a reader never sees
+    /// half of what `act` did.
+    ///
+    /// # Errors
+    /// What `act` returns (nothing is appended then), or an error reading
+    /// or writing the record.
+    pub fn act<T>(
+        &self,
+        key: &str,
+        invoker: &Invoker,
+        act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
+    ) -> Result<T, RecordError> {
+        let mut store = self.open(key)?;
+        let doc =
+            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        let replica = Replica::<Environment>::from_doc(doc);
+        let mut replica = match invoker {
+            Invoker::Person(person) => replica.as_author(person),
+            Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
+        };
+        replica.set_now_ms(tilo_clock::unix_now_ms_i64());
+        let answer = act(&mut replica)?;
+        store
+            .append(replica.doc_mut())
+            .map_err(|e| RecordError::Store(e.to_string()))?;
+        Ok(answer)
+    }
+
+    /// The record `key`'s History: every change, oldest first, with the
+    /// action, its actor and the compensation its undo applies.
+    ///
+    /// # Errors
+    /// Returns an error for a bad key, a missing record, or one that cannot
+    /// be read.
+    pub fn history(&self, key: &str) -> Result<Vec<tilo_resource::history::Version>, RecordError> {
+        let mut store = self.open(key)?;
+        let mut doc =
+            Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
+        Ok(tilo_resource::history::versions(&mut doc))
+    }
+}
+
 fn check_key(key: &str) -> Result<(), RecordError> {
     if is_record_key(key) {
         Ok(())

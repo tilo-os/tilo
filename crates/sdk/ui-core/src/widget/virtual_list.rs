@@ -293,6 +293,45 @@ struct MountedRow<K> {
     selection: RowSelection,
     widget: Element,
     node: Option<NodeId>,
+    /// The row this one was built to replace, in the layout the host
+    /// retains: it stays alive, and stands in the layout walk where this one
+    /// will, until the remount lets go of its node
+    /// ([`VirtualList::remount_rows`]) or a build drops it.
+    replacing: Option<LaidOutRow>,
+}
+
+/// A row's widget as the retained layout holds it, and its node there.
+struct LaidOutRow {
+    widget: Element,
+    node: NodeId,
+}
+
+impl<K> MountedRow<K> {
+    /// The widget the retained layout holds for this row: its own when it
+    /// was laid out, else the one it replaces until the next remount.
+    fn laid_out(self) -> Option<LaidOutRow> {
+        match self.node {
+            Some(node) => Some(LaidOutRow {
+                widget: self.widget,
+                node,
+            }),
+            None => self.replacing,
+        }
+    }
+
+    /// The node the retained layout holds for this row, if any.
+    fn laid_out_node(&self) -> Option<NodeId> {
+        self.node
+            .or_else(|| self.replacing.as_ref().map(|row| row.node))
+    }
+
+    /// The widget the retained layout walk meets for this row.
+    fn laid_out_widget(&self) -> &dyn Widget {
+        match (&self.node, &self.replacing) {
+            (None, Some(row)) => row.widget.as_ref(),
+            _ => self.widget.as_ref(),
+        }
+    }
 }
 
 /// What a mounted row's widget stands for.
@@ -1246,19 +1285,20 @@ impl<M: ListModel> VirtualList<M> {
             } else {
                 RowSelection::default()
             };
-            let mut row = old
-                .remove(&key)
-                .filter(|row| {
-                    !self.invalidated.contains(&row.key)
-                        && row.state == mounted_state
-                        && (!self.selection_aware
-                            || row.selection == selection
-                            || row
-                                .widget
-                                .as_any()
-                                .is_some_and(|any| any.is::<crate::widget::ListRow>()))
-                })
-                .unwrap_or_else(|| {
+            let previous = old.remove(&key);
+            let keep = previous.as_ref().is_some_and(|row| {
+                !self.invalidated.contains(&row.key)
+                    && row.state == mounted_state
+                    && (!self.selection_aware
+                        || row.selection == selection
+                        || row
+                            .widget
+                            .as_any()
+                            .is_some_and(|any| any.is::<crate::widget::ListRow>()))
+            });
+            let mut row = match previous {
+                Some(row) if keep => row,
+                previous => {
                     replaced = true;
                     let widget = match &mounted_state {
                         MountedRowState::Ready => {
@@ -1273,8 +1313,12 @@ impl<M: ListModel> VirtualList<M> {
                         state: mounted_state,
                         selection,
                         node: None,
+                        // The retained layout holds the row it replaces
+                        // until a remount lets go of it.
+                        replacing: previous.and_then(MountedRow::laid_out),
                     }
-                });
+                }
+            };
             row.widget.set_interaction_environment(interaction);
             row.index = index;
             mounted.push(row);
@@ -1793,6 +1837,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         for row in &mut self.mounted {
             let child = row.widget.build_layout(taffy, theme, node_map);
             row.node = Some(child);
+            row.replacing = None;
             child_nodes.push(child);
         }
         self.place_rows(taffy);
@@ -2290,6 +2335,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         for row in &self.mounted {
             visitor(row.widget.as_ref());
         }
+    }
+
+    /// The rows as the retained layout holds them: a row built anew since
+    /// stands there as the row it replaces, until the remount mounts it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for row in &self.mounted {
+            visitor(row.laid_out_widget());
+        }
+        true
     }
 
     /// The rows near its box: the others are clipped away.

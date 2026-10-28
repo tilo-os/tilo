@@ -198,41 +198,69 @@ impl Clock for ManualClock {
     }
 }
 
-/// A shortcut this device may start, with the room it is saved in and the
-/// fire times of that room's schedules already claimed.
+/// A shortcut this device may start, with the room it is saved in, the
+/// person whose device proved saving it, and the fire times of that room's
+/// schedules already claimed.
 #[derive(Clone, Debug)]
 pub struct Armed<'a> {
     pub room: String,
-    pub shortcut: &'a Shortcut,
+    pub shortcut: Shortcut,
+    /// Who saved it, by their device's proof: its triggers fire on their
+    /// behalf only.
+    pub saver: String,
     pub claims: &'a [ScheduleClaim],
 }
 
-/// Every shortcut in `workspaces` with triggers that was saved by the person
-/// this device acts for in its room (`local_person`).
+/// Every shortcut in `workspaces` with triggers that the person this device
+/// acts for in its room (`local_person`) saved, by the proof of a device of
+/// theirs ([`tilo_peer_state::room::proven_saver`]) that holds at `now_ns`
+/// against the room's revocations (`revocations`, `None` for a room this
+/// device holds no document of). A `saved_by` without such a proof, or one
+/// for another room, never arms.
 pub fn armed(
     workspaces: &[crate::shell::state::Workspace],
     local_person: impl Fn(&crate::shell::state::Workspace) -> String,
+    revocations: impl Fn(&crate::shell::state::Workspace) -> Option<tilo_user_identity::RevocationList>,
+    now_ns: u64,
 ) -> Vec<Armed<'_>> {
-    workspaces
-        .iter()
-        .flat_map(|workspace| {
-            let person = local_person(workspace);
-            let room = workspace.room().to_string();
-            let claims = workspace.schedule_claims.as_slice();
-            workspace
-                .shortcuts
-                .iter()
-                .filter(move |shortcut| {
-                    !shortcut.triggers.is_empty()
-                        && shortcut.saved_by.as_deref() == Some(person.as_str())
-                })
-                .map(move |shortcut| Armed {
+    let mut armed = Vec::new();
+    for workspace in workspaces {
+        let mut triggered = workspace
+            .shortcuts
+            .iter()
+            .filter_map(|saved| saved.decode().ok())
+            .filter(|shortcut| !shortcut.triggers.is_empty())
+            .peekable();
+        if triggered.peek().is_none() {
+            continue;
+        }
+        let Some(revocations) = revocations(workspace) else {
+            continue;
+        };
+        let person = local_person(workspace);
+        let room = workspace.room().to_string();
+        for shortcut in triggered {
+            if tilo_peer_state::room::proven_saver(&room, &shortcut, &revocations, now_ns).as_ref()
+                == Some(&person)
+            {
+                armed.push(Armed {
                     room: room.clone(),
                     shortcut,
-                    claims,
-                })
-        })
-        .collect()
+                    saver: person.clone(),
+                    claims: workspace.schedule_claims.as_slice(),
+                });
+            }
+        }
+    }
+    armed
+}
+
+/// Nanoseconds since the Unix epoch at `at`, for [`armed`].
+#[must_use]
+pub fn unix_ns(at: DateTime<Utc>) -> u64 {
+    at.timestamp_nanos_opt()
+        .and_then(|ns| u64::try_from(ns).ok())
+        .unwrap_or_default()
 }
 
 /// What a source is shown.
@@ -642,9 +670,7 @@ pub fn watched_folders(
         else {
             continue;
         };
-        let Some(saver) = armed.shortcut.saved_by.as_deref() else {
-            continue;
-        };
+        let saver = armed.saver.as_str();
         for trigger in &armed.shortcut.triggers {
             let TriggerSpec::FileChanged { capability } = trigger else {
                 continue;
@@ -1109,16 +1135,14 @@ fn record_firings(
     use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
     let mut firings = Vec::new();
     for armed in armed.iter().filter(|armed| armed.room == event.room) {
-        let Some(saver) = armed.shortcut.saved_by.as_deref() else {
-            continue;
-        };
+        let saver = armed.saver.as_str();
         let dispatched = dispatch::dispatch(
             &[DispatchArmed {
                 firer: Firer::Shortcut {
                     shortcut: &armed.shortcut.id,
                     saver,
                 },
-                shortcut: armed.shortcut,
+                shortcut: &armed.shortcut,
             }],
             Event::Record(event),
         );
@@ -1344,15 +1368,53 @@ mod tests {
             .with_timezone(&Utc)
     }
 
+    /// The device this test's person saves with.
+    fn my_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x4d; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x4e; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("signed device");
+        (key, cert)
+    }
+
+    /// The person this device acts for.
+    fn me() -> String {
+        hex::encode(my_device().1.user_public_key)
+    }
+
+    /// `shortcut` as this test's person saves it in `room`, proven by their
+    /// device.
+    fn saved_in(room: &str, mut shortcut: Shortcut) -> Shortcut {
+        let (key, cert) = my_device();
+        tilo_peer_state::room::sign_saved_shortcut(room, &mut shortcut, &cert, &key)
+            .expect("signed shortcut");
+        shortcut
+    }
+
+    /// No room revocation, at any time.
+    fn unrevoked(_: &crate::shell::state::Workspace) -> tilo_user_identity::RevocationList {
+        tilo_user_identity::RevocationList::new()
+    }
+
     fn shortcut(trigger: &TriggerSpec) -> Shortcut {
-        serde_json::from_value(serde_json::json!({
-            "id": "tidy",
-            "name": "Tidy",
-            "steps": [],
-            "triggers": [trigger],
-            "saved_by": "person:me"
-        }))
-        .expect("shortcut JSON")
+        saved_in(
+            PERSONAL,
+            serde_json::from_value(serde_json::json!({
+                "id": "tidy",
+                "name": "Tidy",
+                "steps": [],
+                "triggers": [trigger],
+            }))
+            .expect("shortcut JSON"),
+        )
     }
 
     #[test]
@@ -1412,7 +1474,8 @@ mod tests {
         });
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
+            saver: me(),
             claims: &[],
         }];
         let clock = SystemClock;
@@ -1452,7 +1515,7 @@ mod tests {
     impl Device {
         fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
             let mut tree = crate::shell::state::WorkspaceTree::default();
-            let workspace = tree.append_empty_workspace("Personal");
+            let workspace = tree.create_hosted_workspace("Personal").0;
             assert!(tree.stand_in_room(workspace, personal_room()));
             let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
             triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {
@@ -1470,7 +1533,12 @@ mod tests {
         /// the session does: claim it in the room, then run it.
         fn tick(&mut self) {
             let fired = {
-                let armed = armed(&self.tree.desktop.workspaces, |_| "person:me".into());
+                let armed = armed(
+                    &self.tree.desktop.workspaces,
+                    |_| me(),
+                    |ws| Some(unrevoked(ws)),
+                    unix_ns(self.triggers.clock().now()),
+                );
                 self.triggers.observe(TriggerEvent::Tick, &armed)
             };
             for firing in fired {
@@ -1482,19 +1550,14 @@ mod tests {
         }
     }
 
-    /// Carry `from`'s copy of the personal room to `to`.
-    fn sync(from: &mut Device, to: &mut Device) {
-        let changes = from
-            .tree
-            .export_room_changes_since(personal_room(), &[])
-            .expect("the device is in the room");
-        to.tree
-            .apply_room_changes(
-                personal_room(),
-                &changes,
-                &crate::shell::state::PeerOrigin::hub(1),
-            )
-            .expect("the room's changes apply");
+    /// Carry `from`'s copy of the personal room to `to`: its shortcuts and
+    /// schedule claims, as the room's host serves them to every member.
+    fn sync(from: &Device, to: &mut Device) {
+        let source = &from.tree.desktop.workspaces[0];
+        let (shortcuts, claims) = (source.shortcuts.clone(), source.schedule_claims.clone());
+        let target = &mut to.tree.desktop.workspaces[0];
+        target.shortcuts = shortcuts;
+        target.schedule_claims = claims;
     }
 
     fn laptop_and_desktop(clock: &Arc<ManualClock>) -> (Device, Device) {
@@ -1502,14 +1565,21 @@ mod tests {
         let mut laptop = Device::new("laptop", &both, clock);
         let mut desktop = Device::new("desktop", &both, clock);
         let workspace = laptop.tree.desktop.workspaces[0].id;
-        assert!(laptop.tree.save_workspace_shortcut(
-            workspace,
-            &shortcut(&TriggerSpec::Schedule {
-                schedule: Schedule::Interval { seconds: 3600 },
-                catch_up: CatchUp::Skip,
-            })
-        ));
-        sync(&mut laptop, &mut desktop);
+        laptop
+            .tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|held| held.id == workspace)
+            .expect("the personal workspace")
+            .shortcuts
+            .push(tilo_automation::SavedShortcut::encode(&shortcut(
+                &TriggerSpec::Schedule {
+                    schedule: Schedule::Interval { seconds: 3600 },
+                    catch_up: CatchUp::Skip,
+                },
+            )));
+        sync(&laptop, &mut desktop);
         assert_eq!(
             desktop.tree.desktop.workspaces[0].shortcuts.len(),
             1,
@@ -1546,9 +1616,9 @@ mod tests {
             clock.set(due - ChronoDuration::seconds(15));
             for _ in 0..21 {
                 laptop.tick();
-                sync(&mut laptop, &mut desktop);
+                sync(&laptop, &mut desktop);
                 desktop.tick();
-                sync(&mut desktop, &mut laptop);
+                sync(&desktop, &mut laptop);
                 clock.advance(ChronoDuration::seconds(15));
             }
             let runs: Vec<&Firing> = laptop.ran.iter().chain(&desktop.ran).collect();
@@ -1673,7 +1743,7 @@ mod tests {
         );
     }
 
-    /// A shortcut saved by `person:me` with `trigger` and the inputs `inputs`
+    /// A shortcut this test's person saved with `trigger` and the inputs `inputs`
     /// (name and type).
     fn event_shortcut(trigger: &TriggerSpec, inputs: &[(&str, &str)]) -> Shortcut {
         let inputs: Vec<serde_json::Value> = inputs
@@ -1684,15 +1754,17 @@ mod tests {
                 })
             })
             .collect();
-        serde_json::from_value(serde_json::json!({
-            "id": "on-event",
-            "name": "On event",
-            "inputs": inputs,
-            "steps": [],
-            "triggers": [trigger],
-            "saved_by": "person:me"
-        }))
-        .expect("shortcut JSON")
+        saved_in(
+            PERSONAL,
+            serde_json::from_value(serde_json::json!({
+                "id": "on-event",
+                "name": "On event",
+                "inputs": inputs,
+                "steps": [],
+                "triggers": [trigger],
+            }))
+            .expect("shortcut JSON"),
+        )
     }
 
     fn observe_once(
@@ -1703,7 +1775,8 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: room.into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
+            saver: me(),
             claims: &[],
         }];
         let clock = SystemClock;
@@ -1936,7 +2009,8 @@ mod tests {
         );
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
+            saver: me(),
             claims: &[],
         }];
         let deadline = tilo_test_env::hang_deadline();
@@ -2116,7 +2190,7 @@ mod tests {
             .govern_as_at(
                 &owner,
                 tilo_action_policy::Change::AddMember {
-                    person: "person:me".into(),
+                    person: me(),
                     role: tilo_action_policy::Role::Viewer,
                 },
                 tilo_clock::unix_now(),
@@ -2126,7 +2200,7 @@ mod tests {
             .grant_as(
                 &owner,
                 CapOverride::grant(
-                    Subject::person("person:me"),
+                    Subject::person(me()),
                     Scope::FsPath("/var/workspace/inbox".into()),
                     Access::Read,
                 )
@@ -2137,21 +2211,26 @@ mod tests {
             .grant_as(
                 &owner,
                 CapOverride::grant(
-                    Subject::person("person:me"),
+                    Subject::person(me()),
                     Scope::NetHost("example.org".into()),
                     Access::Read,
                 )
                 .with_id("me-host"),
             )
             .expect("the owner shares a host");
-        workspace.shortcuts = vec![event_shortcut(
+        workspace.shortcuts = vec![tilo_automation::SavedShortcut::encode(&event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
             },
             &[],
-        )];
+        ))];
         let folders = |workspaces: &[Workspace]| {
-            let armed = armed(workspaces, |_| "person:me".into());
+            let armed = armed(
+                workspaces,
+                |_| me(),
+                |ws| Some(unrevoked(ws)),
+                unix_ns(Utc::now()),
+            );
             watched_folders(workspaces, &armed)
         };
         let watched = folders(std::slice::from_ref(&workspace));
@@ -2164,7 +2243,7 @@ mod tests {
             }]
         );
         assert!(
-            readable_folder(&workspace, "me-host", "person:me")
+            readable_folder(&workspace, "me-host", &me())
                 .expect_err("a host is no folder")
                 .contains("does not share a folder")
         );
@@ -2248,7 +2327,8 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: "room".into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
+            saver: me(),
             claims: &[],
         }];
         let devices = PersonalDevices {
@@ -2364,7 +2444,8 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: PERSONAL.into(),
-            shortcut: tidy,
+            shortcut: tidy.clone(),
+            saver: me(),
             claims: &[],
         }];
         schedules.observe(
@@ -2498,5 +2579,106 @@ mod tests {
             at("2026-09-25T12:00:00Z").timestamp_millis(),
             "the state writer recorded the next fire time"
         );
+    }
+
+    /// The ids of what arms in a workspace of the personal room holding
+    /// `shortcuts`, for this test's person, against `revocations`.
+    fn arming(
+        shortcuts: &[Shortcut],
+        revocations: &tilo_user_identity::RevocationList,
+    ) -> Vec<String> {
+        let mut workspace = crate::shell::state::Workspace::in_room(
+            crate::shell::state::WorkspaceId(1),
+            personal_room(),
+            "Personal",
+        );
+        workspace.shortcuts = shortcuts
+            .iter()
+            .map(tilo_automation::SavedShortcut::encode)
+            .collect();
+        let workspaces = [workspace];
+        armed(
+            &workspaces,
+            |_| me(),
+            |_| Some(revocations.clone()),
+            unix_ns(Utc::now()),
+        )
+        .into_iter()
+        .map(|armed| armed.shortcut.id)
+        .collect()
+    }
+
+    fn hourly() -> TriggerSpec {
+        TriggerSpec::Schedule {
+            schedule: Schedule::Interval { seconds: 3600 },
+            catch_up: CatchUp::Skip,
+        }
+    }
+
+    #[test]
+    fn a_shortcut_arms_only_with_its_savers_proof() {
+        let none = tilo_user_identity::RevocationList::new();
+        assert_eq!(arming(&[shortcut(&hourly())], &none), ["tidy"]);
+
+        // The field alone, as a shortcut saved before proofs carries it, or
+        // as anyone writing the room could set it.
+        let mut unproven = shortcut(&hourly());
+        unproven.saved_proof = None;
+        assert!(arming(&[unproven], &none).is_empty());
+
+        // Another person's device proving a shortcut that names this one.
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let mut other = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Other".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut other, &root).expect("signed device");
+        let mut foreign = shortcut(&hourly());
+        tilo_peer_state::room::sign_saved_shortcut(PERSONAL, &mut foreign, &other, &key)
+            .expect("signed shortcut");
+        assert!(
+            arming(std::slice::from_ref(&foreign), &none).is_empty(),
+            "another person's shortcut never arms here"
+        );
+        foreign.saved_by = Some(me());
+        assert!(
+            arming(std::slice::from_ref(&foreign), &none).is_empty(),
+            "nor does one naming this person under another's proof"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_copied_from_another_room_never_arms() {
+        let copied = saved_in(
+            "6d2b1c3a-0000-4000-8000-000000000077",
+            serde_json::from_value(serde_json::json!({
+                "id": "tidy", "name": "Tidy", "steps": [], "triggers": [hourly()],
+            }))
+            .expect("shortcut JSON"),
+        );
+        assert!(arming(&[copied], &tilo_user_identity::RevocationList::new()).is_empty());
+    }
+
+    #[test]
+    fn a_device_revoked_after_it_saved_stops_arming_its_shortcuts() {
+        let (_, cert) = my_device();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x4d; 32]);
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: cert.user_public_key,
+            revoked_device_public_key: cert.device_public_key,
+            revoked_at_ns: unix_ns(Utc::now()),
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).expect("signed revocation");
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        revocations.insert(entry).expect("verified revocation");
+        assert!(arming(&[shortcut(&hourly())], &revocations).is_empty());
     }
 }

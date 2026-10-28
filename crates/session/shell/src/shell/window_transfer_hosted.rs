@@ -135,12 +135,13 @@ pub(super) fn propose(
         failed(st, plan, &t("window-move-unknown-workspace"));
         return None;
     };
+    let id = st.tree().mint_id();
     let tab = place_in(
         st,
         plan.destination.workspace,
         strip,
         Tab {
-            id: crate::shell::state::next_id(),
+            id,
             title: plan.title.clone(),
             tile: TileContent::LocalApp {
                 app_id: plan.app_id.clone(),
@@ -537,7 +538,6 @@ pub(super) fn consent(st: &mut ChromeState, transfers: &mut WindowTransfers) {
             tree.desktop
                 .workspaces
                 .iter()
-                .filter(|ws| tree.requires_native_owner(ws.room()) || hosted.hosts(ws.room()))
                 .map(|ws| (ws.room(), ws.name.clone()))
                 .collect()
         };

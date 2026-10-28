@@ -19,10 +19,15 @@ impl ShellOverlayHost {
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         if let Some(chrome) = &self.chrome {
-            chrome.borrow_mut().native_app_opening =
-                Some(crate::shell::launcher::NativeAppOpening(broker.downgrade()));
+            chrome
+                .borrow()
+                .native_app_opening
+                .attach(broker.downgrade());
         }
         self.room_activity.attach_task_broker(broker.clone());
+        self.shared_window_follow.attach(
+            crate::shell::search::providers::app_content::OpenDoor::new(broker.clone()),
+        );
         self.attach_shortcut_trigger_broker(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ShortcutsProvider::new(broker.clone()),
@@ -652,6 +657,8 @@ impl ShellOverlayHost {
             live_shares: live_shares::NativeLiveShares::default(),
             hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
+            window_share_controls: window_share_controls::WindowShareControls::default(),
+            shared_window_follow: shared_window_follow::SharedWindowFollow::default(),
             bar_tooltip: ui::widget::tooltip::TooltipHost::new(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),

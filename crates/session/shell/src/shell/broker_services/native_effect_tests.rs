@@ -1,5 +1,7 @@
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
+#[path = "native_shortcut_tests.rs"]
+mod shortcuts;
 use crate::shell::{
     broker_services::NativeCertificates, certified_action_session::ActionSessionSource,
     collab_broker, native_workspace_owner, state::WorkspaceTree,
@@ -376,14 +378,16 @@ fn native_legacy_facade_retains_certified_job_ownership_across_clones() {
             .expect("a native seat without a transport lease resolves")
             .is_ok()
     );
+    // A room this device's host holds is sealed: its membership surface
+    // offers the one change the device asks, an opening app's authorship.
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: surface.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+            address: tilo_actions::ActionAddress::new("desktop:workspace", "grant-app-authorship"),
         },
         argument: InvokeArgument::Json(
-            serde_json::json!({"agent":"scribe", "preset":"operator"})
+            serde_json::json!({"app": "so.tilo.chat"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -868,10 +872,11 @@ fn failed_effect(
         invocation,
         target: RemoteActionTarget {
             provider: surface.peer_id.to_string(),
-            address: tilo_actions::ActionAddress::new("desktop:workspace", "add-agent"),
+            address: tilo_actions::ActionAddress::new("desktop:workspace", "grant-app-authorship"),
         },
+        // Admitted, then refused by the owner: no canonical application id.
         argument: InvokeArgument::Json(
-            serde_json::json!({"agent":"scribe", "preset":"not-a-preset"})
+            serde_json::json!({"app": "Not A Canonical App"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -1020,10 +1025,7 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
         Access::Read
     ));
     let person = crate::shell::state::local_user_id_for_room(&fixture.room);
-    assert!(
-        tree.write()
-            .revoke_sandbox_in_workspace(workspace, &person, &saved.id)
-    );
+    assert!(tree.write().narrow_sandbox(workspace, &person, &saved.id));
     assert!(!grants.permits(&caller, &resource, Access::Read));
     publish("so.tilo.chat");
     assert!(

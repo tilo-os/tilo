@@ -91,6 +91,16 @@ async fn post(
 }
 
 async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 32] {
+    browser_as(addr, key, cert, false).await
+}
+
+/// A browser session, in the background when `background`.
+async fn browser_as(
+    addr: SocketAddr,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    background: bool,
+) -> [u8; 32] {
     let (status, body) = post(
         addr,
         "/session",
@@ -109,6 +119,7 @@ async fn browser(addr: SocketAddr, key: &SigningKey, cert: &DeviceCert) -> [u8; 
                 ))
                 .to_bytes(),
         },
+        background,
     };
     let (status, body) = post(
         addr,
@@ -230,10 +241,13 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         .unwrap();
         for id in [71, 72] {
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     id,
                     true,
-                    vec![cert.device_public_key],
+                    tilo_peer_state::GovernedAccess {
+                        member_user_roots: vec![relay.own_user_public_key()],
+                        member_devices: vec![cert.device_public_key],
+                    },
                     state.path().into(),
                 )
                 .await
@@ -255,6 +269,7 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
                     ))
                     .to_bytes(),
             },
+            false,
         )
         .unwrap();
     let grants = live::LiveGrants::new();
@@ -303,7 +318,15 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
 
     // A later observation must still replace a previously allowed decision.
     relay
-        .set_workspace_membership(72, true, vec![], state.path().into())
+        .replace_governed_workspace_access(
+            72,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_user_roots: vec![relay.own_user_public_key()],
+                member_devices: vec![],
+            },
+            state.path().into(),
+        )
         .await
         .unwrap();
     grants.observe(&sessions).await;
@@ -370,10 +393,13 @@ async fn live_grants_follow_announced_changes() {
         .unwrap();
         for id in [81, 82] {
             relay
-                .set_workspace_membership(
+                .replace_governed_workspace_access(
                     id,
                     true,
-                    vec![cert.device_public_key],
+                    tilo_peer_state::GovernedAccess {
+                        member_user_roots: vec![relay.own_user_public_key()],
+                        member_devices: vec![cert.device_public_key],
+                    },
                     state.path().into(),
                 )
                 .await
@@ -395,6 +421,7 @@ async fn live_grants_follow_announced_changes() {
                     ))
                     .to_bytes(),
             },
+            false,
         )
         .unwrap();
     let grants = live::LiveGrants::new();
@@ -426,7 +453,15 @@ async fn live_grants_follow_announced_changes() {
     // Removal announces itself; the observer runs well before its old 50 ms
     // tick plus the carrier's 100 ms recheck.
     relay
-        .set_workspace_membership(81, true, vec![], state.path().into())
+        .replace_governed_workspace_access(
+            81,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_user_roots: vec![relay.own_user_public_key()],
+                member_devices: vec![],
+            },
+            state.path().into(),
+        )
         .await
         .unwrap();
     let denied = tokio::time::timeout(Duration::from_millis(150), async {
@@ -474,7 +509,15 @@ async fn expired_cert_gets_no_live_grant() {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(91, true, vec![cert.device_public_key], state.path().into())
+            .replace_governed_workspace_access(
+                91,
+                true,
+                tilo_peer_state::GovernedAccess {
+                    member_user_roots: vec![relay.own_user_public_key()],
+                    member_devices: vec![cert.device_public_key],
+                },
+                state.path().into(),
+            )
             .await
             .unwrap();
         let sessions = Sessions::new(relay.web_context().clone());
@@ -1059,6 +1102,29 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 1, "{online:?}");
     assert!(online.contains_key(&owner.user_public_key));
+    // A page keeps a background session here while its person is in a
+    // room elsewhere, to deliver problem reports: nobody is online by it,
+    // so it takes no seat and shows no face; the person beside it who is
+    // here counts once, as before.
+    let background = browser_as(addr, &guest_key, &guest, true).await;
+    let owner_background = browser_as(addr, &owner_key, &owner, true).await;
+    let online = online_sessions.online_users();
+    assert_eq!(online.len(), 1, "{online:?}");
+    assert_eq!(online.get(&owner.user_public_key), Some(&1));
+    assert_eq!(
+        post(addr, "/node", Some(background), Vec::new()).await.0,
+        200,
+        "a background session is a session all the same"
+    );
+    for token in [background, owner_background] {
+        post(
+            addr,
+            protocol::SESSION_END_PATH,
+            None,
+            hex::encode(token).into_bytes(),
+        )
+        .await;
+    }
     assert_eq!(
         post(addr, "/node", Some(guest_token), Vec::new()).await.0,
         401
@@ -1374,6 +1440,7 @@ async fn exercise_handshake_refusal_reasons(
             &crate::auth::HelloAck2 {
                 sig_over_server_nonce: [0; 64],
             },
+            false,
         )
         .map(|_| ())
         .unwrap_err();

@@ -218,6 +218,28 @@ impl AppActionGrants for ProfileGrants {
         request: &tilo_action_broker::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
+    ) -> tilo_action_broker::services::GrantRecording {
+        let recorded = self
+            .record_here(request, grant, answer)
+            .ok_or_else(|| "this workspace could not record the grant".to_owned());
+        Box::pin(std::future::ready(recorded))
+    }
+
+    fn revoke(&self, room: &str, grant: &str) {
+        self.revoke_here(room, grant);
+    }
+}
+
+impl ProfileGrants {
+    /// Record `grant` in this host's own workspace, with its receipt, in one
+    /// update: the profile's tree is this host's own, so the grant is in
+    /// force as the update returns. Its id, or `None` when this host does
+    /// not govern the workspace or its policy refuses the grant.
+    fn record_here(
+        &self,
+        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        grant: tilo_action_policy::Grant,
+        answer: tilo_action_broker::app_actions::AppActionConsent,
     ) -> Option<String> {
         if !self.workspace.governs() {
             return None;
@@ -253,7 +275,8 @@ impl AppActionGrants for ProfileGrants {
         })
     }
 
-    fn revoke(&self, room: &str, grant: &str) {
+    /// Take `grant` back in this host's own workspace.
+    fn revoke_here(&self, room: &str, grant: &str) {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()

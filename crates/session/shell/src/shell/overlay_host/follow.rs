@@ -23,7 +23,7 @@ impl ShellOverlayHost {
     ) {
         let area = self.overlay_area();
         let bar_top = area.y0 + f64::from(tilo_desktop::topbar::topbar_height(theme));
-        let window_bars = self.window_bar_rects();
+        let window_bars = self.chrome_bar_rects(theme);
         let following = self
             .followed_peer
             .is_some()

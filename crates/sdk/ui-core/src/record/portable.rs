@@ -262,26 +262,7 @@ pub(super) fn save_status(
     id: &RecordId,
     doc: &AutoCommit,
 ) -> RecordSaveStatus {
-    let key = key(package, workspace, id);
-    if doc.pending_ops() != 0 {
-        return RecordSaveStatus::Saving;
-    }
-    let Some(heads) = cache.document_heads(&key) else {
-        return RecordSaveStatus::Saving;
-    };
-    let Ok(heads) = heads else {
-        return RecordSaveStatus::Failed("cached document is corrupt".into());
-    };
-    if heads != doc.base_heads() {
-        return RecordSaveStatus::Saving;
-    }
-    match cache.flush(&key) {
-        Ok(()) => RecordSaveStatus::Saved,
-        Err(message) if message == "persistence pending host acknowledgement" => {
-            RecordSaveStatus::Saving
-        }
-        Err(message) => RecordSaveStatus::Failed(message),
-    }
+    RecordSaveStatus::of_portable(cache, &key(package, workspace, id), doc)
 }
 
 #[cfg(test)]

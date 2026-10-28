@@ -257,10 +257,18 @@ impl Checker<'_> {
             );
         } else {
             let known = self.locals_in_scope();
+            let names: Vec<String> = self
+                .st
+                .scopes
+                .iter()
+                .flat_map(|s| s.keys().cloned())
+                .chain(self.env.imports.iter().map(|i| i.alias.clone()))
+                .collect();
+            let hint = crate::diag::suggestion(name, names.iter().map(String::as_str));
             self.err(
                 "E014",
                 span,
-                format!("unknown name `{name}`; variables in scope: {known}"),
+                format!("unknown name `{name}`{hint}; variables in scope: {known}"),
             );
         }
         Ex::error()
@@ -679,9 +687,13 @@ impl Checker<'_> {
                         "E021",
                         name.span,
                         format!(
-                            "`{}` has no field `{}`; fields are: {}",
+                            "`{}` has no field `{}`{}; fields are: {}",
                             key.name,
                             name.name,
+                            crate::diag::suggestion(
+                                &name.name,
+                                info.fields.iter().map(|f| f.name.as_str())
+                            ),
                             info.field_names()
                         ),
                     );

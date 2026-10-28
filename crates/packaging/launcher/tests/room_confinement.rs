@@ -134,8 +134,8 @@ impl DataHome {
 #[test]
 fn rooms_and_apps_cannot_read_each_others_directories() {
     // Phase `an_app_cannot_read_across_rooms`.
-    // The claim in `docs/architecture/rooms.md` — "an app opened in a room starts
-    // empty" — as observable behaviour rather than a design statement.
+    // The claim in `docs/architecture/workspace.md` — "an app opened in a new workspace
+    // starts empty" — as observable behaviour rather than a design statement.
     //
     // One app, two rooms: it writes a record in room A, and the same app
     // in room B cannot read it. Both halves matter — without the read

@@ -9,6 +9,10 @@
 # `upstream` says why it is carried and where it stands. `stable` is the first
 # stable release of its series with the backport: from it on the build leaves
 # the patch out, so a buildroot refresh onto that release needs no change here.
+#
+# Most entries here exist because a Snapdragon X laptop needs them; a newer
+# generation of that hardware may need the same treatment again. See
+# docs/snapdragon-x-laptop-generation.md, section 3, for what to watch for.
 
 fedora_kernel = "kernel-7.2.10-200.fc44"
 

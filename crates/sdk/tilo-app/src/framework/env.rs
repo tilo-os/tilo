@@ -269,10 +269,10 @@ impl<R: Resource> RecordEnv<R> {
     }
 
     /// Whether the record's latest edits are durable, for automation and
-    /// for a view that presents the save status itself
-    /// ([`Saves::shown_by_view`](super::Saves::shown_by_view)). Saving is
-    /// automatic and the window already says what there is to say (only a
-    /// save that stalls or fails): never show this as "Saving…" or "Saved".
+    /// an accessibility status. Saving is automatic and the window already
+    /// says what there is to say (a save that stalls or fails, and the
+    /// document's unsaved mark then): never show this as "Saving…" or
+    /// "Saved", nor mark the document edited from it.
     pub fn save_status(&self) -> LocalState<RecordSaveStatus> {
         self.saved.clone()
     }

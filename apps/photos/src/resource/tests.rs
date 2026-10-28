@@ -1276,3 +1276,39 @@ fn upgrading_drops_origin_paths_and_photos_kept_only_by_path() {
     assert_eq!(kept.content.as_deref(), Some("a".repeat(64).as_str()));
     assert!(upgrade_library(&mut doc, 2).is_err());
 }
+
+/// A past version reads with the album it held, and History draws it with
+/// the library's own view, read-only.
+#[test]
+fn a_past_version_reads_and_shows_its_album() {
+    use ui::framework::testing::TestApp;
+
+    let mut app = TestApp::<PhotosShell>::new().unwrap();
+    let album = Album::named("photos.album:walk", "Lighthouse Walk");
+    let made = PhotoLibrary::paths()
+        .albums
+        .insert_as(&album.item(), usize::MAX, &album);
+    app.call("field-edit", serde_json::json!({ "edit": made }))
+        .unwrap();
+    let past = app.versions().pop().unwrap().hash;
+    let renamed = album_paths(&album.id).name.replace("Harbour Days");
+    app.call("field-edit", serde_json::json!({ "edit": renamed }))
+        .unwrap();
+
+    let read = app
+        .call(
+            "read",
+            serde_json::json!({ "version": past.to_string(), "item": album.id }),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        read["content"].to_string().contains("Lighthouse Walk"),
+        "{read}"
+    );
+    let shown = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        shown.iter().any(|text| text.contains("Lighthouse Walk")),
+        "{shown:?}"
+    );
+}

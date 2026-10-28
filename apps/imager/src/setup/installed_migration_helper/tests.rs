@@ -12,7 +12,7 @@ impl Runner for NoApps {
 }
 #[test]
 fn native_session_copies_then_requires_adoption_and_preserves_selected_custody() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::setup::test_support::qualified_tempdir();
     let source = temp.path().join("old-home");
     let home = temp.path().join("new-home");
     for directory in [&source, &home] {
@@ -101,7 +101,7 @@ fn bounded_protocol_refuses_extra_fields_and_oversized_lines() {
 
 #[test]
 fn native_applications_session_adopts_only_independent_app_data_then_acknowledges() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::setup::test_support::qualified_tempdir();
     let source = temp.path().join("old-home");
     let home = temp.path().join("new-home");
     for root in [&source, &home] {

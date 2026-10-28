@@ -4,20 +4,23 @@
 //! never receive it as a peer window. A Settings window can't be moved onto
 //! a shared strip either.
 //!
-//! Two trees stand for two machines in one room: the host, which governs
-//! it and also has a workspace only its person is in, and a collaborator
-//! the host admitted. What crosses between them is the room's change
-//! stream, as on the wire.
+//! Two trees stand for two machines in one room: the device whose person
+//! made it, which also has a workspace only its person is in, and a
+//! collaborator admitted to it. What crosses between them is the room's
+//! layout record as the first device writes it, as its record route carries
+//! it.
 
-use shell::shell::state::{PeerOrigin, RoomId, TabId, TileContent, WorkspaceId, WorkspaceTree};
+use shell::shell::state::{RoomId, TabId, TileContent, WorkspaceId, WorkspaceTree};
 use shell::shell::tab_binding;
 
 const SETTINGS: &str = "so.tilo.settings";
-const HOST: &str = "ada";
 const GUEST: &str = "bob";
-/// The collaborator's machine mints ids in another range than this
-/// process's, so the host's windows are a peer's to it.
+/// The person's own machine and the collaborator's mint ids in ranges of
+/// their own, so the person's windows are a peer's to the collaborator.
+const HOST_SALT: u16 = 0xA11C;
 const GUEST_SALT: u16 = 0xBEEF;
+/// The key of the person's own machine, which signs its layout record.
+const HOST_DEVICE: [u8; 32] = [0xA1; 32];
 
 struct Room {
     host: WorkspaceTree,
@@ -31,9 +34,10 @@ struct Room {
 /// admitted to; the shared one is shown.
 fn shared_room() -> Room {
     let mut host = WorkspaceTree::default();
-    let personal = host.append_empty_workspace("Mine");
-    let shared = host.append_empty_workspace("Together");
-    host.adopt_ownerless_workspaces(&HOST.to_string());
+    host.set_peer_salt(HOST_SALT);
+    let (personal, _) = host.create_hosted_workspace("Mine");
+    let (shared, _) = host.create_hosted_workspace("Together");
+    host.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
     let room = host
         .room_of(shared)
         .expect("the shared workspace is a room");
@@ -46,12 +50,10 @@ fn shared_room() -> Room {
     host.set_active(shared);
 
     let mut guest = WorkspaceTree::default();
-    guest.set_salt_override(GUEST_SALT);
+    guest.set_peer_salt(GUEST_SALT);
     guest
-        .join_room("Together", room)
+        .join_native_room("Together", room)
         .expect("the guest joins the room");
-    assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
-    guest.adopt_ownerless_workspaces(&GUEST.to_string());
     Room {
         host,
         guest,
@@ -61,16 +63,12 @@ fn shared_room() -> Room {
     }
 }
 
-/// The host's room changes, applied on the guest's machine.
+/// The person's layout of the room, written into its layout record and taken
+/// in on the guest's machine as the room's record route delivers it.
 fn ship(room: &mut Room) {
-    room.host.sync_room_doc(room.id);
-    let changes = room
-        .host
-        .export_room_changes_since(room.id, &[])
-        .expect("the host is in the room");
     room.guest
-        .apply_room_changes(room.id, &changes, &PeerOrigin::hub(1))
-        .expect("the guest merges the room");
+        .hear_layout(&mut room.host, room.id, HOST_DEVICE)
+        .expect("the guest takes in the room's layout");
 }
 
 /// The workspace holding `tab` in `tree`.
@@ -176,8 +174,9 @@ fn a_settings_window_never_moves_onto_a_shared_strip() {
     assert!(settings_tabs_in(&room.guest, room.id).is_empty());
 
     // Onto another workspace only the person is in, the same move goes.
-    let also_mine = room.host.append_empty_workspace("Also mine");
-    room.host.adopt_ownerless_workspaces(&HOST.to_string());
+    let (also_mine, _) = room.host.create_hosted_workspace("Also mine");
+    room.host
+        .own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
     assert!(
         room.host.move_tab_across_strips(
             source,

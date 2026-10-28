@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Ensure path-filtered workflows and t checks follow workspace dependency closures.
+"""Ensure path-filtered workflows follow workspace dependency closures.
 
-A workflow's `paths` lists decide when it runs; a t check's `inputs` decide when its cached
-result is stale. Either must cover every directory of the package's dependency closure. Name a
-t check as `t.toml#<check>`. A t check that names the package in `cargo_packages` covers it by
-construction: t derives those inputs from the manifests and the lockfile.
+A workflow's `paths` lists decide when it runs, so they must cover every directory of the
+package's dependency closure. (t keys its checks by what their jobs read, so a t check has no
+such list to keep.)
 """
 
 from __future__ import annotations
@@ -17,19 +16,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import tomllib
 from collections.abc import Sequence
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
-
 # The platforms a build is resolved for: both Linux architectures, so the graph doesn't depend on
-# the machine resolving it, or macOS for a t check that runs on t's Mac (`os=macos`).
+# the machine resolving it.
 LINUX_TARGETS = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
-MACOS_TARGETS = ("aarch64-apple-darwin",)
 PATHS_KEY = re.compile(r"^(?P<indent>\s*)paths:\s*(?:#.*)?$")
 LIST_ITEM = re.compile(r"^\s*-\s*(?P<value>.+?)\s*$")
 
@@ -121,7 +115,7 @@ def _cargo_tree_directories(
     link. ``cargo tree --edges normal`` matches ``cargo build -p`` / image
     Containerfiles, so path filters rebuild when the image's inputs change and
     stay quiet for pure test-harness edges. ``targets`` are the platforms
-    it builds for (LINUX_TARGETS, or MACOS_TARGETS for a check on t's Mac).
+    it builds for.
     ``cargo_args`` select the features the image builds with, such as
     ``--no-default-features``.
     """
@@ -186,32 +180,6 @@ def unmatched_patterns(workflow_text: str, files: list[str]) -> list[str]:
     )
 
 
-def t_check(text: str, name: str) -> dict[str, Any]:
-    """A t check as t reads it: matrices are expanded first, so `name` is one combination
-    (`build-x86_64`), as t names it."""
-    config = t_matrix.expand(tomllib.loads(text), t_matrix.tree_paths(ROOT))
-    for check in config.get("check", []):
-        if check.get("name") == name:
-            return check
-    raise ValueError(f"t.toml declares no check {name}")
-
-
-def t_check_targets(text: str, name: str) -> Sequence[str]:
-    """The platforms a t check builds for: macOS where it runs on t's Mac, else Linux."""
-    return MACOS_TARGETS if "os=macos" in t_check(text, name).get("requires", []) else LINUX_TARGETS
-
-
-def t_check_blocks(text: str, name: str, package: str) -> list[set[str]]:
-    """A t check's `inputs` as one paths block; none to audit when its `cargo_packages`
-    names `package`, whose dependency closure t then derives itself."""
-    check = t_check(text, name)
-    packages = check.get("cargo_packages", [])
-    if any(fnmatchcase(package, pattern) for pattern in packages):
-        return []
-    # As t reads it: without `inputs`, everything, unless it names packages instead.
-    return [set(check.get("inputs", [] if packages else ["**"]))]
-
-
 def audit(
     metadata: dict[str, Any],
     root: Path,
@@ -268,21 +236,16 @@ def main() -> int:
         metadata = load_metadata(ROOT)
         results = []
         for package, workflow in checks:
-            path, _, check = str(workflow).partition("#")
-            text = (ROOT / path).read_text(encoding="utf-8")
-            blocks = t_check_blocks(text, check, package) if check else None
-            targets = t_check_targets(text, check) if check else LINUX_TARGETS
-            results.append((package, workflow, audit(metadata, ROOT, package, text, blocks, targets=targets)))
+            text = (ROOT / workflow).read_text(encoding="utf-8")
+            results.append((package, workflow, audit(metadata, ROOT, package, text)))
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2
     failed = [(package, workflow, violations) for package, workflow, violations in results if violations]
     if failed:
         for package, workflow, violations in failed:
-            # A finding names the file that declares the paths block: t.toml for a t check.
-            path, _, check = str(workflow).partition("#")
             for item in violations:
-                print(f"{path}: {check or 'workflow'} misses a {package} dependency path: {item}")
+                print(f"{workflow}: workflow misses a {package} dependency path: {item}")
         return 1
     for package, workflow, _ in results:
         print(f"{workflow}: every paths block tracks {package}'s dependency closure", file=sys.stderr)

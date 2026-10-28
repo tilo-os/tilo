@@ -293,6 +293,10 @@ class Bootstrap(unittest.TestCase):
                     ['/usr/bin/python3', str(root/'tilo-installer-code-refresh.py')])
                 self.assertEqual(run.call_args_list[0].args, ('mount', '--bind', str(root/files[-1]), str(destination)))
                 self.assertEqual(json.loads((daemon.BASE/'bootstrap.json').read_text()), receipt)
+                # The environment is cleared above, so the daemon it starts
+                # learns of the handshake only from that receipt.
+                self.assertEqual(os.environ, {})
+                self.assertTrue((daemon.BASE/'bootstrap.json').is_file())
 
 
 if __name__ == '__main__':

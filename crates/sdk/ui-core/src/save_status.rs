@@ -306,6 +306,15 @@ impl SaveStatusSurface {
         }
     }
 
+    /// Whether the document has work the window should mark unsaved
+    /// ([`crate::window_toolbar::ToolbarLocation::edited`]): a save that
+    /// failed, or one still unconfirmed past [`SAVE_STALL`]. A save that
+    /// lands in time marks nothing, as it says nothing.
+    #[must_use]
+    pub fn shows_unsaved(&self) -> bool {
+        self.failure.is_some() || (self.waiting() && self.stage != Stage::Quiet)
+    }
+
     /// Whether the current save gave up waiting and asks the person.
     #[must_use]
     pub fn gave_up(&self) -> bool {

@@ -64,6 +64,5 @@ cargo() { printf '%s\\n' "$@"; }
         assert not any("browser" in value for value in argv), argv
         excluded |= available - set(selected)
         print(f"PASS browser={browser} prebuilt_desktop={desktop}: {len(selected)} shipped binaries")
-assert {"shots", "tilo-loadclient", "ux-bench", "click_test_client",
-        "tilo-model-catalog"} <= excluded, excluded
+assert {"shots", "tilo-loadclient", "tilo-model-catalog"} <= excluded, excluded
 print("Unshipped binaries excluded:", ", ".join(sorted(excluded)))

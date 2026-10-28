@@ -80,7 +80,7 @@ fn a_save_queued_while_an_owner_publication_writes_is_not_lost() {
     // change is, from a tree that still holds the record being replaced.
     {
         let mut tree = tree.write();
-        tree.append_empty_workspace(ADDED);
+        tree.create_hosted_workspace(ADDED);
         tree.seed_doc_from_cache();
     }
     tree.read().queue_save();

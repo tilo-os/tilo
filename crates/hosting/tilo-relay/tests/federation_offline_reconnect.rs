@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::{Envelope, RelayClient, RelayConfig, WorkspaceBinding};
+use tilo_relay::{Envelope, RelayClient, RelayConfig};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, sign_device_cert,
 };
@@ -67,20 +67,10 @@ async fn start_relay_at(
     members: &[[u8; 32]],
 ) -> Relay {
     std::fs::create_dir_all(&state_root).unwrap();
-    let mut cfg = RelayConfig {
+    let cfg = RelayConfig {
         state_root: state_root.clone(),
         ..Default::default()
     };
-    for id in workspaces {
-        cfg.workspaces.push(WorkspaceBinding {
-            id: *id,
-            pin: true,
-            replication: tilo_relay::ReplicationIntent::FullWorkspace,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        });
-    }
     let identity = RelayIdentity {
         user_public_key: user.user_pk,
         device_signing_key: sk,
@@ -90,7 +80,15 @@ async fn start_relay_at(
     let relay = Relay::start(cfg, identity).await.unwrap();
     for id in workspaces {
         relay
-            .set_workspace_membership(*id, true, members.to_vec(), state_root.clone())
+            .replace_governed_workspace_access(
+                *id,
+                true,
+                tilo_peer_state::GovernedAccess {
+                    member_devices: members.to_vec(),
+                    member_user_roots: vec![relay.own_user_public_key()],
+                },
+                state_root.clone(),
+            )
             .await
             .unwrap();
     }

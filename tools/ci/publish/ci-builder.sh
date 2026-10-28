@@ -15,7 +15,7 @@ case ${1:-} in
     out=${3:?}
     case $arch in
       x86_64) platform=linux/amd64 pdfium=pdfium-8057-linux-x64.tgz
-              extra=(innosetup-6.7.3.exe jsign-7.6.jar) ;;
+              extra=(innosetup-6.7.3.exe jsign-7.6.jar "$(bash tools/ci/install-wine.sh --asset-name)") ;;
       aarch64) platform=linux/arm64 pdfium=pdfium-8057-linux-arm64.tgz extra=() ;;
       *) die "unknown architecture $arch" ;;
     esac
@@ -35,6 +35,7 @@ case ${1:-} in
       tools/ci/check-build-env.sh tools/ci/install-android-ndk.sh tools/ci/install-pdfium.sh \
       tools/ci/native-mold-linker.sh tools/ci/verify-native-mold.sh tools/ci/windows/wine-prefix.sh \
       tools/ci/install-xwayland-satellite.sh os/external-assets/xwayland-satellite/*.patch \
+      tools/ci/install-wine.sh os/external-assets/wine/*.patch \
       tools/ci/shstk-mark.py os/scripts/verify-elf-hardening.sh; do
       install -D -m 0644 "$file" "$context/$file"
     done

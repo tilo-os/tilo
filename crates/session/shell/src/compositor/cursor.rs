@@ -972,7 +972,7 @@ pub fn composite_xbgr2101010(
     height: usize,
     at: (i32, i32),
     cursor: &CursorBitmap,
-    encoder: &crate::shell::color_pipeline::SdrToPqEncoder,
+    encoder: &tilo_color_pipeline::color_pipeline::SdrToPqEncoder,
 ) {
     for_each_covered_pixel(
         dst,
@@ -1006,7 +1006,7 @@ pub fn composite_xbgr2101010(
                     / 255;
                 u16::try_from(mixed).unwrap_or(1023)
             });
-            *word = crate::shell::color_pipeline::pack_xbgr2101010(blended).to_le_bytes();
+            *word = tilo_color_pipeline::color_pipeline::pack_xbgr2101010(blended).to_le_bytes();
         },
     );
 }
@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn hdr_cursor_is_encoded_at_desktop_brightness_and_clipped() {
-        let encoder = crate::shell::color_pipeline::SdrToPqEncoder::new(203.0);
+        let encoder = tilo_color_pipeline::color_pipeline::SdrToPqEncoder::new(203.0);
         let cursor = CursorBitmap {
             width: 2,
             height: 1,
@@ -1043,7 +1043,7 @@ mod tests {
             // Opaque white, then half-covered black (premultiplied).
             rgba: Arc::new(vec![255, 255, 255, 255, 0, 0, 0, 128]),
         };
-        let background = crate::shell::color_pipeline::pack_xbgr2101010([400, 400, 400]);
+        let background = tilo_color_pipeline::color_pipeline::pack_xbgr2101010([400, 400, 400]);
         let mut dst: Vec<u8> = background.to_le_bytes().repeat(4);
         // A 2x2 target, cursor at the bottom-right corner so it is clipped.
         composite_xbgr2101010(&mut dst, 8, 2, 2, (0, 0), &cursor, &encoder);

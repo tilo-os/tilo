@@ -210,7 +210,7 @@ pub(crate) fn runs_of(tracker: &Tracker) -> Vec<TrackerRun> {
 /// A run records the model it captured when it started, and an issue records
 /// the one a person chose for it afterwards; either answers for the issue.
 fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
-    let mut seen = 0;
+    let mut seen: usize = 0;
     let mut node = issue;
     loop {
         if let Some(model) = node
@@ -220,7 +220,7 @@ fn inherited_model(tracker: &Tracker, issue: &Issue) -> Option<ModelChoice> {
         {
             return Some(model);
         }
-        seen += 1;
+        seen = seen.saturating_add(1);
         let parent = tracker.issues.get(node.parent.as_ref()?)?;
         if seen > MAX_PARENT_DEPTH {
             return None;
@@ -283,7 +283,7 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
             .and_then(|subject| serde_json::from_value(subject.clone()).ok()),
         model: inherited_model(tracker, issue).map(|model| runtime_collab::TaskRunModel {
             profile: model.profile.clone(),
-            model: model.model.clone(),
+            model: model.model,
         }),
         directions,
         question,

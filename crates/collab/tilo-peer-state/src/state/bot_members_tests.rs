@@ -179,6 +179,7 @@ pub(crate) fn program_invoking(action: tilo_actions::ActionKey, grant: Vec<Rule>
         grant,
         triggers: vec![],
         saved_by: None,
+        saved_proof: None,
     };
     String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
 }

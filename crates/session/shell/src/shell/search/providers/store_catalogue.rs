@@ -1146,6 +1146,10 @@ impl SearchProvider for StoreCatalogueProvider {
         self.row(&snapshot, row, provider_score(0))
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,

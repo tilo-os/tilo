@@ -8,8 +8,8 @@ use crate::shell::device_fabric::{InputLease, PersonalFabricAction, PersonalFabr
 use crate::shell::device_fabric_runtime::{
     grant_input_control, person_layout, revoke_input_control,
 };
-use crate::shell::personal_continuity::DeviceId;
 use std::collections::BTreeSet;
+use tilo_network_actor::fabric::DeviceId;
 use tokio::sync::mpsc;
 
 struct Fixture {
@@ -400,7 +400,7 @@ fn automatic_display_input_exclusion_revokes_only_the_matching_automatic_lease()
 
 /// The input the native compositor would take next, past its release barriers.
 fn admitted_spatial_input() -> Vec<(
-    crate::shell::personal_continuity::DeviceId,
+    tilo_network_actor::fabric::DeviceId,
     crate::shell::device_fabric::FabricInputEvent,
 )> {
     use crate::shell::device_fabric_runtime::{SpatialInputBatch, take_spatial_input_batches};
@@ -963,6 +963,10 @@ fn spatial_controller_withdrawal_retries_terminal_after_policy_off_and_transport
         fixture.actions().is_empty(),
         "full transport cannot report terminal delivery"
     );
+    // The pump reads the policy through the settings watch, which publishes
+    // the write above on its own thread: on a loaded machine the pump would
+    // otherwise still see Display & Input on and probe the peer's health.
+    runtime.refresh_settings_for_test();
     runtime.pump(
         &fixture.network,
         &selection,

@@ -171,7 +171,11 @@ pub struct WindowGroup {
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
-    hosts: Vec<(u64, TileHost)>,
+    /// Each tab's host, boxed so it keeps its address while it stays in the
+    /// window: the frame's layout pointer map names the shown host by
+    /// address, and opening, closing or reordering another tab must not
+    /// move it out from under that map.
+    hosts: Vec<(u64, Box<TileHost>)>,
     width: WindowWidth,
     /// Pushed down by the parent [`crate::widget::GroupRow`] before every
     /// `build_layout`; seeded to [`DEFAULT_STRIP_USABLE_PX`].
@@ -458,7 +462,7 @@ impl WindowGroup {
             .into_iter()
             .map(|(d, h)| {
                 h.set_panic_scope(d.id);
-                (d.id, h)
+                (d.id, Box::new(h))
             })
             .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
@@ -1616,14 +1620,14 @@ impl WindowGroup {
         self.hosts
             .iter_mut()
             .find(|(i, _)| *i == id)
-            .map(|(_, h)| h)
+            .map(|(_, h)| &mut **h)
     }
 
     /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
     /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {
         let id = self.bar.active_id();
-        self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
+        self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| &**h)
     }
 
     pub(crate) fn discard_layout_nodes(&mut self) {
@@ -1924,6 +1928,7 @@ impl WindowGroup {
     pub fn detach_tab(&mut self, tab_id: u64) -> Option<(TabDescriptor, TileHost)> {
         let host_idx = self.hosts.iter().position(|(i, _)| *i == tab_id)?;
         let (_, host) = self.hosts.remove(host_idx);
+        let host = *host;
         let desc = self.bar.tabs().iter().find(|t| t.id == tab_id)?.clone();
         self.bar.remove_tab(tab_id);
         // Drop lingering close-fade state for the moved id, or a stale
@@ -1946,12 +1951,12 @@ impl WindowGroup {
         let before_shown = self
             .hosts
             .iter()
-            .any(|(i, h)| *i == before && Widget::presented(h))
+            .any(|(i, h)| *i == before && Widget::presented(&**h))
             && !self.closing_hosts.contains_key(&before);
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
         host.set_panic_scope(id);
-        self.hosts.insert(clamped, (id, host));
+        self.hosts.insert(clamped, (id, Box::new(host)));
         if before_shown && before != id && self.bar.active_id() == id {
             self.tab_waiting = Some((before, id));
         }
@@ -1967,7 +1972,7 @@ impl WindowGroup {
                 self.tab_waiting = None;
             } else if self.hosts.iter().any(|(i, h)| {
                 *i == to
-                    && (Widget::presented(h)
+                    && (Widget::presented(&**h)
                         || h.holds_first_frame_until(crate::time::now()).is_none())
             }) {
                 // Drawn, or its place is reserved past the frame its first
@@ -2031,7 +2036,7 @@ impl WindowGroup {
             id,
             close_reports: vec![],
             bar,
-            hosts: vec![(tab_id, host)],
+            hosts: vec![(tab_id, Box::new(host))],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             alone: false,
@@ -2438,10 +2443,36 @@ impl WindowGroup {
 
     /// Mark tab `id` as running a developer's own build, installed by
     /// `installer` into the room it is in, or clear the mark: while it is in
-    /// front the bar says "Dev build · by …". `true` when that changed what
+    /// front the bar says "Dev build by …". `true` when that changed what
     /// the window shows.
     pub fn set_tab_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
         self.bar.set_dev_build(id, installer)
+    }
+
+    /// Mark tab `id` as a window shared with its workspace, seen by whom
+    /// `shared` names, or clear the mark: while it is in front the bar says
+    /// "Shared with …" with the faces of the people who see it. `true` when
+    /// that changed what the window shows.
+    pub fn set_tab_shared(&mut self, id: u64, shared: Option<super::SharedWith>) -> bool {
+        self.bar.set_shared(id, shared)
+    }
+
+    /// Who sees the window of tab `id`, while it is shared.
+    pub fn tab_shared_with(&self, id: u64) -> Option<&super::SharedWith> {
+        self.bar.shared_with(id)
+    }
+
+    /// Mark tab `id` as a window someone else shared with its workspace,
+    /// whose `shared` names, or clear the mark: while it is in front the bar
+    /// says "Ana's window" with their face. `true` when that changed what
+    /// the window shows.
+    pub fn set_tab_shared_by(&mut self, id: u64, shared: Option<super::SharedBy>) -> bool {
+        self.bar.set_shared_by(id, shared)
+    }
+
+    /// Whose the window of tab `id` is, while someone else shares it here.
+    pub fn tab_shared_by(&self, id: u64) -> Option<&super::SharedBy> {
+        self.bar.shared_by(id)
     }
 
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
@@ -2686,7 +2717,7 @@ impl WindowGroup {
         self.hosts
             .iter_mut()
             .find(|(id, _)| *id == tab_id)
-            .map(|(_, h)| h)
+            .map(|(_, h)| &mut **h)
     }
 
     /// Laid-out content bounds for a tab. Shell-owned system windows use
@@ -2915,7 +2946,7 @@ impl WindowGroup {
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
                 let (_, mut host) = self.hosts.remove(idx);
                 self.close_reports
-                    .extend(crate::component_lifecycle::close_components(&mut host));
+                    .extend(crate::component_lifecycle::close_components(&mut *host));
             }
             self.bar.finalize_close(id);
         }
@@ -3308,26 +3339,26 @@ impl WindowGroup {
 impl FloatingSurfaceProvider for WindowGroup {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_focus_changed(host, id, focused);
+            FloatingSurfaceProvider::on_floating_surface_focus_changed(&mut **host, id, focused);
         }
     }
 
     fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(&mut **host, id);
         }
     }
 
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
+            FloatingSurfaceProvider::on_floating_surface_event_source(&mut **host, id);
         }
     }
 
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
-        self.hosts
-            .iter()
-            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_accessibility(host, id))
+        self.hosts.iter().find_map(|(_, host)| {
+            FloatingSurfaceProvider::floating_surface_accessibility(&**host, id)
+        })
     }
 
     fn perform_floating_surface_accessibility_action(
@@ -3340,7 +3371,12 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::perform_floating_surface_accessibility_action(
-                host, id, target, action, state, path,
+                &mut **host,
+                id,
+                target,
+                action,
+                state,
+                path,
             )
         })
     }
@@ -3348,7 +3384,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
         self.hosts
             .iter()
-            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(host, id))
+            .find_map(|(_, host)| FloatingSurfaceProvider::floating_surface_ime(&**host, id))
     }
 
     fn take_floating_surface_request(
@@ -3356,9 +3392,9 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
         // A detached presentation remains interactive even when its source tab
         // is not selected. Drain every retained owner, not only the tiled one.
-        self.hosts
-            .iter_mut()
-            .find_map(|(_, host)| FloatingSurfaceProvider::take_floating_surface_request(host))
+        self.hosts.iter_mut().find_map(|(_, host)| {
+            FloatingSurfaceProvider::take_floating_surface_request(&mut **host)
+        })
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
@@ -3370,7 +3406,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         self.hosts
             .iter_mut()
             .flat_map(|(_, host)| {
-                FloatingSurfaceProvider::take_floating_surface_source_updates(host)
+                FloatingSurfaceProvider::take_floating_surface_source_updates(&mut **host)
             })
             .collect()
     }
@@ -3385,7 +3421,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::draw_floating_surfaces(
-                host,
+                &mut **host,
                 scene,
                 transform,
                 text_renderer,
@@ -3407,7 +3443,7 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> bool {
         self.hosts.iter_mut().any(|(_, host)| {
             FloatingSurfaceProvider::draw_floating_surface(
-                host,
+                &mut **host,
                 id,
                 scene,
                 transform,
@@ -3420,7 +3456,7 @@ impl FloatingSurfaceProvider for WindowGroup {
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::set_floating_surface_bounds(host, bounds);
+            FloatingSurfaceProvider::set_floating_surface_bounds(&mut **host, bounds);
         }
     }
 
@@ -3429,14 +3465,14 @@ impl FloatingSurfaceProvider for WindowGroup {
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
         self.hosts
             .iter()
-            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(host))
+            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(&**host))
             .collect()
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
         self.hosts
             .iter()
-            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(host))
+            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(&**host))
             .collect()
     }
 
@@ -3445,7 +3481,7 @@ impl FloatingSurfaceProvider for WindowGroup {
         message: &crate::floating_surface::FloatingSurfaceHostMessage,
     ) {
         for (_, host) in &mut self.hosts {
-            FloatingSurfaceProvider::on_floating_surface_host_message(host, message);
+            FloatingSurfaceProvider::on_floating_surface_host_message(&mut **host, message);
         }
     }
 }
@@ -3489,7 +3525,7 @@ impl Widget for WindowGroup {
         request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         for (_, host) in &mut self.hosts {
-            request.visit(host)?;
+            request.visit(&mut **host)?;
         }
         Ok(())
     }
@@ -3517,7 +3553,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.set_platform_conventions(conventions);
         }
@@ -3531,7 +3567,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.set_interaction_environment(environment);
         }
@@ -3542,7 +3578,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.mount_native_views(host);
         }
@@ -3553,7 +3589,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.unmount_native_views();
         }
@@ -3564,7 +3600,7 @@ impl Widget for WindowGroup {
         for child in self
             .hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
         {
             child.native_view_frame_start();
         }
@@ -3583,7 +3619,7 @@ impl Widget for WindowGroup {
         if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
             // A host swapped in through `host_for_tab_mut` is named here.
             host.set_panic_scope(*id);
-            children.push(host);
+            children.push(&**host);
         }
         children
     }
@@ -3612,7 +3648,7 @@ impl Widget for WindowGroup {
         }
         if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
             host.set_panic_scope(*id);
-            children.push(host);
+            children.push(&mut **host);
         }
         children
     }
@@ -3621,7 +3657,7 @@ impl Widget for WindowGroup {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for (id, host) in &self.hosts {
             host.set_panic_scope(*id);
-            visitor(host);
+            visitor(&**host);
         }
     }
 
@@ -4263,7 +4299,7 @@ impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
+            .map(|(_, host)| &mut **host as &mut dyn Widget)
             .collect()
     }
 }
@@ -4493,6 +4529,29 @@ mod tests {
             "restoring twice must not duplicate the pill"
         );
         assert_eq!(group.tab_count(), 2);
+    }
+
+    #[test]
+    fn a_host_keeps_its_address_while_other_tabs_come_and_go() {
+        // The frame's layout pointer map names the shown host by address
+        // until the next structural rebuild; another tab opening, moving or
+        // leaving must not move it.
+        let mut group = make_group();
+        let shown: *const TileHost = group.host_for_tab_mut(1).expect("tab 1");
+        for id in 3..40 {
+            group.insert_detached_tab(
+                0,
+                TabDescriptor::new(id, format!("T{id}")),
+                TileHost::new(TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: format!("t{id}"),
+                }),
+            );
+        }
+        assert!(group.reorder_tab(0, 5));
+        assert!(group.detach_tab(2).is_some());
+        let now: *const TileHost = group.host_for_tab_mut(1).expect("tab 1");
+        assert_eq!(shown, now);
     }
 
     pub(super) fn make_group() -> WindowGroup {
@@ -5298,275 +5357,6 @@ mod tests {
         }
     }
 
-    struct EdgeResizeJourney {
-        row: crate::widget::GroupRow,
-        tree: TaffyTree<()>,
-        node: NodeId,
-        pointer: Point,
-    }
-
-    impl EdgeResizeJourney {
-        fn new() -> Self {
-            use taffy::prelude::TaffyMaxContent;
-
-            let mut row = crate::widget::GroupRow::new(vec![make_group()]);
-            let mut tree = TaffyTree::new();
-            let node = row.build_layout(
-                &mut tree,
-                &Theme::dark().with_reduce_motion(true),
-                &mut Default::default(),
-            );
-            let root = tree.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            );
-            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
-            row.apply_layout(&tree, node, Point::ZERO);
-            let rect = row.groups[0].get_rect();
-            assert!(rect.height() > 0.0);
-            Self {
-                row,
-                tree,
-                node,
-                pointer: Point::new(rect.x1 - 3.0, rect.center().y),
-            }
-        }
-
-        fn send(&mut self, event: &WindowEvent) -> bool {
-            Dispatch::new()
-                .layout(&self.tree, self.node)
-                .send(&mut self.row, event)
-                .handled
-        }
-
-        fn move_pointer(&mut self, dx: f64) {
-            self.send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(self.pointer.x + dx, self.pointer.y),
-            });
-        }
-
-        fn mouse(&mut self, state: ElementState) {
-            self.send(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            });
-        }
-
-        fn begin(&mut self) {
-            self.move_pointer(0.0);
-            self.mouse(ElementState::Pressed);
-            assert!(self.row.wants_pointer_capture());
-            self.move_pointer(100.0);
-            assert_ne!(
-                self.row.groups[0].layout_width_px(),
-                self.row.groups[0].resolved_width_px(),
-                "the drag sets the width live"
-            );
-            assert!(self.row.groups[0].take_pending_width_change().is_none());
-        }
-
-        fn assert_cancelled_and_restart(&mut self) {
-            assert!(
-                !self.row.wants_pointer_capture(),
-                "interruption must release capture"
-            );
-            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
-            assert_eq!(
-                self.row.groups[0].layout_width_px(),
-                self.row.groups[0].resolved_width_px(),
-                "and the window is back at its width"
-            );
-            self.move_pointer(250.0);
-            self.mouse(ElementState::Released);
-            assert_eq!(self.row.groups[0].width(), WindowWidth::Normal);
-            assert!(self.row.groups[0].take_pending_width_change().is_none());
-            self.begin();
-            self.mouse(ElementState::Released);
-            assert!(!self.row.wants_pointer_capture());
-            assert!(self.row.groups[0].take_pending_width_change().is_some());
-            assert!(self.row.groups[0].take_pending_width_change().is_none());
-        }
-    }
-
-    #[test]
-    fn window_edge_resize_focus_loss_cancels_preview_and_allows_a_fresh_drag() {
-        let mut journey = EdgeResizeJourney::new();
-        journey.begin();
-        journey.send(&WindowEvent::Focused(false));
-        journey.assert_cancelled_and_restart();
-    }
-
-    #[test]
-    fn window_edge_resize_escape_cancels_preview_before_a_late_release() {
-        let mut journey = EdgeResizeJourney::new();
-        journey.begin();
-        let escape = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: crate::synthetic_input::key_event(
-                Key::Named(winit::keyboard::NamedKey::Escape),
-                None,
-                ElementState::Pressed,
-            ),
-            is_synthetic: true,
-        };
-        assert!(journey.send(&escape));
-        journey.send(&escape);
-        journey.assert_cancelled_and_restart();
-    }
-
-    #[test]
-    fn an_edge_drag_sets_the_width_live_and_commits_it_once() {
-        use std::collections::HashMap;
-        use taffy::Style;
-        use taffy::prelude::TaffyMaxContent;
-
-        // (Re)build the taffy tree from the group's current state and run a
-        // full layout pass, returning the group's laid-out width.
-        fn layout_width(g: &mut WindowGroup, theme: &Theme) -> f64 {
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, theme, &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, node, Point::ZERO);
-            g.get_rect().width()
-        }
-
-        {
-            let theme = Theme::dark();
-            let mut g = make_group();
-            // 1800 px strip: one per-mille is 1.8 px, so a share alone could
-            // not put the edge where the pointer is.
-            g.set_strip_usable_px(1800.0);
-            let _ = g.take_structure_dirty();
-            assert_eq!(layout_width(&mut g, &theme), 1201.0);
-            g.begin_edge_drag(WindowEdge::Trailing);
-            assert!(g.edge_resize_in_flight());
-            assert_eq!(g.edge_drag_origin_px(), Some(1201.0));
-            assert_eq!(g.edge_highlight(), Some(WindowEdge::Trailing));
-            g.set_live_width(1700.4);
-            assert!(
-                g.take_structure_dirty(),
-                "a live width relays the window out"
-            );
-            assert_eq!(layout_width(&mut g, &theme), 1700.0, "whole pixels");
-            assert_eq!(
-                g.take_pending_width_change(),
-                None,
-                "mid-drag nothing is handed to the shell to persist",
-            );
-            let settle = g.end_edge_drag(true);
-            assert_eq!(
-                g.width(),
-                WindowWidth::Fraction(944),
-                "the drag is stored as the share it landed on (1700/1800)",
-            );
-            assert_eq!(
-                g.take_pending_width_change(),
-                Some(WindowWidth::Fraction(944))
-            );
-            assert_eq!(g.take_pending_width_change(), None, "drained once");
-            assert_eq!(
-                settle,
-                g.resolved_width_px() - 1700.0,
-                "the commit reports what the share's own grid moves the width by",
-            );
-            assert!(!g.edge_resize_in_flight());
-            assert_eq!(g.edge_highlight(), None);
-        }
-
-        {
-            let mut g = make_group();
-            g.set_strip_usable_px(1200.0);
-            g.begin_edge_drag(WindowEdge::Leading);
-            g.set_live_width(300.0);
-            assert_eq!(g.layout_width_px(), 300.0);
-            let _ = g.end_edge_drag(false);
-            assert_eq!(g.width(), WindowWidth::Normal);
-            assert_eq!(g.layout_width_px(), 800.0);
-            assert_eq!(g.take_pending_width_change(), None);
-        }
-
-        {
-            let mut g = make_group();
-            g.set_strip_usable_px(1200.0);
-            let limits = g.width_limits();
-            assert_eq!(limits.min, min_group_px(1200.0));
-            assert_eq!(limits.max, max_group_px(1200.0));
-        }
-
-        {
-            let theme = Theme::dark();
-            let mut g = make_group();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy.parent_node(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            );
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, node, Point::ZERO);
-            let rect = g.get_rect();
-            let cy = rect.center().y;
-            for x in [rect.x1 - 3.0, rect.x0 + 3.0] {
-                assert_eq!(
-                    Widget::cursor_shape(&g, Point::new(x, cy)),
-                    Some(winit::window::CursorIcon::EwResize),
-                    "an edge band requests an east-west resize cursor (x = {x})",
-                );
-            }
-            assert_eq!(
-                Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
-                None,
-                "pointer over the group body (not the edge band) defers",
-            );
-            // An in-flight drag holds the cursor even off the band.
-            g.begin_edge_drag(WindowEdge::Trailing);
-            assert_eq!(
-                Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
-                Some(winit::window::CursorIcon::EwResize),
-            );
-        }
-
-        {
-            // A width a person set is a share, kept on every display (the
-            // default width stops growing past what reads well instead).
-            let mut wide = make_group();
-            wide.set_width(WindowWidth::Fraction(667));
-            wide.set_strip_usable_px(3840.0);
-            assert_eq!(
-                wide.resolved_width_px(),
-                2561.0,
-                "667/1000 of a 3840 px strip — the same share a 1200 px strip \
-             gives at 800 px, to the 1 px that per-mille quantisation costs \
-             at this size",
-            );
-            let mut default = make_group();
-            default.set_strip_usable_px(3840.0);
-            assert_eq!(default.width(), g_normal_width());
-            assert_eq!(default.resolved_width_px(), 1280.0);
-        }
-    }
-
     #[test]
     fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
         {
@@ -5772,7 +5562,7 @@ mod tests {
 
     /// The tier `make_group()` seeds. Named so the cross-display assertion
     /// above reads against the fixture rather than restating a literal.
-    fn g_normal_width() -> WindowWidth {
+    pub(super) fn g_normal_width() -> WindowWidth {
         WindowWidth::Normal
     }
 
@@ -6460,6 +6250,10 @@ mod search;
 #[cfg(test)]
 #[path = "window_group_window_bar_tests.rs"]
 mod window_bar_tests;
+
+#[cfg(test)]
+#[path = "window_group_edge_resize_tests.rs"]
+mod edge_resize_tests;
 
 #[cfg(test)]
 #[path = "window_group_search_tests.rs"]

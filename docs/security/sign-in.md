@@ -207,6 +207,13 @@ initrd needs no D-Bus session and no separate screen reader. Its parts are:
 - `espeak-ng` with the voice data for the device's language;
 - ALSA, with the sound modules, firmware and UCM profile the machine needs.
 
+With the screen reader on, a finger explores the screen as it does with
+TalkBack and VoiceOver. What is under the finger is read and nothing is
+pressed; a double tap anywhere presses what was read last, and a swipe right
+or left moves to the next or previous item. The on-screen keyboard's keys are
+read by their names, as iOS reads a passcode keypad. What the field holds is
+never read.
+
 A machine whose audio needs firmware too large for the initrd shows the screen
 without speech, and its hardware test records that. Neither USB audio nor a headset
 needs that firmware.

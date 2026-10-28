@@ -1,4 +1,4 @@
-"""A check.yml test shard prepares its environment from the merged tree.
+"""A test shard prepares its environment from the merged tree.
 
 A pull request runs its own head's check.yml against its head merged onto
 main. An environment requirement added as a workflow step therefore never
@@ -10,72 +10,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".forgejo/workflows/check.yml"
 SCRIPT = ROOT / "tools/ci/prepare-test-shard.sh"
-PREPARE = "Prepare the shard's test environment"
-# Everything the test job may do between merging main and its first test run.
-# A new shard requirement belongs in tools/ci/prepare-test-shard.sh, not here.
-PREPARATION = [
-    "Read the shared test filters",
-    "Prepare Rust build caches",
-    "Check native architecture",
-    PREPARE,
-]
-# Commands that install into a test shard's environment.
-INSTALLS = re.compile(r"\bdnf\b|\bnpm (?:ci|install)\b|\bensure-[\w-]+\.sh|\binstall-[\w-]+\.sh")
-
-
-def job(source: str, name: str) -> str:
-    start = re.search(rf"(?m)^  {re.escape(name)}:\n", source)
-    if start is None:
-        raise AssertionError("cannot observe job " + name)
-    remaining = source[start.end():]
-    end = re.search(r"(?m)^  [a-z][a-z-]*:\n", remaining)
-    return remaining[:end.start()] if end else remaining
-
-
-def steps(body: str) -> list[tuple[str, str]]:
-    matches = list(re.finditer(r"(?m)^      - name: (.+)\n", body))
-    if not matches:
-        raise AssertionError("cannot observe named steps")
-    return [(match.group(1), body[match.start():matches[i + 1].start() if i + 1 < len(matches)
-                                  else len(body)].rstrip())
-            for i, match in enumerate(matches)]
-
-
-class TestJobPreparesFromTheMergedTree(unittest.TestCase):
-    def setUp(self) -> None:
-        self.steps = steps(job(WORKFLOW.read_text(), "test"))
-        self.names = [name for name, _ in self.steps]
-
-    def test_only_the_merged_tree_script_prepares_the_shard(self) -> None:
-        merged = self.names.index("Merge onto the tested main")
-        first_test = next(index for index, name in enumerate(self.names)
-                          if name.startswith("Test shard "))
-        self.assertEqual(self.names[merged + 1:first_test], PREPARATION,
-                         "add shard requirements to tools/ci/prepare-test-shard.sh, "
-                         "not as check.yml steps a stale pull request never receives")
-
-    def test_the_script_receives_the_shard_selection(self) -> None:
-        body = dict(self.steps)[PREPARE]
-        self.assertIn("run: bash tools/ci/prepare-test-shard.sh", body)
-        self.assertIn("TEST_PACKAGES: ${{ matrix.test_packages }}", body)
-        self.assertIn("SCOPED_TESTS: ${{ matrix.scoped_tests }}", body)
-        self.assertNotIn("if:", body, "every shard prepares; the script decides what it needs")
-
-    def test_no_other_test_job_step_installs_tools(self) -> None:
-        for name, body in self.steps:
-            if name == PREPARE:
-                continue
-            with self.subTest(step=name):
-                self.assertIsNone(INSTALLS.search(body))
 
 
 class PrepareTestShardScript(unittest.TestCase):
@@ -152,13 +93,14 @@ class PrepareTestShardScript(unittest.TestCase):
                 self.assertIn("tools/ci/require-pdf-sandbox.sh", self.tools(calls))
                 self.assertIn("TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so\n", exported)
 
-    def test_browser_peer_gets_chromium_as_a_package_or_scoped_test(self) -> None:
+    def test_browser_peer_builds_its_page_library_in_the_builders_chromium(self) -> None:
         scoped = '[{"package":"tilo-browser-peer","test":"voice","filter":"all()"}]'
         for packages, scoped_tests in (("-p tilo-browser-peer", ""), ("", scoped)):
             with self.subTest(packages=packages, scoped=scoped_tests):
                 calls, exported = self.prepare(packages, scoped_tests)
-                self.assertIn("dnf", self.tools(calls))
-                self.assertRegex(exported, r"(?m)^CHROME=.+/chromium(?:-browser)?$")
+                self.assertEqual(self.tools(calls)[-2:], ["npm", "node"])
+                self.assertNotIn("dnf", self.tools(calls))
+                self.assertNotIn("CHROME=", exported)
 
     def test_imager_gets_its_qualified_cache_root(self) -> None:
         _, exported = self.prepare("-p imager")

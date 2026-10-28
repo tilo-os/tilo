@@ -20,8 +20,6 @@ mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;
-mod governed;
-mod governor;
 mod history_content;
 mod limits;
 mod private_direct_conversations;
@@ -29,6 +27,7 @@ mod publication;
 mod record;
 pub mod renewal;
 pub mod session;
+mod shortcuts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
@@ -47,7 +46,6 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
-pub use governor::Nonces;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
@@ -172,21 +170,15 @@ impl NativeCommittedView {
     /// The signed invitation this device enrolled with.
     ///
     /// # Errors
-    /// The room is governed here: this device created it.
+    /// The room's record holds no enrollment.
     pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
         Ok(&self.enrollment()?.invitation)
-    }
-    /// Whether this device governs the room itself, having created it,
-    /// rather than holding a replica of a room a host governs.
-    #[must_use]
-    pub fn governed_here(&self) -> bool {
-        self.record.enrollment.is_none()
     }
     fn enrollment(&self) -> Result<&record::StoredEnrollment, String> {
         self.record
             .enrollment
             .as_ref()
-            .ok_or_else(|| "the room is governed here, not joined through a host".into())
+            .ok_or_else(|| "the room's record holds no enrollment".into())
     }
     #[must_use]
     pub fn device(&self) -> &DeviceCert {
@@ -219,7 +211,7 @@ impl NativeCommittedView {
     /// Where the host this device enrolled through is reached.
     ///
     /// # Errors
-    /// The room is governed here: no host carries it.
+    /// The room's record holds no enrollment.
     pub fn transport_hint(&self) -> Result<&tilo_peer_state::join::TransportHint, String> {
         Ok(&self.enrollment()?.transport_hint)
     }

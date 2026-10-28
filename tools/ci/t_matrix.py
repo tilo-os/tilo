@@ -15,7 +15,8 @@ stands for, as t does before anything else reads the file (t's README, "Matrices
   default = false
 
 Each combination becomes a check with `{variable}` replaced by its value in every string and
-table key; anything else in braces stays. Checks come in the order `name` uses the axes.
+table key; anything else in braces stays. Checks come in the order `name` uses the axes. A need
+that names a template as it is written (`needs = ["sign-{arch}"]`) needs every check it stands for.
 
   t_matrix.py [--only PREFIX]   print the expanded checks' names
 """
@@ -170,18 +171,28 @@ def combinations(name: str, matrix: dict[str, Any], paths: Callable[[str], list[
 def expand(config: dict[str, Any], paths: Callable[[str], list[str]] | None = None) -> dict[str, Any]:
     """`config` (t.toml as tomllib reads it) with its matrices expanded."""
     out = []
+    # Each template's name, with the names of the checks it stands for.
+    stands_for: dict[str, list[str]] = {}
     for check in config.get("check", []):
         if "matrix" not in check:
             out.append(check)
             continue
         template = {k: v for k, v in check.items() if k != "matrix"}
         combos, sets = combinations(check.get("name", ""), check["matrix"], paths)
+        expanded = []
         for combo in combos:
             one = copy.deepcopy(template)
             for when, fields in sets:
                 if all(combo.get(k) == v for k, v in when.items()):
                     one.update(copy.deepcopy(fields))
-            out.append(fill(one, combo))
+            expanded.append(fill(one, combo))
+        stands_for[check.get("name", "")] = [c.get("name", "") for c in expanded]
+        out.extend(expanded)
+    # A need naming a template (`needs = ["vm-acceptance/{shard}"]`) needs every check it stands for.
+    for check in out:
+        for field in ("needs", "optional_needs", "needs_any_outcome"):
+            if field in check:
+                check[field] = [n for need in check[field] for n in stands_for.get(need, [need])]
     return {**config, "check": out}
 
 

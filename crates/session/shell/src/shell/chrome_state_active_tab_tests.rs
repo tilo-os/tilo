@@ -267,32 +267,14 @@ fn focus_and_workspace_names_survive_restart_and_replicate() {
         );
     }
 
-    fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+    fn committed_workspace_name_survives_restart_and_is_asked_of_the_governor() {
         let dir = tempfile::tempdir().expect("state dir");
         let path = dir.path().join("workspace.json");
         let mut tree = tree_with(100);
         let room = tree.desktop.workspaces[0].room();
         tree.persist_path = Some(path.clone());
-        tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+        tree.own_workspaces_for_test(|_| "shell-fixture".to_string());
         tree.queue_save();
-
-        // Establish a real shared-room lineage before the rename. Merely
-        // assigning the same RoomId to two independently-seeded documents
-        // creates concurrent `name` values; that is not how a peer joins and
-        // cannot prove which later edit should win.
-        let mut replica = tree_with(100);
-        let replica_workspace = replica.join_room("Joining", room).expect("joins the room");
-        replica.desktop.active = replica_workspace;
-        // The host's invite pins it (hub 1) as the room's governor.
-        assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
-        let baseline = tree
-            .export_room_changes_since(room, &[])
-            .expect("host room baseline");
-        replica
-            .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("guest joins host room");
-        assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
-        let replica_heads = replica.room_heads(room);
 
         let chrome = ChromeState::new_with_fixture_handle(
             tree.shared(),
@@ -311,31 +293,23 @@ fn focus_and_workspace_names_survive_restart_and_replicate() {
             restarted.desktop.active_workspace().unwrap().name,
             "Project Aurora"
         );
-        let changes = chrome
-            .borrow()
-            .tree_mut()
-            .export_room_changes_since(room, &replica_heads)
-            .expect("room rename delta");
+        let asked = chrome.borrow().tree_mut().take_governance_requests();
         assert!(
-            !changes.is_empty(),
-            "the rename must enter the room document"
-        );
-        replica
-            .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
-            .expect("room merge");
-        assert_eq!(
-            replica
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == replica_workspace)
-                .map(|workspace| workspace.name.as_str()),
-            Some("Project Aurora")
+            matches!(
+                asked.as_slice(),
+                [(
+                    asked_room,
+                    crate::shell::state::GovernanceRequest::Command(
+                        tilo_desktop_model::commands::DesktopCommand::RenameWorkspace { name }
+                    )
+                )] if *asked_room == room && name == "Project Aurora"
+            ),
+            "the rename is asked of the room's governor, which every member reads it from"
         );
     }
 
     focus_tab_and_strip_focus_survive_restart();
-    committed_workspace_name_survives_restart_and_replicates_to_a_room_peer();
+    committed_workspace_name_survives_restart_and_is_asked_of_the_governor();
 }
 
 /// A tree with one strip/group holding `tile`, plus the ids to

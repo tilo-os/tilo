@@ -19,7 +19,6 @@ use crate::shell::overlay_host::{
     DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, RealtimeContinuityBridge,
     RealtimeContinuityUiAction,
 };
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::personal_tethering_runtime::TetheringPhase;
 use crate::shell::remote_capture::device::RemoteCaptureKind;
 use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
@@ -29,6 +28,7 @@ use crate::shell::search::{
     SearchResult,
 };
 use crate::shell::speaker_group_runtime::SpeakerConsentKind;
+use tilo_network_actor::fabric::DeviceId;
 
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
@@ -1254,6 +1254,10 @@ impl SearchProvider for DeviceContinuityActionsProvider {
         device_projection(&self.bridge, &self.ranker, ctx, &view).1
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -1440,6 +1444,10 @@ impl SearchProvider for CallContinuityActionsProvider {
         .1
     }
 
+    fn pages_itself(&self) -> bool {
+        true
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -1610,9 +1618,9 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::overlay_host::{FabricDeviceView, FabricMediaView};
-    use crate::shell::personal_continuity::DeviceId;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
+    use tilo_network_actor::fabric::DeviceId;
 
     fn device(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()

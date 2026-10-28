@@ -724,17 +724,17 @@ struct HostLaunchActivation {
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
 #[derive(Debug, Default)]
 struct PersonalFabricInputHolders {
-    keys: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    keys: HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
     key_counts: HashMap<u32, usize>,
-    buttons: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    buttons: HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
     button_counts: HashMap<u32, usize>,
 }
 
 impl PersonalFabricInputHolders {
     fn transition(
-        holders: &mut HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+        holders: &mut HashMap<tilo_network_actor::fabric::DeviceId, HashSet<u32>>,
         counts: &mut HashMap<u32, usize>,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         code: u32,
         pressed: bool,
     ) -> bool {
@@ -774,7 +774,7 @@ impl PersonalFabricInputHolders {
 
     fn key_transition(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         keycode: u32,
         pressed: bool,
     ) -> bool {
@@ -789,7 +789,7 @@ impl PersonalFabricInputHolders {
 
     fn button_transition(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         button: u32,
         pressed: bool,
     ) -> bool {
@@ -804,7 +804,7 @@ impl PersonalFabricInputHolders {
 
     fn release_controller(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
     ) -> (Vec<u32>, Vec<u32>) {
         let mut keys = self
             .keys
@@ -831,7 +831,7 @@ impl PersonalFabricInputHolders {
         (keys, buttons)
     }
 
-    fn controllers(&self) -> Vec<crate::shell::personal_continuity::DeviceId> {
+    fn controllers(&self) -> Vec<tilo_network_actor::fabric::DeviceId> {
         let mut controllers = self
             .keys
             .keys()
@@ -847,7 +847,7 @@ impl PersonalFabricInputHolders {
 #[cfg(test)]
 mod personal_fabric_input_holder_tests {
     use super::PersonalFabricInputHolders;
-    use crate::shell::personal_continuity::DeviceId;
+    use tilo_network_actor::fabric::DeviceId;
 
     #[test]
     fn cleanup_releases_only_the_final_controller_holding_an_input() {
@@ -1266,6 +1266,9 @@ pub struct State {
     /// Pings sent on input to tell an app that stopped answering
     /// ([`crate::compositor::app_liveness`]).
     pub(crate) app_watches: crate::compositor::app_liveness::Watches,
+    /// Toplevels the person gave input to since the chrome last took them
+    /// ([`Self::take_used_surfaces`]).
+    used_surfaces: Vec<u64>,
     pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
@@ -2240,6 +2243,7 @@ impl State {
             system_modals: Vec::new(),
             shell_pongs: crate::compositor::client_settle::Pongs::default(),
             app_watches: crate::compositor::app_liveness::Watches::default(),
+            used_surfaces: Vec::new(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             seat_input_method,
@@ -3506,6 +3510,30 @@ impl State {
         }
     }
 
+    /// `surface`'s stream could not start for `receivers` at `size`: it
+    /// waits for them (or the size) to change, and the stream it was to
+    /// replace ends.
+    fn legacy_share_failed(
+        &mut self,
+        surface: SurfaceId,
+        receivers: Vec<media::realtime::CodecCapabilities>,
+        size: (u32, u32),
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
+        self.legacy_share_failures.insert(
+            surface,
+            LegacyShareFailure {
+                receivers,
+                size,
+                at: std::time::Instant::now(),
+            },
+        );
+        if let Some(replaced) = replaced {
+            self.active_sessions.insert(surface, replaced);
+            self.unregister_share_session(surface);
+        }
+    }
+
     /// Reconcile encoder lifetimes and viewer permissions with the windows
     /// that have viewers: shares in the active workspace's replicated
     /// `shared_surfaces` map, and windows the person's other devices show. A
@@ -3581,6 +3609,13 @@ impl State {
                 continue;
             }
 
+            // What this machine encodes is read off the frame loop once; the
+            // stream starts when it is known (a worker wakes the loop then).
+            if !paint
+                && !tilo_window_share::flatpak_share::encoders_known(crate::shell::wake_compositor)
+            {
+                continue;
+            }
             // The window is still shared: its stream is replaced, not ended,
             // unless the new one cannot start.
             let replaced = self.active_sessions.remove(&surface);
@@ -3599,18 +3634,7 @@ impl State {
                 Ok(session) => session,
                 Err(error) => {
                     log_share_failure(surface, app_id, (width, height), &error, &receivers);
-                    self.legacy_share_failures.insert(
-                        surface,
-                        LegacyShareFailure {
-                            receivers,
-                            size: (width, height),
-                            at: std::time::Instant::now(),
-                        },
-                    );
-                    if let Some(replaced) = replaced {
-                        self.active_sessions.insert(surface, replaced);
-                        self.unregister_share_session(surface);
-                    }
+                    self.legacy_share_failed(surface, receivers, (width, height), replaced);
                     continue;
                 }
             };
@@ -4290,7 +4314,7 @@ impl State {
     /// device's own input: to the desktop, its apps and its clients alike.
     pub fn apply_personal_fabric_input(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
         event: crate::shell::device_fabric::FabricInputEvent,
     ) -> bool {
         use crate::shell::device_fabric::FabricInputEvent;
@@ -4338,7 +4362,7 @@ impl State {
     /// in a stuck state.
     pub fn release_personal_fabric_input(
         &mut self,
-        controller: &crate::shell::personal_continuity::DeviceId,
+        controller: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
         use crate::shell::device_fabric::FabricInputEvent;
         let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
@@ -4808,7 +4832,7 @@ fn share_receivers(
     recipients
         .iter()
         .map(|peer| {
-            let mut caps = crate::network::media_caps::capabilities(*peer);
+            let mut caps = tilo_network_actor::media_caps::capabilities(*peer);
             if let Some(limits) = decode_limits.get(peer) {
                 caps.hardware_decode.extend(limits.keys().copied());
                 caps.hardware_decode_max.clone_from(limits);
@@ -4943,6 +4967,13 @@ impl State {
     /// compositor closes their tabs as a person's close does.
     pub fn take_remote_closes(&mut self) -> Vec<SurfaceId> {
         std::mem::take(&mut self.remote_closes)
+    }
+
+    /// The toplevels the person gave input to since the last call: a
+    /// window someone shared that was used here stays when the share ends
+    /// ([`crate::shell::state::WorkspaceTree::note_window_used`]).
+    pub fn take_used_surfaces(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.used_surfaces)
     }
 
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
@@ -7676,6 +7707,9 @@ impl State {
     /// Input reached the app of toplevel `surface_id`: ask it to answer, so
     /// an app that stopped answering is told apart from a quiet one.
     pub fn note_app_input(&mut self, surface_id: u64) {
+        if !self.used_surfaces.contains(&surface_id) {
+            self.used_surfaces.push(surface_id);
+        }
         let Some((client, id)) = self.shell_client_of(surface_id) else {
             return;
         };
@@ -9210,6 +9244,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const MEMBER: PeerId = 0xCCCC;
         const SURFACE: SurfaceId = 0x7e57_0000_0093;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9274,6 +9311,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0xBBBB;
         const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9343,6 +9383,9 @@ mod tick_hook_tests {
         const HOST: PeerId = 0xAAAA;
         const VIEWER: PeerId = 0x5eed_1017;
         const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        // A share starts once what this machine encodes is known, which the
+        // compositor reads on a worker; read it here first.
+        tilo_window_share::flatpak_share::read_encoders();
         let mut state = make_state();
         let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&sent);
@@ -9352,7 +9395,7 @@ mod tick_hook_tests {
         }));
         let frames = crate::compositor::foreign::store();
         frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
-        crate::network::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
+        tilo_network_actor::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
         let desired = HashMap::from([(
             SURFACE,
             LegacyShare {
@@ -9384,7 +9427,7 @@ mod tick_hook_tests {
             "the next pump does not try again for the same viewers"
         );
 
-        crate::network::media_caps::record(
+        tilo_network_actor::media_caps::record(
             VIEWER,
             &[],
             &["hevc-main10".into(), "h264".into()],
@@ -9396,7 +9439,7 @@ mod tick_hook_tests {
         assert!(!state.legacy_share_failures.contains_key(&SURFACE));
 
         state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
-        crate::network::media_caps::forget(VIEWER);
+        tilo_network_actor::media_caps::forget(VIEWER);
         frames.forget(SURFACE);
     }
 

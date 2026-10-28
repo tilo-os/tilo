@@ -414,6 +414,7 @@ impl Daemon {
             } => self.add_recovery(peer, &user, &secret, &recovery),
             Request::ClaimBootSignIn { user } => Ok(self.claim_boot_sign_in(peer, &user)),
             Request::KeyHeld { user } => self.key_held(peer, &user),
+            Request::SecretKind { user } => self.secret_kind(peer, &user),
         };
         Answer::Reply(result.unwrap_or_else(|e| {
             eprintln!("tilo-authd: {e:#}");
@@ -522,23 +523,42 @@ impl Daemon {
         });
     }
 
-    fn key_held(&self, peer: Peer, user: &str) -> Result<Reply> {
+    /// The account `user` names, when `peer` may ask about it: root, that
+    /// person, or the greeter, which asks about whoever is signing in.
+    fn subject_for_greeter(&self, peer: Peer, user: &str) -> Result<Result<Account, Reply>> {
         let greeter = self
             .accounts
             .by_name(&self.cfg.greeter_user)
             .ok()
             .flatten()
             .map(|a| a.uid);
-        let account = if greeter == Some(peer.uid) && !self.privileged(peer) {
-            match self.accounts.by_name(user)? {
-                Some(account) => account,
-                None => return Ok(Reply::refused(Refusal::NotEnrolled)),
-            }
-        } else {
-            match self.subject(peer, user)? {
-                Ok(account) => account,
-                Err(reply) => return Ok(reply),
-            }
+        if greeter == Some(peer.uid) && !self.privileged(peer) {
+            return Ok(self
+                .accounts
+                .by_name(user)?
+                .ok_or_else(|| Reply::refused(Refusal::NotEnrolled)));
+        }
+        self.subject(peer, user)
+    }
+
+    fn secret_kind(&self, peer: Peer, user: &str) -> Result<Reply> {
+        let account = match self.subject_for_greeter(peer, user)? {
+            Ok(account) => account,
+            Err(reply) => return Ok(reply),
+        };
+        Ok(Reply {
+            secret: self
+                .store
+                .load(account.uid)?
+                .and_then(|record| record.secret),
+            ..Reply::success()
+        })
+    }
+
+    fn key_held(&self, peer: Peer, user: &str) -> Result<Reply> {
+        let account = match self.subject_for_greeter(peer, user)? {
+            Ok(account) => account,
+            Err(reply) => return Ok(reply),
         };
         self.settle_held();
         let held = self.has_session(account.uid) && self.held().contains_key(&account.uid);

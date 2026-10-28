@@ -37,6 +37,12 @@
 #                            systemd/system, verity.d, pam.d/sshd, and the
 #                            validation-only boot diagnostic script
 #     --raw                   leave the raw image, skip the qcow2 conversion
+#     --seed-raw FILE         a raw disk an earlier run left with this option: the new
+#                            disk starts as a copy-on-write copy of it (a reflink), so
+#                            its composefs repository already holds the layers both
+#                            images share and the install pulls only the others; the
+#                            seed then becomes this disk. Composefs on btrfs only; the
+#                            first run, or one whose layout changed, partitions afresh
 #     --direct-boot-bundle DIR
 #                            export this dev disk's installed UKI sections
 #                            and ESP PARTUUID for WHPX direct kernel boot
@@ -128,7 +134,7 @@ DIRECT_SEALED_SOURCE=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
-KEEP_RAW=0; DEFAULT_KARGS=yes
+KEEP_RAW=0; DEFAULT_KARGS=yes; SEED_RAW=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -156,6 +162,7 @@ while [ $# -gt 0 ]; do
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
+    --seed-raw) SEED_RAW="$2"; shift ;;
     -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) if [ -z "$IMAGE" ]; then IMAGE="$1"; elif [ -z "$OUTDIR" ]; then OUTDIR="$1";
@@ -617,10 +624,20 @@ elif [ "$COMPOSEFS" = yes ]; then
   repo="${repo%%@*}"
   repo="${repo%%:*}"
   [ -n "$repo" ] || die "cannot derive a local registry repository from $IMAGE"
-  msg "publishing $IMAGE to $REG/$repo:disk-install"
-  podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install" \
-    || die "pushing $IMAGE to $REG failed. The composefs backend has to install from a
+  # TILO_DISK_PUBLISHED_DIGEST: the caller put the image in this registry already, under
+  # that tag and with this manifest digest (as `skopeo copy` from its OCI layout does, which
+  # copies only the blobs the registry lacks and compresses nothing). A push from storage
+  # compresses every layer again before it can tell the registry has it.
+  published="${TILO_DISK_PUBLISHED_DIGEST:-}"
+  if [ -n "$published" ] && [ "$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
+         "docker://$REG/$repo:disk-install" 2>/dev/null)" = "$published" ]; then
+    msg "$IMAGE is in $REG/$repo:disk-install already ($published)"
+  else
+    msg "publishing $IMAGE to $REG/$repo:disk-install"
+    podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install" \
+      || die "pushing $IMAGE to $REG failed. The composefs backend has to install from a
   registry (see the note above), so there is no local-storage fallback to take."
+  fi
   SRC_REF="docker://$REG/$repo:disk-install"
   # bootc runs *out of* the image being installed, so root podman needs a copy
   # too. Running the one already in the registry avoids save|load — which is the
@@ -660,15 +677,25 @@ if [ -n "$ROOT_MAX" ]; then
   printf 'SizeMaxBytes=%s\n' "$ROOT_MAX" >> "$DEFS/02-root.conf"
 fi
 
-msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
+# The seed is reused only for the layout it was made with.
+SEEDED=0
+seed_layout="$SIZE $ESP_SIZE $ROOT_MIN ${ROOT_MAX:-none} $ROOTFS ${BOOT_GAP:-none} $BOOT_IS_ESP"
 rm -f "$RAW"
-truncate -s "$SIZE" "$RAW"
-# Pin 512-byte sectors. Without --sector-size, systemd-repart 255 and >= 257
-# format a regular file's partitions with 4096-byte filesystem sectors, which
-# makes the ESP a 4K-sector FAT that SD/eMMC/USB firmware cannot read. btrfs
-# keeps its 4 KiB minimum block size; ext4 does not take a sector size.
-sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
-  --sector-size=512 --definitions="$DEFS" --size="$SIZE" "$RAW"
+if [ -n "$SEED_RAW" ] && [ "$COMPOSEFS" = yes ] && [ "$ROOTFS" = btrfs ] && [ -z "$BOOT_GAP" ] \
+   && [ -s "$SEED_RAW" ] && [ "$(cat "$SEED_RAW.layout" 2>/dev/null)" = "$seed_layout" ] \
+   && cp --reflink=always "$SEED_RAW" "$RAW" 2>/dev/null; then
+  SEEDED=1
+  msg "1/4 $RAW: a copy of the seed $SEED_RAW, whose composefs repository the install reuses"
+else
+  msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
+  truncate -s "$SIZE" "$RAW"
+  # Pin 512-byte sectors. Without --sector-size, systemd-repart 255 and >= 257
+  # format a regular file's partitions with 4096-byte filesystem sectors, which
+  # makes the ESP a 4K-sector FAT that SD/eMMC/USB firmware cannot read. btrfs
+  # keeps its 4 KiB minimum block size; ext4 does not take a sector size.
+  sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
+    --sector-size=512 --definitions="$DEFS" --size="$SIZE" "$RAW"
+fi
 python3 "$SCRIPT_DIR/check-disk-sectors.py" "$RAW" >&2 \
   || die "systemd-repart did not lay out $RAW with 512-byte sectors"
 
@@ -769,6 +796,20 @@ else
   ESP_STAGE_BIND_MOUNTED=1
   ESP_STAGED=1
   msg "2/4 mounted $root_dev -> $MNT; staging ESP files at $ESP_AT for mtools"
+fi
+
+# A seeded disk keeps nothing of the system installed on it before but its composefs
+# repository: the ESP is emptied, and the root holds only /composefs, bind-mounted onto
+# itself so that bootc's check for an empty target (which accepts directories holding only
+# mount points) takes it, and the install adds this image's objects beside the ones it shares.
+if [ "$SEEDED" = 1 ]; then
+  [ "$ESP_STAGED" = 0 ] || die "a seeded disk needs its ESP mounted as vfat"
+  [ -d "$MNT/composefs" ] || die "the seed $SEED_RAW holds no composefs repository; remove it"
+  sudo -n find "$ESP_AT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  sudo -n chattr -R -i "$MNT/state" 2>/dev/null || true
+  sudo -n find "$MNT" -mindepth 1 -maxdepth 1 ! -name composefs ! -name boot ! -name lost+found \
+    -exec rm -rf -- {} +
+  sudo -n mount --bind "$MNT/composefs" "$MNT/composefs"
 fi
 
 # --- install ------------------------------------------------------------------
@@ -1125,6 +1166,17 @@ fi
 
 cleanup
 trap - EXIT
+
+if [ -n "$SEED_RAW" ] && [ "$COMPOSEFS" = yes ] && [ "$ROOTFS" = btrfs ] && [ -z "$BOOT_GAP" ]; then
+  if cp --reflink=always "$RAW" "$SEED_RAW.part" 2>/dev/null; then
+    mv -f "$SEED_RAW.part" "$SEED_RAW"
+    printf '%s\n' "$seed_layout" > "$SEED_RAW.layout"
+    msg "the seed $SEED_RAW is this disk now"
+  else
+    rm -f "$SEED_RAW.part"
+    msg "no seed: $SEED_RAW cannot be a reflink of $RAW (another filesystem, or none that shares extents)"
+  fi
+fi
 
 if [ -n "$ROCKCHIP_LOADER" ]; then
   msg "installing the Rockchip loader into the leading gap of $RAW"

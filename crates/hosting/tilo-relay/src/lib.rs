@@ -66,13 +66,7 @@
 #[cfg(feature = "agents")]
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod app_serving;
-#[cfg(not(target_arch = "wasm32"))]
-mod authority_epoch;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod compaction;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
@@ -98,21 +92,11 @@ pub mod environment_routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_tools;
 #[cfg(not(target_arch = "wasm32"))]
-mod handshake;
-#[cfg(not(target_arch = "wasm32"))]
-mod host_authority;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]
 pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod member_limits;
-#[cfg(not(target_arch = "wasm32"))]
-mod membership_watch;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod metrics;
 #[cfg(feature = "agents")]
 pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
@@ -130,41 +114,17 @@ mod offload_rooms;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_route;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod payloads;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod peer;
-#[cfg(not(target_arch = "wasm32"))]
-mod persistence;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod presence_mailbox;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(feature = "agents")]
 pub mod reseal;
-#[cfg(not(target_arch = "wasm32"))]
-mod room_access;
 #[cfg(feature = "agents")]
 pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod room_records;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod rooms;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod store;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod surfaces;
-#[cfg(not(target_arch = "wasm32"))]
-mod timing;
 #[cfg(feature = "web")]
 pub mod web;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod workspace;
-#[cfg(not(target_arch = "wasm32"))]
-mod workspace_io;
 pub mod workspace_join;
 
 #[cfg(test)]
@@ -178,6 +138,16 @@ tilo_agent_participant::app_worker!();
 // session clients (relay, co-edit, anti-entropy, room administration and
 // workspace join) in `tilo-relay-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
+#[cfg(feature = "web")]
+use tilo_room_host::timing;
+#[cfg(not(target_arch = "wasm32"))]
+pub use tilo_room_host::{
+    app_serving, compaction, host, member_limits, metrics, payloads, peer, presence_mailbox,
+    room_records, rooms, store, surfaces, workspace,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use tilo_room_host::{authority_epoch, handshake, host_authority, room_access, workspace_io};
+
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
     auth, certify, config, home_peer, live, mesh, placement, policy, process_lease,
@@ -221,7 +191,7 @@ pub use compute_worker::{
     run_compute_assignment, run_production_compute_worker, serve_worker_stream,
     serve_worker_stream_with, spawn_worker_stream,
 };
-pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{PeerRelayConfig, RelayConfig};
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};

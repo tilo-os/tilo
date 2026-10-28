@@ -36,8 +36,9 @@ use tilo_unlock_protocol::{
 };
 use tilo_user_identity::{CertifiedFleet, DeviceStanding};
 
-use crate::shell::device_fabric::{FabricError, FabricStamp};
-use crate::shell::personal_continuity::DeviceId;
+use crate::shell::device_fabric::FabricError;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 /// The typed action the owner approves a pending unlock with.
 pub const DEVICE_UNLOCK_ACTION: &str = "device.unlock";

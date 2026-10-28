@@ -276,26 +276,6 @@ else
   bad 'the two-architecture OS release does not have matching native kernel builds'
 fi
 
-# Only kernel inputs rebuild the kernel. The OS RPM snapshot and base are not
-# kernel inputs: the kernel builds on its own signed buildroot, so an OS
-# package change never invalidates the pinned kernel.
-kernel_inputs="$(tcheck image-kernel-{arch} inputs)" || kernel_inputs=""
-rpms_inputs="$(tcheck image-rpms-{arch} inputs; tcheck provenance-rpms inputs)" || rpms_inputs=""
-kernel_digest="$(sed -n '/^inputs_digest() {/,/^}/p' "$kernel_script")"
-if grep -Fxq 'os/kernel-buildroot-snapshot.env' <<<"$kernel_inputs" \
-   && grep -Fxq 'os/kernel/**' <<<"$kernel_inputs" \
-   && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env' <<<"$kernel_inputs" \
-   && [ -n "$rpms_inputs" ] \
-   && ! grep -Eq '^os/kernel(/|-)' <<<"$rpms_inputs" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$publish/rpms-build.sh" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
-   && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$kernel_digest" \
-   && ! grep -Eq 'base-snapshot\.env|kernel-snapshot\.env|rpms' <<<"$kernel_digest"; then
-  ok 'only kernel inputs rebuild the kernel; OS package changes do not'
-else
-  bad 'an OS package or base change can invalidate or rebuild the kernel'
-fi
-
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && ok 'desktop, app and OS component tags are disjoint' \

@@ -216,7 +216,6 @@ fn the_lens_paints_the_emoji_tab_and_routes_its_presses() {
         people: &crate::collaborators::PeopleNames::default(),
         editing_name: None,
         name_selection: ui::text_selection::Selection::collapsed(0),
-        governs_active_room: true,
         owner_controls: false,
         apps: &crate::workspace_settings::NoAppDirectory,
         devices: &[],

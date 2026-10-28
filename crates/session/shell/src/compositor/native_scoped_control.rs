@@ -152,6 +152,7 @@ pub(super) fn scoped_decision(
         lock: None,
         seat: None,
         resolved: None,
+        listings: None,
     }
     .row_facts(provider, id);
     let facts = match facts {

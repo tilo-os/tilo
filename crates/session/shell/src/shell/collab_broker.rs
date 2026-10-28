@@ -169,6 +169,40 @@ impl BrokerHandle {
         self.channel_encryption.clone()
     }
 
+    /// The channel keys this session's identity service hands an app, for
+    /// an app connected with an explicit endpoint identity
+    /// ([`ui::collaboration::CertifiedEndpointIdentity::with_channel_keys`]):
+    /// what its writes are encrypted under, as a launched app's are.
+    #[cfg(test)]
+    pub(crate) fn endpoint_channel_keys(&self) -> ui::collaboration::EndpointChannelKeys {
+        use tilo_identity_host::broker::ChannelKeySource as _;
+        let keys = session_channel_keys(self.channel_encryption.clone());
+        Arc::new(
+            move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
+                let unavailable = |why: String| {
+                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(why))
+                };
+                let room = crate::shell::state::RoomId::parse(workspace_id)
+                    .ok_or_else(|| unavailable(format!("{workspace_id} is not a room")))?;
+                let route = collab_types::ChannelRoute::new(app_id, record_id);
+                let (access, generation, bytes) = match keys.access(room, &route, generation) {
+                    Some(Ok(answer)) => answer,
+                    Some(Err(error)) => return Err(unavailable(error)),
+                    None => (
+                        runtime_identity::wire::ChannelAccess::Unavailable,
+                        generation,
+                        Vec::new(),
+                    ),
+                };
+                Ok(runtime_identity::wire::ChannelKeysReply {
+                    access,
+                    generation,
+                    keys: (!bytes.is_empty()).then_some(bytes),
+                })
+            },
+        )
+    }
+
     pub(crate) fn local_session_lifecycle(
         &self,
     ) -> crate::shell::collab_broker_capnp::LocalSessionLifecycle {
@@ -246,7 +280,7 @@ pub fn spawn_native_offloading(
     // over the same network this broker answers their requests on.
     if let Some(network) = peer_sync {
         crate::shell::record_hydration::set_source(Arc::new(
-            crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
+            crate::shell::record_hydration::NetworkSource(Arc::downgrade(network)),
         ));
     }
     let publisher = PeerPublisher::with_optional_owner_commit(
@@ -266,6 +300,7 @@ pub fn spawn_native_offloading(
         CertificateProvisioning::Production,
         None,
         action_offload,
+        None,
     )
 }
 
@@ -289,6 +324,7 @@ pub fn spawn_native_harness(
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
         None,
         None,
+        None,
     )
 }
 
@@ -310,6 +346,22 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
     network: &Arc<ShellNetwork>,
     reads: Option<NativeReadHarnessWrapper>,
 ) -> std::io::Result<BrokerHandle> {
+    spawn_device_harness(socket, membership, trusted_devices, network, reads, None)
+}
+
+#[cfg(test)]
+/// [`spawn_native_owner_harness_with_reads`] for a device whose channel
+/// state is kept in `channel_store`, as a session's is under its secret
+/// store: the broker's channel service opens it, so the device has the
+/// keys of channels another device stewards.
+pub(crate) fn spawn_device_harness(
+    socket: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+    network: &Arc<ShellNetwork>,
+    reads: Option<NativeReadHarnessWrapper>,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
+) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::with_optional_owner_commit(
         Some(network.clone()),
         Arc::new(super::broker_services::NativeOwnerCommitService::new(
@@ -325,6 +377,7 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
         None,
+        channel_store,
     )
 }
 
@@ -356,6 +409,7 @@ pub fn spawn_native_peer(
         CertificateProvisioning::Production,
         Some(config),
         None,
+        None,
     )
 }
 
@@ -374,6 +428,68 @@ impl CertificateProvisioning {
             Self::Production => false,
             #[cfg(any(test, feature = "test-support"))]
             Self::HarnessDevices(..) => true,
+        }
+    }
+}
+
+/// A harness's certificate authority: the devices it enrolled, in every
+/// room, under a policy clock of its own as a session's identity store is.
+#[cfg(any(test, feature = "test-support"))]
+struct HarnessCertificates {
+    devices: Arc<Vec<[u8; 32]>>,
+    origin: Result<
+        tilo_action_broker::peer_actions::PolicyOrigin,
+        tilo_action_broker::peer_actions::PolicyClockError,
+    >,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl HarnessCertificates {
+    fn new(devices: Arc<Vec<[u8; 32]>>) -> Self {
+        Self {
+            devices,
+            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+                .map(|clock| clock.new_origin()),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl tilo_action_broker::peer_actions::CertificateAuthority for HarnessCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+        self.origin
+            .as_ref()
+            .map_err(ToString::to_string)?
+            .capture()
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+        time: &tilo_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(), String> {
+        let origin = self.origin.as_ref().map_err(ToString::to_string)?;
+        if !origin.owns(time) {
+            return Err("harness certificate policy origin changed".into());
+        }
+        let now = time.now_ns().map_err(|error| error.to_string())?;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "harness certificate expired at retained policy time")?;
+        self.authorize(room, certificate)
+    }
+
+    fn authorize(
+        &self,
+        _room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if self.devices.contains(&certificate.device_public_key) {
+            Ok(())
+        } else {
+            Err("device not enrolled".into())
         }
     }
 }
@@ -464,13 +580,19 @@ impl DrainQueues {
         announced: &mut Announced,
     ) -> bool {
         self.drain_owner_views();
-        self.drain_presence(labels, announced)
+        // The sealed writes rooms' hosts sent, queued by the network actor,
+        // join the inbound documents drained below; the opens waiting for a
+        // host's replay are told once what it replayed was taken.
+        let replayed = self.net.take_channel_traffic();
+        let drained = self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
             && self.drain_person_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
-            && self.drain_record_content()
+            && self.drain_record_content();
+        self.net.sealed_replays_taken(&replayed);
+        drained
     }
 
     fn drain_owner_views(&self) {
@@ -842,12 +964,18 @@ fn spawn_inner(
     certificate_provisioning: CertificateProvisioning,
     config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
-    let channel_encryption =
-        open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
+    let channel_encryption = open_session_services(
+        membership.as_ref(),
+        peer_sync,
+        &channels,
+        config.is_none(),
+        channel_store,
+    );
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -907,6 +1035,7 @@ fn spawn_inner(
                     let wake = std::sync::Arc::clone(&wake);
                     tilo_identity_host::policy_change::Watch::new(move || wake.poke())
                 };
+                queues.net.channel_drain_runs(true);
                 while !quit.load(Ordering::Relaxed) {
                     let mut governance_due = queues.pump_governance();
                     if !queues.drain_once(&mut labels, &mut announced) {
@@ -925,6 +1054,7 @@ fn spawn_inner(
                     };
                     wake.wait(timeout);
                 }
+                queues.net.channel_drain_runs(false);
             })
             .ok()
     });
@@ -940,6 +1070,7 @@ fn spawn_inner(
             membership.clone(),
             peer_sync.cloned(),
             channel_keys.clone(),
+            Some(Arc::clone(&channels)),
         )
     } else {
         tilo_action_broker::services::HostServices::default()
@@ -1014,15 +1145,21 @@ fn spawn_inner(
                 table,
             )?
         }
+        // A harness admits its enrolled devices where a session's broker
+        // asks the identity store, under its own policy clock as a
+        // session's does: membership changes, an opening app's authorship
+        // among them, keep their original custody as they do in a session.
+        // Its local callers stay its own: it has no person service. A
+        // harness is never a configured peer broker.
         #[cfg(any(test, feature = "test-support"))]
         CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
-            tilo_action_broker::collab_broker::spawn_with_test_services(
+            tilo_action_broker::collab_broker::spawn_with_harness_authority(
                 capnp_socket_path,
                 authority,
                 publisher.clone(),
-                config,
                 services,
-                Some(trusted_devices),
+                Arc::clone(&trusted_devices),
+                Arc::new(HarnessCertificates::new(trusted_devices)),
                 channels,
                 table,
             )?
@@ -1041,7 +1178,7 @@ fn spawn_inner(
             .collect();
         network
             .cmd_tx
-            .try_send(crate::network::actor::NetCmd::AttachActionBroker { queue, host, rooms })
+            .try_send(tilo_network_actor::NetCmd::AttachActionBroker { queue, host, rooms })
             .map_err(|_| std::io::Error::other("action broker network attachment unavailable"))?;
     }
     let personal_source = inner
@@ -1083,28 +1220,42 @@ fn session_channel_keys(
 }
 
 /// The broker's session services: the durable history store and the
-/// channel encryption service, which is all a caller keeps. Tests run with
-/// neither, since each needs the session's state root and vault.
+/// channel encryption service, which is all a caller keeps.
 type SessionServices = Option<crate::shell::channel_encryption::ChannelKeyAccess>;
 
-#[cfg(test)]
-fn open_session_services(
-    _: Option<&crate::shell::state::WorkspaceTreeHandle>,
-    _: Option<&Arc<ShellNetwork>>,
-    _: &Arc<Mutex<BrokerChannels>>,
-    _: bool,
-) -> SessionServices {
-    None
-}
-
-#[cfg(not(test))]
+/// Open the session's services. The channel encryption service runs
+/// whenever this session reaches room hosts (`peer_sync`) or has a secret
+/// store, unless it is a configured peer broker (`own_channels`): keys of the rooms this device's
+/// own room host stewards come from that host and need nothing else. The
+/// secret store only adds this device's own channel state, which rooms
+/// hosted elsewhere need ([`session_channel_store`]).
 fn open_session_services(
     membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
     peer_sync: Option<&Arc<ShellNetwork>>,
     channels: &Arc<Mutex<BrokerChannels>>,
-    open_vault: bool,
+    own_channels: bool,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> SessionServices {
-    let mut channel_encryption = None;
+    open_session_history(channels);
+    if !own_channels {
+        return None;
+    }
+    let workspaces = membership?.clone();
+    let store = channel_store.or_else(session_channel_store);
+    // With neither a store nor a room host to ask, no channel has keys.
+    if store.is_none() && peer_sync.is_none() {
+        return None;
+    }
+    channel_key_access(store, workspaces, peer_sync.cloned(), Arc::clone(channels))
+}
+
+/// Keep the session's collaboration history durably. Tests keep it in
+/// memory, since the store lives in the session's state root.
+#[cfg(test)]
+fn open_session_history(_: &Arc<Mutex<BrokerChannels>>) {}
+
+#[cfg(not(test))]
+fn open_session_history(channels: &Arc<Mutex<BrokerChannels>>) {
     match crate::shell::collab_history::CollabHistoryStore::open_for_session() {
         Ok(history) => {
             if let Ok(mut state) = channels.lock() {
@@ -1115,75 +1266,102 @@ fn open_session_services(
             tracing::warn!(%error, "durable collaboration history unavailable; scrollback is limited to memory");
         }
     }
-    if !open_vault {
-        return channel_encryption;
-    }
-    match crate::shell::mls_vault::SecretServiceMlsVault::open_for_session() {
-        Ok(vault) => {
-            if let Some(workspaces) = membership.cloned() {
-                channel_encryption = open_channel_encryption(
-                    &vault,
-                    workspaces,
-                    peer_sync.cloned(),
-                    Arc::clone(channels),
-                );
-            }
-        }
-        Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
-        }
-    }
-    channel_encryption
 }
 
-/// Start this device's channel encryption service over the session's
-/// secret-store vault and certified device key. Without either, channels
-/// stay closed to this device rather than falling back to plaintext.
+/// This device's own channel state: kept under the session's secret-store
+/// vault and signed with its certified device key. `None` without either;
+/// the channel service then serves only rooms this device's own host
+/// stewards, and never falls back to plaintext. Tests have no secret store.
+#[cfg(test)]
+fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEncryptionConfig> {
+    None
+}
+
 #[cfg(not(test))]
-fn open_channel_encryption(
-    vault: &crate::shell::mls_vault::SecretServiceMlsVault,
-    workspaces: crate::shell::state::WorkspaceTreeHandle,
-    net: Option<Arc<ShellNetwork>>,
-    channels: Arc<Mutex<BrokerChannels>>,
-) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
+fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEncryptionConfig> {
+    let vault = match crate::shell::mls_vault::SecretServiceMlsVault::open_for_session() {
+        Ok(vault) => vault,
+        Err(error) => {
+            tracing::warn!(%error, "no system secret store answered: only rooms this device hosts have channel keys");
+            return None;
+        }
+    };
     let paths = crate::firstboot::collaboration_identity_paths();
     let device_key = match tilo_user_identity::persist::read_device_key(&paths.device_privkey) {
         Ok(key) => key,
         Err(error) => {
-            tracing::warn!(%error, "channel encryption unavailable: no certified device key");
+            tracing::warn!(%error, "no certified device key: only rooms this device hosts have channel keys");
             return None;
         }
     };
+    Some(crate::shell::channel_encryption::ChannelEncryptionConfig {
+        root: vault.channel_state_root(),
+        vault: vault.channel_state_key(),
+        device_key,
+    })
+}
+
+/// Open this device's channel encryption service, with its own channel
+/// state under `store` when a secret store keeps one: its directory follows
+/// `workspaces`, the devices `net` authenticates and each room's steward as
+/// this device's native owner holds the room.
+pub(crate) fn channel_key_access(
+    store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
+    workspaces: crate::shell::state::WorkspaceTreeHandle,
+    net: Option<Arc<ShellNetwork>>,
+    channels: Arc<Mutex<BrokerChannels>>,
+) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let (authenticated, authenticated_changes): (
+    let (authenticated, authenticated_changes, stewards, hosted): (
         crate::shell::channel_policy::AuthenticatedDevices,
         crate::shell::channel_policy::AuthenticatedChanges,
+        crate::shell::channel_policy::Stewards,
+        Option<crate::shell::channel_policy::HostedChannelKeys>,
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
+            let stewards = crate::shell::network::ShellNetwork::room_stewards(&net);
+            let hosted = hosted_channel_keys_of(Arc::clone(&net));
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
                 Box::new(move |after| changes.authenticated_devices_next_change(after)),
+                stewards,
+                Some(hosted),
             )
         }
-        None => (Box::new(|_| Vec::new()), Box::new(|_| None)),
+        None => (
+            Box::new(|_| Vec::new()),
+            Box::new(|_| None),
+            Box::new(|_| None),
+            None,
+        ),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
     )
-    .with_authenticated_changes(authenticated_changes);
-    match crate::shell::channel_encryption::ChannelEncryption::open(
-        crate::shell::channel_encryption::ChannelEncryptionConfig {
-            root: vault.channel_state_root(),
-            vault: vault.channel_state_key(),
-            device_key,
-        },
-        Box::new(directory),
-        channels,
-    ) {
+    .with_authenticated_changes(authenticated_changes)
+    .with_stewards(stewards);
+    let directory = match hosted {
+        Some(hosted) => directory.with_hosted_channel_keys(hosted),
+        None => directory,
+    };
+    let opened = match store {
+        Some(store) => crate::shell::channel_encryption::ChannelEncryption::open(
+            store,
+            Box::new(directory),
+            channels,
+        ),
+        None => Ok(
+            crate::shell::channel_encryption::ChannelEncryption::without_store(
+                Box::new(directory),
+                channels,
+            ),
+        ),
+    };
+    match opened {
         Ok(service) => Some(match drain_wake {
             Some(wake) => crate::shell::channel_encryption::ChannelKeyAccess::with_wake(
                 service,
@@ -1399,6 +1577,16 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
         None if now == id => None,
         _ => Some(now.to_string()),
     }
+}
+
+/// The keys of the channels of rooms `net`'s own room host governs, from
+/// that host's steward.
+pub(crate) fn hosted_channel_keys_of(
+    net: Arc<crate::shell::network::ShellNetwork>,
+) -> crate::shell::channel_policy::HostedChannelKeys {
+    Box::new(move |room, channel, route, create| {
+        net.hosted_channel_keys(room, channel, route, create)
+    })
 }
 
 #[cfg(test)]

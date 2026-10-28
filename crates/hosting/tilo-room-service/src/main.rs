@@ -707,15 +707,11 @@ impl Service {
         // A deploy's health check needs the relay: one that cannot start
         // leaves this service answering while nobody gets in.
         if let (Some(persistent), Some(fields)) = (&self.persistent, mode.as_object_mut()) {
-            let relay = if persistent.relay_up().await {
-                "up"
-            } else {
-                "restarting"
-            };
-            fields.insert("relay".into(), relay.into());
+            let (up, failure) = persistent.relay_state().await;
+            fields.insert("relay".into(), if up { "up" } else { "restarting" }.into());
             // Why it is down, so a failed deploy is diagnosable from
             // outside the cluster: the relay's error, sanitized.
-            if let Some(failure) = persistent.relay_failure().await {
+            if let Some(failure) = failure {
                 fields.insert(
                     "relay_error".into(),
                     serde_json::to_value(&failure).unwrap_or_default(),

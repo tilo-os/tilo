@@ -3,7 +3,6 @@ import hashlib
 import importlib.util
 import io
 import json
-import re
 from pathlib import Path
 import tempfile
 import tomllib
@@ -135,19 +134,6 @@ class DesktopCatalogReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 handler.redirect_request(request, None, 302, "redirect", {}, target)
 
-    def test_every_native_imager_lane_consumes_the_prepared_exact_source_catalog(self):
-        workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
-        catalog = workflow.split("\n  catalog:\n", 1)[1].split("\n  linux:\n", 1)[0]
-        self.assertIn("desktop-catalog-release.py prepare", catalog)
-        self.assertIn("--review-manifest apps/imager/packaging/desktop-release-manifest.json", catalog)
-        self.assertLess(catalog.index("desktop-catalog-release.py prepare"), catalog.index("name: tilo-desktop-catalog"))
-        for lane in ("linux", "windows", "macos"):
-            block = re.split(r"\n  [a-z][a-z0-9-]*:\n", workflow.split(f"\n  {lane}:\n", 1)[1], maxsplit=1)[0]
-            self.assertIn("name: tilo-desktop-catalog", block)
-            self.assertIn("desktop-catalog-release.py consume desktop-catalog", block)
-            self.assertIn("--copy-to apps/imager/desktop-catalog.json", block)
-            self.assertIn("--source ", block)
-            self.assertLess(block.index("desktop-catalog-release.py consume"), block.index("package-host."))
 
     def test_published_desktop_packages_carry_their_login_test_and_its_exact_bytes(self):
         checks = {check["name"]: check

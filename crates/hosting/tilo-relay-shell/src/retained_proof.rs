@@ -356,7 +356,7 @@ pub fn verify_room(
                 standing: tilo_peer_state::room::Standing::TransportAuthorized,
             },
             authority: tilo_peer_state::room::AuthorityPin::Device(&pinned),
-            caps_now: 0,
+            now_ns: 0,
         },
         &doc,
     )

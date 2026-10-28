@@ -201,7 +201,7 @@ fn offer(tree: &mut WorkspaceTree, caller: &Caller, app: &str, display_name: &st
     let placement = crate::shell::placement::group_showing(workspace, &caller.package)
         .map_or(Placement::NewGroup, Placement::RightOf);
     let tab = Tab {
-        id: crate::shell::state::next_id(),
+        id: tree.mint_id(),
         title: display_name.to_owned(),
         app_title: None,
         tile: TileContent::LocalApp {

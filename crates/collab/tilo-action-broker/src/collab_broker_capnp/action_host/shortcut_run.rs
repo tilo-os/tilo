@@ -220,8 +220,21 @@ impl CapnpBrokerState {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
             .ok_or(ActionHostError::UnknownAction)?;
+        // The one rule arming holds too: started for its saver only, the
+        // person a device of theirs proved saved it in this room.
         let actor = BrokerActor::for_caller(caller).id;
-        if shortcut.saved_by.as_deref() != Some(actor.as_str()) {
+        let revocations = self
+            .membership
+            .as_ref()
+            .and_then(|membership| membership.room_revocations(room))
+            .ok_or(ActionHostError::NotPermitted)?;
+        if tilo_peer_state::room::proven_saver(
+            room,
+            &shortcut,
+            &revocations,
+            tilo_clock::unix_now_ns(),
+        ) != Some(actor)
+        {
             return Err(ActionHostError::NotPermitted);
         }
         if !shortcut.triggers.contains(trigger) {
@@ -232,7 +245,9 @@ impl CapnpBrokerState {
         let catalog =
             tilo_automation::ActionCatalog::new(self.eager_catalogue(caller, RowScope::All).0);
         let others = self
-            .decide_for(caller, room, |workspace, _, _| workspace.shortcuts.clone())
+            .decide_for(caller, room, |workspace, _, _| {
+                tilo_automation::decode_saved(&workspace.shortcuts)
+            })
             .unwrap_or_default();
         let resolver = |id: &str| others.iter().find(|other| other.id == id).cloned();
         tilo_automation::check(&shortcut, &catalog, &resolver).map_err(|errors| {
@@ -302,8 +317,8 @@ impl CapnpBrokerState {
             workspace
                 .shortcuts
                 .iter()
-                .find(|shortcut| shortcut.id == shortcut_id)
-                .cloned()
+                .find(|shortcut| shortcut.id() == shortcut_id)
+                .and_then(|shortcut| shortcut.decode().ok())
         })
         .flatten()
     }

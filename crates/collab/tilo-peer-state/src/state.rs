@@ -53,12 +53,16 @@ mod local_outbox;
 mod owner_membership;
 mod workspace_effects;
 mod workspace_membership;
+mod workspace_shortcuts;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod held;
 mod media_governance;
 mod native_publication;
+mod room_hosts;
+pub use room_hosts::{ROOM_HOSTS_KEY, room_hosts_of};
 mod room_layout;
 mod room_name;
+mod room_settings;
 mod succession;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
@@ -85,6 +89,7 @@ fn now_ns(now: SystemTime) -> u64 {
         .try_into()
         .unwrap_or(u64::MAX)
 }
+#[cfg(test)]
 fn now_secs(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1732,7 +1737,7 @@ impl StatePeer {
                     standing: room::Standing::Member { person, foreign },
                 },
                 authority: room::AuthorityPin::Device(&pinned),
-                caps_now: now_secs(now),
+                now_ns: now_ns(now),
             },
             room_changes,
         )

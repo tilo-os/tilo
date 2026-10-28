@@ -1,6 +1,6 @@
-//! Shell-side bridge into the peer-sync [`Actor`]: owns the
-//! [`WorkspaceTreeReplica`], drives the actor's `tokio` runtime, and drains
-//! `NetEvent`s into replica replies re-published as `NetCmd::Publish`s.
+//! Shell-side bridge into the peer-sync [`Actor`]: holds the shared
+//! workspace tree, drives the actor's `tokio` runtime, and drains its
+//! `NetEvent`s.
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 mod boot_join;
@@ -15,15 +15,15 @@ mod display_input_tests;
 #[cfg(test)]
 mod display_observation_refresh_tests;
 mod display_observations;
+mod governance_requests;
 mod governor_actions;
 mod hosted_sites;
+mod room_rosters;
 mod room_window_carriers;
 mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
 mod device_certification_tests;
-#[cfg(test)]
-mod hostless_live_tests;
 #[cfg(test)]
 mod idle_quiet_tests;
 mod input_declines;
@@ -37,10 +37,14 @@ mod native_admission;
 mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
+#[cfg(test)]
+mod native_ingress_actor_tests;
 mod on_demand_records;
 pub(crate) use on_demand_records::OnDemand;
 #[cfg(test)]
 mod native_replay_budget_tests;
+#[cfg(test)]
+pub(crate) mod one_host_tests;
 mod own_devices;
 #[cfg(test)]
 mod own_devices_tests;
@@ -53,6 +57,7 @@ mod personal_reconcile;
 mod personal_reconcile_tests;
 #[cfg(test)]
 mod presence_identity_tests;
+pub(crate) mod presence_visibility;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
@@ -61,7 +66,6 @@ pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
-mod room_push;
 #[cfg(test)]
 mod tick_bench;
 #[cfg(test)]
@@ -69,7 +73,6 @@ mod tick_off_loop_tests;
 mod turn_steps;
 pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
-use room_push::RoomPush;
 use turn_steps::TurnSteps;
 #[cfg(test)]
 mod agent_question_tests;
@@ -78,23 +81,35 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+#[cfg(test)]
+mod device_steward_tests;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
+mod embedded_host;
+#[cfg(test)]
+mod enrollment_resume_tests;
 #[cfg(test)]
 mod foreign_ask_tests;
+mod grant_in_force;
 #[cfg(test)]
-mod governor_succession_tests;
+mod grant_in_force_tests;
+mod home_relay_hosting;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
 mod node_member_tests;
+#[cfg(test)]
+mod outbox_tests;
 mod relay_rooms;
+mod session_host;
+pub(crate) use session_host::Placement;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
+mod shortcut_saves;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;
@@ -113,22 +128,24 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
-use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
-use crate::network::behaviour::load_or_create_keypair;
-use crate::network::governor_join::GoverningRooms;
 use crate::network::identity::PeerIdentityStore;
-use crate::network::invite::accept_invite_into;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
-use crate::network::replica::WorkspaceTreeReplica;
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
+use tilo_network_actor::behaviour::load_or_create_keypair;
+use tilo_network_actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
+use tilo_network_actor::{PersonalFabricPayload, WorkspaceControlRoute};
 
-pub use crate::network::actor::PeerDepartureCause;
 use crate::shell::collab_broker::CrdtRoute;
+pub use tilo_network_actor::PeerDepartureCause;
 
-/// Compatibility/control topic used only when a message has no room identity.
-pub const DEFAULT_WS_TOPIC: u64 = 0;
+use tilo_network_actor::{DEFAULT_WS_TOPIC, room_topic_id};
+
+/// The wake a channel queue rouses its drain with: a poke of `park`.
+fn poke(park: &Arc<crate::idle_wake::DrainPark>) -> tilo_network_actor::Wake {
+    let park = Arc::clone(park);
+    Arc::new(move || park.poke())
+}
 
 /// Maximum number of recent transport departures retained for diagnostics.
 ///
@@ -347,7 +364,7 @@ pub struct PeerDeparture {
     /// Actor-minted incarnation of this endpoint on this exact topic. `None`
     /// is reserved for relay/session events that cannot authorize the
     /// personal fabric.
-    pub membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    pub membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     pub session_handle: u64,
     pub route: CrdtRoute,
     pub cause: PeerDepartureCause,
@@ -364,30 +381,27 @@ pub struct PeerDeparture {
 pub(crate) struct AuthenticatedPersonalRoute {
     workspace_topic: u64,
     endpoint_id: iroh::EndpointId,
-    membership_epoch: crate::network::actor::MembershipEpoch,
+    membership_epoch: tilo_network_actor::MembershipEpoch,
     user_public_key: [u8; 32],
-    device: crate::shell::personal_continuity::DeviceId,
+    device: tilo_network_actor::fabric::DeviceId,
 }
 
 impl AuthenticatedPersonalRoute {
-    pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
+    pub(crate) fn device(&self) -> &tilo_network_actor::fabric::DeviceId {
         &self.device
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(device: crate::shell::personal_continuity::DeviceId) -> Self {
+    pub(crate) fn for_test(device: tilo_network_actor::fabric::DeviceId) -> Self {
         Self::for_test_epoch(device, 1)
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test_epoch(
-        device: crate::shell::personal_continuity::DeviceId,
-        epoch: u64,
-    ) -> Self {
+    pub(crate) fn for_test_epoch(device: tilo_network_actor::fabric::DeviceId, epoch: u64) -> Self {
         Self {
             workspace_topic: 1,
             endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
-            membership_epoch: crate::network::actor::MembershipEpoch::for_test(epoch),
+            membership_epoch: tilo_network_actor::MembershipEpoch::for_test(epoch),
             user_public_key: [0xE8; 32],
             device,
         }
@@ -475,29 +489,16 @@ impl PeerDepartureHistory {
 }
 
 /// The rooms whose topics this device joins: every room in the tree but one
-/// it is still joining through a host. That room's traffic comes over its
-/// native session once the replica installs, which joins the topic itself;
-/// joined earlier, its host would replay the room's retained traffic to a
-/// device that cannot yet tell a member from anyone.
+/// it is still joining through a host or still placing on one. A joining
+/// room's traffic comes over its native session once the replica installs,
+/// which joins the topic itself; joined earlier, its host would replay the
+/// room's retained traffic to a device that cannot yet tell a member from
+/// anyone.
 fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
     tree.rooms()
         .into_iter()
-        .filter(|room| !tree.is_joining(*room))
+        .filter(|room| !tree.is_joining(*room) && !tree.pending_placements.contains(room))
         .collect()
-}
-
-/// Stable transport/host shard for a durable room. Local workspace handles are
-/// deliberately not used: they differ between devices.
-pub fn room_topic_id(room: RoomId) -> u64 {
-    if room.is_nil() {
-        return DEFAULT_WS_TOPIC;
-    }
-    // `room.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
-    // can always re-parse, so the `Err` path is unreachable in practice.
-    // Fall back to the "no room identity" topic rather than panic on this
-    // hot path — `room_workspace_id` never returns 0 on success, so a real
-    // topic id can't collide with the fallback.
-    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// Stable private shard shared only by certified devices rooted in the same
@@ -528,7 +529,7 @@ fn relay_topics_for_home_peers(
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
-pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
+pub const DEFAULT_KEYPAIR_PATH: &str = tilo_network_actor::behaviour::DEVICE_KEY_PATH;
 
 /// Resolve one network configuration value; an empty value counts as absent.
 fn network_env(name: &'static str) -> Option<(&'static str, std::ffi::OsString)> {
@@ -612,41 +613,44 @@ enum Reach {
 }
 
 /// Why someone could need to dial this device, from what its session has
-/// recorded: a room it shares (one it joined, a peer it names in it, a
-/// relay-governed or continuation room), an invite still open, or another of
-/// the person's devices in its fabric (they continue, sync and disk-unlock
+/// recorded: a room whose admitted document names another device, a room
+/// continued from another device, an invite still open, or another of the
+/// person's devices in its fabric (they continue, sync and disk-unlock
 /// through it). Read as the session starts and again while it ticks; while
-/// it holds, the relays stay up. Hosts, enrolled home peers and the person's
-/// paired devices are dialled at start, which holds the relays up in the
-/// actor, as does every relationship that begins later.
+/// it holds, the relays stay up. Hosts, enrolled home peers and the person's paired devices are
+/// dialled at start, which holds the relays up in the actor, as does every
+/// relationship that begins later.
 fn needs_reachability(
     tree: &WorkspaceTree,
     local_endpoint: &str,
+    local_device: &[u8; 32],
     open_invitations: bool,
     other_devices: bool,
 ) -> Option<&'static str> {
-    // The inviter names and certifies itself in its own rooms, so only an
-    // endpoint other than this one is a peer.
-    let someone_else = |peer: &String| peer != local_endpoint;
-    if tree
-        .room_authority
-        .values()
-        .any(|authority| *authority != crate::shell::state::RoomAuthority::Local)
-    {
-        Some("a room this device joined")
-    } else if tree
-        .room_peer_names
-        .values()
-        .any(|peers| peers.keys().any(someone_else))
-    {
-        // A peer's certified identity is only admitted under its name, and
-        // outlives an un-naming as revocation evidence: a peer no longer
-        // named is no longer a member, and nobody to stay reachable for.
+    // A room names this device too, so only an endpoint other than this one
+    // is a peer. A native room's names are no reason: its document keeps a
+    // removed member's devices as signed history, so who may still dial is
+    // its membership, read below and in `ShellNetwork::hosts_other_members`.
+    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let shared = tree
+        .rooms()
+        .into_iter()
+        .filter(|room| !native.contains(room))
+        .any(|room| {
+            tree.room_peer_endpoints(room)
+                .iter()
+                .any(|peer| peer.to_string() != local_endpoint)
+        });
+    if shared {
         Some("a room shared with a peer")
-    } else if !tree.native_authority.is_empty() {
-        Some("a relay-governed room")
-    } else if !tree.continuation_rooms.is_empty() {
-        Some("a room continued from another device")
+    } else if tree
+        .native_authority
+        .rooms()
+        .any(|room| !tree.native_authority.hosted_on(room, local_device))
+    {
+        // A room hosted on this device keeps it reachable only while
+        // another device is a member (`ShellNetwork::hosts_other_members`).
+        Some("a room hosted elsewhere")
     } else if open_invitations {
         Some("an open invitation")
     } else if other_devices {
@@ -727,7 +731,9 @@ pub(crate) fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RegisteredHomePeer {
     addr: iroh::EndpointAddr,
-    expectation: crate::network::actor::HomePeerExpectation,
+    expectation: tilo_network_actor::HomePeerExpectation,
+    /// The name it was paired with.
+    label: String,
 }
 
 /// The registrations in the home-peer registry, read from disk. Not for the
@@ -811,10 +817,11 @@ fn home_peers_from_registrations(
             .unwrap_or_else(|| iroh::EndpointAddr::new(relay_id));
         addrs.push(RegisteredHomePeer {
             addr,
-            expectation: crate::network::actor::HomePeerExpectation {
+            expectation: tilo_network_actor::HomePeerExpectation {
                 user_public_key: local_user,
                 device_public_key,
             },
+            label: registration.label,
         });
     }
     addrs.sort_by_key(|host| host.addr.id.to_string());
@@ -824,8 +831,6 @@ fn home_peers_from_registrations(
 
 /// What the periodic home-peer refresh reads from disk.
 struct HomePeerInputs {
-    /// Rooms an enrollment delivered (`personal-rooms.json`).
-    enrolled_rooms: Vec<RoomId>,
     registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
 }
 
@@ -833,9 +838,7 @@ impl HomePeerInputs {
     /// Read the files. Waits for the disk: the compositor's loop never calls
     /// this, it reads [`Self::watch`]'s copy.
     fn read() -> Self {
-        let peers = personal_device_peer_path();
         Self {
-            enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
             registrations: read_home_peer_registry(),
         }
     }
@@ -970,21 +973,13 @@ const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2
 /// room, an open invitation, another device) still needs its relays up.
 /// Local work over a few maps; a parked compositor does not tick at all.
 const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
-/// The longest an invite minted on this device waits for a home relay to
-/// name in it, when the relays were not already running: about what a net
-/// report and a relay handshake take.
+/// The longest an invitation issued by this device's host waits for a home
+/// relay to name in it, when the relays were not already running: about
+/// what a net report and a relay handshake take.
 const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-/// How long after a room changed, here or by a peer's batch, a shell asks
-/// its rooms for anything it is missing. Local changes are pushed the tick
-/// they land ([`ShellNetwork::push_room_changes`]); this pull, made once a
-/// burst of activity settles, is the repair path for a push a peer missed:
-/// a peer whose request names changes it lacks asks back
-/// ([`crate::network::replica::WorkspaceTreeReplica`]). A peer that comes
-/// back is pulled when it joins.
-const SYNC_REPAIR_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest a shell goes without that pull while nothing changes: the
-/// safety net under the repair pull and the join pull, not a heartbeat. An
-/// idle, converged desktop asks once per this long.
+/// safety net under the repair pull, not a heartbeat. An idle, converged
+/// desktop asks once per this long.
 const SYNC_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
@@ -1035,27 +1030,6 @@ fn pending_invites_path(state_dir: &Path) -> PathBuf {
 
 fn personal_continuity_path(state_dir: &Path) -> PathBuf {
     state_dir.join("personal-continuity.postcard")
-}
-
-/// The governing endpoints of rooms `tree` holds now but did not hold as
-/// `before`, for rooms someone else governs.
-fn governors_before_and_after(
-    tree: &WorkspaceTreeHandle,
-    before: &[RoomId],
-) -> Vec<iroh::EndpointId> {
-    let tree = tree.read();
-    tree.desktop
-        .rooms()
-        .into_iter()
-        .filter(|room| !before.contains(room))
-        .filter_map(|room| match tree.room_authority(room) {
-            crate::shell::state::RoomAuthority::Peer(origin) => origin
-                .as_str()
-                .strip_prefix("iroh:")
-                .and_then(|endpoint| endpoint.parse().ok()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// Tell the workspace menus which of the person's devices each of their
@@ -1410,8 +1384,8 @@ fn write_pending_invitations(path: &Path, bytes: &[u8]) {
 }
 
 /// Shell-side handle for the peer-sync subsystem. Owns the tokio
-/// runtime hosting the [`Actor`], the per-workspace
-/// [`WorkspaceTreeReplica`], and the actor↔replica event channel.
+/// runtime hosting the [`Actor`], the shared workspace tree, and the
+/// actor's event channel.
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
@@ -1423,6 +1397,8 @@ pub struct ShellNetwork {
     /// room's relay ([`room_window_carriers`]).
     room_window_carriers: room_window_carriers::State,
     relay_rooms: relay_rooms::State,
+    /// This device's own room host and the workspaces placed on it.
+    embedded_host: embedded_host::State,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
     /// Pairing links this computer made, and the new devices asking.
@@ -1431,9 +1407,8 @@ pub struct ShellNetwork {
     on_demand_records: on_demand_records::State,
     /// Send commands into the actor (e.g. publish a `NeighbourMsg`).
     pub cmd_tx: mpsc::Sender<NetCmd>,
-    /// Shared replica owning the tree-side reactions to `NetEvent::Msg`;
-    /// `Arc<Mutex<_>>` so other tasks can share a clone.
-    pub replica: Arc<Mutex<WorkspaceTreeReplica>>,
+    /// The shared workspace tree every network reaction reads and writes.
+    pub tree: WorkspaceTreeHandle,
     /// Sender half of the actor→replica event channel, cloned into
     /// `NetCmd::JoinWorkspace`.
     pub event_tx: mpsc::Sender<NetEvent>,
@@ -1447,6 +1422,18 @@ pub struct ShellNetwork {
     /// Topics already subscribed in the actor. Avoids sending a Join command on
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
+    /// The room rosters last told to the actor ([`Self::send_room_rosters`]).
+    room_rosters_sent: Mutex<room_rosters::Sent>,
+    /// This device's own room host, governing the rooms placed on it
+    /// ([`governance_requests::LocalGovernor`]).
+    local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
+    /// Where the outbox stood when the drain last found nothing more to
+    /// ask, or found the hosts of what is left out of reach
+    /// ([`Self::send_outbox_off_loop`]): looked at again only once it moved
+    /// or a host's session came up.
+    outbox_waiting: Mutex<Option<(u64, uuid::Uuid)>>,
+    /// The outbox entries being asked now, so a tick never asks one twice.
+    outbox_asked: Mutex<std::collections::HashSet<uuid::Uuid>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -1522,8 +1509,6 @@ pub struct ShellNetwork {
     next_sync_pull: Mutex<Option<std::time::Instant>>,
     /// See [`Self::peers_joined_epoch`].
     peers_joined: std::sync::atomic::AtomicU64,
-    /// Push side of room replication: see [`Self::push_room_changes`].
-    room_push: Mutex<RoomPush>,
     /// Private, same-person continuation state. It is intentionally separate
     /// from `replica`, whose documents are visible to room collaborators.
     personal_continuity: Mutex<crate::shell::personal_continuity::PersonalContinuity>,
@@ -1532,7 +1517,7 @@ pub struct ShellNetwork {
     /// (its workspace identities): each has a person room of its own, routed
     /// to that root's other devices only.
     workspace_person_roots: Vec<[u8; 32]>,
-    pub(crate) personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub(crate) personal_continuity_device: Option<tilo_network_actor::fabric::DeviceId>,
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
@@ -1557,6 +1542,11 @@ pub struct ShellNetwork {
     personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
     #[cfg(test)]
     continuity_policy_override: Option<crate::shell::continuity_policy::ContinuityPolicySnapshot>,
+    /// The person's rooms this device holds, standing in for an open native
+    /// owner's answer ([`Self::held_personal_rooms`]) in tests that keep the
+    /// workspace list without running a host.
+    #[cfg(test)]
+    held_personal_rooms_override: Option<crate::shell::personal_workspaces::HeldRooms>,
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
@@ -1583,9 +1573,6 @@ pub struct ShellNetwork {
     /// one bearer receive another invite's name or role.
     pending_identity_admissions: Mutex<std::collections::HashMap<[u8; 32], PendingInvitation>>,
     pending_invitations_path: Option<PathBuf>,
-    /// Invite ids this guest must attach to anti-entropy requests until the
-    /// authority's first governance response proves redemption completed.
-    pending_redemptions: Mutex<std::collections::HashMap<crate::shell::state::RoomId, [u8; 32]>>,
     /// Inbound presence updates pushed by [`Self::tick`], drained by the
     /// shell's frame-tick into `PresenceCtx::remote_cursors`.
     inbound_presence: Arc<Mutex<Vec<InboundPresence>>>,
@@ -1594,6 +1581,13 @@ pub struct ShellNetwork {
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
     /// Wakes the broker's drain thread. An empty queue parks there.
     pub(crate) drain_wake: std::sync::Arc<crate::idle_wake::DrainPark>,
+    /// The sealed writes and replay ends rooms' host sessions carry, which
+    /// the network actor queues for the broker's drain without the frame
+    /// loop ([`tilo_network_actor::native_ingress::ChannelQueue`]).
+    channel_queue: Arc<tilo_network_actor::native_ingress::ChannelQueue>,
+    /// Opens waiting for a room's host to replay what it retains, by the
+    /// room's topic: each is told once the broker took what was replayed.
+    sealed_replays: Mutex<std::collections::HashMap<u64, Vec<tokio::sync::oneshot::Sender<()>>>>,
     /// Inbound channel governance pushed by [`Self::tick`], drained by the
     /// channel encryption service.
     inbound_channel_governance: Arc<Mutex<Vec<InboundChannelGovernance>>>,
@@ -1632,11 +1626,10 @@ pub struct ShellNetwork {
     /// The last reaction counter said in each room over its presence
     /// channel (a room with no live plane), so each new one is told apart.
     room_reactions: Mutex<std::collections::HashMap<String, u32>>,
-    /// What the people in each room may see of this person, as the person
-    /// chose ([`Self::set_presence_visibility`]); a room not named yet is
-    /// "Nothing": until the desktop has said what the person chose there,
-    /// nothing of them leaves, and they see nobody's pointer.
-    presence_visibility: Mutex<std::collections::HashMap<String, ui::PresenceVisibility>>,
+    /// What the people in each room may see of this person: the person's
+    /// choices and whether each room is public
+    /// ([`Self::presence_visibility`]).
+    presence_visibility: Mutex<presence_visibility::Visibilities>,
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
@@ -1682,7 +1675,7 @@ pub struct ShellNetwork {
 struct HeldRemoteAction {
     workspace_topic: u64,
     peer: iroh::EndpointId,
-    membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     replayed: bool,
     frame: Vec<u8>,
 }
@@ -1971,9 +1964,8 @@ impl ShellNetwork {
     pub(crate) fn messaging_host_identity(&self) -> Option<HostIdentity> {
         self.host_identity.clone()
     }
-    /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
-    /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
-    /// return a handle the shell can use to drive sync. The keypair is
+    /// Build a tokio runtime, spawn the iroh [`Actor`] over the shared
+    /// `WorkspaceTree`, and return a handle the shell can use to drive sync. The keypair is
     /// loaded if it already exists, otherwise a fresh ed25519 key is
     /// generated and persisted.
     ///
@@ -2048,7 +2040,8 @@ impl ShellNetwork {
         // Must use the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
-        let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
+        let local_peer_hash =
+            tilo_network_actor::behaviour::peer_liveness_handle(&keypair.public());
         let lookup = MemoryLookup::new();
         // The relay transport binds with an empty map: no home relay, net
         // report or port mapping until something needs this device
@@ -2102,7 +2095,7 @@ impl ShellNetwork {
                 builder
                     .secret_key(keypair.clone())
                     .address_lookup(lookup.clone())
-                    .transport_config(crate::network::actor::transport_config())
+                    .transport_config(tilo_network_actor::transport_config())
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
@@ -2128,7 +2121,7 @@ impl ShellNetwork {
             .map(workspace_person_roots)
             .unwrap_or_default();
         let personal_continuity_device = host_identity.as_ref().and_then(|identity| {
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 identity.device_cert.device_public_key,
             ))
             .ok()
@@ -2153,15 +2146,20 @@ impl ShellNetwork {
         });
         let private_chat_endpoint = Some(endpoint.clone());
         let discovery_endpoint = endpoint.clone();
-        // A device answers the workspace-join exchange for the rooms it governs.
-        let governing = GoverningRooms::of(&tree, host_identity.as_ref());
-        let (cmd_tx, _join) = Actor::spawn_governing(
+        // This device's room host answers on the endpoint once it hosts a
+        // room; until then its handlers refuse.
+        let (local_host, host_protocols) = tilo_network_actor::local_host::LocalHost::deferred();
+        crate::network::install_actor_services();
+        let (cmd_tx, _join) = Actor::spawn_hosting(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
             reachability.clone(),
-            governing,
+            Some(tilo_network_actor::Hosting {
+                host: local_host.clone(),
+                protocols: host_protocols,
+            }),
         );
         let lan_discovery = host_identity
             .as_ref()
@@ -2222,11 +2220,7 @@ impl ShellNetwork {
         host_addrs.sort_by_key(|addr| addr.id.to_string());
         host_addrs.dedup_by_key(|addr| addr.id);
 
-        // Peer id `1` is the replica-side identity for
-        // `WorkspaceTreeReplica::handle`'s `_sender` arg; the actor's
-        // Iroh `EndpointId` is transport-level and hashed separately.
         let tree_for_reachability = tree.clone();
-        let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
         let (event_tx, mut arriving) = mpsc::channel(64);
@@ -2281,18 +2275,27 @@ impl ShellNetwork {
             needs_reachability(
                 &tree_for_reachability.read(),
                 &local_peer_id.to_string(),
+                local_peer_id.as_bytes(),
                 !pending_identity_admissions.is_empty(),
                 other_devices,
             ),
         );
 
+        let readiness = tree.room_readiness().clone();
+        let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
+        let channel_queue =
+            tilo_network_actor::native_ingress::ChannelQueue::new(poke(&drain_wake));
         let network = Self {
             cmd_tx,
-            replica,
+            tree,
             event_tx,
             event_rx: Mutex::new(event_rx),
             event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
+            room_rosters_sent: Mutex::default(),
+            local_governor: std::sync::OnceLock::new(),
+            outbox_waiting: Mutex::default(),
+            outbox_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -2318,7 +2321,6 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
-            room_push: Mutex::new(RoomPush::default()),
             personal_focus_recency: Mutex::new(
                 crate::shell::continuity_suggestion::FocusRecency::seeded(
                     &persisted_continuity.continuity,
@@ -2339,6 +2341,8 @@ impl ShellNetwork {
             personal_reconcile: personal_reconcile::State::default(),
             #[cfg(test)]
             continuity_policy_override: None,
+            #[cfg(test)]
+            held_personal_rooms_override: None,
             device_fabric: Mutex::new(device_fabric),
             #[cfg(test)]
             device_fabric_reads: DeviceFabricReads::default(),
@@ -2350,20 +2354,22 @@ impl ShellNetwork {
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
             pending_invitations_path: Some(pending_invitations_path),
-            pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
-            hosted_sites: hosted_sites::State::open(state_dir),
+            embedded_host: embedded_host::State::new(local_host),
+            hosted_sites: hosted_sites::State::open(state_dir, readiness),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
             on_demand_records: on_demand_records::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
-            drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
+            drain_wake,
+            channel_queue,
+            sealed_replays: Mutex::default(),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             person_artifacts: Mutex::default(),
@@ -2378,7 +2384,7 @@ impl ShellNetwork {
             live_waves: Mutex::default(),
             live_keys: Box::new(crate::shell::live_presence::session_keys),
             room_reactions: Mutex::default(),
-            presence_visibility: Mutex::default(),
+            presence_visibility: Mutex::new(presence_visibility::Visibilities::saved()),
             peer_colours: Mutex::default(),
             peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -2410,7 +2416,7 @@ impl ShellNetwork {
     /// Certified local identity used to author personal-fabric state.
     pub fn local_device_fabric_identity(
         &self,
-    ) -> Option<(crate::shell::personal_continuity::DeviceId, String)> {
+    ) -> Option<(tilo_network_actor::fabric::DeviceId, String)> {
         Some((
             self.personal_continuity_device.clone()?,
             self.host_identity
@@ -2434,7 +2440,7 @@ impl ShellNetwork {
         &self,
         workspace: u64,
         target: iroh::EndpointId,
-    ) -> Result<crate::network::WorkspaceControlSession, String> {
+    ) -> Result<tilo_network_actor::workspace_control::WorkspaceControlSession, String> {
         if target == self.local_peer_id {
             return Err("cannot control this device through its remote route".into());
         }
@@ -2463,12 +2469,14 @@ impl ShellNetwork {
         } else {
             return Err("no authenticated direct workspace-control path is online".into());
         };
-        Ok(crate::network::WorkspaceControlSession::new(
-            workspace,
-            self.local_peer_hash,
-            target,
-            route,
-        ))
+        Ok(
+            tilo_network_actor::workspace_control::WorkspaceControlSession::new(
+                workspace,
+                self.local_peer_hash,
+                target,
+                route,
+            ),
+        )
     }
 
     /// Publish one input through a session's selected route. The session gate
@@ -2480,7 +2488,7 @@ impl ShellNetwork {
     /// is unavailable.
     pub fn publish_workspace_control_input(
         &self,
-        session: &crate::network::WorkspaceControlSession,
+        session: &tilo_network_actor::workspace_control::WorkspaceControlSession,
         event: &tilo_window_share::streaming::InputEvent,
     ) -> Result<(), String> {
         let msg = session.input_message(event).map_err(str::to_owned)?;
@@ -2502,7 +2510,7 @@ impl ShellNetwork {
     /// unavailable.
     pub fn publish_workspace_control_keyframe_request(
         &self,
-        session: &crate::network::WorkspaceControlSession,
+        session: &tilo_network_actor::workspace_control::WorkspaceControlSession,
         seq: u64,
     ) -> Result<(), String> {
         let msg = session.keyframe_request(seq).map_err(str::to_owned)?;
@@ -2551,17 +2559,26 @@ impl ShellNetwork {
         {
             return devices;
         }
-        let Ok(replica) = self.replica.lock() else {
-            return Vec::new();
-        };
         let local = self.local_peer_id_hash();
-        replica
-            .tree
+        self.tree
             .read()
             .room_peer_endpoints(room)
             .into_iter()
-            .filter(|device| crate::network::behaviour::peer_liveness_handle(device) != local)
+            .filter(|device| tilo_network_actor::behaviour::peer_liveness_handle(device) != local)
             .collect()
+    }
+
+    /// The other devices of `room`'s people, whom a wave may be aimed at:
+    /// in an enrolled room every device its governance admits, the host's
+    /// own included when the room is hosted on someone's device; else the
+    /// devices its document names.
+    pub fn room_people_devices(&self, room: crate::shell::state::RoomId) -> Vec<iroh::EndpointId> {
+        if self.native_topic_required(room_topic_id(room))
+            && let Some(devices) = self.governed_devices(room)
+        {
+            return devices;
+        }
+        self.room_devices(room)
     }
 
     /// This device's copy of the workspace that is `room`, when it hosts it.
@@ -2569,10 +2586,7 @@ impl ShellNetwork {
         &self,
         room: crate::shell::state::RoomId,
     ) -> Option<crate::shell::state::Workspace> {
-        self.replica
-            .lock()
-            .ok()?
-            .tree
+        self.tree
             .read()
             .desktop
             .workspaces
@@ -2589,11 +2603,7 @@ impl ShellNetwork {
         if room.is_nil() {
             return empty;
         }
-        let Ok(replica) = self.replica.lock() else {
-            return empty;
-        };
-        let labels = replica.tree.read().room_peer_labels(room);
-        drop(replica);
+        let labels = self.tree.read().room_peer_labels(room);
         named_by_themselves(labels, self.live_labels_of(cluster_id))
     }
 
@@ -2642,11 +2652,7 @@ impl ShellNetwork {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
             return std::collections::BTreeMap::new();
         };
-        let Ok(replica) = self.replica.lock() else {
-            return std::collections::BTreeMap::new();
-        };
-        replica
-            .tree
+        self.tree
             .read()
             .desktop
             .workspaces
@@ -2681,7 +2687,7 @@ impl ShellNetwork {
                 relays
                     .iter()
                     .filter(|(relay_ws, _)| *relay_ws == workspace)
-                    .map(|(_, relay)| crate::network::behaviour::peer_liveness_handle(relay))
+                    .map(|(_, relay)| tilo_network_actor::behaviour::peer_liveness_handle(relay))
                     .collect()
             })
             .unwrap_or_default()
@@ -2695,7 +2701,20 @@ impl ShellNetwork {
         let _ = self.event_wake.set(Box::new(move || events()));
         let _ = self
             .cmd_tx
-            .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+            .try_send(NetCmd::SetWake(tilo_network_actor::LoopWake(wake)));
+    }
+
+    /// What a frame-tick step that found the tree held by another thread
+    /// runs once that thread released it: the loop wakes once and the step
+    /// looks again ([`WorkspaceTreeHandle::try_read_or_wake`]).
+    fn release_wake(&self) -> impl FnOnce() + Send + 'static {
+        // A reference count, not an allocation: built on every tick.
+        let wake = Arc::clone(&self.event_wake);
+        move || {
+            if let Some(wake) = wake.get() {
+                wake();
+            }
+        }
     }
 
     /// Wake the compositor loop from any thread, once [`Self::set_wake`]
@@ -2710,11 +2729,7 @@ impl ShellNetwork {
     }
 
     pub fn active_ws_for_publish(&self) -> u64 {
-        let Ok(replica) = self.replica.lock() else {
-            return DEFAULT_WS_TOPIC;
-        };
-        replica
-            .tree
+        self.tree
             .read()
             .desktop
             .active_workspace()
@@ -2768,21 +2783,25 @@ impl ShellNetwork {
         if !joined.insert(ws) {
             return true;
         }
-        if self
-            .cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws,
-                on_event: self.event_tx.clone(),
-            })
-            .is_err()
+        let on_event = self.event_tx.clone();
+        // The person's own topic also travels directly between their
+        // devices; a room's travels over its host sessions alone.
+        let command = if self
+            .personal_continuity_user
+            .is_some_and(|user| ws == personal_continuity_topic_id(&user))
         {
+            NetCmd::JoinPersonalTopic { ws, on_event }
+        } else {
+            NetCmd::JoinWorkspace { ws, on_event }
+        };
+        if self.cmd_tx.try_send(command).is_err() {
             joined.remove(&ws);
             return false;
         }
         true
     }
 
-    fn publish_message(&self, mut msg: NeighbourMsg) -> bool {
+    fn publish_message(&self, msg: NeighbourMsg) -> bool {
         if matches!(
             &msg,
             NeighbourMsg::PersonalContinuityRequest { .. }
@@ -2790,19 +2809,6 @@ impl ShellNetwork {
         ) && !self.enforce_app_continuations_policy()
         {
             return false;
-        }
-        if let NeighbourMsg::SyncReq {
-            room, invite_id, ..
-        } = &mut msg
-            && invite_id.is_none()
-            && let Some(room_id) = RoomId::parse(room)
-            && let Some(redemption) = self
-                .pending_redemptions
-                .lock()
-                .ok()
-                .and_then(|pending| pending.get(&room_id).copied())
-        {
-            *invite_id = Some(redemption);
         }
         let ws = self.topic_for_message(&msg);
         if self.native_topic_required(ws)
@@ -3125,12 +3131,8 @@ impl ShellNetwork {
         if self.person_root_of_room(room).is_some() {
             return false;
         }
-        let Ok(replica) = self.replica.lock() else {
-            return false;
-        };
-        let known = replica.tree.read().rooms();
+        let known = self.tree.read().rooms();
         let in_room = known.contains(&room);
-        drop(replica);
         tracing::info!(
             target: "tilo_collab_probe",
             cluster = %cluster_id,
@@ -3338,7 +3340,7 @@ impl ShellNetwork {
         // A whole mutation fits a frame (larger ones travel as segments); one
         // that does not would be refused by every receiver.
         let size = postcard::to_allocvec(&payload).map_or(usize::MAX, |bytes| bytes.len());
-        if size > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES {
+        if size > tilo_network_actor::fabric::MAX_FABRIC_CHECKPOINT_BYTES {
             tracing::warn!(
                 size,
                 "person room document exceeds the personal fabric frame limit; dropping"
@@ -3468,7 +3470,7 @@ impl ShellNetwork {
             sender.capabilities.foreign,
         );
         self.handle_document_message(
-            crate::network::behaviour::peer_liveness_handle(&peer),
+            tilo_network_actor::behaviour::peer_liveness_handle(&peer),
             app_id,
             cluster_id,
             record_id,
@@ -3516,7 +3518,7 @@ impl ShellNetwork {
         let Some(room) = RoomId::parse(&cluster_id) else {
             return;
         };
-        let person = crate::shell::state::local_user_id_for_room(&room);
+        let person = self.person_in_room(room);
         let author = if self.is_local_person_room(&cluster_id) {
             tilo_action_policy::Standing::person(
                 tilo_action_policy::RoomPolicy::new(cluster_id.clone(), person.clone()),
@@ -3782,27 +3784,6 @@ impl ShellNetwork {
             .is_ok()
     }
 
-    /// What the people in `room` see of this person from now on. Every
-    /// pointer, caret, selection and live frame this session publishes in
-    /// that room is held to it here, whoever asked for it to go out.
-    pub fn set_presence_visibility(&self, room: &str, visibility: ui::PresenceVisibility) {
-        if let Ok(mut rooms) = self.presence_visibility.lock() {
-            rooms.insert(room.to_owned(), visibility);
-        }
-    }
-
-    /// What the people in `room` see of this person. A room the desktop
-    /// has not told about yet (the moments after start, before the person's
-    /// choice is read and handed over) is held to the most private choice,
-    /// never to a default looser than what they may have chosen.
-    pub fn presence_visibility(&self, room: &str) -> ui::PresenceVisibility {
-        self.presence_visibility
-            .lock()
-            .ok()
-            .and_then(|rooms| rooms.get(room).copied())
-            .unwrap_or(ui::PresenceVisibility::Nothing)
-    }
-
     /// Who waved at this person on a live plane since the last call, by
     /// roster id.
     pub fn take_live_waves(&self) -> Vec<String> {
@@ -3857,14 +3838,13 @@ impl ShellNetwork {
 
     /// The room whose workspace topic is `ws`.
     fn room_of_topic(&self, ws: u64) -> Option<RoomId> {
-        self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
+        {
+            self.tree
                 .read()
                 .rooms()
                 .into_iter()
                 .find(|room| room_topic_id(*room) == ws)
-        })
+        }
     }
 
     /// How this device asks live members to draw it: the person's name.
@@ -4239,16 +4219,14 @@ impl ShellNetwork {
     }
 
     fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
-        let replica = self.replica.lock().ok()?;
-        replica
-            .tree
+        self.tree
             .read()
             .rooms()
             .into_iter()
             .find(|room| room_topic_id(*room) == topic)
     }
 
-    fn enrolled_room_candidates(&self) -> Result<Vec<RoomId>, String> {
+    fn enrolled_room_candidates(&self) -> Vec<RoomId> {
         let mut enrolled =
             personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
         // The setup session publishes its rooms under the user state
@@ -4260,17 +4238,11 @@ impl ShellNetwork {
                 }
             }
         }
-        let local = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "workspace state is unavailable".to_string())?;
-            replica.tree.read().rooms()
-        };
-        Ok(enrolled
+        let local = self.tree.read().rooms();
+        enrolled
             .into_iter()
             .filter(|room| local.contains(room))
-            .collect())
+            .collect()
     }
 
     /// The shared room to reach `endpoint` on: `named` when given, else the
@@ -4280,7 +4252,7 @@ impl ShellNetwork {
         endpoint: iroh::EndpointId,
         named: Option<RoomId>,
     ) -> Result<RoomId, String> {
-        let candidates = self.enrolled_room_candidates()?;
+        let candidates = self.enrolled_room_candidates();
         let live = self
             .live_room_peers
             .lock()
@@ -4569,15 +4541,11 @@ impl ShellNetwork {
     /// the compatibility/control topic. Rooms accepted later are joined by
     /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
-        // Startup, once: the first refresh may not have been read yet.
-        self.adopt_enrolled_rooms(&personal_room_ids(
-            &personal_device_peer_path().with_file_name("personal-rooms.json"),
-        ));
         self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
-        if let Ok(replica) = self.replica.lock() {
+        {
             topics.extend(
-                topic_rooms(&replica.tree.read())
+                topic_rooms(&self.tree.read())
                     .into_iter()
                     .map(room_topic_id),
             );
@@ -4592,28 +4560,11 @@ impl ShellNetwork {
         }
     }
 
-    /// Join the rooms an enrollment delivered to this device's tree.
-    fn adopt_enrolled_rooms(&self, rooms: &[RoomId]) {
-        if rooms.is_empty() {
-            return;
-        }
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let mut tree = replica.tree.write();
-        for room in rooms {
-            tree.join_enrolled_room(*room);
-        }
-    }
-
     fn export_personal_rooms(&self) {
         let Some(path) = tilo_identity_host::provisioning::personal_rooms_export_path() else {
             return;
         };
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let ids = replica
+        let ids = self
             .tree
             .read()
             .rooms()
@@ -4621,7 +4572,6 @@ impl ShellNetwork {
             .map(|room| room.to_string())
             .filter(|id| RoomId::parse(id).is_some())
             .collect::<Vec<_>>();
-        drop(replica);
         let Ok(bytes) = serde_json::to_vec(&ids) else {
             return;
         };
@@ -4676,21 +4626,12 @@ impl ShellNetwork {
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
-        // An enrollment can deliver rooms after this session started. Adopt
-        // them and join their topics, or a request sent to this device on
-        // such a room never arrives.
-        self.adopt_enrolled_rooms(&inputs.enrolled_rooms);
         let mut changed = self.join_room_topics();
         // Direct peers are how the person's devices reach each other, with
         // or without a relay. A missing or malformed relay registry must not
         // skip them.
         changed |= self.dial_direct_peers();
-        let mut relay_workspace_ids = self
-            .replica
-            .lock()
-            .ok()
-            .map(|replica| relay_topics_for_home_peers(replica.tree.read().rooms(), None))
-            .unwrap_or_default();
+        let mut relay_workspace_ids = relay_topics_for_home_peers(self.tree.read().rooms(), None);
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
@@ -4769,12 +4710,7 @@ impl ShellNetwork {
     /// Join the topic of every room in the tree. Returns whether a join was
     /// queued.
     fn join_room_topics(&self) -> bool {
-        let Some(rooms) = self
-            .replica
-            .lock()
-            .ok()
-            .map(|replica| topic_rooms(&replica.tree.read()))
-        else {
+        let Some(rooms) = Some(topic_rooms(&self.tree.read())) else {
             return false;
         };
         let mut queued = false;
@@ -4851,7 +4787,8 @@ impl ShellNetwork {
     /// Why what this session has recorded needs this device reachable, if
     /// it does ([`needs_reachability`]).
     fn session_reachability_need(&self) -> Option<&'static str> {
-        let tree = self.replica.lock().ok()?.tree.clone();
+        self.retire_redeemed_invitations();
+        let tree = self.tree.clone();
         let now = tilo_clock::unix_now();
         let open_invitations = self
             .pending_identity_admissions
@@ -4867,9 +4804,14 @@ impl ShellNetwork {
         needs_reachability(
             &tree,
             &self.local_peer_id.to_string(),
+            self.local_peer_id.as_bytes(),
             open_invitations,
             other_devices,
         )
+        .or_else(|| {
+            self.hosts_other_members()
+                .then_some("a room hosted here with other members")
+        })
     }
 
     /// Tell the relays what the session has recorded, so they stay up while
@@ -4902,7 +4844,7 @@ impl ShellNetwork {
     /// The tally of every application message this device's peers and
     /// hosts delivered to it. Blocks until the actor answers, so it must
     /// not be called from inside the network's runtime.
-    pub fn wire_tally(&self) -> Option<Arc<crate::network::actor::WireTally>> {
+    pub fn wire_tally(&self) -> Option<Arc<tilo_network_actor::WireTally>> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.cmd_tx.try_send(NetCmd::WireTally(reply)).ok()?;
         answer.blocking_recv().ok()
@@ -4913,6 +4855,7 @@ impl ShellNetwork {
     /// inventory before rows are returned to the UI.
     #[must_use]
     pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        self.retire_redeemed_invitations();
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return Vec::new();
         };
@@ -4931,6 +4874,42 @@ impl ShellNetwork {
             .collect();
         rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
         rows
+    }
+
+    /// Forget the invitations their room's admitted document says were
+    /// redeemed: each is redeemed once, so nobody is still to come with it.
+    fn retire_redeemed_invitations(&self) {
+        let invitations: Vec<([u8; 32], RoomId)> = match self.pending_identity_admissions.lock() {
+            Ok(pending) if !pending.is_empty() => pending
+                .values()
+                .map(|invite| (invite.id, invite.room))
+                .collect(),
+            _ => return,
+        };
+        let redeemed: Vec<[u8; 32]> = {
+            let tree = self.tree.read();
+            invitations
+                .into_iter()
+                .filter(|(id, room)| {
+                    tree.room_docs
+                        .get(room)
+                        .is_some_and(|doc| tilo_peer_state::room::invitation_redeemed(doc, id))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        if redeemed.is_empty() {
+            return;
+        }
+        let Ok(mut pending) = self.pending_identity_admissions.lock() else {
+            return;
+        };
+        for id in &redeemed {
+            pending.remove(id);
+        }
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
     }
 
     /// Return the original signed token without extending its lifetime or
@@ -4991,17 +4970,11 @@ impl ShellNetwork {
         &self,
         local: crate::shell::state::WorkspaceId,
     ) -> Result<String, String> {
-        let room = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            replica
-                .tree
-                .read()
-                .room_of(local)
-                .ok_or_else(|| format!("no workspace {}", local.raw()))?
-        };
+        let room = self
+            .tree
+            .read()
+            .room_of(local)
+            .ok_or_else(|| format!("no workspace {}", local.raw()))?;
         let cert = selected_device_cert(room, &self.keypair)?;
         Ok(format!(
             "tilo-identity:{}",
@@ -5094,10 +5067,21 @@ impl ShellNetwork {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "invite issuance keeps membership authorization, recipient binding, expiry, and signing in one validated operation"
-    )]
+    /// The person this device acts as in `room`: the root of the
+    /// certificate it holds the room with, which is who the room's host
+    /// decides for. The session's person when it has no identity of its own.
+    fn person_in_room(&self, room: RoomId) -> crate::shell::state::UserId {
+        self.host_identity
+            .as_ref()
+            .and_then(|identity| identity.current_native_material(room_topic_id(room)).ok())
+            .and_then(|(certificate, _)| {
+                crate::shell::state::person_id_of(certificate.user_public_key)
+            })
+            .unwrap_or_else(|| crate::shell::state::local_user_id_for_room(&room))
+    }
+
+    /// Have the room's host issue an invitation into `local`'s room, when the
+    /// one invitation policy lets this device ask for one.
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -5108,18 +5092,12 @@ impl ShellNetwork {
     ) -> Result<String, String> {
         use crate::shell::invite_policy::InviteRoute;
         // Attach the native owner, when this device has one, so the policy
-        // below reads the admitted governor of a relay-governed room. A
-        // device without one only holds self-governed rooms.
+        // below reads the admitted governor of the room. A device without
+        // one holds no room yet.
         if let Err(error) = self.native_owner() {
             tracing::debug!(%error, "inviting without a native owner");
         }
-        let tree_handle = {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-            replica.tree.clone()
-        };
+        let tree_handle = self.tree.clone();
         let missing = || format!("no workspace {} to invite into", local.raw());
         // The room's governor is read outside the tree's lock (see
         // `invite_policy::native_governor`); the decision below is taken on
@@ -5130,7 +5108,7 @@ impl ShellNetwork {
             (room, tree.installed_native_owner())
         };
         let governor = crate::shell::invite_policy::native_governor(owner, room);
-        let local_user = crate::shell::state::local_user_id_for_room(&room);
+        let local_user = self.person_in_room(room);
         let tree = tree_handle.read();
         let ws = tree
             .desktop
@@ -5141,8 +5119,7 @@ impl ShellNetwork {
             .ok_or_else(missing)?;
         // The same decision the invite composer and the palette are gated
         // on: who may invite, and which authority signs it.
-        let route =
-            crate::shell::invite_policy::may_issue_invitation(&tree, &ws, &local_user, governor);
+        let route = crate::shell::invite_policy::may_issue_invitation(&ws, &local_user, governor);
         drop(tree);
         let terms = relay_rooms::RelayInvitation {
             role,
@@ -5151,260 +5128,33 @@ impl ShellNetwork {
             lifetime: expiry_seconds_from_now,
         };
         match route {
-            InviteRoute::Relay => {
+            InviteRoute::Host => {
                 let held = self
-                    .relay_governed_room(ws.room())
-                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
-                return self.issue_relay_invitation(&held, &terms);
-            }
-            InviteRoute::ShareOnRelay => {
-                if let Some(token) = self.share_on_home_relay(local, ws.room(), &ws.name, &terms)? {
-                    return Ok(token);
+                    .hosted_room(ws.room())
+                    .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
+                if held.hosted_here() {
+                    // The invitee dials this device's host, so the
+                    // invitation names its home relay: from behind a NAT a
+                    // direct address alone may not reach it. The composer
+                    // started the relays when it opened; an invitation
+                    // issued straight away waits a moment for one, and
+                    // names direct addresses if none comes.
+                    self.reachability.wake("an invitation was issued");
+                    let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
                 }
+                self.issue_relay_invitation(&held, &terms)
             }
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
-                return Err(route.refusal().unwrap_or_default().into());
+                Err(route.refusal().unwrap_or_default().into())
             }
         }
-        // The invitee will dial this device, so the invite names its home
-        // relay: from behind a NAT a direct address alone may not reach it,
-        // and address lookup finds the relay only later. The composer
-        // started the relays when it opened; an invite minted straight away
-        // waits a moment for one, and goes out with direct addresses if
-        // none comes (no network to the relays).
-        self.reachability.wake("an invitation was issued");
-        let addr = self
-            .reachability
-            .relay_addr_within(INVITE_RELAY_WAIT)
-            .or_else(|| self.dial_addr())
-            .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
-        let (token, room) = {
-            let hosts = self
-                .host_addrs
-                .lock()
-                .map(|hosts| hosts.clone())
-                .unwrap_or_default();
-            let pins: Vec<_> = self
-                .personal_continuity_user
-                .map(|user| {
-                    registered_home_peer_addrs(
-                        Some(user),
-                        &std::collections::BTreeSet::from([room_topic_id(ws.room())]),
-                    )
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|host| crate::network::invite::HomeHostPin {
-                        addr: host.addr,
-                        user_public_key: host.expectation.user_public_key,
-                        device_public_key: host.expectation.device_public_key,
-                    })
-                    .collect()
-                })
-                .unwrap_or_default();
-            let device_cert = selected_device_cert(ws.room(), &self.keypair)?;
-            let token = crate::network::invite::make_invite_token_with_recipient(
-                &self.keypair,
-                &ws,
-                &addr,
-                &hosts,
-                &pins,
-                Some(device_cert),
-                crate::network::invite::InviteTerms {
-                    role,
-                    recipient: recipient_user_public_key.map(|user_public_key| {
-                        crate::network::invite::InviteRecipient {
-                            user_public_key,
-                            name: invitee,
-                        }
-                    }),
-                    expiry_seconds_from_now,
-                },
-            )
-            .map_err(|e| e.to_string())?;
-            (token, ws.room())
-        };
-
-        // Nobody invites the inviter, so without this the host would be
-        // the one peer left unnamed. Self-declared, but through the same
-        // authority-checked channel every other name travels on, so it
-        // can't be forged. Best-effort: a non-administering machine has
-        // the write refused and stays an id rather than failing the invite.
-        if let Ok(replica) = self.replica.lock() {
-            let me = crate::shell::state::local_user_id_for_room(&room);
-            let peer = self.local_peer_id.to_string();
-            replica.tree.write().name_peer(room, &me, &peer, &me);
-            if let Some(identity) = &self.host_identity {
-                replica.tree.write().certify_peer_identity(
-                    room,
-                    &peer,
-                    identity.device_cert.clone(),
-                );
-            }
-            let projection = replica.tree.read().trusted_identity_projection(room);
-            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
-        }
-        self.join_topic(room_topic_id(room));
-
-        let invitee = invitee.map(str::trim).filter(|name| !name.is_empty());
-        let parsed = crate::network::invite::validate_invite_token(&token)?;
-        let invite_id = crate::network::invite::invite_id(&token);
-        let mut pending = self
-            .pending_identity_admissions
-            .lock()
-            .map_err(|_| "invite admission state is unavailable".to_string())?;
-        pending.insert(
-            invite_id,
-            PendingInvitation {
-                id: invite_id,
-                room,
-                name: invitee.unwrap_or("Member").to_string(),
-                role,
-                token: token.clone(),
-                recipient_user_public_key,
-                expiry_unix_seconds: parsed.expiry_unix_seconds,
-            },
-        );
-        if let Some(path) = self.pending_invitations_path.as_deref() {
-            persist_pending_invitations(path, &pending);
-        }
-        drop(pending);
-        self.note_session_reachability(true);
-        Ok(token)
     }
 
-    /// Promote a transport-authenticated identity announcement through room
-    /// governance and immediately publish the accepted Files projection.
-    ///
-    /// The endpoint binding is checked here, before governance sees the row;
-    /// `certify_peer_identity_with_revocations` then checks the room governor,
-    /// governed name, certificate lifetime and every root-signed revocation.
-    fn handle_identity_announcement(
-        &self,
-        peer: &iroh::EndpointId,
-        room: &str,
-        device_cert: &tilo_user_identity::DeviceCert,
-        revocations: &[tilo_user_identity::RevocationEntry],
-    ) -> bool {
-        let Some(room) = RoomId::parse(room) else {
-            return false;
-        };
-        if device_cert.device_public_key != *peer.as_bytes()
-            || tilo_user_identity::verify_device_cert(device_cert).is_err()
-        {
-            tracing::warn!(%peer, %room, "dropping mismatched device identity announcement");
-            return false;
-        }
-
-        let projection = {
-            let Ok(rep) = self.replica.lock() else {
-                tracing::error!(%peer, %room, "replica state is poisoned; refusing identity announcement");
-                return false;
-            };
-            rep.tree.write().certify_peer_identity_with_revocations(
-                room,
-                &peer.to_string(),
-                device_cert.clone(),
-                revocations.to_vec(),
-            );
-            rep.tree.read().trusted_identity_projection(room)
-        };
-        crate::shell::launcher::set_trusted_identity_projection(room, &projection);
-        true
-    }
-
-    /// Accept an invite token as a workspace of its own, the room it names,
-    /// then immediately ask the room to catch us up — replication is per room, so
-    /// without that request a freshly accepted invite sits idle until
-    /// something else kicks a round. Takes the token *string*, not a
-    /// parsed token, so validation cannot be skipped on the way in.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error (as a message) if the replica lock is poisoned
-    /// or `token` fails to parse/validate.
-    pub fn accept_invite(&self, token: &str) -> Result<crate::shell::state::RoomId, String> {
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-        let (_, room) = {
-            let mut tree = replica.tree.write();
-            accept_invite_into(&mut tree, token)?
-        };
-        if !self.join_topic(room_topic_id(room)) {
-            return Err("peer-sync command queue is full; try accepting the invite again".into());
-        }
-        self.publish_identity_announcement(room);
-        // Dial the authenticated address carried by the invite.
-        // `validate_invite_token` already ran inside `accept_invite_into`,
-        // so re-reading the token here cannot let an unverified address through.
-        if let Ok(parsed) = crate::network::invite::validate_invite_token(token) {
-            if let Ok(mut pending) = self.pending_redemptions.lock() {
-                pending.insert(room, crate::network::invite::invite_id(token));
-            }
-            let _ = self.cmd_tx.try_send(NetCmd::Connect {
-                addr: parsed.owner_addr,
-            });
-            // Connect identity-pinned home hosts first.  Do not also enqueue
-            // the same endpoint through the legacy, unpinned host list: that
-            // would let an unauthenticated session win the race before the
-            // actor has a chance to verify the enrolled device/root pair.
-            for pin in &parsed.home_host_pins {
-                let _ = self.cmd_tx.try_send(NetCmd::ConnectHost {
-                    addr: pin.addr.clone(),
-                    expectation: Some(crate::network::actor::HomePeerExpectation {
-                        user_public_key: pin.user_public_key,
-                        device_public_key: pin.device_public_key,
-                    }),
-                });
-            }
-            for host in parsed.host_addrs {
-                if !parsed.home_host_pins.iter().any(|pin| pin.addr == host) {
-                    let _ = self.connect_host(host);
-                }
-            }
-        }
-        // Ask only the room just joined: the guest's other workspaces are
-        // rooms of their own, and accepting this invitation is no reason to
-        // ask each of them for a catch-up again.
-        replica.request_sync_of(&[room]);
-        let outgoing = replica.drain_outgoing();
-        drop(replica);
-        for msg in outgoing {
-            let _ = self.publish_message(msg);
-        }
-        Ok(room)
-    }
-
-    fn publish_identity_announcement(&self, room: crate::shell::state::RoomId) {
-        let Some(identity) = &self.host_identity else {
-            return;
-        };
-        let (device_cert, revocations) = identity.material_for(room_topic_id(room));
-        let _ = self.publish_message(NeighbourMsg::IdentityAnnouncementV2 {
-            room: room.to_string(),
-            device_cert: Box::new(device_cert),
-            revocations,
-        });
-    }
-
-    /// Ask every room this machine is in for whatever it is missing, and
-    /// publish the requests: on this thread, or on the peer-sync worker
-    /// when the caller is the loop ([`Self::publish_sync_requests`]).
+    /// Ask the person's other devices for their continuity and device
+    /// fabric, and offer this device's: on this thread, or on the peer-sync
+    /// worker when the caller is the loop ([`Self::publish_sync_requests`]).
+    /// Rooms need no asking: their state travels over their host sessions.
     fn publish_sync_requests_now(&self) {
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let rooms = replica.tree.read().rooms();
-        replica.request_sync();
-        let outgoing = replica.drain_outgoing();
-        drop(replica);
-        for room in rooms {
-            self.publish_identity_announcement(room);
-        }
-        for msg in outgoing {
-            let _ = self.publish_message(msg);
-        }
         self.publish_personal_continuity_request();
         self.publish_personal_continuity_if_changed();
         self.publish_device_fabric_request();
@@ -5471,15 +5221,13 @@ impl ShellNetwork {
         // staged offers need the tree for writing. A write that removed
         // nothing would still wait for any thread holding the tree, and wake
         // every reader that watches its generation.
-        if let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone())
-            && {
-                let tree = tree.read();
-                !tree.continuation_tabs.is_empty() || !tree.continuation_rooms.is_empty()
-            }
-        {
-            let mut tree = tree.write();
+        let staged = {
+            let tree = self.tree.read();
+            !tree.continuation_tabs.is_empty()
+        };
+        if staged {
+            let mut tree = self.tree.write();
             tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
-            tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
         }
         false
     }
@@ -5489,7 +5237,7 @@ impl ShellNetwork {
             return None;
         }
         let device = self.personal_continuity_device.clone()?;
-        let tree_handle = self.replica.lock().ok()?.tree.clone();
+        let tree_handle = self.tree.clone();
         let pending_closed_tabs = tree_handle.read().continuation_closed_tabs.clone();
 
         // Hash a counter-neutral capture so a quiet tree stays quiet. The
@@ -5833,7 +5581,7 @@ impl ShellNetwork {
     /// The devices of this person the fabric currently sees online.
     pub fn online_device_ids(
         &self,
-    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
+    ) -> std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId> {
         self.with_device_fabric(|fabric| {
             fabric
                 .online_devices()
@@ -5861,7 +5609,7 @@ impl ShellNetwork {
     /// Returns an error for a malformed target or a full command queue.
     pub(crate) fn cancel_nearby_transfer_stream(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         transfer_id: [u8; 16],
     ) -> Result<(), String> {
         let target_bytes: [u8; 32] = hex::decode(target.as_str())
@@ -5882,7 +5630,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     pub(crate) fn start_nearby_transfer(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         transfer: NearbyTransferCheckpoint,
         path: &Path,
     ) -> Result<(), String> {
@@ -5938,7 +5686,7 @@ impl ShellNetwork {
     /// transport cannot take it right now.
     pub fn send_personal_fabric_action(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
         self.try_send_personal_fabric_action(target, action)
@@ -5956,7 +5704,7 @@ impl ShellNetwork {
     /// every other failure.
     pub fn try_send_personal_fabric_action(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError> {
         let (request_id, command) = self
@@ -5973,7 +5721,7 @@ impl ShellNetwork {
 
     fn personal_fabric_command(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
@@ -6049,9 +5797,7 @@ impl ShellNetwork {
     }
 
     /// The person's other devices with a current route here, each once.
-    pub(crate) fn personal_route_devices(
-        &self,
-    ) -> Vec<crate::shell::personal_continuity::DeviceId> {
+    pub(crate) fn personal_route_devices(&self) -> Vec<tilo_network_actor::fabric::DeviceId> {
         let mut devices: Vec<_> = self
             .authenticated_personal_routes
             .lock()
@@ -6063,7 +5809,7 @@ impl ShellNetwork {
     }
 
     /// This device, as the person's fabric names it.
-    pub(crate) fn personal_device_id(&self) -> Option<crate::shell::personal_continuity::DeviceId> {
+    pub(crate) fn personal_device_id(&self) -> Option<tilo_network_actor::fabric::DeviceId> {
         self.personal_continuity_device.clone()
     }
 
@@ -6076,7 +5822,7 @@ impl ShellNetwork {
 
     pub(crate) fn current_personal_route(
         &self,
-        device: &crate::shell::personal_continuity::DeviceId,
+        device: &tilo_network_actor::fabric::DeviceId,
     ) -> Option<AuthenticatedPersonalRoute> {
         self.authenticated_personal_routes
             .lock()
@@ -6108,7 +5854,7 @@ impl ShellNetwork {
         &self,
         workspace_topic: u64,
         endpoint_id: iroh::EndpointId,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
     ) -> AuthenticatedPersonalRoute {
         let route = AuthenticatedPersonalRoute {
@@ -6116,10 +5862,8 @@ impl ShellNetwork {
             endpoint_id,
             membership_epoch,
             user_public_key,
-            device: crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                endpoint_id.as_bytes(),
-            ))
-            .expect("endpoint id is a valid test device"),
+            device: tilo_network_actor::fabric::DeviceId::new(hex::encode(endpoint_id.as_bytes()))
+                .expect("endpoint id is a valid test device"),
         };
         self.authenticated_personal_routes
             .lock()
@@ -6203,7 +5947,7 @@ impl ShellNetwork {
 
     pub(crate) fn personal_device_is_enrolled(
         &self,
-        device: &crate::shell::personal_continuity::DeviceId,
+        device: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
         self.personal_continuity_user.is_some()
             && self.certified_secret_recipients().contains(device)
@@ -6212,7 +5956,7 @@ impl ShellNetwork {
     /// Retain offline facts without treating a checkpoint as live reachability.
     pub(crate) fn person_display_devices(
         &self,
-        local: &crate::shell::personal_continuity::DeviceId,
+        local: &tilo_network_actor::fabric::DeviceId,
     ) -> Vec<settings_store::person_displays::PersonDevice> {
         if self.personal_continuity_user.is_none()
             || self.personal_continuity_device.as_ref() != Some(local)
@@ -6224,13 +5968,13 @@ impl ShellNetwork {
             .person_devices(local)
             .into_iter()
             .filter(|device| {
-                crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                tilo_network_actor::fabric::DeviceId::new(device.device.clone())
                     .is_ok_and(|owner| enrolled.contains(&owner))
             })
             .map(|mut device| {
                 device.online = device.local
                     || (device.online
-                        && crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                        && tilo_network_actor::fabric::DeviceId::new(device.device.clone())
                             .is_ok_and(|owner| self.current_personal_route(&owner).is_some()));
                 device
             })
@@ -6239,9 +5983,9 @@ impl ShellNetwork {
 
     fn observe_display_outputs(
         &self,
-        owner: &crate::shell::personal_continuity::DeviceId,
-        stamp: &crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+        owner: &tilo_network_actor::fabric::DeviceId,
+        stamp: &tilo_network_actor::fabric::FabricStamp,
+        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
     ) -> Result<bool, crate::shell::device_fabric::FabricError> {
         let mut fabric = self
             .device_fabric
@@ -6302,8 +6046,8 @@ impl ShellNetwork {
     /// Rejects metadata without the local owner identity or current revision.
     pub fn publish_local_display_outputs(
         &self,
-        stamp: &crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+        stamp: &tilo_network_actor::fabric::FabricStamp,
+        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
     ) -> Result<bool, crate::shell::device_fabric::FabricError> {
         use crate::shell::device_fabric::FabricError;
         if !self
@@ -6339,8 +6083,7 @@ impl ShellNetwork {
 
     pub(crate) fn load_display_input_declines(
         &self,
-    ) -> Result<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>, String>
-    {
+    ) -> Result<std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>, String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::load(&path, user)
     }
@@ -6348,7 +6091,7 @@ impl ShellNetwork {
     #[cfg(test)]
     pub(crate) fn save_display_input_declines(
         &self,
-        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        devices: &std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::save(&path, user, devices)
@@ -6361,7 +6104,7 @@ impl ShellNetwork {
     /// fails.
     pub(crate) fn save_display_input_declines_in_background(
         &self,
-        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        devices: &std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>,
         failed: impl FnOnce(String) + Send + 'static,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
@@ -6381,7 +6124,7 @@ impl ShellNetwork {
 
     /// Delete everything `device` published to the personal fabric, here and
     /// in the persisted checkpoint, once it has left the person's fleet.
-    pub fn forget_device_fabric(&self, device: &crate::shell::personal_continuity::DeviceId) {
+    pub fn forget_device_fabric(&self, device: &tilo_network_actor::fabric::DeviceId) {
         let Ok(mut fabric) = self.device_fabric.lock() else {
             return;
         };
@@ -6404,7 +6147,7 @@ impl ShellNetwork {
         &self,
         update: impl FnOnce(
             &mut crate::shell::device_unlock::UnlockFabricState,
-            &crate::shell::device_fabric::FabricStamp,
+            &tilo_network_actor::fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
         self.modify_local_device_fabric(|snapshot, stamp| {
@@ -6415,7 +6158,7 @@ impl ShellNetwork {
 
     /// The person's `device` has no route here any more: it shows offline
     /// until it is back.
-    fn device_departed(&self, device: &crate::shell::personal_continuity::DeviceId) {
+    fn device_departed(&self, device: &tilo_network_actor::fabric::DeviceId) {
         let Ok(mut fabric) = self.device_fabric.lock() else {
             return;
         };
@@ -6441,7 +6184,7 @@ impl ShellNetwork {
         &self,
         edit: impl FnOnce(
             &mut crate::shell::device_fabric::DeviceFabricSnapshot,
-            &crate::shell::device_fabric::FabricStamp,
+            &tilo_network_actor::fabric::FabricStamp,
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         let local = self
@@ -6457,7 +6200,7 @@ impl ShellNetwork {
                 .get(&local)
                 .cloned()
                 .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
-            let stamp = crate::shell::device_fabric::FabricStamp {
+            let stamp = tilo_network_actor::fabric::FabricStamp {
                 counter: fabric.max_counter().saturating_add(1).max(1),
                 device: local,
             };
@@ -6564,7 +6307,7 @@ impl ShellNetwork {
     /// persist the local fabric snapshot.
     pub(crate) fn seal_tethering_credential(
         &self,
-        requester: &crate::shell::personal_continuity::DeviceId,
+        requester: &tilo_network_actor::fabric::DeviceId,
         ssid: &str,
         password: &str,
     ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
@@ -6581,7 +6324,7 @@ impl ShellNetwork {
             password,
             &author,
             std::collections::BTreeSet::from([requester.clone()]),
-            crate::shell::device_fabric::FabricStamp {
+            tilo_network_actor::fabric::FabricStamp {
                 counter: self.device_fabric().max_counter().saturating_add(1).max(1),
                 device: author.clone(),
             },
@@ -6654,7 +6397,7 @@ impl ShellNetwork {
     /// or the registered home-device ids change.
     fn certified_secret_recipients(
         &self,
-    ) -> Arc<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>> {
+    ) -> Arc<std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>> {
         let local = self.personal_continuity_device.as_ref();
         let build = |enrolled: &[[u8; 32]]| {
             let mut recipients = local
@@ -6663,11 +6406,11 @@ impl ShellNetwork {
                 .collect::<std::collections::BTreeSet<_>>();
             if let Ok(devices) = self.registered_home_device_ids.lock() {
                 recipients.extend(devices.iter().filter_map(|device| {
-                    crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).ok()
                 }));
             }
             recipients.extend(enrolled.iter().filter_map(|device| {
-                crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).ok()
             }));
             recipients
         };
@@ -6828,50 +6571,18 @@ impl ShellNetwork {
         }
     }
 
-    /// Tell the tree which person stands behind each authenticated peer, so
-    /// room admission can let any device of a room's owner govern it. Rebuilt
-    /// from the identity store, so a revoked or expired device drops out on
-    /// the next refresh.
-    ///
-    /// A room whose pinned governor its root revoked and replaced moves to
-    /// the successor here too ([`WorkspaceTree::follow_governor_successions`]).
-    fn refresh_authenticated_persons(&self) {
-        let persons = self.peer_identities.authenticated_persons(now_unix_nanos());
-        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return;
-        };
-        if tree.read().authenticated_persons != persons {
-            tree.write().authenticated_persons = persons;
-        }
+    /// Move every room whose governor its root revoked and replaced to the
+    /// successor the person's devices announced.
+    fn follow_revoked_governors(&self) {
         let successions = self.peer_identities.successions();
-        if !successions.is_empty() {
-            let local = crate::shell::state::PeerOrigin::peer(&self.local_peer_id);
-            if tree
-                .read()
-                .follows_governor_successions(&successions, &local)
-            {
-                tree.write()
-                    .follow_governor_successions(&successions, &local);
-            }
-            let owner = tree.read().installed_native_owner();
-            if let Some(owner) = owner
-                && let Err(error) =
-                    owner.follow_successions(&successions, std::time::SystemTime::now())
-            {
-                tracing::warn!(%error, "a room could not follow its revoked governor's successor");
-            }
+        if successions.is_empty() {
+            return;
         }
-    }
-
-    /// The person this device acts as in the owner field of their own
-    /// workspaces; `None` on a device certified for no person.
-    fn personal_person(&self) -> Option<crate::shell::state::UserId> {
-        let user = self.personal_continuity_user?;
-        match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(user),
-        ) {
-            collab_types::caps::Principal::Person(person) => Some(person),
-            _ => None,
+        let owner = self.tree.read().installed_native_owner();
+        if let Some(owner) = owner
+            && let Err(error) = owner.follow_successions(&successions, std::time::SystemTime::now())
+        {
+            tracing::warn!(%error, "a room could not follow its revoked governor's successor");
         }
     }
 
@@ -6915,10 +6626,12 @@ impl ShellNetwork {
         else {
             return false;
         };
-        let (Some(local_user), Some(workspaces), Some(person)) = (
+        let (Some(local_user), Some(workspaces), Some(here)) = (
             self.personal_continuity_user,
             self.personal_workspaces.as_ref(),
-            self.personal_person(),
+            self.host_identity
+                .as_ref()
+                .map(|identity| identity.device_cert.device_public_key),
         ) else {
             return true;
         };
@@ -6952,41 +6665,30 @@ impl ShellNetwork {
         ) {
             return true;
         }
-        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return true;
-        };
-        let rooms_before = tree.read().desktop.rooms();
-        let (adopted, answer) = {
-            let mut tree = tree.write();
+        let held = self.held_personal_rooms();
+        let (adoption, answer) = {
+            let mut tree = self.tree.write();
             let Ok(mut workspaces) = workspaces.lock() else {
                 return true;
             };
             // What changed here since the last agreement goes into the
             // directory first, so the merge sees both sides.
-            let local = workspaces.publish_local(&tree, &person);
+            let local = workspaces.publish_local(&tree, &held);
             if let Err(error) = workspaces.merge(update, &author, now) {
                 tracing::warn!(%error, peer = %origin, "refusing a workspace list");
                 return true;
             }
-            let adopted = workspaces.adopt_into(&mut tree, &person);
+            let adoption = workspaces.adopt_into(&mut tree, &here);
             refresh_device_choices(&mut tree, &workspaces);
             drop(tree);
             let answer = local || !workspaces.covered_by(update);
             drop(workspaces);
-            (adopted, answer)
+            (adoption, answer)
         };
-        if adopted {
-            // Reach the governor of each room someone else owns directly, so
-            // its answer does not depend on another device relaying it.
-            for governor in governors_before_and_after(&tree, &rooms_before) {
-                let _ = self.cmd_tx.try_send(NetCmd::Connect {
-                    addr: iroh::EndpointAddr::new(governor),
-                });
-            }
-            // Join each new workspace's room and ask for its content now
-            // rather than at the next periodic round.
-            self.publish_sync_requests();
-        }
+        // The rooms the list brings are entered at their hosts, and those it
+        // let go released, as the list arrives.
+        self.follow_list_off_loop(adoption);
+        self.enter_configured_host_rooms_off_loop(None);
         if answer {
             self.publish_personal_workspaces();
         }
@@ -7009,42 +6711,18 @@ impl ShellNetwork {
             due
         });
         if upkeep {
-            self.refresh_authenticated_persons();
+            self.follow_revoked_governors();
             self.publish_personal_continuity_if_changed();
         }
-        // A guest still redeeming an invite keeps asking at the repair pace
-        // until the authority answers: its request is what redeems.
-        let redeeming = self
-            .pending_redemptions
-            .lock()
-            .is_ok_and(|pending| !pending.is_empty());
         let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
             let due = next.is_none_or(|at| now >= at);
             if due {
-                let wait = if redeeming {
-                    SYNC_REPAIR_DELAY
-                } else {
-                    SYNC_SAFETY_INTERVAL
-                };
-                *next = Some(now.checked_add(wait).unwrap_or(now));
+                *next = Some(now.checked_add(SYNC_SAFETY_INTERVAL).unwrap_or(now));
             }
             due
         });
         if pull {
             self.publish_sync_requests();
-        }
-    }
-
-    /// A room changed: pull [`SYNC_REPAIR_DELAY`] from now, unless a pull is
-    /// due sooner.
-    fn schedule_repair_pull(&self) {
-        let now = std::time::Instant::now();
-        let due = now.checked_add(SYNC_REPAIR_DELAY).unwrap_or(now);
-        if let Ok(mut next) = self.next_sync_pull.lock()
-            && let Some(at) = *next
-            && at > due
-        {
-            *next = Some(due);
         }
     }
 
@@ -7075,21 +6753,11 @@ impl ShellNetwork {
         steps
     }
 
-    /// When [`Self::frame_tick`] must run again though nothing wakes the
-    /// loop: a room push that found the tree held by another thread retries
-    /// then.
-    pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.room_push.lock().ok().and_then(|push| push.retry_at)
-    }
-
     fn tick_with(&self, admission: Admission, steps: &mut TurnSteps) {
         self.remote_action_replies.expire(std::time::Instant::now());
         steps.time("network/reachability", || {
             self.note_session_reachability(false);
         });
-        // Local room changes go out the tick they land; the periodic pull
-        // repairs whatever a peer missed.
-        steps.time("network/room-push", || self.push_room_changes());
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
             self.reconcile_personal_workspaces_if_changed(matches!(admission, Admission::InPlace));
@@ -7098,10 +6766,22 @@ impl ShellNetwork {
             self.refresh_home_peer_hosts_periodically();
         });
         steps.time("network/shared-rooms", || match admission {
-            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::InPlace => {
+                if self.take_shared_rooms_due() {
+                    self.finish_shared_rooms();
+                }
+            }
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
         });
+        steps.time("network/placements", || match admission {
+            Admission::InPlace => self.place_pending_workspaces(),
+            Admission::OffLoop => self.place_pending_workspaces_off_loop(),
+        });
         steps.time("network/keepalive", || self.live_keepalive());
+        steps.time("network/governance", || {
+            self.send_outbox_off_loop();
+        });
+        steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -7130,6 +6810,7 @@ impl ShellNetwork {
                 Admission::OffLoop => self.dispatch_native_inputs_off_loop(again),
                 Admission::InPlace => self.dispatch_native_inputs(again),
             }
+            self.turn_again_if_owed(&event_rx);
             return;
         }
         // Inbound events read the room's governance from the native owner.
@@ -7180,6 +6861,24 @@ impl ShellNetwork {
                 break;
             }
         }
+        self.turn_again_if_owed(&event_rx);
+    }
+
+    /// Ask the loop for another turn when this one left inbound work queued:
+    /// events past its bound or behind an admission, or held inputs due
+    /// again. Their arrival woke the loop once, for a turn that took only
+    /// some of them; nothing else wakes an idle loop for the rest. An
+    /// admission still on the worker wakes it when it ends.
+    fn turn_again_if_owed(&self, event_rx: &mpsc::Receiver<NetEvent>) {
+        let owed = !event_rx.is_empty()
+            || self.native_admission.carries()
+            || self.native_admission.owes_again();
+        if owed
+            && !self.native_admission.admitting()
+            && let Some(wake) = self.event_wake.get()
+        {
+            wake();
+        }
     }
 
     /// Route one drained [`NetEvent`] to its handler. Split out of
@@ -7205,13 +6904,29 @@ impl ShellNetwork {
                 frames,
             } => self.on_demand_record_opened(ws, channel, frames),
             NetEvent::HostReady { ws, peer } => {
+                // What was live before this session to the room's host was up
+                // (a resting pointer) reached nobody: it is said again now.
+                self.note_peer_joined();
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
                 }
+                // A host's session is up: what the outbox holds for a host
+                // out of reach may reach it now.
+                if let Ok(mut waiting) = self.outbox_waiting.lock() {
+                    *waiting = None;
+                }
                 self.on_demand_hosts_changed(ws);
                 self.record_content_sources_changed();
-                self.handle_host_ready(ws, peer);
+                self.handle_host_ready(ws);
                 self.room_relay_ready();
+                // A configured host's session of the person's own topic is
+                // up: the rooms it holds for them are entered now.
+                if self
+                    .personal_continuity_user
+                    .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
+                {
+                    self.enter_configured_host_rooms_off_loop(Some(peer));
+                }
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
                 self.note_peer_joined();
@@ -7282,14 +6997,14 @@ impl ShellNetwork {
                             direct.iter().any(|(_, endpoint)| endpoint == &peer)
                         });
                 if !has_live_route {
-                    let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                    let handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
                     // Adverts are not restated on a timer, so they do not
                     // go stale by themselves: a departure forgets them.
-                    crate::network::media_caps::forget(handle);
+                    tilo_network_actor::media_caps::forget(handle);
                     self.peer_identities
                         .remove(&crate::shell::state::PeerOrigin::peer(&peer));
-                    if let Ok(replica) = self.replica.lock() {
-                        replica.tree.write().retire_session(handle);
+                    {
+                        self.tree.write().retire_session(handle);
                     }
                 }
             }
@@ -7302,16 +7017,15 @@ impl ShellNetwork {
             } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, replayed, msg),
             NetEvent::OwnReplay { msg, .. } => self.dispatch_own_replayed_document(msg),
             NetEvent::NotAdmitted { ws } => {
-                let room = self.replica.lock().ok().and_then(|replica| {
-                    replica
-                        .tree
+                let room = {
+                    self.tree
                         .read()
                         .desktop
                         .workspaces
                         .iter()
                         .map(crate::shell::state::Workspace::room)
                         .find(|room| room_topic_id(*room) == ws)
-                });
+                };
                 if let Some(room) = room {
                     self.room_not_admitted(room);
                 }
@@ -7333,7 +7047,7 @@ impl ShellNetwork {
                 status,
             } => {
                 if let Ok(target) =
-                    crate::shell::personal_continuity::DeviceId::new(hex::encode(target.as_bytes()))
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(target.as_bytes()))
                 {
                     crate::shell::device_fabric_runtime::record_nearby_transfer_progress(
                         target,
@@ -7358,7 +7072,7 @@ impl ShellNetwork {
         &self,
         ws: u64,
         peer: iroh::EndpointId,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
@@ -7423,9 +7137,9 @@ impl ShellNetwork {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
             PersonalFabricPayload::NearbyTransfer(frame) => {
-                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                )) else {
+                let Ok(source) =
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
+                else {
                     return;
                 };
                 crate::shell::device_fabric_runtime::handle_nearby_transfer_frame(
@@ -7498,7 +7212,7 @@ impl ShellNetwork {
         bytes: &[u8],
     ) {
         let received_monotonic_us = fabric_monotonic_us();
-        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
+        if bytes.len() > tilo_network_actor::fabric::MAX_FABRIC_ACTION_BYTES {
             tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
             return;
         }
@@ -7516,7 +7230,7 @@ impl ShellNetwork {
             return;
         };
         let Ok(source) =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(authenticated_device))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(authenticated_device))
         else {
             return;
         };
@@ -7560,25 +7274,20 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         cause: PeerDepartureCause,
-        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     ) {
-        let session_handle = crate::network::behaviour::peer_liveness_handle(&peer);
-        let route = self
-            .replica
-            .lock()
-            .ok()
-            .and_then(|replica| {
-                replica
-                    .tree
-                    .read()
-                    .rooms()
-                    .into_iter()
-                    .find(|room| room_topic_id(*room) == ws)
-            })
-            .map_or_else(
-                || CrdtRoute::cluster(""),
-                |room| CrdtRoute::cluster(room.to_string()),
-            );
+        let session_handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
+        let route = {
+            self.tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == ws)
+        }
+        .map_or_else(
+            || CrdtRoute::cluster(""),
+            |room| CrdtRoute::cluster(room.to_string()),
+        );
         let participant_name = (!route.cluster_id.is_empty())
             .then(|| {
                 self.peer_labels(&route.cluster_id)
@@ -7603,84 +7312,28 @@ impl ShellNetwork {
         });
     }
 
-    /// Seed a durable host's checkpoint once it finishes subscribing to
-    /// `ws` — see [`NetEvent::HostReady`]. Unlike `SyncReq`, this does
-    /// not need another device online to answer it.
-    fn handle_host_ready(&self, ws: u64, peer: iroh::EndpointId) {
-        if self.native_topic_required(ws) {
-            return;
-        }
-        if self
-            .personal_continuity_user
-            .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
-        {
-            if !self.enforce_app_continuations_policy() {
-                return;
-            }
-            // PublishCheckpoint gives a newly enrolled/offline device a
-            // retained baseline even when no interactive device is online.
-            if let (Some(user_public_key), Some(snapshot)) = (
-                self.personal_continuity_user,
-                self.local_continuity_snapshot_bytes(),
-            ) && self.enforce_app_continuations_policy()
-            {
-                let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint {
-                    ws,
-                    msg: NeighbourMsg::PersonalContinuityCheckpoint {
-                        user_public_key,
-                        publisher: self.local_peer_id_hash(),
-                        snapshot,
-                    },
-                });
-            }
-            return;
-        }
-        let room = self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
-                .read()
-                .rooms()
-                .into_iter()
-                .find(|room| room_topic_id(*room) == ws)
-        });
-        let Some(room) = room else {
+    /// Seed the person's durable host with this device's continuity once it
+    /// finishes subscribing to their topic: see [`NetEvent::HostReady`]. A
+    /// newly enrolled or offline device then has a retained baseline even
+    /// when no other device of theirs is online.
+    fn handle_host_ready(&self, ws: u64) {
+        let Some(user_public_key) = self.personal_continuity_user else {
             return;
         };
-        // Seed a complete shell-room checkpoint.
-        let changes = self
-            .replica
-            .lock()
-            .ok()
-            .and_then(|replica| replica.tree.write().export_room_changes_since(room, &[]))
-            .unwrap_or_default();
-        if !changes.is_empty() {
-            let _ = self.publish_shell_checkpoint(NeighbourMsg::SyncResp {
-                changes,
-                room: room.to_string(),
-            });
+        if personal_continuity_topic_id(&user_public_key) != ws
+            || !self.enforce_app_continuations_policy()
+        {
+            return;
         }
-
-        // Apps answer an Arrived presence event with their full
-        // Automerge document. Synthesize that local event for the
-        // durable host so its retained checkpoints include app
-        // state that existed before the host connected.
-        let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
-        for payload in [
-            collab_types::presence::PresencePayload::Arrived,
-            collab_types::presence::PresencePayload::Left,
-        ] {
-            let key = collab_types::presence::PresenceKey::Workspace {
-                id: room.to_string(),
-            };
-            if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                self.handle_typed_app_presence_message(
-                    host_peer,
-                    None,
-                    String::new(),
-                    room.to_string(),
-                    presence,
-                );
-            }
+        if let Some(snapshot) = self.local_continuity_snapshot_bytes() {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint {
+                ws,
+                msg: NeighbourMsg::PersonalContinuityCheckpoint {
+                    user_public_key,
+                    publisher: self.local_peer_id_hash(),
+                    snapshot,
+                },
+            });
         }
     }
 
@@ -7696,7 +7349,7 @@ impl ShellNetwork {
         &self,
         ws: u64,
         peer: iroh::EndpointId,
-        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
         replayed: bool,
         msg: NeighbourMsg,
     ) {
@@ -7766,7 +7419,7 @@ impl ShellNetwork {
                 return;
             }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations, successions);
-            self.refresh_authenticated_persons();
+            self.follow_revoked_governors();
             if self.peer_identities.get(&origin).is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
             {
@@ -7784,9 +7437,8 @@ impl ShellNetwork {
                     .find(|root| ws == personal_continuity_topic_id(root)),
                 self.peer_identities.get(&origin),
             ) && identity.is_same_user(&user)
-                && let Ok(device) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                ))
+                && let Ok(device) =
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
                 && let Ok(mut routes) = self.authenticated_personal_routes.lock()
             {
                 routes.insert(
@@ -7820,7 +7472,7 @@ impl ShellNetwork {
             // An admitted native member need not also send a legacy hello.
             // Presence still binds the publisher to the authenticated endpoint
             // and checks this exact room's current signed read authority.
-            if *publisher == crate::network::behaviour::peer_liveness_handle(&peer)
+            if *publisher == tilo_network_actor::behaviour::peer_liveness_handle(&peer)
                 && self.governed_presence_allows(ws, peer, app_id, cluster_id)
             {
                 self.dispatch_app_presence_v2(
@@ -7836,30 +7488,15 @@ impl ShellNetwork {
             }
             return;
         }
-        // A member of an enrolled room that announced nothing to this device
-        // (a browser) is known from the room's governance, which also says it
-        // may take part in the room: its actions are answered as its own.
-        let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
-            && self.peer_identities.get(&origin).is_none()
-            && self.governed_identity(ws, peer).is_some();
-        // A member's desktop pointer and liveness in an enrolled room reach
-        // this device through the room's host, which authenticated the
-        // device; the member sends no hello over it (hellos are
-        // neighbour-only). As with app presence, the room's governance
-        // admits it: a current member device may be seen by the others.
-        // The publisher is still bound to the authenticated endpoint below.
-        let governed_presence = self.native_topic_required(ws)
-            && matches!(
-                msg,
-                NeighbourMsg::PresenceMoved { .. }
-                    | NeighbourMsg::PresenceCleared { .. }
-                    | NeighbourMsg::Heartbeat { .. }
-            )
-            && self.peer_identities.get(&origin).is_none()
-            && self.governed_identity(ws, peer).is_some();
-        // Known from governance rather than a hello.
-        let governed = governed_action || governed_presence;
-        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() && !governed {
+        // A member of a room reaches this device through the room's host,
+        // which authenticated the device; it sends no hello over it (hellos
+        // are between the person's own devices). The room's governance says
+        // who it is and that it may take part.
+        let hello_identity = self.peer_identities.get(&origin);
+        let governed = hello_identity.is_none() && self.native_topic_required(ws);
+        let identity =
+            hello_identity.or_else(|| governed.then(|| self.governed_identity(ws, peer)).flatten());
+        if self.require_peer_identity && identity.is_none() {
             if let NeighbourMsg::RemoteAction { frame } = msg {
                 self.hold_remote_action(HeldRemoteAction {
                     workspace_topic: ws,
@@ -7876,7 +7513,7 @@ impl ShellNetwork {
         }
         if self.require_peer_identity
             && let Some(claimed_peer) = Self::claimed_publisher(&msg)
-            && claimed_peer != crate::network::behaviour::peer_liveness_handle(&peer)
+            && claimed_peer != tilo_network_actor::behaviour::peer_liveness_handle(&peer)
         {
             tracing::warn!(
                 peer = %peer,
@@ -7898,7 +7535,7 @@ impl ShellNetwork {
             software_encode,
         } = &msg
         {
-            crate::network::media_caps::record(
+            tilo_network_actor::media_caps::record(
                 *advertiser,
                 hardware_decode,
                 software_decode,
@@ -7909,25 +7546,17 @@ impl ShellNetwork {
         }
         if self.dispatch_personal_continuity(ws, &origin, &msg)
             || self.dispatch_personal_workspaces(ws, &origin, &msg)
-            || self.dispatch_room_archive(ws, &origin, &msg)
         {
             return;
         }
         if self.require_peer_identity
-            && let NeighbourMsg::SyncReq {
-                invite_id: Some(invite_id),
-                ..
-            } = &msg
-            && let Some(identity) = self.peer_identities.get(&origin)
+            && let Some(identity) = &identity
         {
-            self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
-        }
-        if self.require_peer_identity && !governed {
             let required = Self::required_room_action(&msg);
-            let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
-            if !required.as_ref().is_some_and(|required| {
-                self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap)
-            }) {
+            if !required
+                .as_ref()
+                .is_some_and(|required| self.peer_room_allows(identity, governed, ws, required))
+            {
                 tracing::warn!(
                     peer = %peer,
                     workspace_topic = ws,
@@ -7937,22 +7566,8 @@ impl ShellNetwork {
                 return;
             }
         }
-        if let NeighbourMsg::SyncResp { room, .. } = &msg
-            && let Some(room) = RoomId::parse(room)
-            && let Ok(mut pending) = self.pending_redemptions.lock()
-        {
-            pending.remove(&room);
-        }
         match msg {
-            NeighbourMsg::IdentityAnnouncementV2 {
-                room,
-                device_cert,
-                revocations,
-            } => {
-                self.handle_identity_announcement(&peer, &room, &device_cert, &revocations);
-                self.refresh_authenticated_persons();
-            }
-            // Ephemeral overlay state, not CRDT state — skips the replica entirely.
+            // Ephemeral overlay state, not room state.
             NeighbourMsg::PresenceMoved {
                 peer: peer_hash,
                 // Who the sender says it is: older peers still send it, and
@@ -7971,35 +7586,6 @@ impl ShellNetwork {
                 peer: peer_hash,
                 key,
             } => self.handle_presence_cleared(peer_hash, key),
-            NeighbourMsg::AppDocument {
-                peer: peer_hash,
-                app_id,
-                cluster_id,
-                record_id,
-                envelope,
-            } => {
-                let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
-                else {
-                    tracing::debug!(
-                        app_id,
-                        "peer document for a record no local app holds; dropping"
-                    );
-                    return;
-                };
-                let author = if self.require_peer_identity {
-                    self.peer_document_author(&origin, &cluster_id, &app_id, &record_id, &envelope)
-                } else {
-                    Some(unauthenticated_editor(&cluster_id, peer_hash))
-                };
-                if peer_hash != self.local_peer_hash
-                    && self.is_in_room(&cluster_id)
-                    && let Some(author) = author
-                {
-                    self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, author, replayed, *envelope,
-                    );
-                }
-            }
             NeighbourMsg::AppPresenceV2 {
                 peer: peer_hash,
                 app_id,
@@ -8092,8 +7678,123 @@ impl ShellNetwork {
             | NeighbourMsg::RecordContentLacks { .. }) => {
                 self.dispatch_record_content(ws, peer, message);
             }
-            other => self.dispatch_to_replica(peer, other),
+            other => {
+                tracing::debug!(%peer, ws, kind = other.kind(), "dropping a message no room takes");
+            }
         }
+    }
+
+    /// Whether the member `identity`, authenticated on `workspace_topic`,
+    /// may do `required` in that topic's room. A member the room's
+    /// governance admitted ([`Self::governed_identity`]) may read it; every
+    /// change is answered by the room's policy, projected from its admitted
+    /// document.
+    fn peer_room_allows(
+        &self,
+        identity: &crate::network::identity::PeerIdentity,
+        governed: bool,
+        workspace_topic: u64,
+        required: &room_gate::RoomAction,
+    ) -> bool {
+        let (node, kind) = required;
+        if governed && *kind == tilo_action_policy::ActionKind::Read {
+            return true;
+        }
+        let Some(room) = self.unique_room_for_topic(workspace_topic) else {
+            return false;
+        };
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        let tree = self.tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .is_some_and(|workspace| {
+                workspace.answer_at(
+                    &person,
+                    &workspace.node().join(node),
+                    *kind,
+                    tilo_clock::unix_now(),
+                ) == tilo_action_policy::Answer::Allow
+            })
+    }
+
+    /// Show the newest app state the person's devices continue, in the
+    /// rooms this device has workspaces for. Which rooms are the person's,
+    /// and where they are hosted, is their workspace list's to say
+    /// ([`crate::shell::personal_workspaces::PersonalWorkspaces`]): state
+    /// for a room not here yet stays in the merged set, and shows once the
+    /// list has entered the room. Answers whether the tree changed.
+    fn materialize_continuations(
+        &self,
+        merged: &crate::shell::personal_continuity::PersonalContinuity,
+    ) -> bool {
+        if !self.enforce_app_continuations_policy() {
+            return false;
+        }
+        // From the accepted merged set, not from a wire payload: a
+        // checkpoint can carry stale entries beside one newer entry, and
+        // arrival order must never choose an app state.
+        let mut candidate_apps = std::collections::BTreeSet::new();
+        for snapshot in merged.snapshots().values() {
+            for workspace in &snapshot.workspaces {
+                for app in &workspace.apps {
+                    candidate_apps.insert((workspace.room, app.id));
+                }
+            }
+        }
+        let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
+        for (room, app_id) in candidate_apps {
+            if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
+                winners_by_room.entry(room).or_default().push(app.clone());
+            }
+        }
+        let desired_tabs = winners_by_room
+            .values()
+            .flat_map(|apps| apps.iter().map(|app| app.id.0))
+            .collect::<std::collections::BTreeSet<_>>();
+        // All tab changes share one write of the tree, so they reconcile
+        // against one snapshot. The frame loop opens materialized tabs
+        // locally without changing the active workspace or focus.
+        let mut tree = self.tree.write();
+        let mut materialized = false;
+        for (room, apps) in winners_by_room {
+            // A room the person's list has not brought yet waits for it.
+            if !tree.has_workspace(room) {
+                continue;
+            }
+            let source = apps
+                .first()
+                .map(|app| app.stamp.device.as_str().to_string())
+                .unwrap_or_default();
+            let workspace = crate::shell::personal_continuity::WorkspaceContinuation { room, apps };
+            materialized |= tree.materialize_continuation_workspace(
+                &source,
+                &workspace,
+                &*self.continuation_labels,
+            );
+        }
+        let reconciled = tree.reconcile_continuation_tabs(&desired_tabs);
+        drop(tree);
+        materialized || reconciled
+    }
+
+    /// [`Self::materialize_continuations`] from the merged set this device
+    /// keeps: a room the person's list brought has its workspace now.
+    pub(super) fn materialize_kept_continuations(&self) -> bool {
+        let Some(merged) = self
+            .personal_continuity
+            .lock()
+            .ok()
+            .map(|continuity| continuity.clone())
+        else {
+            return false;
+        };
+        self.materialize_continuations(&merged)
     }
 
     /// Handle the private same-person lane before room authorization. Returns
@@ -8101,7 +7802,7 @@ impl ShellNetwork {
     /// fall through into the collaboration-room replica.
     #[allow(
         clippy::too_many_lines,
-        reason = "personal-continuity dispatch validates the private lane and applies its room projection as one authorization decision"
+        reason = "personal-continuity dispatch validates the private lane and applies what it accepted as one authorization decision"
     )]
     fn dispatch_personal_continuity(
         &self,
@@ -8199,86 +7900,7 @@ impl ShellNetwork {
             let Some(merged) = merged else {
                 return true;
             };
-            // Reconcile from the accepted merged set, not from the wire
-            // payload. A checkpoint can contain stale entries alongside one
-            // newer entry; arrival order must never choose an app state.
-            let mut candidate_apps = std::collections::BTreeSet::new();
-            let mut rooms = std::collections::BTreeMap::new();
-            for snapshot in merged.snapshots().values() {
-                for workspace in &snapshot.workspaces {
-                    rooms
-                        .entry(workspace.room)
-                        .or_insert_with(|| snapshot.device.as_str().to_string());
-                    for app in &workspace.apps {
-                        candidate_apps.insert((workspace.room, app.id));
-                    }
-                }
-            }
-            let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
-            for (room, app_id) in candidate_apps {
-                if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
-                    winners_by_room.entry(room).or_default().push(app.clone());
-                }
-            }
-            let materializations: Vec<_> = winners_by_room
-                .into_iter()
-                .map(|(room, apps)| {
-                    let source = apps
-                        .first()
-                        .map(|app| app.stamp.device.as_str().to_string())
-                        .unwrap_or_default();
-                    (
-                        source,
-                        crate::shell::personal_continuity::WorkspaceContinuation { room, apps },
-                    )
-                })
-                .collect();
-            let desired_tabs = materializations
-                .iter()
-                .flat_map(|(_, workspace)| workspace.apps.iter().map(|app| app.id.0))
-                .collect::<std::collections::BTreeSet<_>>();
-            let tree_handle = self.replica.lock().ok().map(|replica| replica.tree.clone());
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "all continuation room and tab mutations share one workspace write lock to preserve their common reconciliation snapshot"
-            )]
-            let adopted = tree_handle.is_some_and(|tree| {
-                if !self.enforce_app_continuations_policy() {
-                    return false;
-                }
-                let mut tree = tree.write();
-                let desired_rooms = rooms
-                    .keys()
-                    .copied()
-                    .collect::<std::collections::BTreeSet<_>>();
-                let adopted_rooms =
-                    rooms
-                        .into_iter()
-                        .fold(false, |changed, (room, source_device)| {
-                            tree.adopt_continuation_room(room, &source_device) || changed
-                        });
-                // Materialized tabs are idempotent by durable AppInstanceId.
-                // The frame loop opens them locally without changing the
-                // active workspace or focus.
-                let materialized =
-                    materializations
-                        .into_iter()
-                        .fold(false, |changed, (source, workspace)| {
-                            tree.materialize_continuation_workspace(
-                                &source,
-                                &workspace,
-                                &*self.continuation_labels,
-                            ) || changed
-                        });
-                let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
-                let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
-                reconciled_tabs || reconciled_rooms || adopted_rooms || materialized
-            });
-            if adopted {
-                // Joining the room topics is demand-driven by these requests;
-                // the active workspace remains untouched.
-                self.publish_sync_requests();
-            }
+            self.materialize_continuations(&merged);
         }
         true
     }
@@ -8333,7 +7955,7 @@ impl ShellNetwork {
     /// topic is derived from a UUID, it is only 64 bits; an ambiguous collision
     /// must not let membership in one room authorize traffic for another.
     fn unique_room_for_topic(&self, workspace_topic: u64) -> Option<RoomId> {
-        let tree_handle = self.replica.lock().ok()?.tree.clone();
+        let tree_handle = self.tree.clone();
         let tree = tree_handle.read();
         let mut matching = tree
             .rooms()
@@ -8347,71 +7969,6 @@ impl ShellNetwork {
         let result = matching.next().is_none().then_some(room);
         drop(tree);
         result
-    }
-
-    /// Authenticate the transport device as a person and then authorize that
-    /// person against the room's policy. Device authentication alone
-    /// is deliberately insufficient: any valid Tilo identity can possess a
-    /// certificate without being a member of this workspace.
-    fn peer_room_allows(
-        &self,
-        origin: &crate::shell::state::PeerOrigin,
-        workspace_topic: u64,
-        required: &room_gate::RoomAction,
-        pinned_authority_may_bootstrap: bool,
-    ) -> bool {
-        let Some(identity) = self.peer_identities.get(origin) else {
-            return false;
-        };
-        let Some(room) = self.unique_room_for_topic(workspace_topic) else {
-            return false;
-        };
-        let Some(tree_handle) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return false;
-        };
-        let tree = tree_handle.read();
-        // A newly joined guest has not received the owner's governance yet,
-        // so it cannot derive the owner's membership locally. The invite pins
-        // that exact transport peer as authority; allow only its SyncResp to
-        // bootstrap the signed-invite room. A room pinned to a person (one
-        // they own, or one their own device offered for continuation) is
-        // bootstrapped the same way by any of that person's devices. The
-        // replica still runs the shared room admission, which requires the
-        // pinned governance writer; an unpinned room accepts no governance.
-        let authority = tree.room_authority(room);
-        let pinned_writer = pinned_authority_may_bootstrap
-            && match &authority {
-                crate::shell::state::RoomAuthority::Peer(pinned) => pinned == origin,
-                // Only a device currently authenticated as that person, so a
-                // revoked or expired device of theirs is not a pinned writer.
-                crate::shell::state::RoomAuthority::Person(person) => {
-                    tree.authenticated_persons.get(origin) == Some(person)
-                }
-                crate::shell::state::RoomAuthority::Local
-                | crate::shell::state::RoomAuthority::Unpinned => false,
-            };
-        let allowed = pinned_writer || {
-            let person = collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-            )
-            .id()
-            .to_string();
-            tree.desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .is_some_and(|workspace| {
-                    let (node, kind) = required;
-                    workspace.answer_at(
-                        &person,
-                        &workspace.node().join(node),
-                        *kind,
-                        tilo_clock::unix_now(),
-                    ) == tilo_action_policy::Answer::Allow
-                })
-        };
-        drop(tree);
-        allowed
     }
 
     /// `AppPresenceV2`: app-level presence crossing the host boundary.
@@ -8472,54 +8029,6 @@ impl ShellNetwork {
     ) {
         if responder != self.local_peer_hash {
             self.handle_scrollback_response_message(responder, artifact, ops);
-        }
-    }
-
-    /// Every [`NeighbourMsg`] variant not special-cased in
-    /// [`Self::dispatch_neighbour_msg`] (`SyncReq`, `SyncResp`, ...)
-    /// replicates through the shell-tree replica. `SyncReq`
-    /// additionally carries an invite id which is redeemed before the
-    /// replica answers, so roster and reply land together.
-    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: NeighbourMsg) {
-        let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        if let NeighbourMsg::SyncResp { room, changes } = msg {
-            if let Some(room) = crate::network::replica::batch_room(&origin, &room) {
-                self.merge_room_batch_off_loop(peer, room, changes);
-            }
-            return;
-        }
-        // A poisoned replica lock here just drops this one message
-        // rather than panicking the whole compositor.
-        let Ok(mut rep) = self.replica.lock() else {
-            return;
-        };
-        // The peer's own identity, not the liveness-handle
-        // digest: this decides whether the payload may rewrite
-        // a room's governance.
-        rep.handle_from(&origin, &msg);
-        let refreshed_room = match &msg {
-            NeighbourMsg::SyncReq { room, .. } => RoomId::parse(room),
-            _ => None,
-        };
-        self.finish_replica_turn(rep, refreshed_room);
-    }
-
-    /// Publish what the replica queued, and the trusted identities of the
-    /// room it touched.
-    fn finish_replica_turn(
-        &self,
-        rep: std::sync::MutexGuard<'_, WorkspaceTreeReplica>,
-        room: Option<RoomId>,
-    ) {
-        let refreshed_projection =
-            room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
-        let outgoing = rep.drain_outgoing();
-        drop(rep);
-        if let Some((room, projection)) = refreshed_projection {
-            crate::shell::launcher::set_trusted_identity_projection(room, &projection);
-        }
-        for out_msg in outgoing {
-            let _ = self.publish_message(out_msg);
         }
     }
 
@@ -8589,222 +8098,19 @@ impl ShellNetwork {
             "accepted collaboration device identity"
         );
         self.keep_own_device(cert);
-        if let Some(room) = self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
-                .read()
-                .rooms()
-                .into_iter()
-                .find(|room| room_topic_id(*room) == workspace_topic)
-        }) {
-            self.name_own_device(room, peer, cert);
-            self.handle_identity_announcement(peer, &room.to_string(), cert, revocations);
-        }
-        // The initial SyncReq can race ahead of the identity hello and is
-        // intentionally dropped. Re-kick anti-entropy after trust is
-        // established so joining never waits for another topology event.
-        // Presence sent before trust was dropped the same way: say it again.
+        // A request sent before trust was established was dropped, and so
+        // was presence: ask and say it again now.
         if !was_known {
             self.note_peer_joined();
             self.publish_sync_requests();
         }
         self.release_held_remote_actions(*peer);
     }
-
-    /// Give another of this person's devices its certified label in a room
-    /// this device governs, so the person's presence there reads as that
-    /// device ("Orange Pi") rather than an anonymous session. Naming stays
-    /// the governor's act; the certificate was authenticated by the hello
-    /// and belongs to this same person.
-    fn name_own_device(
-        &self,
-        room: RoomId,
-        peer: &iroh::EndpointId,
-        cert: &tilo_user_identity::DeviceCert,
-    ) {
-        if self.personal_continuity_user != Some(cert.user_public_key) {
-            return;
-        }
-        let Some(person) = self.personal_person() else {
-            return;
-        };
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let mut tree = replica.tree.write();
-        if tree.governs_room(room) {
-            let _ = tree.name_peer(room, &person, &peer.to_string(), &cert.device_label);
-        }
-    }
-
-    fn redeem_invited_identity(
-        &self,
-        workspace_topic: u64,
-        invite_id: [u8; 32],
-        peer: &iroh::EndpointId,
-        cert: &tilo_user_identity::DeviceCert,
-    ) {
-        let room = self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
-                .read()
-                .rooms()
-                .into_iter()
-                .find(|room| room_topic_id(*room) == workspace_topic)
-        });
-        let Some(room) = room else { return };
-        let admission = self
-            .pending_identity_admissions
-            .lock()
-            .ok()
-            .and_then(|pending| pending.get(&invite_id).cloned());
-        let Some(admission) = admission else { return };
-        let now = tilo_clock::unix_now();
-        if admission.room != room || admission.expiry_unix_seconds < now {
-            if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-                pending.remove(&invite_id);
-                if let Some(path) = self.pending_invitations_path.as_deref() {
-                    persist_pending_invitations(path, &pending);
-                }
-            }
-            return;
-        }
-        if admission
-            .recipient_user_public_key
-            .is_some_and(|recipient| recipient != cert.user_public_key)
-        {
-            tracing::warn!(
-                room = %room,
-                peer = %peer,
-                "refusing invite redemption by a different person identity"
-            );
-            return;
-        }
-        let collab_types::caps::Principal::Person(person) =
-            collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
-            )
-        else {
-            return;
-        };
-        let Ok(replica) = self.replica.lock() else {
-            return;
-        };
-        let mut tree = replica.tree.write();
-        let local = crate::shell::state::local_user_id_for_room(&room);
-        let Some(workspace_id) = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room() == room)
-            .map(|workspace| workspace.id)
-        else {
-            return;
-        };
-        let owner = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == workspace_id)
-            .and_then(|workspace| workspace.owner().cloned());
-        let granted = tree
-            .admit_in_workspace(workspace_id, &local, &person, admission.role.role())
-            .is_some();
-        if !granted {
-            tracing::warn!(
-                room = %room,
-                grantor = %local,
-                ?owner,
-                "workspace owner could not grant invited identity membership"
-            );
-            return;
-        }
-        let session = crate::network::behaviour::peer_liveness_handle(peer);
-        tree.admit_collaborator_in_room(
-            room,
-            crate::shell::state::Collaborator::new(person, admission.name.clone())
-                .with_session(session),
-        );
-        let _ = tree.name_peer(room, &local, &peer.to_string(), &admission.name);
-        // The peer may already have been named by its first SyncReq. In
-        // that case `name_peer` is a no-op, so project the membership grant
-        // explicitly instead of relying on the naming path to do it.
-        tree.sync_room_doc(room);
-        tree.queue_save();
-        drop(tree);
-        drop(replica);
-        if let Ok(mut pending) = self.pending_identity_admissions.lock() {
-            pending.remove(&invite_id);
-            if let Some(path) = self.pending_invitations_path.as_deref() {
-                persist_pending_invitations(path, &pending);
-            }
-        }
-        // The guest's first announcement can arrive before exact-token
-        // redemption and is therefore refused. Retry certification now that
-        // governance has named and admitted this endpoint; the periodic V2
-        // announcement will subsequently project any revocations too.
-        self.handle_identity_announcement(peer, &room.to_string(), cert, &[]);
-        tracing::info!(
-            room = %room,
-            user = %hex::encode(cert.user_public_key),
-            role = admission.role.label(),
-            "admitted invited collaboration identity"
-        );
-    }
-
-    /// The room policy this device holds for `room`, if it hosts the room.
-    fn room_policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
-        let replica = self.replica.lock().ok()?;
-        let tree_handle = replica.tree.clone();
-        drop(replica);
-        let tree = tree_handle.read();
-        let policy = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room() == room)
-            .map(|workspace| workspace.policy.clone());
-        drop(tree);
-        policy
-    }
-
-    /// Authenticate a signed document envelope against the transport device
-    /// and exact document route: the author's standing in the room, a member
-    /// of it, held to the foreign-device bound on a device that is not
-    /// theirs. What the envelope may change is the broker drainer's to
-    /// decide, which owns the channel log and decides it by the action the
-    /// op performs.
-    fn peer_document_author(
-        &self,
-        origin: &crate::shell::state::PeerOrigin,
-        cluster_id: &str,
-        app_id: &str,
-        record_id: &str,
-        envelope: &collab_types::SignedOp,
-    ) -> Option<tilo_action_policy::Standing> {
-        let identity = self.peer_identities.get(origin)?;
-        if *envelope.author.as_bytes() != identity.device_pubkey {
-            return None;
-        }
-        if collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)
-            .is_err()
-        {
-            return None;
-        }
-        let person = hex::encode(identity.user_pubkey);
-        let policy = self.room_policy(RoomId::parse(cluster_id)?)?;
-        policy.role_of(&person)?;
-        let standing = tilo_action_policy::Standing::person(policy, person);
-        Some(if identity.capabilities.foreign {
-            standing.on_foreign_device()
-        } else {
-            standing
-        })
-    }
 }
 
 /// The standing of a peer this device did not authenticate, in a network
 /// that does not require it: an editor of `cluster_id`.
+#[cfg(test)]
 fn unauthenticated_editor(cluster_id: &str, peer: u64) -> tilo_action_policy::Standing {
     editor_standing(cluster_id, format!("peer:{peer:016x}"))
 }
@@ -8974,21 +8280,28 @@ pub(crate) fn shell_network_for_test(
     let mut joined_topics = std::collections::HashSet::from([DEFAULT_WS_TOPIC]);
     joined_topics.extend(tree.read().rooms().into_iter().map(room_topic_id));
     // As the desktop tells it on start for every workspace it is in: what
-    // the person chose there, here "Where I am". A room added later is
-    // unknown, and held to "Nothing", until a test says otherwise.
+    // the person chose there, here "Where I am". A room added later takes
+    // its default once its host answers whether it is public.
     let presence_visibility = tree
         .read()
         .rooms()
         .into_iter()
-        .map(|room| (room.to_string(), ui::PresenceVisibility::WhereIAm))
+        .map(|room| (room, ui::PresenceVisibility::WhereIAm))
         .collect();
+    let readiness = tree.room_readiness().clone();
+    let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
+    let channel_queue = tilo_network_actor::native_ingress::ChannelQueue::new(poke(&drain_wake));
     let net = ShellNetwork {
         cmd_tx,
-        replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
+        tree,
         event_tx,
         event_rx: Mutex::new(event_rx),
         event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
+        room_rosters_sent: Mutex::default(),
+        local_governor: std::sync::OnceLock::new(),
+        outbox_waiting: Mutex::default(),
+        outbox_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,
@@ -9014,7 +8327,6 @@ pub(crate) fn shell_network_for_test(
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
-        room_push: Mutex::new(RoomPush::default()),
         personal_continuity: Mutex::default(),
         personal_continuity_user: None,
         workspace_person_roots: Vec::new(),
@@ -9029,6 +8341,7 @@ pub(crate) fn shell_network_for_test(
         last_personal_workspaces_snapshot: Mutex::new(None),
         personal_reconcile: personal_reconcile::State::default(),
         personal_focus_recency: Mutex::default(),
+        held_personal_rooms_override: None,
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
                 serde_json::json!({
@@ -9059,20 +8372,22 @@ pub(crate) fn shell_network_for_test(
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         pending_invitations_path: None,
-        pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
-        hosted_sites: hosted_sites::State::default(),
+        embedded_host: embedded_host::State::default(),
+        hosted_sites: hosted_sites::State::with_readiness(readiness),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
         on_demand_records: on_demand_records::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
-        drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
+        drain_wake,
+        channel_queue,
+        sealed_replays: Mutex::default(),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         person_artifacts: Mutex::default(),
@@ -9087,7 +8402,9 @@ pub(crate) fn shell_network_for_test(
         live_waves: Mutex::default(),
         live_keys: Box::new(crate::shell::live_presence::session_keys),
         room_reactions: Mutex::default(),
-        presence_visibility: Mutex::new(presence_visibility),
+        presence_visibility: Mutex::new(presence_visibility::Visibilities::with_choices(
+            presence_visibility,
+        )),
         peer_colours: Mutex::default(),
         peer_colours_epoch: std::sync::atomic::AtomicU64::new(0),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
@@ -9135,19 +8452,6 @@ pub(crate) fn native_remote_answer_for_test(
         None,
         false,
         NeighbourMsg::RemoteAction { frame },
-    );
-}
-
-/// Give a fixture network the worker runtime a spawned one owns, so governor
-/// invocations are answered instead of refused as "the network is not running".
-#[cfg(test)]
-pub(crate) fn with_test_runtime(network: &mut ShellNetwork) {
-    network.runtime = Some(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("fixture network runtime"),
     );
 }
 
@@ -9237,97 +8541,7 @@ mod tests {
             ])
         );
     }
-    use crate::shell::state::WorkspaceAuthority as _;
 
-    #[test]
-    fn a_room_change_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
-        const SALT: u16 = 0xCAFE;
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        tree.write().set_salt_override(SALT);
-        let room = tree.read().rooms()[0];
-        let topic = room_topic_id(room);
-        let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0xCAFE);
-        let drain_pushes = |cmd_rx: &mut mpsc::Receiver<NetCmd>| {
-            let mut pushes = Vec::new();
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                if let NetCmd::Publish {
-                    ws,
-                    msg: NeighbourMsg::SyncResp { room, changes },
-                    ..
-                } = cmd
-                {
-                    pushes.push((ws, room, changes));
-                }
-            }
-            pushes
-        };
-        // The first tick learns where every room stands and announces none
-        // of its history; a peer that lacks it pulls it.
-        net.tick();
-        assert!(drain_pushes(&mut cmd_rx).is_empty());
-        net.tick();
-        assert!(
-            drain_pushes(&mut cmd_rx).is_empty(),
-            "an idle tick sends nothing"
-        );
-        let before = tree
-            .read()
-            .room_docs
-            .get(&room)
-            .cloned()
-            .expect("room document");
-
-        // The room is renamed here, where it is governed: its document
-        // takes the name.
-        {
-            let mut tree = tree.write();
-            tree.desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .expect("room workspace")
-                .name = "Pushed".into();
-            tree.seed_doc_from_cache();
-        }
-        net.tick();
-        let pushes = drain_pushes(&mut cmd_rx);
-        let [(ws, pushed_room, changes)] = pushes.as_slice() else {
-            panic!("one push for the changed room, got {pushes:?}");
-        };
-        assert_eq!(
-            (*ws, pushed_room.as_str()),
-            (topic, room.to_string().as_str())
-        );
-
-        let mut peer = before;
-        for change in changes {
-            tilo_automerge::ApplyIncoming::apply_incoming(
-                &mut peer,
-                [automerge::Change::from_bytes(change.clone()).expect("change")],
-            )
-            .expect("push applies on top of what was announced");
-        }
-        assert_eq!(
-            automerge::ReadDoc::get(&peer, automerge::ROOT, "name")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_string().ok())
-                .as_deref(),
-            Some("Pushed"),
-            "the pushed change carries the room's new name"
-        );
-        assert_eq!(changes.len(), 1, "one incremental change, not a checkpoint");
-        eprintln!(
-            "room-push-work mutation-ticks=1 batches=1 changes={}",
-            changes.len()
-        );
-
-        net.tick();
-        assert!(
-            drain_pushes(&mut cmd_rx).is_empty(),
-            "nothing new, nothing sent"
-        );
-    }
     use crate::shell::state::FreshId as _;
 
     #[test]
@@ -9363,7 +8577,7 @@ mod tests {
         let user = [0x44_u8; 32];
         let (mut net, mut commands) = personal_continuity_network_for_test(user);
         net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
-        let id = crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).unwrap();
+        let id = tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).unwrap();
         assert!(net.certified_secret_recipients().contains(&id));
         let request_id = net
             .send_personal_fabric_action(
@@ -9422,9 +8636,8 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        let kept = crate::shell::personal_continuity::DeviceId::new(hex::encode(kept_key)).unwrap();
-        let removed =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed_key)).unwrap();
+        let kept = tilo_network_actor::fabric::DeviceId::new(hex::encode(kept_key)).unwrap();
+        let removed = tilo_network_actor::fabric::DeviceId::new(hex::encode(removed_key)).unwrap();
         let reads = || net.personal_device_peers.lock().unwrap().reads();
         // One second of audio to two speakers, on the production send path.
         for _ in 0..50 {
@@ -9462,8 +8675,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        let removed =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed)).unwrap();
+        let removed = tilo_network_actor::fabric::DeviceId::new(hex::encode(removed)).unwrap();
         net.try_send_personal_fabric_action(&removed, remote_audio_frame())
             .expect("an enrolled device takes an audio frame");
         while commands.try_recv().is_ok() {}
@@ -9492,7 +8704,7 @@ mod tests {
         let device = iroh::SecretKey::from_bytes(&[0x23; 32]);
         authenticated_personal_peer(&net, &root, &device);
         while commands.try_recv().is_ok() {}
-        let advertiser = crate::network::behaviour::peer_liveness_handle(&device.public());
+        let advertiser = tilo_network_actor::behaviour::peer_liveness_handle(&device.public());
         for ws in [DEFAULT_WS_TOPIC, personal_continuity_topic_id(&user)] {
             net.dispatch_neighbour_msg(
                 ws,
@@ -9509,7 +8721,7 @@ mod tests {
             );
         }
         assert!(
-            crate::network::media_caps::capabilities(advertiser)
+            tilo_network_actor::media_caps::capabilities(advertiser)
                 .hardware_decode
                 .iter()
                 .any(|codec| codec.wire_label() == "h264"),
@@ -9518,7 +8730,7 @@ mod tests {
         assert!(commands.try_recv().is_err());
 
         let stranger = iroh::SecretKey::from_bytes(&[0x24; 32]);
-        let unproven = crate::network::behaviour::peer_liveness_handle(&stranger.public());
+        let unproven = tilo_network_actor::behaviour::peer_liveness_handle(&stranger.public());
         net.dispatch_neighbour_msg(
             DEFAULT_WS_TOPIC,
             stranger.public(),
@@ -9533,7 +8745,7 @@ mod tests {
             },
         );
         assert!(
-            crate::network::media_caps::capabilities(unproven)
+            tilo_network_actor::media_caps::capabilities(unproven)
                 .hardware_decode
                 .is_empty(),
             "an unauthenticated device's advert is not recorded"
@@ -9629,35 +8841,25 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_room_enrolled_after_startup_is_joined() {
+    fn a_room_an_enrollment_names_is_no_workspace_until_it_is_joined() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &peers);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        assert!(net.join_default_workspace());
-        while commands.try_recv().is_ok() {}
-        let room = "22222222-2222-4222-8222-222222222222";
+        let room = RoomId::parse("22222222-2222-4222-8222-222222222222").expect("room");
         std::fs::write(
             dir.path().join("personal-rooms.json"),
             format!("[\"{room}\"]"),
         )
         .unwrap();
-        assert!(net.refresh_home_peer_hosts());
-        let topic = room_topic_id(RoomId::parse(room).expect("room"));
-        assert!(
-            std::iter::from_fn(|| commands.try_recv().ok())
-                .any(|command| matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
-            "a room that appears after startup must be joined"
-        );
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
         let _ = net.refresh_home_peer_hosts();
-        assert!(
-            std::iter::from_fn(|| commands.try_recv().ok())
-                .all(|command| !matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
-            "a joined room is not joined again"
-        );
+        let tree = net.tree.read();
+        assert!(!tree.has_workspace(room), "no workspace is made for it");
+        assert!(!tree.is_joining(room), "nothing is entering it");
     }
 
     #[cfg(unix)]
@@ -9733,6 +8935,12 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        for room in [absent, present] {
+            net.tree
+                .write()
+                .join_room("Shared", RoomId::parse(room).expect("room"))
+                .expect("a workspace of the room");
+        }
         assert!(net.join_default_workspace());
         while commands.try_recv().is_ok() {}
         let endpoint = iroh::EndpointId::from_bytes(&device).expect("endpoint");
@@ -9788,6 +8996,10 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        net.tree
+            .write()
+            .join_room("Shared", RoomId::parse(room).expect("room"))
+            .expect("a workspace of the room");
         assert!(net.join_default_workspace());
         while commands.try_recv().is_ok() {}
         let address = tilo_actions::ActionAddress::new("app.files", "open");
@@ -9923,6 +9135,12 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test(user);
+        // The person's list brings the shared room's workspace; an
+        // enrollment's room list alone makes none.
+        net.tree
+            .write()
+            .join_room("Shared", RoomId::parse(room).expect("room"))
+            .expect("a workspace of the room");
         let net = Arc::new(net);
         assert!(net.join_default_workspace());
         let topic = room_topic_id(RoomId::parse(room).expect("room"));
@@ -10031,11 +9249,11 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn enrolled_rooms_stay_after_startup_when_continuations_are_off() {
+    fn a_workspace_of_an_enrolled_room_stays_after_startup_when_continuations_are_off() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
-        let room = "11111111-1111-4111-8111-111111111111";
+        let room = RoomId::parse("11111111-1111-4111-8111-111111111111").expect("room");
         std::fs::write(
             dir.path().join("personal-rooms.json"),
             format!("[\"{room}\"]"),
@@ -10045,26 +9263,20 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
-        assert!(net.join_default_workspace());
-        let rooms = net.replica.lock().expect("replica").tree.read().rooms();
-        assert!(
-            rooms.iter().any(|candidate| candidate.to_string() == room),
-            "startup must keep the enrolled room"
-        );
-        let owner = net
-            .replica
-            .lock()
-            .expect("replica")
+        let workspace = net
             .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room().to_string() == room)
-            .and_then(|workspace| workspace.owner().cloned());
-        assert_eq!(
-            owner.as_deref(),
-            Some(crate::shell::state::local_user_id().as_str())
+            .write()
+            .join_room("Plans", room)
+            .expect("a workspace of the room");
+        assert!(net.join_default_workspace());
+        let tree = net.tree.read();
+        assert!(tree.rooms().contains(&room), "startup keeps the room");
+        assert!(
+            tree.desktop
+                .workspaces
+                .iter()
+                .any(|candidate| candidate.id == workspace && candidate.room() == room),
+            "and its workspace"
         );
     }
 
@@ -10172,10 +9384,9 @@ mod tests {
         let path = dir.path().join("personal-device-fabric.postcard");
         net.device_fabric_path = Some(path.clone());
         authenticated_personal_peer(&net, &root, &peer_device);
-        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-            peer_device.public().as_bytes(),
-        ))
-        .unwrap();
+        let owner =
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer_device.public().as_bytes()))
+                .unwrap();
         let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
         incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
         let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
@@ -10184,7 +9395,7 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -10288,15 +9499,15 @@ mod tests {
         drop(env);
     }
 
-    fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
-        crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
+    fn test_device(byte: u8) -> tilo_network_actor::fabric::DeviceId {
+        tilo_network_actor::fabric::DeviceId::new(hex::encode([byte; 32]))
             .expect("valid test device")
     }
 
     fn fabric_envelope(
         request_byte: u8,
-        source: &crate::shell::personal_continuity::DeviceId,
-        target: &crate::shell::personal_continuity::DeviceId,
+        source: &tilo_network_actor::fabric::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> crate::shell::device_fabric::PersonalFabricActionEnvelope {
         crate::shell::device_fabric::PersonalFabricActionEnvelope {
@@ -10317,10 +9528,9 @@ mod tests {
     fn nearby_stream_cancel_targets_only_the_exact_peer_and_transfer() {
         let (net, mut commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
         let target_endpoint = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
-        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-            target_endpoint.as_bytes(),
-        ))
-        .expect("target device");
+        let target =
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(target_endpoint.as_bytes()))
+                .expect("target device");
         let transfer_id = [0xC2; 16];
         net.cancel_nearby_transfer_stream(&target, transfer_id)
             .expect("cancel command");
@@ -10331,8 +9541,8 @@ mod tests {
                 transfer_id: cancelled_id,
             }) if cancelled_target == target_endpoint && cancelled_id == transfer_id
         ));
-        let malformed = crate::shell::personal_continuity::DeviceId::new("not-a-transport-id")
-            .expect("device id");
+        let malformed =
+            tilo_network_actor::fabric::DeviceId::new("not-a-transport-id").expect("device id");
         assert!(
             net.cancel_nearby_transfer_stream(&malformed, transfer_id)
                 .is_err()
@@ -10357,7 +9567,7 @@ mod tests {
             &net,
             &root,
             &device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             topic,
         );
         let frame = tilo_actions::remote::RemoteActionFrame::new(
@@ -10383,7 +9593,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             topic,
             device.public(),
-            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            Some(tilo_network_actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::RemoteAction { frame },
         );
@@ -10443,7 +9653,7 @@ mod tests {
             let tree_b = tree_for();
             let (mut net_b, mut commands_b) = shell_network_for_test(tree_b.clone(), 0xB);
             net_b.require_peer_identity = true;
-            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
             authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
             authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
 
@@ -10593,7 +9803,7 @@ mod tests {
                 .encode()
                 .expect("frame")
             };
-            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
             for sender in [&device_a, &stranger] {
                 net.dispatch_neighbour_msg(
                     topic,
@@ -10664,7 +9874,7 @@ mod tests {
             });
             direct.observe(&NeighbourMsg::SurfaceStreamStart {
                 surface: 4,
-                source_peer: crate::network::behaviour::peer_liveness_handle(&target),
+                source_peer: tilo_network_actor::behaviour::peer_liveness_handle(&target),
                 width: 64,
                 height: 64,
                 codec: "h264".into(),
@@ -10768,7 +9978,7 @@ mod tests {
             shell_network_for_test(WorkspaceTree::default().shared(), 0xC0_11_AB);
         net.personal_continuity_user = Some(user_public_key);
         net.personal_continuity_device = Some(
-            crate::shell::personal_continuity::DeviceId::new("local-continuity-device")
+            tilo_network_actor::fabric::DeviceId::new("local-continuity-device")
                 .expect("valid local device id"),
         );
         // Exercise the production fail-closed gate rather than the usual
@@ -10837,75 +10047,54 @@ mod tests {
         std::iter::from_fn(|| commands.try_recv().ok()).collect()
     }
 
-    fn personal_workspaces_sent(commands: &[NetCmd]) -> Vec<NeighbourMsg> {
-        commands
-            .iter()
-            .filter_map(|command| match command {
-                NetCmd::PublishCheckpoint {
-                    msg: msg @ NeighbourMsg::PersonalWorkspaces { .. },
-                    ..
-                } => Some(msg.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
     #[test]
+    #[serial_test::serial]
     #[allow(
         clippy::too_many_lines,
         reason = "two devices, their exchange in both directions and a stranger's refusal form one scenario"
     )]
     fn a_persons_devices_share_their_workspace_list_and_join_its_rooms() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0x3C; 32]);
-        let laptop_device = iroh::SecretKey::from_bytes(&[0x3D; 32]);
-        let board_device = iroh::SecretKey::from_bytes(&[0x3E; 32]);
-        let collab_types::caps::Principal::Person(person) =
-            collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            )
-        else {
-            panic!("a root names a person");
+        use crate::shell::network::one_host_tests::{
+            Device, Person, Wakes, hosted_workspace, scratch, until,
         };
-        let (laptop_tree, research) = tree_with_own_workspace(&person, "Research");
-        let (board_tree, board_home) = tree_with_own_workspace(&person, "Board home");
-        let (laptop, mut laptop_commands) =
-            personal_workspaces_network_for_test(&root, &laptop_device, laptop_tree);
-        let (board, mut board_commands) =
-            personal_workspaces_network_for_test(&root, &board_device, board_tree);
-        let topic = personal_continuity_topic_id(&root.verifying_key().to_bytes());
+        use tilo_user_identity::DeviceCapabilities;
 
-        // The laptop lists its workspace on its first tick.
-        laptop.reconcile_personal_workspaces();
-        let sent = personal_workspaces_sent(&drain(&mut laptop_commands));
-        assert_eq!(sent.len(), 1, "one signed list per change");
-        laptop.reconcile_personal_workspaces();
-        assert!(
-            personal_workspaces_sent(&drain(&mut laptop_commands)).is_empty(),
-            "an unchanged list is not resent every frame"
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let dir = scratch();
+        let wakes = Arc::new(Wakes::default());
+        let person = Person::new(0x3C);
+        home.env().set("TILO_USER_ID", person.id());
+        let laptop = Device::start(
+            &person,
+            "Laptop",
+            &dir.path().join("laptop"),
+            0x3D,
+            DeviceCapabilities::primary(),
+            &wakes,
         );
-
-        // Before the laptop has introduced itself its list is not merged.
-        let list = sent.into_iter().next().expect("list");
-        board.dispatch_neighbour_msg(topic, laptop_device.public(), None, false, list.clone());
-        assert!(
-            !board
-                .replica
-                .lock()
-                .unwrap()
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == research)
+        let board = Device::start(
+            &person,
+            "Board",
+            &dir.path().join("board"),
+            0x3E,
+            DeviceCapabilities::primary(),
+            &wakes,
         );
+        // Each makes a workspace, hosted on it.
+        let (_, research) = hosted_workspace(&laptop, &[&board], "Research");
+        let (_, board_home) = hosted_workspace(&board, &[&laptop], "Board home");
 
-        authenticated_personal_peer(&board, &root, &laptop_device);
-        drain(&mut board_commands);
-        board.dispatch_neighbour_msg(topic, laptop_device.public(), None, false, list);
+        // The person's list brings each device the other's workspace, which
+        // it enters at the other device's host: nobody invites anybody.
+        board.reach(&laptop);
+        laptop.reach(&board);
+        until(
+            &[&laptop, &board],
+            "each device to hold the other's workspace",
+            || (board.holds(research) && laptop.holds(board_home)).then_some(()),
+        );
         {
-            let replica = board.replica.lock().unwrap();
-            let tree = replica.tree.read();
+            let tree = board.tree.read();
             let joined = tree
                 .desktop
                 .workspaces
@@ -10913,57 +10102,31 @@ mod tests {
                 .find(|workspace| workspace.room() == research)
                 .expect("the laptop's workspace is on the board");
             assert_eq!(joined.name, "Research");
-            assert_eq!(joined.owner().map(String::as_str), Some(person.as_str()));
             assert_eq!(
-                tree.desktop.room_of(tree.desktop.active),
-                Some(board_home),
-                "the board keeps looking at its own workspace"
+                joined.owner().map(String::as_str),
+                Some(person.id().as_str())
+            );
+            // A device that so far has only rooms of its own shows the first
+            // room it holds through another device's host.
+            assert_eq!(
+                tree.desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room),
+                Some(research),
+                "the board shows the first room it holds through the laptop's host"
             );
         }
-        let answered = drain(&mut board_commands);
+        assert_eq!(board.workspaces_of(research), 1);
+        assert_eq!(laptop.workspaces_of(board_home), 1);
         assert!(
-            answered.iter().any(|command| matches!(
-                command,
-                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. }, .. }
-                    if *ws == room_topic_id(research) && *room == research.to_string()
-            )),
-            "the board asks the new workspace's room for its content at once"
-        );
-        let reply = personal_workspaces_sent(&answered);
-        assert_eq!(
-            reply.len(),
-            1,
-            "the board answers with what the laptop lacks"
+            laptop.net().pending_invitations(research).is_empty()
+                && board.net().pending_invitations(board_home).is_empty(),
+            "nobody was invited"
         );
 
-        authenticated_personal_peer(&laptop, &root, &board_device);
-        drain(&mut laptop_commands);
-        laptop.dispatch_neighbour_msg(
-            topic,
-            board_device.public(),
-            None,
-            false,
-            reply.into_iter().next().expect("reply"),
-        );
-        assert!(
-            laptop
-                .replica
-                .lock()
-                .unwrap()
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == board_home),
-            "the board's workspace reaches the laptop"
-        );
-        assert!(
-            personal_workspaces_sent(&drain(&mut laptop_commands)).is_empty(),
-            "two devices that agree fall quiet"
-        );
-
-        // Another person's device cannot add workspaces to this list.
+        // Another person's device cannot add workspaces to this list, before
+        // or after it says who it is: its signed list names its own room on
+        // its own host, and the board takes neither the room nor the device.
         let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x4C; 32]);
         let stranger_device = iroh::SecretKey::from_bytes(&[0x4D; 32]);
         let collab_types::caps::Principal::Person(outsider) =
@@ -10976,45 +10139,65 @@ mod tests {
             panic!("a root names a person");
         };
         let (stranger_tree, theirs) = tree_with_own_workspace(&outsider, "Theirs");
-        let (stranger, mut stranger_commands) =
+        let (stranger, _stranger_commands) =
             personal_workspaces_network_for_test(&stranger_root, &stranger_device, stranger_tree);
-        stranger.reconcile_personal_workspaces();
-        let Some(NeighbourMsg::PersonalWorkspaces { update, .. }) =
-            personal_workspaces_sent(&drain(&mut stranger_commands))
-                .into_iter()
-                .next()
-        else {
-            panic!("the stranger lists their workspace");
+        let update = {
+            let mut list = stranger
+                .personal_workspaces
+                .as_ref()
+                .expect("the stranger keeps a list")
+                .lock()
+                .unwrap();
+            let held = crate::shell::personal_workspaces::HeldRooms::from([(
+                theirs,
+                *stranger_device.public().as_bytes(),
+            )]);
+            assert!(list.publish_local(&stranger.tree.read(), &held));
+            list.snapshot(
+                &ed25519_dalek::SigningKey::from_bytes(&stranger_device.to_bytes()),
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the stranger signs its list")
         };
+        let topic = personal_continuity_topic_id(&person.user());
+        let offer = || {
+            board.net().dispatch_neighbour_msg(
+                topic,
+                stranger_device.public(),
+                None,
+                false,
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: person.user(),
+                    update: Box::new(update.clone()),
+                },
+            );
+        };
+        offer();
         authenticated_personal_peer_on_topic(
-            &board,
+            board.net(),
             &stranger_root,
             &stranger_device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             topic,
         );
-        board.dispatch_neighbour_msg(
-            topic,
-            stranger_device.public(),
-            None,
-            false,
-            NeighbourMsg::PersonalWorkspaces {
-                user_public_key: root.verifying_key().to_bytes(),
-                update,
-            },
-        );
+        offer();
+        board.frame();
+        assert!(!board.tree.read().has_workspace(theirs));
+        let known = board
+            .net()
+            .personal_workspaces
+            .as_ref()
+            .expect("the board keeps the list")
+            .lock()
+            .unwrap()
+            .device_choices(board_home);
         assert!(
-            !board
-                .replica
-                .lock()
-                .unwrap()
-                .tree
-                .read()
-                .desktop
-                .workspaces
+            known
                 .iter()
-                .any(|workspace| workspace.room() == theirs)
+                .all(|choice| choice.device != *stranger_device.public().as_bytes()),
+            "the stranger's device is not one of the person's: {known:?}"
         );
+        drop((laptop, board));
     }
 
     fn test_continuity_policy(
@@ -11044,7 +10227,7 @@ mod tests {
             net,
             root,
             device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
         );
     }
 
@@ -11052,7 +10235,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
     ) {
         authenticated_personal_peer_on_topic(
             net,
@@ -11080,7 +10263,7 @@ mod tests {
             net,
             root,
             device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             personal_continuity_topic_id(&root.verifying_key().to_bytes()),
             capabilities,
         );
@@ -11090,7 +10273,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         topic: u64,
     ) {
         authenticated_peer_with(
@@ -11107,7 +10290,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         topic: u64,
         capabilities: tilo_user_identity::DeviceCapabilities,
     ) {
@@ -11172,12 +10355,7 @@ mod tests {
             let user = [0xA5; 32];
             let (mut net, _commands) = personal_continuity_network_for_test(user);
             let room = RoomId::new();
-            net.replica
-                .lock()
-                .expect("replica")
-                .tree
-                .write()
-                .adopt_continuation_room(room, "remote-device");
+            net.tree.write().join_room("Plans", room);
             let remote = test_device(0xA6);
             let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
                 remote,
@@ -11227,15 +10405,6 @@ mod tests {
             );
             assert!(!path.exists());
             assert!(!personal_continuity_backup_path(&path).exists());
-            assert!(
-                net.replica
-                    .lock()
-                    .expect("replica")
-                    .tree
-                    .read()
-                    .continuation_rooms
-                    .is_empty()
-            );
             assert_eq!(
                 crate::shell::personal_continuity_registry::global_registry()
                     .lock()
@@ -11270,7 +10439,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: user,
-                    publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(&peer.public()),
                     snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
                 },
             );
@@ -11326,15 +10495,15 @@ mod tests {
             let relay_key = iroh::SecretKey::from_bytes(&[0x84; 32]);
             let relay_signing_key = ed25519_dalek::SigningKey::from_bytes(&relay_key.to_bytes());
             let user_public_key = root.verifying_key().to_bytes();
-            let local_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let local_device = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 local_key.verifying_key().to_bytes(),
             ))
             .expect("local device id");
-            let remote_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let remote_device = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 remote_key.verifying_key().to_bytes(),
             ))
             .expect("remote device id");
-            let relay_service = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let relay_service = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 relay_key.public().as_bytes(),
             ))
             .expect("relay service id");
@@ -11444,13 +10613,14 @@ mod tests {
     }
 
     fn fabric_snapshot(
-        owner: crate::shell::personal_continuity::DeviceId,
+        owner: tilo_network_actor::fabric::DeviceId,
         counter: u64,
     ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
         use crate::shell::device_fabric::{
             DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-            FabricCapabilities, FabricStamp, OwnerSession,
+            FabricCapabilities, OwnerSession,
         };
+        use tilo_network_actor::fabric::FabricStamp;
         DeviceFabricSnapshot {
             schema_version: FABRIC_SCHEMA_VERSION,
             presence: DevicePresence {
@@ -11531,14 +10701,15 @@ mod tests {
     }
 
     pub(super) fn rich_display_network_snapshot(
-        owner: crate::shell::personal_continuity::DeviceId,
+        owner: tilo_network_actor::fabric::DeviceId,
     ) -> (
         crate::shell::device_fabric::DeviceFabricSnapshot,
-        crate::shell::device_fabric::DisplayOutputObservation,
+        tilo_network_actor::fabric::DisplayOutputObservation,
     ) {
-        use crate::shell::device_fabric::{
-            DisplayConnectorPlacement, DisplayOutputObservation, DisplayPlacement, DisplayRect,
-        };
+        use crate::shell::device_fabric::DisplayPlacement;
+        use tilo_network_actor::fabric::DisplayConnectorPlacement;
+        use tilo_network_actor::fabric::DisplayOutputObservation;
+        use tilo_network_actor::fabric::DisplayRect;
         let mut snapshot = fabric_snapshot(owner.clone(), 1);
         let rect = DisplayRect {
             x: 0,
@@ -11582,9 +10753,9 @@ mod tests {
     #[test]
     fn offline_display_cache_requires_root_enrolment_and_exact_revision() {
         use crate::shell::device_fabric::DeviceFabric;
-        use crate::shell::personal_continuity::DeviceId;
         use std::collections::BTreeSet;
         use std::os::unix::fs::PermissionsExt as _;
+        use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
         let owner = DeviceId::new("offline-display").unwrap();
@@ -11640,8 +10811,8 @@ mod tests {
     #[test]
     fn offline_display_cache_rejects_corruption_without_partial_projection() {
         use crate::shell::device_fabric::DeviceFabric;
-        use crate::shell::personal_continuity::DeviceId;
         use std::collections::BTreeSet;
+        use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
         let owner = DeviceId::new("offline-display").unwrap();
@@ -11706,7 +10877,7 @@ mod tests {
         // assigned workspaces only, so nothing but the display cache could.
         authenticated_workspace_peer(&net, &root, &peer);
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
         let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
@@ -11806,7 +10977,7 @@ mod tests {
             .unwrap()
             .insert(*peer.public().as_bytes());
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let local = net.personal_continuity_device.clone().unwrap();
         let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
@@ -11834,7 +11005,7 @@ mod tests {
             ws: personal_continuity_topic_id(&user),
             peer: peer.public(),
             cause: PeerDepartureCause::GossipNeighborDown,
-            membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
         });
         assert!(!net.person_display_devices(&local)[0].online);
         assert!(
@@ -11859,10 +11030,10 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[0xE2; 32]);
         let (mut net, _commands) = personal_continuity_network_for_test(user);
         let allowed = net.continuity_policy_override;
-        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
         authenticated_personal_peer_at(&net, &root, &peer, epoch);
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let (mut snapshot, observation) = rich_display_network_snapshot(owner.clone());
         net.device_fabric
@@ -11883,7 +11054,7 @@ mod tests {
         net.dispatch_personal_fabric(
             topic,
             peer.public(),
-            crate::network::actor::MembershipEpoch::for_test(2),
+            tilo_network_actor::MembershipEpoch::for_test(2),
             user,
             payload.clone(),
         );
@@ -11932,7 +11103,7 @@ mod tests {
         fn device_fabric_store_recovers_from_valid_backup() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-device-fabric.postcard");
-            let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+            let owner = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
             let mut expected = crate::shell::device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
             let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
@@ -11951,7 +11122,7 @@ mod tests {
             let peer_device = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
             authenticated_personal_peer(&net, &root, &peer_device);
-            let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let owner = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .unwrap();
@@ -11961,20 +11132,19 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
             );
             assert!(net.device_fabric().snapshots().contains_key(&owner));
 
-            let forged =
-                crate::shell::personal_continuity::DeviceId::new("some-other-device").unwrap();
+            let forged = tilo_network_actor::fabric::DeviceId::new("some-other-device").unwrap();
             let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
             incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
             );
@@ -11986,7 +11156,7 @@ mod tests {
             let user = root.verifying_key().to_bytes();
             let target_key = iroh::SecretKey::generate();
             let (net, mut commands) = personal_continuity_network_for_test(user);
-            let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let target = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 target_key.public().as_bytes(),
             ))
             .unwrap();
@@ -12035,7 +11205,7 @@ mod tests {
             let peer_device = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
             authenticated_personal_peer(&net, &root, &peer_device);
-            let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let source = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .unwrap();
@@ -12055,7 +11225,7 @@ mod tests {
                 net.dispatch_personal_fabric(
                     personal_continuity_topic_id(&user),
                     peer_device.public(),
-                    crate::network::actor::MembershipEpoch::for_test(1),
+                    tilo_network_actor::MembershipEpoch::for_test(1),
                     user,
                     payload.clone(),
                 );
@@ -12071,11 +11241,11 @@ mod tests {
             let mut misaddressed = envelope;
             misaddressed.request_id = [9; 16];
             misaddressed.target =
-                crate::shell::personal_continuity::DeviceId::new("another-device").unwrap();
+                tilo_network_actor::fabric::DeviceId::new("another-device").unwrap();
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
             );
@@ -12087,13 +11257,12 @@ mod tests {
             let user = root.verifying_key().to_bytes();
             let peer = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
-            let old_epoch = crate::network::actor::MembershipEpoch::for_test(41);
-            let new_epoch = crate::network::actor::MembershipEpoch::for_test(42);
+            let old_epoch = tilo_network_actor::MembershipEpoch::for_test(41);
+            let new_epoch = tilo_network_actor::MembershipEpoch::for_test(42);
             authenticated_personal_peer_at(&net, &root, &peer, old_epoch);
-            let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                peer.public().as_bytes(),
-            ))
-            .unwrap();
+            let source =
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                    .unwrap();
             let target = net.personal_continuity_device.clone().unwrap();
             let mut envelope = fabric_envelope(
                 0xD4,
@@ -12138,7 +11307,7 @@ mod tests {
             let local_user = local_root.verifying_key().to_bytes();
             let peer = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(local_user);
-            let epoch = crate::network::actor::MembershipEpoch::for_test(51);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(51);
             authenticated_personal_peer_on_topic(
                 &net,
                 &other_root,
@@ -12146,10 +11315,9 @@ mod tests {
                 epoch,
                 personal_continuity_topic_id(&local_user),
             );
-            let peer_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                peer.public().as_bytes(),
-            ))
-            .unwrap();
+            let peer_device =
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                    .unwrap();
             assert!(net.current_personal_route(&peer_device).is_none());
             net.peer_identities
                 .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
@@ -12186,7 +11354,7 @@ mod tests {
                 &net,
                 &local_root,
                 &peer,
-                crate::network::actor::MembershipEpoch::for_test(52),
+                tilo_network_actor::MembershipEpoch::for_test(52),
             );
             // Prove the actor-only token is not part of the serializable envelope:
             // changing local route authority leaves the exact wire bytes unchanged.
@@ -12549,7 +11717,7 @@ mod tests {
         fn personal_continuity_counter_and_checkpoint_survive_restart_store() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-continuity.postcard");
-            let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+            let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
             let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
                 device.clone(),
                 41,
@@ -12631,6 +11799,88 @@ mod tests {
         personal_continuity_topic_is_stable_and_root_bound();
     }
 
+    /// What another device continues in a room the person's list has not
+    /// brought here yet makes no workspace and marks nothing joined: the
+    /// list says which rooms are the person's and where they are hosted.
+    /// The app state is kept, and shows once the room is entered.
+    #[test]
+    #[serial_test::serial]
+    fn continued_app_state_waits_for_the_list_to_bring_its_room() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
+            LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
+        };
+        use tilo_network_actor::fabric::DeviceId;
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
+        let user_public_key = root.verifying_key().to_bytes();
+        let source_endpoint = iroh::SecretKey::from_bytes(&[0xE6; 32]);
+        let source_device = DeviceId::new(hex::encode(source_endpoint.public().as_bytes()))
+            .expect("endpoint ids are portable device ids");
+        let room = RoomId::new();
+        let tab = 0xC011_0101;
+        let app = AppInstanceState::new(
+            AppInstanceId(tab),
+            TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            LaunchIntent::app("so.tilo.browser").expect("known app id"),
+            None,
+            ContinuityStamp {
+                counter: 1,
+                device: source_device.clone(),
+            },
+        );
+        let snapshot = DeviceContinuationSnapshot::new(
+            source_device,
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            }],
+        )
+        .expect("valid snapshot");
+        let mut continuity = PersonalContinuity::default();
+        continuity.upsert(snapshot).expect("snapshot merges");
+        let checkpoint = postcard::to_allocvec(&continuity).expect("checkpoint encodes");
+
+        let (target, _commands) = personal_continuity_network_for_test(user_public_key);
+        authenticated_personal_peer(&target, &root, &source_endpoint);
+        target.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            source_endpoint.public(),
+            None,
+            false,
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
+                    &source_endpoint.public(),
+                ),
+                snapshot: checkpoint,
+            },
+        );
+        {
+            let tree = target.tree.read();
+            assert!(!tree.has_workspace(room), "continuity made a workspace");
+            assert!(
+                !tree.joining_rooms.contains(&room),
+                "continuity marked it joined"
+            );
+            assert!(!tree.continuation_tabs.contains(&tab));
+        }
+
+        // The list brings the room: entering it makes its workspace.
+        target.tree.write().join_native_room("Plans", room);
+        assert!(target.materialize_kept_continuations());
+        assert!(
+            target.tree.read().continuation_tabs.contains(&tab),
+            "the kept app state shows in the entered room"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
     /// Exercises the shipped continuation boundaries as one lifecycle: an
     /// app report becomes a private Postcard checkpoint, a second shell
     /// turns it into dormant cards, the normal launcher handoff receives the
@@ -12644,8 +11894,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn personal_continuity_app_report_checkpoint_restore_close_and_restart_lifecycle() {
-        use crate::shell::personal_continuity::{AppInstanceId, DeviceId, LaunchIntent};
+        use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
         use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
+        use tilo_network_actor::fabric::DeviceId;
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
         let user_public_key = root.verifying_key().to_bytes();
@@ -12769,10 +12020,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("continuity store");
         let continuity_path = dir.path().join("personal-continuity.postcard");
         let (mut source, _source_commands) = personal_continuity_network_for_test(user_public_key);
-        source.replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
-            1,
-            source_tree.shared(),
-        )));
+        source.tree = source_tree.shared();
         source.personal_continuity_device = Some(source_device.clone());
         source.personal_continuity_path = Some(continuity_path.clone());
         let checkpoint = source
@@ -12808,6 +12056,9 @@ mod tests {
 
         let (target, _target_commands) = personal_continuity_network_for_test(user_public_key);
         authenticated_personal_peer(&target, &root, &source_endpoint);
+        // The person's list brought the room here; continuity shows what is
+        // open in it.
+        target.tree.write().join_room("Plans", room);
         target.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
@@ -12815,15 +12066,14 @@ mod tests {
             false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
-                publisher: crate::network::behaviour::peer_liveness_handle(
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                     &source_endpoint.public(),
                 ),
                 snapshot: checkpoint,
             },
         );
         {
-            let replica = target.replica.lock().expect("target replica");
-            let tree = replica.tree.read();
+            let tree = target.tree.read();
             for tab in [browser_tab, ebook_tab, music_tab, file_tab] {
                 assert!(tree.continuation_tabs.contains(&tab));
             }
@@ -12877,9 +12127,8 @@ mod tests {
         // a fresh checkpoint tombstones that durable tab. The target removes
         // it while retaining the other independent offers.
         {
-            let replica = source.replica.lock().expect("source replica");
             assert!(crate::shell::tab_binding::remove_tab(
-                &mut replica.tree.write(),
+                &mut source.tree.write(),
                 browser_tab,
             ));
         }
@@ -12901,20 +12150,18 @@ mod tests {
             false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
-                publisher: crate::network::behaviour::peer_liveness_handle(
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                     &source_endpoint.public(),
                 ),
                 snapshot: closed_checkpoint,
             },
         );
-        let replica = target.replica.lock().expect("target replica");
-        let tree = replica.tree.read();
+        let tree = target.tree.read();
         assert!(!tree.continuation_tabs.contains(&browser_tab));
         assert!(tree.continuation_tabs.contains(&ebook_tab));
         assert!(tree.continuation_tabs.contains(&music_tab));
         assert!(tree.continuation_tabs.contains(&file_tab));
         drop(tree);
-        drop(replica);
 
         // The checkpoint is written on the state writer.
         crate::shell::durable_writer::global().flush();
@@ -12945,7 +12192,7 @@ mod tests {
             authenticated_personal_peer(&net, &foreign_root, &foreign_device);
             while commands.try_recv().is_ok() {}
 
-            let foreign_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let foreign_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 foreign_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -12963,7 +12210,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: local_user,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &foreign_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&snapshot).expect("encode snapshot"),
@@ -12992,7 +12239,7 @@ mod tests {
             authenticated_personal_peer(&net, &root, &peer_device);
             while commands.try_recv().is_ok() {}
 
-            let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -13014,7 +12261,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &peer_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
@@ -13048,15 +12295,12 @@ mod tests {
             authenticated_personal_peer(&net, &root, &peer_device);
 
             let active_before = net
-                .replica
-                .lock()
-                .expect("replica")
                 .tree
                 .read()
                 .desktop
                 .active_workspace()
                 .map(|workspace| workspace.id);
-            let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -13083,7 +12327,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &peer_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&offered).expect("encode populated checkpoint"),
@@ -13098,8 +12342,7 @@ mod tests {
                 Some(&snapshot),
                 "a populated continuation must traverse the production Postcard codec"
             );
-            let replica = net.replica.lock().expect("replica");
-            let tree = replica.tree.read();
+            let tree = net.tree.read();
             assert_eq!(
                 tree.desktop
                     .active_workspace()
@@ -13107,15 +12350,9 @@ mod tests {
                 active_before,
                 "receiving a continuation must not move focus"
             );
-            let adopted = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .expect("continuation room is available for later user-directed restore");
             assert!(
-                adopted.strips.is_empty(),
-                "receiving a continuation must not recreate applications"
+                !tree.has_workspace(room) && !tree.is_joining(room),
+                "a continuation alone brings no workspace and no join: the person's list does"
             );
         }
 
@@ -13232,17 +12469,33 @@ mod tests {
                         ws: DEFAULT_WS_TOPIC,
                         peer,
                         cause: PeerDepartureCause::LivenessTimedOut,
-                        membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(
+                        membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(
                             u64::try_from(generation + 1).expect("small test generation"),
                         )),
                     })
                     .expect("bounded fixture fits the actor event channel");
             }
 
+            let turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let asked = Arc::clone(&turns);
+            let _ = net.event_wake.set(Box::new(move || {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+
             net.tick();
             assert_eq!(net.peer_departures().len(), MAX_NET_EVENTS_PER_TICK);
+            assert_eq!(
+                turns.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "a turn that left events queued asks for the next"
+            );
             net.tick();
             assert_eq!(net.peer_departures().len(), queued);
+            assert_eq!(
+                turns.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "a turn that drained the queue asks for none"
+            );
         }
 
         fn tick_with_no_events_is_noop() {
@@ -13265,7 +12518,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn invite_credentials_persist_and_accepting_joins_the_exact_room() {
+    fn invite_credentials_persist_and_live_claims_are_identified() {
         fn pending_invites_survive_restart_and_cancel_exactly_one_credential() {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("pending-invitations.json");
@@ -13377,989 +12630,8 @@ mod tests {
             );
         }
 
-        fn accepting_an_invite_joins_the_room_and_asks_it_for_a_catch_up() {
-            use crate::network::invite::make_invite_token;
-            use crate::shell::state::Workspace;
-
-            let host_ws = Workspace::new(
-                crate::shell::state::WorkspaceId::new(),
-                "Design review".to_string(),
-            );
-            let host_room = host_ws.room();
-            let owner_key = iroh::SecretKey::generate();
-            let owner_addr = iroh::EndpointAddr::new(owner_key.public())
-                .with_ip_addr("127.0.0.1:4001".parse().unwrap());
-            let token = make_invite_token(&owner_key, &host_ws, &owner_addr, 3600)
-                .expect("the host issues an invite");
-
-            let mut guest = WorkspaceTree::default();
-            let local = guest.append_empty_workspace("Mine");
-            let before = guest.room_of(local).expect("the guest's own room");
-            assert_ne!(before, host_room);
-            let tree = guest.shared();
-            let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
-
-            let joined = net
-                .accept_invite(&token)
-                .expect("a well-formed invite is accepted");
-            assert_eq!(
-                joined, host_room,
-                "the guest joins the room it was invited to"
-            );
-            assert_eq!(
-                tree.read().room_of(local),
-                Some(before),
-                "the guest's own workspace stays its own room",
-            );
-            assert!(
-                tree.read()
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.room() == host_room),
-                "the inviter's room is a workspace of its own on the guest",
-            );
-
-            // Three commands, in order: join the stable room shard, dial the
-            // address the token named, then ask that room for a catch-up.
-            let subscribe = cmd_rx
-                .try_recv()
-                .expect("accepting an invite must join its room topic");
-            match subscribe {
-                NetCmd::JoinWorkspace { ws, .. } => assert_eq!(ws, room_topic_id(host_room)),
-                other => panic!("expected NetCmd::JoinWorkspace, got {other:?}"),
-            }
-            let dial = cmd_rx
-                .try_recv()
-                .expect("accepting an invite must dial the address it named");
-            match dial {
-                NetCmd::Connect { addr } => assert_eq!(addr, owner_addr),
-                other => panic!("expected NetCmd::Connect, got {other:?}"),
-            }
-            let cmd = cmd_rx
-                .try_recv()
-                .expect("accepting an invite must ask the room for a catch-up");
-            match cmd {
-                NetCmd::Publish { ws, msg, .. } => {
-                    assert_eq!(ws, room_topic_id(host_room));
-                    match msg {
-                        NeighbourMsg::SyncReq {
-                            room, invite_id, ..
-                        } => {
-                            assert_eq!(
-                                room,
-                                host_room.to_string(),
-                                "the request must name the room just joined",
-                            );
-                            assert_eq!(
-                                invite_id,
-                                Some(crate::network::invite::invite_id(&token)),
-                                "admission must redeem this exact signed invite",
-                            );
-                        }
-                        other => panic!("expected a SyncReq, got {other:?}"),
-                    }
-                }
-                other => panic!("expected NetCmd::Publish, got {other:?}"),
-            }
-            assert!(
-                cmd_rx.try_recv().is_err(),
-                "one room joined is one request — the guest must not ask about \
-                 anything else",
-            );
-        }
-
-        fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
-            use crate::network::invite::{
-                HomeHostPin, InviteRole, InviteTerms, make_invite_token_with_recipient,
-            };
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-            let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
-            let owner_device = iroh::SecretKey::from_bytes(&[0x52; 32]);
-            let relay_service = iroh::SecretKey::from_bytes(&[0x53; 32]);
-            let home_device = iroh::SecretKey::from_bytes(&[0x54; 32]);
-            let mut owner_cert = DeviceCert {
-                user_public_key: owner_root.verifying_key().to_bytes(),
-                device_public_key: *owner_device.public().as_bytes(),
-                device_label: "Alice laptop".into(),
-                capabilities: DeviceCapabilities::primary(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut owner_cert, &owner_root).expect("owner certificate");
-
-            let host_workspace = crate::shell::state::Workspace::new(
-                crate::shell::state::WorkspaceId::new(),
-                "Alice shared",
-            );
-            let room = host_workspace.room();
-            let owner_addr = iroh::EndpointAddr::new(owner_device.public())
-                .with_ip_addr("127.0.0.1:4510".parse().expect("owner address"));
-            let host_addr = iroh::EndpointAddr::new(relay_service.public())
-                .with_ip_addr("127.0.0.1:4511".parse().expect("relay address"));
-            let pin = HomeHostPin {
-                addr: host_addr.clone(),
-                user_public_key: owner_cert.user_public_key,
-                device_public_key: *home_device.public().as_bytes(),
-            };
-            let token = make_invite_token_with_recipient(
-                &owner_device,
-                &host_workspace,
-                &owner_addr,
-                std::slice::from_ref(&host_addr),
-                std::slice::from_ref(&pin),
-                Some(owner_cert),
-                InviteTerms {
-                    role: InviteRole::Editor,
-                    recipient: None,
-                    expiry_seconds_from_now: 3600,
-                },
-            )
-            .expect("Alice issues Bob a pinned invite");
-
-            let mut bob_tree = WorkspaceTree::default();
-            bob_tree.append_empty_workspace("Bob local");
-            let (bob, mut commands) = shell_network_for_test(bob_tree.shared(), 0xB0B);
-            assert_eq!(bob.accept_invite(&token).expect("Bob accepts"), room);
-
-            let mut pinned = Vec::new();
-            while let Ok(command) = commands.try_recv() {
-                if let NetCmd::ConnectHost { addr, expectation } = command {
-                    pinned.push((addr, expectation));
-                }
-            }
-            assert_eq!(
-                pinned.len(),
-                1,
-                "a pinned host must not also be dialed unpinned"
-            );
-            assert_eq!(pinned[0].0, host_addr);
-            assert_eq!(
-                pinned[0].1,
-                Some(crate::network::actor::HomePeerExpectation {
-                    user_public_key: pin.user_public_key,
-                    device_public_key: pin.device_public_key,
-                })
-            );
-        }
-
         pending_invites_survive_restart_and_cancel_exactly_one_credential();
         live_session_claims_are_identified_before_dispatch();
-        accepting_an_invite_joins_the_room_and_asks_it_for_a_catch_up();
-        accepting_a_pinned_home_host_invite_queues_exact_expectation_once();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn redeemed_invites_grant_exactly_their_signed_role_and_name() {
-        /// Whether the author `net` authenticated for `envelope` may make
-        /// the change it carries, decided the way the broker decides it.
-        fn document_allowed(
-            net: &ShellNetwork,
-            origin: &crate::shell::state::PeerOrigin,
-            cluster_id: &str,
-            app_id: &str,
-            record_id: &str,
-            envelope: &collab_types::SignedOp,
-        ) -> bool {
-            net.peer_document_author(origin, cluster_id, app_id, record_id, envelope)
-                .is_some_and(|author| {
-                    let allows = |node: &tilo_action_policy::TreePath, kind| {
-                        author.answer(
-                            node,
-                            kind,
-                            &tilo_desktop_model::context_at(tilo_clock::unix_now()),
-                        ) == tilo_action_policy::Answer::Allow
-                    };
-                    collab_types::decide_op(
-                        envelope,
-                        &collab_types::Record {
-                            room: cluster_id,
-                            app: app_id,
-                            record: record_id,
-                        },
-                        None,
-                        None,
-                        &collab_types::Surfaces::process(),
-                        &allows,
-                    )
-                    .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
-                })
-        }
-
-        fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
-            use tilo_user_identity::{
-                DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
-                sign_device_cert, sign_revocation_entry,
-            };
-
-            // The room identity is read from the configuration directory; keep
-            // tests that repoint it from doing so halfway through this one.
-            let _env = tilo_test_env::lock();
-
-            let user_root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-            let device = iroh::SecretKey::from_bytes(&[62; 32]);
-            let mut cert = DeviceCert {
-                user_public_key: user_root.verifying_key().to_bytes(),
-                device_public_key: *device.public().as_bytes(),
-                device_label: "Guest laptop".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut cert, &user_root).expect("certificate");
-
-            let room = RoomId::new();
-            let mut workspace = crate::shell::state::Workspace::in_room(
-                crate::shell::state::WorkspaceId(17),
-                room,
-                "Shared",
-            );
-            workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
-            let mut tree = WorkspaceTree::default();
-            tree.desktop.workspaces.push(workspace);
-            let (mut net, _commands) = shell_network_for_test(tree.shared(), 99);
-            net.require_peer_identity = true;
-            let _ = net
-                .pending_identity_admissions
-                .lock()
-                .expect("pending")
-                .insert(
-                    [1; 32],
-                    PendingInvitation {
-                        id: [1; 32],
-                        room,
-                        name: "Ada".into(),
-                        role: crate::network::invite::InviteRole::Editor,
-                        token: "invite-one".into(),
-                        recipient_user_public_key: None,
-                        expiry_unix_seconds: u64::MAX,
-                    },
-                );
-
-            let attacker_root = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
-            let attacker_device = iroh::SecretKey::from_bytes(&[84; 32]);
-            let mut attacker_cert = DeviceCert {
-                user_public_key: attacker_root.verifying_key().to_bytes(),
-                device_public_key: *attacker_device.public().as_bytes(),
-                device_label: "Link thief".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut attacker_cert, &attacker_root).expect("attacker certificate");
-            net.redeem_invited_identity(
-                room_topic_id(room),
-                [2; 32],
-                &attacker_device.public(),
-                &attacker_cert,
-            );
-            let collab_types::caps::Principal::Person(attacker_person) =
-                collab_types::caps::Principal::person_from_key(
-                    collab_types::crypto::Ed25519PublicKey::from_bytes(
-                        attacker_cert.user_public_key,
-                    ),
-                )
-            else {
-                unreachable!()
-            };
-            assert!(
-                net.replica
-                    .lock()
-                    .expect("replica")
-                    .tree
-                    .read()
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.room() == room)
-                    .is_some_and(|workspace| workspace.role_of(&attacker_person).is_none()),
-                "possession must not redeem an invite bound to a different person"
-            );
-
-            let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-            net.event_tx
-                .try_send(NetEvent::Msg {
-                    ws: room_topic_id(room),
-                    peer: device.public(),
-                    membership_epoch: None,
-                    replayed: false,
-                    msg: NeighbourMsg::IdentityHello {
-                        protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                        cert: Box::new(cert.clone()),
-                        revocations: Vec::new(),
-                        successions: Vec::new(),
-                    },
-                })
-                .expect("identity hello");
-            net.tick();
-            assert!(
-                !net.peer_room_allows(
-                    &origin,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Read
-                    ),
-                    false,
-                ),
-                "identity authentication alone must not consume an outstanding invite",
-            );
-            net.event_tx
-                .try_send(NetEvent::Msg {
-                    ws: room_topic_id(room),
-                    peer: device.public(),
-                    membership_epoch: None,
-                    replayed: false,
-                    msg: NeighbourMsg::SyncReq {
-                        since: Vec::new(),
-                        room: room.to_string(),
-                        invite_id: Some([99; 32]),
-                        nonce: 0,
-                    },
-                })
-                .expect("wrong invite redemption");
-            net.tick();
-            assert!(
-                !net.peer_room_allows(
-                    &origin,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Read
-                    ),
-                    false,
-                ),
-                "a different invite hash must not grant room membership",
-            );
-            net.event_tx
-                .try_send(NetEvent::Msg {
-                    ws: room_topic_id(room),
-                    peer: device.public(),
-                    membership_epoch: None,
-                    replayed: false,
-                    msg: NeighbourMsg::SyncReq {
-                        since: Vec::new(),
-                        room: room.to_string(),
-                        invite_id: Some([1; 32]),
-                        nonce: 0,
-                    },
-                })
-                .expect("exact invite redemption");
-            net.tick();
-            let collab_types::caps::Principal::Person(person) =
-                collab_types::caps::Principal::person_from_key(
-                    collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
-                )
-            else {
-                unreachable!()
-            };
-            let replica = net.replica.lock().expect("replica");
-            let tree = replica.tree.read();
-            let joined = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .expect("workspace");
-            assert_eq!(
-                joined.role_of(&person),
-                Some(crate::shell::state::CapRole::Editor)
-            );
-            drop(tree);
-            drop(replica);
-
-            let changes = net
-                .replica
-                .lock()
-                .expect("replica")
-                .tree
-                .write()
-                .export_room_changes_since(room, &[])
-                .expect("room export");
-            let mut guest = WorkspaceTree::default();
-            guest.join_room("Guest", room).expect("joins the room");
-            let host_origin = crate::shell::state::PeerOrigin::peer(&net.local_peer_id);
-            assert!(guest.pin_room_authority(room, host_origin.clone()));
-            guest
-                .apply_room_changes(room, &changes, &host_origin)
-                .expect("host room changes apply");
-            assert_eq!(
-                guest
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.room() == room)
-                    .expect("guest workspace")
-                    .role_of(&person),
-                Some(crate::shell::state::CapRole::Editor),
-                "the membership grant must be present in the replicated room document"
-            );
-
-            let route = crate::shell::collab_broker::CrdtRoute::record(
-                "so.tilo.notes",
-                room.to_string(),
-                "meeting-notes",
-            );
-            let signing = ed25519_dalek::SigningKey::from_bytes(&device.to_bytes());
-            let mut envelope = collab_types::SignedOp::new_unsigned(
-                collab_types::DocumentMutation::Incremental(b"change".to_vec())
-                    .encode()
-                    .expect("typed mutation"),
-                collab_types::document_artifact_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                ),
-                collab_types::Ed25519PublicKey::from_bytes(signing.verifying_key().to_bytes()),
-                collab_types::document_attestation_id(
-                    &route.app_id,
-                    &route.cluster_id,
-                    &route.record_id,
-                ),
-                collab_types::OpKind::Change,
-                std::time::SystemTime::now(),
-                1,
-            );
-            collab_types::sign_op(&mut envelope, &signing).expect("signed mutation");
-            assert!(document_allowed(
-                &net,
-                &origin,
-                &route.cluster_id,
-                &route.app_id,
-                &route.record_id,
-                &envelope,
-            ),);
-            assert!(!document_allowed(
-                &net,
-                &origin,
-                &route.cluster_id,
-                &route.app_id,
-                "foreign-record",
-                &envelope,
-            ),);
-            assert!(net.peer_room_allows(
-                &origin,
-                room_topic_id(room),
-                &(
-                    tilo_action_policy::TreePath::root(),
-                    tilo_action_policy::ActionKind::Read
-                ),
-                false,
-            ));
-            assert!(net.peer_room_allows(
-                &origin,
-                room_topic_id(room),
-                &(
-                    tilo_action_policy::TreePath::root(),
-                    tilo_action_policy::ActionKind::Undoable
-                ),
-                false,
-            ));
-
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .expect("workspace");
-            workspace.dismiss(&person);
-            workspace.admit(person.clone(), tilo_action_policy::Role::Commenter);
-            drop(tree);
-            drop(replica);
-            assert!(
-                !document_allowed(
-                    &net,
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &envelope,
-                ),
-                "a commenter must not smuggle a splice through the generic document route",
-            );
-            // Decided against the app's surface, the commenter's comment is
-            // theirs to make.
-            let surface: &str = "[[resources]]\nkind = \"notes.page\"\nlabel = \"Page\"\nversion = 1\n\n[[resources.verbs]]\nid = \"comment\"\nkind = \"undoable\"\nlabel = \"Comment\"\nfield = \"comments\"\nparams = []\n";
-            let hash = *blake3::hash(surface.as_bytes()).as_bytes();
-            let hex = hex::encode(hash);
-            collab_types::Surfaces::set_process(collab_types::Surfaces::from_source(
-                std::sync::Arc::new(collab_types::surface::ContentSurfaces::new(
-                    move |_, wanted| (wanted == hex).then(|| surface.as_bytes().to_vec()),
-                )),
-            ));
-            let mut comment = envelope.clone().with_surface(Some(hash));
-            {
-                use automerge::transaction::Transactable as _;
-                let mut doc = automerge::AutoCommit::new();
-                doc.put(automerge::ROOT, "comment", "looks good").unwrap();
-                let context = tilo_actions::ActionContext {
-                    what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
-                        tilo_actions::ActionKey::new(&route.app_id, "notes.page", "comment"),
-                        [],
-                    ))),
-                    ..tilo_actions::ActionContext::for_resource(
-                        &route.record_id,
-                        "notes.page",
-                        "Page",
-                    )
-                };
-                doc.commit_with(
-                    automerge::transaction::CommitOptions::default()
-                        .with_message(context.change_message().unwrap()),
-                );
-                comment.payload = collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
-                    .encode()
-                    .unwrap();
-            }
-            collab_types::sign_op(&mut comment, &signing).expect("signed comment");
-            assert!(document_allowed(
-                &net,
-                &origin,
-                &route.cluster_id,
-                &route.app_id,
-                &route.record_id,
-                &comment,
-            ));
-
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .expect("workspace");
-            workspace.dismiss(&person);
-            drop(tree);
-            drop(replica);
-            assert!(
-                !net.peer_room_allows(
-                    &origin,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Read
-                    ),
-                    false,
-                ),
-                "removal blocks every new room frame even while the device stays authenticated"
-            );
-            assert!(
-                !document_allowed(
-                    &net,
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &envelope,
-                ),
-                "an operation signed while online is still refused if it arrives after removal",
-            );
-            let replica = net.replica.lock().expect("replica");
-            let mut tree = replica.tree.write();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .expect("workspace");
-            workspace.admit(person, tilo_action_policy::Role::Editor);
-            drop(tree);
-            drop(replica);
-
-            let mut revoked = RevocationEntry {
-                user_public_key: cert.user_public_key,
-                revoked_device_public_key: cert.device_public_key,
-                revoked_at_ns: 1,
-                reason: RevocationReason::Compromised,
-                signature: [0; 64],
-            };
-            sign_revocation_entry(&mut revoked, &user_root).expect("revocation");
-            net.accept_identity_hello(
-                room_topic_id(room),
-                &origin,
-                &device.public(),
-                &cert,
-                &[revoked],
-                &[],
-            );
-            assert!(net.peer_identities.get(&origin).is_none());
-            assert!(
-                !document_allowed(
-                    &net,
-                    &origin,
-                    &route.cluster_id,
-                    &route.app_id,
-                    &route.record_id,
-                    &envelope,
-                ),
-                "revocation removes document authority as well as app access",
-            );
-        }
-
-        fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-            // The room identity is read from the configuration directory; keep
-            // tests that repoint it from doing so halfway through this one.
-            let _env = tilo_test_env::lock();
-
-            let user_root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-            let device = iroh::SecretKey::from_bytes(&[82; 32]);
-            let mut cert = DeviceCert {
-                user_public_key: user_root.verifying_key().to_bytes(),
-                device_public_key: *device.public().as_bytes(),
-                device_label: "Viewer laptop".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut cert, &user_root).expect("certificate");
-
-            let room = RoomId::new();
-            let mut workspace = crate::shell::state::Workspace::in_room(
-                crate::shell::state::WorkspaceId(81),
-                room,
-                "Read only",
-            );
-            workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
-            let mut tree = WorkspaceTree::default();
-            tree.desktop.workspaces.push(workspace);
-            let (net, _commands) = shell_network_for_test(tree.shared(), 81);
-            let _ = net
-                .pending_identity_admissions
-                .lock()
-                .expect("pending")
-                .insert(
-                    [2; 32],
-                    PendingInvitation {
-                        id: [2; 32],
-                        room,
-                        name: "Vi".into(),
-                        role: crate::network::invite::InviteRole::Viewer,
-                        token: "invite-two".into(),
-                        recipient_user_public_key: Some(cert.user_public_key),
-                        expiry_unix_seconds: u64::MAX,
-                    },
-                );
-
-            let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-            net.accept_identity_hello(
-                room_topic_id(room),
-                &origin,
-                &device.public(),
-                &cert,
-                &[],
-                &[],
-            );
-            net.redeem_invited_identity(room_topic_id(room), [2; 32], &device.public(), &cert);
-            let collab_types::caps::Principal::Person(person) =
-                collab_types::caps::Principal::person_from_key(
-                    collab_types::crypto::Ed25519PublicKey::from_bytes(cert.user_public_key),
-                )
-            else {
-                unreachable!()
-            };
-            let replica = net.replica.lock().expect("replica");
-            let tree = replica.tree.read();
-            let joined = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .expect("workspace");
-            assert_eq!(
-                joined.role_of(&person),
-                Some(crate::shell::state::CapRole::Viewer),
-                "admission must enforce the signed invite role"
-            );
-            assert!(!joined.may_administer(&person));
-            drop(tree);
-            drop(replica);
-            assert!(net.peer_room_allows(
-                &origin,
-                room_topic_id(room),
-                &(
-                    tilo_action_policy::TreePath::root(),
-                    tilo_action_policy::ActionKind::Read
-                ),
-                false,
-            ));
-            assert!(
-                !net.peer_room_allows(
-                    &origin,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Undoable
-                    ),
-                    false,
-                ),
-                "a viewer may request/read room state but must not publish room mutations"
-            );
-        }
-
-        fn concurrent_invites_redeem_their_own_names_and_roles() {
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-            let (_tmp, tree, net, rooms) = net_with_rooms();
-            let room = rooms[0];
-            let make_guest = |seed: u8, label: &str| {
-                let authority_key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-                let device = iroh::SecretKey::from_bytes(&[seed.saturating_add(1); 32]);
-                let mut cert = DeviceCert {
-                    user_public_key: authority_key.verifying_key().to_bytes(),
-                    device_public_key: *device.public().as_bytes(),
-                    device_label: label.into(),
-                    capabilities: DeviceCapabilities::member(),
-                    issued_at_ns: 1,
-                    expires_at_ns: None,
-                    signature: [0; 64],
-                };
-                sign_device_cert(&mut cert, &authority_key).expect("certificate");
-                (device, cert)
-            };
-            let (viewer_device, viewer_cert) = make_guest(31, "Viewer device");
-            let (editor_device, editor_cert) = make_guest(41, "Editor device");
-            let mut pending = net.pending_identity_admissions.lock().unwrap();
-            for (id, admission) in [
-                (
-                    [11; 32],
-                    PendingInvitation {
-                        id: [11; 32],
-                        room,
-                        name: "Vera".into(),
-                        role: crate::network::invite::InviteRole::Viewer,
-                        token: "invite-eleven".into(),
-                        recipient_user_public_key: None,
-                        expiry_unix_seconds: u64::MAX,
-                    },
-                ),
-                (
-                    [12; 32],
-                    PendingInvitation {
-                        id: [12; 32],
-                        room,
-                        name: "Eli".into(),
-                        role: crate::network::invite::InviteRole::Editor,
-                        token: "invite-twelve".into(),
-                        recipient_user_public_key: None,
-                        expiry_unix_seconds: u64::MAX,
-                    },
-                ),
-            ] {
-                pending.insert(id, admission);
-            }
-            drop(pending);
-
-            net.redeem_invited_identity(
-                room_topic_id(room),
-                [12; 32],
-                &editor_device.public(),
-                &editor_cert,
-            );
-            net.redeem_invited_identity(
-                room_topic_id(room),
-                [11; 32],
-                &viewer_device.public(),
-                &viewer_cert,
-            );
-
-            let workspace = tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .cloned()
-                .expect("workspace");
-            let person = |cert: &DeviceCert| {
-                let collab_types::Principal::Person(person) =
-                    collab_types::Principal::person_from_key(
-                        collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key),
-                    )
-                else {
-                    unreachable!()
-                };
-                person
-            };
-            assert_eq!(
-                workspace.role_of(&person(&viewer_cert)),
-                Some(crate::shell::state::CapRole::Viewer),
-            );
-            assert_eq!(
-                workspace.role_of(&person(&editor_cert)),
-                Some(crate::shell::state::CapRole::Editor),
-            );
-            assert_eq!(
-                name_in(&tree, room, &viewer_device.public()).as_deref(),
-                Some("Vera"),
-            );
-            assert_eq!(
-                name_in(&tree, room, &editor_device.public()).as_deref(),
-                Some("Eli"),
-            );
-            assert!(net.pending_identity_admissions.lock().unwrap().is_empty());
-        }
-
-        exact_invite_redeems_as_editor_and_revocation_removes_trust();
-        signed_viewer_invite_admits_a_viewer_not_an_editor();
-        concurrent_invites_redeem_their_own_names_and_roles();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn room_governance_invites_are_bound_to_the_pinned_authority() {
-        fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-            // The room identity is read from the configuration directory; keep
-            // tests that repoint it from doing so halfway through this one.
-            let _env = tilo_test_env::lock();
-
-            let user_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-            let device = iroh::SecretKey::from_bytes(&[92; 32]);
-            let mut cert = DeviceCert {
-                user_public_key: user_root.verifying_key().to_bytes(),
-                device_public_key: *device.public().as_bytes(),
-                device_label: "Inviting device".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut cert, &user_root).expect("certificate");
-
-            let room = RoomId::new();
-            let mut tree = WorkspaceTree::default();
-            tree.join_room("Joining", room).expect("joins the room");
-            let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-            assert!(tree.pin_room_authority(room, origin.clone()));
-            let (net, _commands) = shell_network_for_test(tree.shared(), 92);
-            net.accept_identity_hello(
-                room_topic_id(room),
-                &origin,
-                &device.public(),
-                &cert,
-                &[],
-                &[],
-            );
-
-            assert!(
-                !net.peer_room_allows(
-                    &origin,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Undoable
-                    ),
-                    false,
-                ),
-                "before governance arrives the inviter is not yet in the local roster"
-            );
-            assert!(net.peer_room_allows(
-                &origin,
-                room_topic_id(room),
-                &(
-                    tilo_action_policy::TreePath::root(),
-                    tilo_action_policy::ActionKind::Undoable
-                ),
-                true,
-            ));
-
-            let stranger =
-                crate::shell::state::PeerOrigin::peer(&iroh::SecretKey::generate().public());
-            assert!(
-                !net.peer_room_allows(
-                    &stranger,
-                    room_topic_id(room),
-                    &(
-                        tilo_action_policy::TreePath::root(),
-                        tilo_action_policy::ActionKind::Undoable
-                    ),
-                    true,
-                ),
-                "bootstrap authority is pinned to one authenticated transport peer"
-            );
-        }
-
-        fn a_guest_cannot_mint_an_apparently_authoritative_room_invite() {
-            let mut tree = WorkspaceTree::default();
-            let local = tree.append_empty_workspace("Joined room");
-            let room = tree.room_of(local).expect("room");
-            tree.desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.id == local)
-                .expect("workspace")
-                .set_owner("remote-owner");
-            tree.room_authority.insert(
-                room,
-                crate::shell::state::RoomAuthority::Peer(crate::shell::state::PeerOrigin::peer(
-                    &iroh::SecretKey::generate().public(),
-                )),
-            );
-            let (net, _commands) = shell_network_for_test(tree.shared(), 0x1234);
-
-            let error = net
-                .issue_invite_named_with_role(
-                    local,
-                    3600,
-                    "Mallory",
-                    crate::network::invite::InviteRole::Editor,
-                )
-                .expect_err("a guest must not sign invites for somebody else's room");
-            // The guest holds no Invite grant, so the one invitation policy
-            // refuses before asking who governs the room.
-            assert_eq!(
-                Some(error.as_str()),
-                crate::shell::invite_policy::InviteRoute::Refused(
-                    crate::shell::invite_policy::InviteRefusal::NotPermitted,
-                )
-                .refusal(),
-            );
-        }
-
-        /// A token that does not verify joins nothing and asks nothing.
-        fn a_refused_invite_changes_nothing_and_asks_nothing() {
-            let mut guest = WorkspaceTree::default();
-            let local = guest.append_empty_workspace("Mine");
-            let before = guest.room_of(local).expect("the guest's own room");
-            let tree = guest.shared();
-            let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
-
-            let err = net
-                .accept_invite("not-a-token")
-                .expect_err("garbage must be refused");
-            assert!(!err.is_empty());
-            assert_eq!(
-                tree.read().room_of(local),
-                Some(before),
-                "a refused invite must leave the guest in its own room",
-            );
-            assert!(
-                cmd_rx.try_recv().is_err(),
-                "a refused invite must not put anything on the wire",
-            );
-        }
-
-        only_the_invite_pinned_authority_can_bootstrap_room_governance();
-        a_guest_cannot_mint_an_apparently_authoritative_room_invite();
-        a_refused_invite_changes_nothing_and_asks_nothing();
     }
 
     #[test]
@@ -14592,62 +12864,12 @@ mod tests {
         live_registry_refresh_connects_a_newly_approved_home_peer();
     }
 
-    /// Two rooms this machine governs, and the network that holds
-    /// them. Enough to ask who a name belongs to.
-    fn net_with_rooms() -> (
-        tempfile::TempDir,
-        crate::shell::state::WorkspaceTreeHandle,
-        ShellNetwork,
-        Vec<crate::shell::state::RoomId>,
-    ) {
-        let tmp = tempfile::tempdir().unwrap();
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        let rooms: Vec<_> = {
-            let mut t = tree.write();
-            // `bootstrap_demo` leaves the owner `None`; `may_administer`
-            // reads it, so an unset owner would refuse every name below
-            // for the wrong reason.
-            for ws in &mut t.desktop.workspaces {
-                let me = crate::shell::state::local_user_id_for_room(&ws.room());
-                ws.set_owner(me);
-            }
-            t.desktop
-                .workspaces
-                .iter()
-                .map(crate::shell::state::Workspace::room)
-                .collect()
-        };
-        assert!(
-            rooms.len() >= 2 && rooms.iter().all(|r| !r.is_nil()),
-            "the fixture governs at least two rooms: {rooms:?}"
-        );
-        let net = ShellNetwork::spawn(
-            tree.clone(),
-            &tmp.path().join("peer-key"),
-            &tmp.path().join("peer-sync"),
-        )
-        .expect("spawn");
-        (tmp, tree, net, rooms)
-    }
-
-    fn name_in(
-        tree: &crate::shell::state::WorkspaceTreeHandle,
-        room: crate::shell::state::RoomId,
-        peer: &iroh::EndpointId,
-    ) -> Option<String> {
-        tree.read()
-            .room_peer_names
-            .get(&room)
-            .and_then(|names| names.get(&peer.to_string()))
-            .cloned()
-    }
-
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn peer_lifecycle_retains_departure_cause_and_seeds_host_checkpoints() {
+    fn peer_departure_retains_identity_route_and_cause() {
         fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
             use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -14679,10 +12901,7 @@ mod tests {
                 .insert(origin.clone(), cert.clone(), now_ns)
                 .expect("admitted peer identity");
             tree.write()
-                .room_peer_names
-                .entry(room)
-                .or_default()
-                .insert(peer.to_string(), "Vera".into());
+                .cache_admitted_peer_names_for_test(room, &[(peer.to_string(), "Vera")]);
 
             net.event_tx
                 .try_send(NetEvent::PeerLeft {
@@ -14702,7 +12921,7 @@ mod tests {
             assert_eq!(departure.generation, 1);
             assert_eq!(
                 departure.session_handle,
-                crate::network::behaviour::peer_liveness_handle(&peer)
+                tilo_network_actor::behaviour::peer_liveness_handle(&peer)
             );
             assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
             assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
@@ -14715,65 +12934,7 @@ mod tests {
             );
         }
 
-        fn host_ready_seeds_shell_and_app_checkpoints() {
-            let tree = WorkspaceTree::bootstrap_demo().shared();
-            let room_id = tree.read().rooms()[0];
-            let topic = room_topic_id(room_id);
-            let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFE);
-            // Consume the normal first-tick anti-entropy request so the assertion
-            // below is specifically about the host baseline edge.
-            net.tick();
-            while cmd_rx.try_recv().is_ok() {}
-
-            net.event_tx
-                .try_send(NetEvent::HostReady {
-                    ws: topic,
-                    peer: iroh::SecretKey::from_bytes(&[23; 32]).public(),
-                })
-                .unwrap();
-            net.tick();
-
-            // A slow runner can pass SYNC_KICK_INTERVAL between the two
-            // ticks, so a periodic SyncReq may precede the checkpoint.
-            let mut commands = Vec::new();
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                commands.push(cmd);
-            }
-            assert!(
-                commands.iter().any(|cmd| matches!(
-                    cmd,
-                    NetCmd::PublishCheckpoint {
-                        ws,
-                        msg: NeighbourMsg::SyncResp { room, .. },
-                    } if *ws == topic && room == &room_id.to_string()
-                )),
-                "HostReady seeds the room checkpoint: {commands:?}"
-            );
-            let app_events = net.inbound_app_presence.lock().unwrap().clone();
-            assert_eq!(
-                app_events.len(),
-                2,
-                "Arrived + Left prompt a bounded app snapshot refresh"
-            );
-            let payloads: Vec<_> = app_events.iter().map(|event| &event.presence).collect();
-            assert!(matches!(
-                payloads[0],
-                collab_types::PeerPresence {
-                    payload: collab_types::PeerPresencePayload::Arrived,
-                    ..
-                }
-            ));
-            assert!(matches!(
-                payloads[1],
-                collab_types::PeerPresence {
-                    payload: collab_types::PeerPresencePayload::Left,
-                    ..
-                }
-            ));
-        }
-
         peer_departure_retains_identity_route_and_cause_before_cleanup();
-        host_ready_seeds_shell_and_app_checkpoints();
     }
 
     /// Build the inbound event a LAN peer's signed document publish arrives as.
@@ -14789,27 +12950,6 @@ mod tests {
             cluster_id,
             "note-1",
             "note-1",
-            from_peer_hash,
-            peer,
-            device,
-        )
-    }
-
-    /// As [`app_document_event`], for a local record id sent under
-    /// `wire_record_id`.
-    fn app_document_event_for(
-        cluster_id: &str,
-        record_id: &str,
-        wire_record_id: &str,
-        from_peer_hash: u64,
-        peer: iroh::PublicKey,
-        device: &ed25519_dalek::SigningKey,
-    ) -> NetEvent {
-        app_document_event_with(
-            "so.tilo.notes",
-            cluster_id,
-            record_id,
-            wire_record_id,
             from_peer_hash,
             peer,
             device,
@@ -14957,7 +13097,7 @@ mod tests {
             receiver.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 from.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -15008,46 +13148,19 @@ mod tests {
         assert!(!document.replayed);
     }
 
-    /// A collaborator never sees the person room: nothing about it is
-    /// published where they listen, and nothing naming it is accepted from
-    /// them, on a room topic or on the personal fabric.
-    #[test]
-    fn a_collaborator_never_sends_or_receives_person_room_records() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
-        let user = root.verifying_key().to_bytes();
+    /// Publish all that touches the person room of `user` through `net`, a
+    /// person-room record written by `own_device` among it, and check none of
+    /// it is `sent` to anyone but the person's devices and hosts. Returns the
+    /// record's artifact.
+    fn person_room_stays_with_the_person(
+        net: &ShellNetwork,
+        sent: &mut mpsc::Receiver<NetCmd>,
+        user: [u8; 32],
+        own_device: &ed25519_dalek::SigningKey,
+    ) -> collab_types::ArtifactId {
         let person_room = RoomId::from(collab_types::person_room(&user));
-        let collaborator_root = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32]);
-        let collaborator = iroh::SecretKey::from_bytes(&[0xE7; 32]);
-        let collaborator_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE7; 32]);
-
-        // A workspace already pointing at the person room (as a tampered
-        // state file might) and an ordinary shared room.
-        let mut tree = WorkspaceTree::default();
-        let shared = tree.append_empty_workspace("Shared");
-        let shared_room = tree.room_of(shared).expect("a minted room");
-        let held = tree.append_empty_workspace("Held");
-        let index = tree
-            .desktop
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.id == held)
-            .expect("workspace");
-        tree.desktop.workspaces[index] =
-            crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
-        let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
-        net.personal_continuity_user = Some(user);
-        authenticated_personal_peer_on_topic(
-            &net,
-            &collaborator_root,
-            &collaborator,
-            crate::network::actor::MembershipEpoch::for_test(1),
-            personal_continuity_topic_id(&user),
-        );
-        while sent.try_recv().is_ok() {}
-
         let record = "history";
-        let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
-        let envelope = person_document(&user, record, &own_device);
+        let envelope = person_document(&user, record, own_device);
         let artifact = envelope.artifact;
         net.publish_document(
             "so.tilo.tube".into(),
@@ -15075,6 +13188,49 @@ mod tests {
             )),
             "nothing about the person room leaves for anyone but the person's devices and hosts: {leaked:?}"
         );
+        artifact
+    }
+
+    /// A collaborator never sees the person room: nothing about it is
+    /// published where they listen, and nothing naming it is accepted from
+    /// them, on a room topic or on the personal fabric.
+    #[test]
+    fn a_collaborator_never_sends_or_receives_person_room_records() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
+        let user = root.verifying_key().to_bytes();
+        let person_room = RoomId::from(collab_types::person_room(&user));
+        let collaborator_root = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32]);
+        let collaborator = iroh::SecretKey::from_bytes(&[0xE7; 32]);
+        let collaborator_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE7; 32]);
+
+        // A workspace already pointing at the person room (as a tampered
+        // state file might) and an ordinary shared room.
+        let mut tree = WorkspaceTree::default();
+        let shared = tree.create_hosted_workspace("Shared").0;
+        let shared_room = tree.room_of(shared).expect("a minted room");
+        let held = tree.create_hosted_workspace("Held").0;
+        let index = tree
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == held)
+            .expect("workspace");
+        tree.desktop.workspaces[index] =
+            crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
+        let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
+        net.personal_continuity_user = Some(user);
+        authenticated_personal_peer_on_topic(
+            &net,
+            &collaborator_root,
+            &collaborator,
+            tilo_network_actor::MembershipEpoch::for_test(1),
+            personal_continuity_topic_id(&user),
+        );
+        while sent.try_recv().is_ok() {}
+
+        let record = "history";
+        let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
+        let artifact = person_room_stays_with_the_person(&net, &mut sent, user, &own_device);
 
         net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
         assert!(
@@ -15095,28 +13251,40 @@ mod tests {
             net.tick();
         }
         let inbound = net.inbound_documents_handle();
-        let queued = inbound.lock().unwrap();
+        // A workspace room's records arrive through its native session once
+        // this device holds it, never as raw room-topic traffic; the person
+        // room's never come from a room topic at all.
         assert!(
-            matches!(queued.as_slice(), [document] if document.cluster_id == shared_room.to_string()),
-            "only the shared room's document is accepted from a room topic"
+            inbound.lock().unwrap().is_empty(),
+            "no document is accepted from a room topic"
         );
-        drop(queued);
 
-        net.dispatch_personal_fabric(
-            personal_continuity_topic_id(&user),
-            collaborator.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
-            user,
-            PersonalFabricPayload::Document {
-                app_id: "so.tilo.tube".into(),
-                record_id: record.into(),
-                envelope: Box::new(person_document(&user, record, &collaborator_signing)),
-            },
+        let deliver = |from: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                from.public(),
+                tilo_network_actor::MembershipEpoch::for_test(1),
+                user,
+                PersonalFabricPayload::Document {
+                    app_id: "so.tilo.tube".into(),
+                    record_id: record.into(),
+                    envelope: Box::new(person_document(&user, record, signing)),
+                },
+            );
+        };
+        deliver(&collaborator, &collaborator_signing);
+        assert!(
+            inbound.lock().unwrap().is_empty(),
+            "another person's device is no route into the person room"
         );
+        // The person's own device is.
+        let own = iroh::SecretKey::from_bytes(&[0xE9; 32]);
+        authenticated_personal_peer(&net, &root, &own);
+        deliver(&own, &own_device);
         assert_eq!(
             inbound.lock().unwrap().len(),
             1,
-            "another person's device is no route into the person room"
+            "the person's own device reaches the person room"
         );
     }
 
@@ -15152,14 +13320,14 @@ mod tests {
             &net,
             &stranger,
             &iroh::SecretKey::from_bytes(&[0xEF; 32]),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             personal_continuity_topic_id(&user),
         );
         authenticated_personal_peer_on_topic(
             &net,
             &root,
             &phone,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             room_topic_id(RoomId::new()),
         );
         assert_eq!(
@@ -15210,14 +13378,14 @@ mod tests {
             &phone,
             &root,
             &laptop,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             continuity,
         );
         authenticated_personal_peer_on_topic(
             &phone,
             &stranger_root,
             &stranger,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             continuity,
         );
         let kept = |author: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
@@ -15279,7 +13447,7 @@ mod tests {
         let phone = iroh::SecretKey::from_bytes(&[0xC7; 32]);
         let large = collab_types::DocumentMutation::Snapshot(vec![
             7;
-            crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES
+            tilo_network_actor::fabric::MAX_FABRIC_CHECKPOINT_BYTES
                 + 1
         ]);
         let frames = large.encode_frames().expect("segments");
@@ -15334,7 +13502,7 @@ mod tests {
             receiver.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 laptop.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -15416,14 +13584,14 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&work),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             work,
             from_laptop(&own_person_room, &ada),
         );
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&ada),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             ada,
             from_laptop(&own_person_room, &ada),
         );
@@ -15434,7 +13602,7 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&work),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             work,
             from_laptop(&workspace_identity_room, &work),
         );
@@ -15476,7 +13644,7 @@ mod tests {
         phone.dispatch_neighbour_msg(
             continuity,
             tablet.public(),
-            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            Some(tilo_network_actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
@@ -15605,131 +13773,41 @@ mod tests {
         env.set("TILO_USER_ID", hex::encode(user));
         let person_room = RoomId::from(collab_types::person_room(&user));
         let mut tree = WorkspaceTree::default();
-        let local = tree.append_empty_workspace("Mine");
+        let local = tree.create_hosted_workspace("Mine").0;
         assert!(
             !tree.stand_in_room(local, person_room),
             "an invite cannot name it"
         );
-        assert!(!tree.join_enrolled_room(person_room), "nor an enrollment");
         assert!(
-            !tree.adopt_continuation_room(person_room, "Laptop"),
-            "nor a continuation"
+            tree.join_native_room("Mine", person_room).is_none(),
+            "nor a join"
         );
         assert!(!tree.rooms().contains(&person_room));
         let other = RoomId::new();
         assert!(
-            tree.join_enrolled_room(other),
+            tree.join_native_room("Other", other).is_some(),
             "an ordinary room still joins"
         );
     }
 
-    /// A shell whose room has admitted one certified peer device.
-    fn network_with_admitted_peer() -> (
-        ShellNetwork,
-        crate::shell::state::RoomId,
-        iroh::SecretKey,
-        ed25519_dalek::SigningKey,
-    ) {
-        let mut tree = WorkspaceTree::default();
-        let local = tree.append_empty_workspace("Mine");
-        let our_room = tree.room_of(local).expect("a minted room");
-        tree.desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == local)
-            .expect("workspace")
-            .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
-        let (net, _cmd_rx) = shell_network_for_test(tree.shared(), 0xAAAAu64);
-        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
-        let device = iroh::SecretKey::from_bytes(&[72; 32]);
-        let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: *device.public().as_bytes(),
-            device_label: "Peer laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
-        let _ = net
-            .pending_identity_admissions
-            .lock()
-            .expect("pending admission")
-            .insert(
-                [3; 32],
-                PendingInvitation {
-                    id: [3; 32],
-                    room: our_room,
-                    name: "Peer".into(),
-                    role: crate::network::invite::InviteRole::Editor,
-                    token: "invite-three".into(),
-                    recipient_user_public_key: None,
-                    expiry_unix_seconds: u64::MAX,
-                },
-            );
-        net.event_tx
-            .try_send(NetEvent::Msg {
-                ws: room_topic_id(our_room),
-                peer: device.public(),
-                membership_epoch: None,
-                replayed: false,
-                msg: NeighbourMsg::IdentityHello {
-                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(cert.clone()),
-                    revocations: Vec::new(),
-                    successions: Vec::new(),
-                },
-            })
-            .expect("queue identity proof");
-        net.tick();
-        net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
-        (net, our_room, device, device_signing)
-    }
-
-    /// Channel governance from an admitted device reaches the channel
-    /// service's queue only on its own room's topic, and is published on
-    /// that topic.
+    /// Channel governance is published on its own room's topic, and nothing
+    /// else is published as channel governance.
     #[test]
-    fn channel_governance_is_queued_and_published_per_room() {
-        let (net, room, device, device_signing) = network_with_admitted_peer();
-        let channel = collab_types::ChannelId::new();
-        let request =
-            collab_types::MlsAccessRequestV1::signed(channel, vec![1], 1, &device_signing)
-                .expect("signed request");
+    fn channel_governance_is_published_on_its_rooms_topic() {
+        let room = RoomId::new();
+        let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
+        let request = collab_types::MlsAccessRequestV1::signed(
+            collab_types::ChannelId::new(),
+            vec![1],
+            1,
+            &device_signing,
+        )
+        .expect("signed request");
         let message = NeighbourMsg::MlsAccessRequest {
             room: room.to_string(),
             request: Box::new(request),
             delivery: 1,
         };
-        for ws in [DEFAULT_WS_TOPIC, room_topic_id(room)] {
-            net.event_tx
-                .try_send(NetEvent::Msg {
-                    ws,
-                    peer: device.public(),
-                    membership_epoch: None,
-                    replayed: false,
-                    msg: message.clone(),
-                })
-                .expect("queue governance");
-            net.tick();
-        }
-        let queued = std::mem::take(
-            &mut *net
-                .inbound_channel_governance_handle()
-                .lock()
-                .expect("governance queue"),
-        );
-        assert!(
-            matches!(
-                queued.as_slice(),
-                [InboundChannelGovernance::AccessRequest { room: queued_room, request, route: None }]
-                    if *queued_room == room && request.channel == channel
-            ),
-            "only the copy on the room's own topic is queued: {queued:?}"
-        );
-
         let (net, mut cmd_rx) = shell_network_for_test(WorkspaceTree::default().shared(), 7);
         assert!(net.publish_channel_governance(message));
         let Some((ws, msg)) =
@@ -15755,176 +13833,77 @@ mod tests {
         /// device. Check the exact bytes the actor would put on gossip and the
         /// host link, for a file record and a record derived from one.
         fn file_backed_records_never_put_a_path_on_the_wire() {
-            let tree = WorkspaceTree::bootstrap_demo().shared();
-            let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
-            // Same routing as `publish_document_emits_a_publish_command`.
-            let room = "cluster-7".to_string();
+            // A workspace room's records travel as the native owner's
+            // publication; the person room's still travel as the app's own
+            // envelopes, to the person's hosts and devices.
+            let root = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
+            let user = root.verifying_key().to_bytes();
+            let (net, mut cmd_rx) = personal_continuity_network_for_test(user);
+            let phone = iroh::SecretKey::from_bytes(&[0xF2; 32]);
+            authenticated_personal_peer(&net, &root, &phone);
+            while cmd_rx.try_recv().is_ok() {}
+            let person_room = collab_types::person_room(&user).to_string();
+            let author = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
             let secret = "/home/alice/Secret Plans/merger-2026.odt";
             for record_id in [
                 format!("file:{secret}"),
                 format!("derived:annotations@file:{secret}"),
             ] {
-                let envelope = collab_types::SignedOp::new_unsigned(
-                    collab_types::DocumentMutation::Incremental(vec![7; 32])
-                        .encode()
-                        .expect("typed mutation"),
-                    collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
-                    collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
-                    collab_types::OpKind::Change,
-                    std::time::SystemTime::UNIX_EPOCH,
-                    1,
+                net.publish_document(
+                    "so.tilo.tube".into(),
+                    person_room.clone(),
+                    &record_id,
+                    person_document(&user, &record_id, &author),
                 );
-                net.publish_document("so.tilo.writer".into(), room.clone(), &record_id, envelope);
-                let Ok(NetCmd::Publish { msg, .. }) = cmd_rx.try_recv() else {
-                    panic!("publish_document must enqueue a publish");
-                };
-                let NeighbourMsg::AppDocument {
-                    record_id: wire, ..
-                } = &msg
-                else {
-                    panic!("expected AppDocument, got {msg:?}");
-                };
-                assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
-                let encoded = postcard::to_allocvec(&msg).expect("wire encoding");
-                for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
-                    assert!(
-                        !encoded.windows(needle.len()).any(|window| window == needle),
-                        "{:?} leaked onto the wire for {record_id}",
-                        String::from_utf8_lossy(needle)
-                    );
+                let mut carried = 0;
+                for command in std::iter::from_fn(|| cmd_rx.try_recv().ok()) {
+                    let encoded = match &command {
+                        NetCmd::PublishToHosts { msg, .. } => {
+                            let NeighbourMsg::AppDocument {
+                                record_id: wire, ..
+                            } = msg
+                            else {
+                                panic!("expected AppDocument, got {msg:?}");
+                            };
+                            assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
+                            postcard::to_allocvec(msg).expect("wire encoding")
+                        }
+                        NetCmd::PublishPersonalFabricTarget { payload, .. } => {
+                            postcard::to_allocvec(payload).expect("wire encoding")
+                        }
+                        _ => continue,
+                    };
+                    carried += 1;
+                    for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
+                        assert!(
+                            !encoded.windows(needle.len()).any(|window| window == needle),
+                            "{:?} leaked onto the wire for {record_id}",
+                            String::from_utf8_lossy(needle)
+                        );
+                    }
                 }
+                assert_eq!(
+                    carried, 2,
+                    "the record goes to the person's hosts and to their other device"
+                );
             }
-        }
-
-        /// A peer holding the same file record in the same room still meets
-        /// this device on one route: its sealed name resolves to the local id
-        /// of the record a local app joined, and the envelope validates against
-        /// that id. A sealed name nobody here holds is refused.
-        fn a_sealed_record_name_reaches_the_local_app_holding_that_record() {
-            let (net, room, device, device_signing) = network_with_admitted_peer();
-            let cluster = room.to_string();
-            let local = "file:/var/workspace/shared/report.odt";
-            let wire =
-                crate::network::wire_record::wire_record_id(&cluster, "so.tilo.notes", local);
-
-            net.event_tx
-                .try_send(app_document_event_for(
-                    &cluster,
-                    local,
-                    &wire,
-                    0xBBBB,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the publish");
-            net.tick();
-            assert!(
-                net.inbound_documents_handle().lock().unwrap().is_empty(),
-                "no local app holds the record yet, so its sealed name cannot be routed"
-            );
-
-            net.register_local_record("so.tilo.notes", &cluster, local);
-            net.event_tx
-                .try_send(app_document_event_for(
-                    &cluster,
-                    local,
-                    &wire,
-                    0xBBBB,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the publish");
-            net.tick();
-            let inbound = net.inbound_documents_handle();
-            let delivered = inbound.lock().unwrap();
-            assert_eq!(delivered.len(), 1);
-            assert_eq!(
-                delivered[0].record_id, local,
-                "the local app sees its own record id"
-            );
-            drop(delivered);
-
-            net.event_tx
-                .try_send(app_document_event_for(
-                    &cluster,
-                    local,
-                    local,
-                    0xBBBB,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the publish");
-            net.tick();
-            assert_eq!(
-                net.inbound_documents_handle().lock().unwrap().len(),
-                1,
-                "a peer that names a raw path is refused"
-            );
-        }
-
-        /// A peer's app document reaches local apps only for a room this
-        /// machine is in. Driven through the real receive path (`tick`),
-        /// not the helper directly, with a positive control so the two
-        /// refusals prove something rather than just "nothing arrives".
-        fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
-            let (net, our_room, device, device_signing) = network_with_admitted_peer();
-
-            let theirs = crate::shell::state::RoomId::new();
-            assert_ne!(theirs, our_room);
-
-            net.event_tx
-                .try_send(app_document_event(
-                    "so.tilo.notes",
-                    &theirs.to_string(),
-                    0xBBBBu64,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the stranger's publish");
-            net.tick();
-            assert!(
-                net.inbound_documents_handle().lock().unwrap().is_empty(),
-                "a delta for a room this machine is not in must not reach the broker queue",
-            );
-
-            net.event_tx
-                .try_send(app_document_event(
-                    "so.tilo.notes",
-                    "not-a-room",
-                    0xBBBBu64,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the malformed publish");
-            net.tick();
-            assert!(
-                net.inbound_documents_handle().lock().unwrap().is_empty(),
-                "a cluster id that is not a uuid names no room, so it must be refused",
-            );
-
-            net.event_tx
-                .try_send(app_document_event(
-                    "so.tilo.notes",
-                    &our_room.to_string(),
-                    0xBBBBu64,
-                    device.public(),
-                    &device_signing,
-                ))
-                .expect("queue the member's publish");
-            net.tick();
-            let delivered = net.inbound_documents_handle().lock().unwrap().len();
-            assert_eq!(
-                delivered, 1,
-                "a delta for a room this machine is in must still reach the broker queue",
-            );
         }
 
         /// This device's own document comes back only as host-replayed
         /// history, queued as its own replayed edit; the same message as
         /// ordinary traffic under this device's session is an echo.
         fn a_replayed_own_document_reaches_the_broker_and_an_echo_does_not() {
-            let (net, room, _, own_signing) = network_with_admitted_peer();
+            let mut tree = WorkspaceTree::default();
+            let workspace = tree.create_hosted_workspace("Mine").0;
+            let room = tree.room_of(workspace).expect("a minted room");
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|candidate| candidate.id == workspace)
+                .expect("workspace")
+                .set_owner(crate::shell::state::local_user_id_for_room(&room));
+            let (net, _commands) = shell_network_for_test(tree.shared(), 0xAAAA);
+            let own_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
             let cluster = room.to_string();
             let own = net.local_peer_hash;
             let NetEvent::Msg { msg, .. } = app_document_event(
@@ -15970,8 +13949,6 @@ mod tests {
         }
 
         file_backed_records_never_put_a_path_on_the_wire();
-        a_sealed_record_name_reaches_the_local_app_holding_that_record();
-        app_document_from_a_room_we_are_not_in_never_reaches_the_broker();
         a_replayed_own_document_reaches_the_broker_and_an_echo_does_not();
     }
 
@@ -16109,41 +14086,33 @@ mod tests {
     )]
     fn documents_and_scrollback_publish_to_the_active_topic_and_buffer_for_drain() {
         fn publish_document_emits_a_publish_command() {
+            // An app's document in its workspace's room is the native
+            // owner's to publish: the network asks for its publication on
+            // the room's topic and never puts the app's envelope on gossip.
             let tree = WorkspaceTree::bootstrap_demo().shared();
+            let room = tree
+                .read()
+                .desktop
+                .active_workspace()
+                .expect("an active workspace")
+                .room();
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
             let expected_topic = net.active_ws_for_publish();
-            let envelope = make_envelope(7);
+            assert_eq!(expected_topic, room_topic_id(room));
             net.publish_document(
                 "notes".to_string(),
-                "cluster-7".to_string(),
+                room.to_string(),
                 "uuid:9f",
-                envelope.clone(),
+                make_envelope(7),
             );
-            let cmd = cmd_rx
-                .try_recv()
-                .expect("publish_document must enqueue a NetCmd");
-            match cmd {
-                NetCmd::Publish { ws, msg, .. } => {
-                    assert_eq!(ws, expected_topic);
-                    match msg {
-                        NeighbourMsg::AppDocument {
-                            peer,
-                            app_id,
-                            cluster_id,
-                            record_id,
-                            envelope: got,
-                        } => {
-                            assert_eq!(peer, 0xFEED_u64);
-                            assert_eq!(app_id, "notes");
-                            assert_eq!(cluster_id, "cluster-7");
-                            assert_eq!(record_id, "uuid:9f");
-                            assert_eq!(*got, envelope);
-                        }
-                        other => panic!("expected AppDocument, got {other:?}"),
-                    }
-                }
-                other => panic!("expected NetCmd::Publish, got {other:?}"),
-            }
+            let commands: Vec<_> = std::iter::from_fn(|| cmd_rx.try_recv().ok()).collect();
+            assert!(
+                matches!(
+                    commands.as_slice(),
+                    [NetCmd::NativePublish { ws }] if *ws == expected_topic
+                ),
+                "publish_document must ask for the room's native publication: {commands:?}"
+            );
         }
 
         fn handle_document_message_buffers_for_drain() {
@@ -16258,99 +14227,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn network_announcements_and_revocations_govern_the_files_projection() {
-        #[allow(
-            clippy::similar_names,
-            reason = "merged phases keep their original root/room binding names"
-        )]
-        fn network_announcement_governs_and_republishes_files_projection() {
-            let runtime = tempfile::tempdir().unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_RUNTIME_DIR", runtime.path());
-
-            let mut state = WorkspaceTree::default();
-            let workspace = state.append_empty_workspace("Identity workflow");
-            let room = state.room_of(workspace).unwrap();
-            state.adopt_ownerless_workspaces(&crate::shell::state::local_user_id_for_room(&room));
-            let tree = state.shared();
-            let (network, _commands) = shell_network_for_test(tree.clone(), 0x1D);
-
-            let device_secret = iroh::SecretKey::generate();
-            let endpoint = device_secret.public();
-            let root = ed25519_dalek::SigningKey::from_bytes(&[104; 32]);
-            let mut certificate = tilo_user_identity::DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: *endpoint.as_bytes(),
-                device_label: "Ada's laptop".into(),
-                capabilities: tilo_user_identity::DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
-
-            assert!(tree.write().name_peer(
-                room,
-                &crate::shell::state::local_user_id_for_room(&room),
-                &endpoint.to_string(),
-                "Ada Lovelace",
-            ));
-            assert!(network.handle_identity_announcement(
-                &endpoint,
-                &room.to_string(),
-                &certificate,
-                &[]
-            ));
-            let projection_path = runtime
-                .path()
-                .join("tilo/identity-projections")
-                .join(room.to_string())
-                .join("trusted-identities.json");
-            let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
-                serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
-            assert_eq!(projected.humans.len(), 1);
-            assert_eq!(projected.humans[0].display_name, "Ada Lovelace");
-            assert_eq!(projected.humans[0].devices[0].certificate, certificate);
-
-            let impostor = iroh::SecretKey::generate().public();
-            assert!(
-                !network.handle_identity_announcement(
-                    &impostor,
-                    &room.to_string(),
-                    &certificate,
-                    &[]
-                ),
-                "the signed certificate cannot be rebound to another transport endpoint"
-            );
-
-            let mut revocation = tilo_user_identity::RevocationEntry {
-                user_public_key: root.verifying_key().to_bytes(),
-                revoked_device_public_key: *endpoint.as_bytes(),
-                revoked_at_ns: 2,
-                reason: tilo_user_identity::RevocationReason::Retired,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
-            assert!(network.handle_identity_announcement(
-                &endpoint,
-                &room.to_string(),
-                &certificate,
-                &[revocation]
-            ));
-            let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
-                serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
-            assert!(
-                projected.humans.is_empty(),
-                "the root-signed revocation must immediately replace Files' live projection"
-            );
-            assert!(
-                tree.read()
-                    .trusted_identity_projection(room)
-                    .humans
-                    .is_empty()
-            );
-        }
-
+    fn identity_revocations_load_only_from_their_own_root() {
         fn revocation_source_is_reloaded_and_cross_root_rows_fail_closed() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("revocations.bin");
@@ -16379,7 +14256,6 @@ mod tests {
             );
         }
 
-        network_announcement_governs_and_republishes_files_projection();
         revocation_source_is_reloaded_and_cross_root_rows_fail_closed();
     }
 

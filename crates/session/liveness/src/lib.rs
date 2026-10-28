@@ -39,8 +39,10 @@
 //! A thread cannot be unwound from outside. Each one is sent a real-time
 //! signal whose handler records its own return addresses into a slot of its
 //! own (`capture`), allocating nothing and taking no lock; the answering
-//! thread symbolizes them. Every answer is kept, and a thread that did not
-//! answer is reported as such.
+//! thread names them from the executable's symbol table (`symtab`), never
+//! the debug information, whose parsing outlasts any wait in a large build.
+//! Every answer is kept, and a thread that did not answer is reported as
+//! such.
 //!
 //! Only a thread blocked inside a system call is interrupted
 //! (`/proc/<tid>/syscall` names one), and not one inside the memory system
@@ -62,7 +64,7 @@
 //! `/proc` and signals threads.
 #![cfg(target_os = "linux")]
 
-use std::backtrace::Backtrace;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -71,18 +73,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use calloop::LoopHandle;
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
-use calloop::LoopHandle;
 
 mod capture;
 mod main_thread_files;
+mod symtab;
 mod wake_trace;
 
 pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
 pub use wake_trace::record as trace_wake;
-
 
 /// Removes the socket it names once the server that bound it is gone.
 struct UnlinkOnDrop(PathBuf);
@@ -112,6 +114,13 @@ const MAX_BUDGET: Duration = Duration::from_secs(60);
 
 /// How long a thread dump waits for the threads' answers.
 const DUMP_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the file audit may keep one of the main thread's calls waiting
+/// for its backtrace, the wait for any thread dump in progress included:
+/// well inside half the [`DEFAULT_BUDGET`], so the audit's own hold on the
+/// call never reads as a stalled main loop. A held thread answers within
+/// microseconds when it answers at all.
+const HELD_CAPTURE_WAIT: Duration = Duration::from_millis(100);
 
 /// Where the liveness socket of the control socket at `control` is bound.
 #[must_use]
@@ -879,29 +888,58 @@ pub fn dump_threads() -> Vec<ThreadReport> {
             exited.push(tid);
         }
     }
-    let own = Backtrace::force_capture().to_string();
+    let own = own_ips();
     let deadline = Instant::now()
         .checked_add(DUMP_WAIT)
         .unwrap_or_else(Instant::now);
     wait_for_captures(&ask, pid, &mut signalled, &mut left_alone, deadline);
-    let mut own = Some(own);
+
+    // Every captured stack, named in one pass over the symbol table.
+    let stacks: Vec<(i32, Vec<usize>)> = tids
+        .iter()
+        .filter_map(|&tid| {
+            if tid == me {
+                Some((tid, own.clone()))
+            } else if left_alone.iter().any(|(alone, _)| *alone == tid) || exited.contains(&tid) {
+                None
+            } else {
+                ask.ips(tid).map(|ips| (tid, ips))
+            }
+        })
+        .collect();
+    let named = symtab::render_all(
+        &stacks
+            .iter()
+            .map(|(_, ips)| ips.as_slice())
+            .collect::<Vec<_>>(),
+    );
+    let mut named: HashMap<i32, String> = stacks.iter().map(|(tid, _)| *tid).zip(named).collect();
 
     tids.iter()
         .map(|&tid| {
-            let backtrace = if tid == me {
-                own.take().unwrap_or_default()
-            } else if let Some((_, why)) = left_alone.iter().find(|(alone, _)| *alone == tid) {
-                format!("not interrupted: {why}")
-            } else if exited.contains(&tid) {
-                "no backtrace: the thread had exited".into()
-            } else if let Some(frames) = ask.frames(tid) {
-                frames
-            } else {
-                unanswered()
-            };
+            let backtrace =
+                if let Some((_, why)) = left_alone.iter().find(|(alone, _)| *alone == tid) {
+                    format!("not interrupted: {why}")
+                } else if exited.contains(&tid) {
+                    "no backtrace: the thread had exited".into()
+                } else if let Some(frames) = named.remove(&tid) {
+                    frames
+                } else {
+                    unanswered()
+                };
             report(tid, backtrace)
         })
         .collect()
+}
+
+/// The calling thread's return addresses, innermost first.
+fn own_ips() -> Vec<usize> {
+    let mut ips = Vec::new();
+    backtrace::trace(|frame| {
+        ips.push(frame.ip().addr());
+        true
+    });
+    ips
 }
 
 /// Send `tid` the capture signal for `ask`; `false` when it could not be
@@ -939,6 +977,35 @@ fn capture_thread(tid: i32) -> Option<String> {
         .unwrap_or_else(Instant::now);
     ask.wait(&[tid], deadline);
     ask.frames(tid)
+}
+
+/// The backtrace of thread `tid` of this process while a seccomp listener
+/// holds its system call, or why there is none. Bounded by
+/// [`HELD_CAPTURE_WAIT`] in all: the caller holds the call, and a thread
+/// dump that started meanwhile (the liveness stall report, which leaves a
+/// thread in a seccomp wait alone) would otherwise keep it held for that
+/// dump's whole wait and then this capture's.
+pub(crate) fn capture_held_thread(tid: i32) -> Result<String, String> {
+    let deadline = Instant::now()
+        .checked_add(HELD_CAPTURE_WAIT)
+        .unwrap_or_else(Instant::now);
+    let Some(_one) = ONE_DUMP_AT_A_TIME.try_lock_until(deadline) else {
+        return Err(format!(
+            "no backtrace: a thread dump was in progress for {} ms",
+            HELD_CAPTURE_WAIT.as_millis()
+        ));
+    };
+    let ask = capture::Ask::new(&[tid]);
+    if !signal_capture(&ask, tid) {
+        return Err("no backtrace: the main thread could not be signalled".into());
+    }
+    ask.wait(&[tid], deadline);
+    ask.frames(tid).ok_or_else(|| {
+        format!(
+            "no backtrace: the main thread did not answer the capture signal within {} ms",
+            HELD_CAPTURE_WAIT.as_millis()
+        )
+    })
 }
 
 /// The main thread's state and, where it may be interrupted

@@ -54,7 +54,7 @@ fn hello(
     net.dispatch_neighbour_msg(
         personal_continuity_topic_id(person),
         device.public(),
-        Some(crate::network::actor::MembershipEpoch::for_test(1)),
+        Some(tilo_network_actor::MembershipEpoch::for_test(1)),
         false,
         NeighbourMsg::IdentityHello {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,

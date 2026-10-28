@@ -93,6 +93,12 @@ impl ShellPayloads for NeighbourPayloads {
             } => CheckpointKind::Continuity {
                 user: *user_public_key,
             },
+            NeighbourMsg::PersonalWorkspaces {
+                user_public_key, ..
+            } => CheckpointKind::Directory {
+                user: *user_public_key,
+            },
+            NeighbourMsg::IdentityHello { .. } => CheckpointKind::Identity,
             _ => CheckpointKind::Other,
         };
         Some(Checkpoint {

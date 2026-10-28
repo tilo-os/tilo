@@ -230,6 +230,28 @@ pub struct SemanticNode {
     pub widget_taffy_id: Option<u64>,
     /// Opaque widget-local target for a synthetic child action.
     pub semantic_target: Option<String>,
+    /// Its place in its collection and its depth, as a screen reader says
+    /// them ("3 of 5, level 2").
+    pub place: SetPlace,
+}
+
+/// Where a node sits in its collection and how deep, from its
+/// [`AccessNode`]'s `pos_in_set`, `set_size` and `level`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetPlace {
+    pub pos_in_set: Option<usize>,
+    pub set_size: Option<usize>,
+    pub level: Option<usize>,
+}
+
+impl SetPlace {
+    fn of(access: &AccessNode) -> Self {
+        Self {
+            pos_in_set: access.pos_in_set,
+            set_size: access.set_size,
+            level: access.level,
+        }
+    }
 }
 
 impl SemanticNode {
@@ -252,6 +274,7 @@ impl SemanticNode {
             && self.actions == other.actions
             && self.children == other.children
             && self.semantic_target == other.semantic_target
+            && self.place == other.place
     }
 }
 
@@ -335,6 +358,7 @@ impl SemanticTree {
                 children: Vec::new(),
                 widget_taffy_id: None,
                 semantic_target: None,
+                place: SetPlace::default(),
             },
         );
         Self {
@@ -574,6 +598,7 @@ impl SemanticTree {
                 children: root_children,
                 widget_taffy_id: None,
                 semantic_target: None,
+                place: SetPlace::default(),
             },
         );
 
@@ -1344,6 +1369,11 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                         self.visit_widget(child, &id, durable_identity, &mut children);
                     }
                 }
+                // Placed where the widget draws them, as the AccessKit
+                // bridge places them, so a point finds a synthetic child.
+                if !access.children.is_empty() {
+                    access = crate::a11y::with_synthetic_bounds(access, w);
+                }
                 let synthetic = std::mem::take(&mut access.children)
                     .into_iter()
                     .map(Synthetic::Owned)
@@ -1401,6 +1431,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                         )),
                         _ => access.action_target.clone(),
                     },
+                    place: SetPlace::of(&access),
                 };
                 self.order.push(id.clone());
                 self.insert_node(node);
@@ -1560,6 +1591,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     .map(|target| crate::a11y_child_route::encode(path, Some(target))),
                 _ => semantic_target.map(str::to_owned),
             },
+            place: SetPlace::of(access),
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1713,6 +1745,7 @@ mod tests {
                 children,
                 widget_taffy_id: None,
                 semantic_target: None,
+                place: SetPlace::default(),
             };
             tree.nodes
                 .insert(group.clone(), node(group.clone(), vec![deep.clone()]));

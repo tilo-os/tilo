@@ -606,7 +606,7 @@ pub struct DesktopSurface {
     /// without panning it into view: the strip stays where the person left
     /// it, however little a lone wheel notch moved it.
     settle: Option<GroupId>,
-    search: tilo_desktop_search::DesktopSearch,
+    search: tilo_desktop_search::LazyDesktopSearch,
     /// The window a group's new-tab control opened search for: the
     /// application chosen there opens as its tab, as in the native shell.
     new_tab_into: Option<(StripId, GroupId)>,
@@ -814,7 +814,7 @@ impl DesktopSurface {
             unbuilt: Vec::new(),
             swipe: None,
             settle: None,
-            search: tilo_desktop_search::DesktopSearch::new(),
+            search: tilo_desktop_search::LazyDesktopSearch::new(),
             new_tab_into: None,
             search_window: None,
             search_owners: HashMap::new(),
@@ -1865,9 +1865,14 @@ impl DesktopSurface {
     /// empty canvas, where nothing scrolls, its vertical travel too, so a
     /// plain mouse wheel moves the strip there (down toward later windows).
     fn strip_travel(&self, delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
+        // Sideways is the strip's everywhere. A plain wheel belongs to the app
+        // under it, so a mouse that has only that one pans the strip where no
+        // app can scroll: over the strip's own canvas and window bars. The
+        // bar is the shell's, as on the native desktop, where the wheel over
+        // the tab strip is not a client's.
         sideways(delta, scale_factor).or_else(|| {
             self.shown_row_ref()
-                .is_some_and(GroupRow::pointer_over_background)
+                .is_some_and(GroupRow::pointer_over_chrome)
                 .then(|| vertical(delta, scale_factor))
                 .filter(|travel| *travel != 0.0)
         })
@@ -2441,10 +2446,10 @@ impl Widget for DesktopSurface {
         };
         let mut next = usize::from(has_row);
         if self.search.is_open() {
-            if let Some(&palette) = nodes.get(next) {
-                self.search
-                    .palette_mut()
-                    .apply_layout(taffy, palette, inner);
+            if let Some(&palette) = nodes.get(next)
+                && let Some(search) = self.search.palette_mut()
+            {
+                search.apply_layout(taffy, palette, inner);
             }
             next = next.saturating_add(1);
         }
@@ -2650,7 +2655,8 @@ impl Widget for DesktopSurface {
         let search = self
             .search
             .is_open()
-            .then(|| self.search.palette() as &dyn Widget);
+            .then(|| self.search.palette())
+            .flatten();
         let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
         self.shown
             .and_then(|strip| self.rows.get(&strip))
@@ -2673,8 +2679,10 @@ impl Widget for DesktopSurface {
             request.visit(row)?;
         }
         // Retain original visible overlay callback reach after the retained rows.
-        if self.search.is_open() {
-            request.visit(self.search.palette_mut())?;
+        if self.search.is_open()
+            && let Some(search) = self.search.palette_mut()
+        {
+            request.visit(search)?;
         }
         if let Some(notices) = &mut self.notices {
             request.visit(notices)?;
@@ -2688,7 +2696,7 @@ impl Widget for DesktopSurface {
             .shown
             .and_then(|strip| self.rows.get_mut(&strip))
             .map(|row| row as &mut (dyn Widget + '_));
-        let search = open.then(|| self.search.palette_mut() as &mut (dyn Widget + '_));
+        let search = open.then(|| self.search.palette_mut()).flatten();
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
@@ -2852,7 +2860,7 @@ impl ui::widget::controls::ActionControls for DesktopSurface {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.unrouted_control
             .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(self.search.palette_mut()))
+            .or_else(|| ui::widget::controls::take_control_invocation(self.search.palette_mut()?))
             .or_else(|| ui::widget::controls::take_control_invocation(self.shown_row()?))
     }
 }

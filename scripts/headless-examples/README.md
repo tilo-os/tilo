@@ -6,8 +6,8 @@ For app automation, begin with `tilo-control actions list QUERY --json`, then
 invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
 explains how to distinguish same-named native and host apps and verify execution
 without opening the palette. Use the input examples below when testing input or
-rendering itself. `action-api-demo.py` and `app-launch-proof.py` start their own
-isolated sessions and exercise semantic invocation. `agent-seats-proof.py`
+rendering itself. `action-api-demo.py` starts its own
+isolated session and exercises semantic invocation. `agent-seats-proof.py`
 starts an `agent-control` session and drives it from two MCP sessions at once:
 each agent's strip, screenshots and held keys stay its own.
 
@@ -49,18 +49,6 @@ have their own explicit external prerequisites.
 
 ## Native protocol journeys
 
-`airdrop-transfer-proof.py` boots its own isolated compositor, signed thin Files
-package and pinned OpenDrop loopback receiver. It exercises actual Files actions,
-trusted fingerprint entry, status/progress, cancellation and failure recovery.
-`cast-session-proof.py` drives the real prebuilt projector service, through its
-control socket, against a bounded TLS Cast receiver, checking media LOAD,
-tokenized HLS isolation and clean stop.
-
-These proofs have explicit prerequisites and fail when they cannot observe the
-subject. They never build, configure radios or use the user's desktop/accounts.
-See [continuity interoperability](../../docs/architecture/continuity-interop.md#native-journey-evidence-and-reproduction)
-for build inputs, pinned external dependencies and qualification limits.
-
 `native-pair-journey.py --state-proof` isolates signed native app-state composition
 without an audio server. It requires late app hydration, concurrent semantic edits
 and local presentation on both compositors. See [native app-state acceptance](../../docs/native-app-state-acceptance.md)
@@ -77,15 +65,6 @@ SDK presentation events, compositor-painted frame observation bounds and a live
 frame trace. It does not measure a physical display or bypass ordinary OS
 enrollment. See [native first-frame measurements](../../docs/benchmarks/native-first-frame-2026-10-06.md)
 for the remote wrapper, build inputs, raw samples and cache limitations.
-
-`typing-latency.py` types into tilolang Todo and native Notes in a headless,
-lavapipe-only nested session on a simulated 60 Hz display, one key at a time,
-and reports each stage of a key per app: the compositor's `KEY-LATENCY`
-(key to app commit, commit to submit, submit to present) and the app's own
-`INPUT-FRAME` records (`RUST_LOG=tilo::input_frame=debug`): handling, the wait
-for the frame, the frame and every named scope it ran, the present, and whether
-the frame repainted its whole window and why. Key to commit is the app's
-share; software rendering inflates the compositor's.
 
 ## `tilo-control` CLI
 

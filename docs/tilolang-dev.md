@@ -13,7 +13,7 @@ by the launcher, in its sandbox, under its own id and custody.
 ## Start
 
 You need a nested-session build (`dist/dev/nested-session-build.sh
-target/nested-session`, which `t outputs nested-session` makes) and the tool, built
+target/nested-session`, which `dist/dev/nested-session.sh` has rcargo or t make) and the tool, built
 with the nested session's profile:
 
 ```sh
@@ -29,6 +29,11 @@ below call the result `tilolang` (`target/nested/tilolang`).
 # Start a session and the app in it; from then on, every save reaches the app.
 tilolang run apps/tl/notes --search apps/tl --headless --software
 ```
+
+`tilolang run` opens the app once the session's catalogue offers it (`applications
+<id>`): it asks the shell for the applications listing and the shell holds the answer
+until the listing has settled or changed. If the run fails at any point after the session
+started, the tool stops the session: the shell, its apps and its services.
 
 To work in a session that is already running, attach to it:
 
@@ -124,10 +129,13 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtim
 
 `tilolang dev` then:
 
-1. builds `tilolang-app` thin on the build server (`t outputs tilolang-runtime`,
-   `dist/dev/tilolang-runtime-build.sh`), and again on every change of
-   `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`; a failed
-   build leaves the apps on the last good runtime;
+1. builds `tilolang-app` thin with `dist/dev/tilolang-runtime-build.sh`, on the
+   rcargo builder (`rcargo --fetch tilolang-runtime exec`) or on t (`t outputs
+   tilolang-runtime`), as `nested-session.sh` picks: `--builder rcargo|t` or
+   `TILO_NESTED_BUILDER`, by default rcargo when it is on PATH; a build for
+   another architecture than this machine's is refused. It builds again on every
+   change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
+   a failed build leaves the apps on the last good runtime;
 2. bakes the binary into a runtime bundle signed by a key the launcher trusts;
 3. packs it as a runtime package (`so.tilo.runtime.tilolang.dev`, providing
    `tilolang/0.1.0+dev`) and installs it with `tilo-install`;

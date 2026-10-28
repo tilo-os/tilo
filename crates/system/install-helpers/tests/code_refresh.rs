@@ -641,6 +641,48 @@ fn bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos() {
 }
 
 #[test]
+fn the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable() {
+    // `exchange` picks the bootstrap transport when the guest reports the seed
+    // handed over. The production guest must answer from the receipt the seed
+    // writes into the root-owned runtime directory: an environment variable is
+    // inherited by every child and can be set by whoever starts the unit, so a
+    // shipped binary must never read one to decide this.
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let daemon = fs::read_to_string(source.join("src/code_refresh.rs")).unwrap();
+    assert!(
+        daemon.contains("self.base().join(\"bootstrap.json\").is_file()"),
+        "the shipped daemon must take the handshake from the seed's receipt"
+    );
+    // And nothing in the crate may fall back to a `TILO_*` seam in its place.
+    for entry in walk(&source.join("src")) {
+        let text = fs::read_to_string(&entry).unwrap();
+        assert!(
+            !text.contains("TILO_CODE_BOOTSTRAP_HANDSHAKE"),
+            "{} still reads the retired environment seam",
+            entry.display()
+        );
+    }
+}
+
+/// Every `.rs` file under `root`, so the guard above cannot skip a module.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                found.push(path);
+            }
+        }
+    }
+    assert!(!found.is_empty(), "no sources under {}", root.display());
+    found
+}
+
+#[test]
 fn the_shipped_daemon_refuses_outside_the_development_vm() {
     let output = Command::new(tilo_test_env::package_binary!("tilo-vm-install-proof"))
         .arg("code-refresh")

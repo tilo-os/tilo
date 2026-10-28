@@ -98,6 +98,11 @@ export async function launch({args = []} = {}) {
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
+    // A throwaway profile has nothing to keep secret: never ask the macOS
+    // keychain (or a Linux keyring) for the profile's encryption key, which
+    // otherwise prompts the person at the machine on every launch.
+    '--use-mock-keychain',
+    '--password-store=basic',
     '--enable-unsafe-webgpu',
     // Tabs a test drives in turn must not be throttled as background tabs.
     '--disable-background-timer-throttling',

@@ -22,6 +22,7 @@ use super::site_join::{Arriving, SiteJoin};
 use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
+use std::sync::Arc;
 
 /// A workspace link's invitation, as the join field read it.
 struct InvitationLink<'a> {
@@ -252,15 +253,14 @@ impl ShellNetwork {
             .checked_add(LINK_JOIN_WAIT)
             .unwrap_or_else(std::time::Instant::now);
         loop {
-            let held = self.replica.lock().is_ok_and(|replica| {
-                replica
-                    .tree
+            let held = {
+                self.tree
                     .read()
                     .desktop
                     .workspaces
                     .iter()
                     .any(|workspace| workspace.room() == room)
-            });
+            };
             if held {
                 return Ok(room);
             }
@@ -284,27 +284,28 @@ impl ShellNetwork {
             app,
             entry,
         } = link;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         if tree.read().holds_room(room) {
             return Ok(PeerSyncResponse::Message(room.to_string()));
         }
         let http = HostHttp::new(origin)?;
-        let runtime = self.runtime_handle()?;
         let bytes = base64::Engine::decode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             invitation,
         )
         .map_err(|_| "That invitation is damaged. Ask for a new link.")?;
         tracing::info!(%room, %origin, "join link: asking the workspace's host about the invitation");
-        let name = match runtime.block_on(tilo_relay_client::https::join(
-            http.as_ref(),
-            &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation: bytes },
-        )) {
+        let inspected = {
+            let http = Arc::clone(&http);
+            self.wait_on(async move {
+                tilo_relay_client::https::join(
+                    http.as_ref(),
+                    &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation: bytes },
+                )
+                .await
+            })?
+        };
+        let name = match inspected {
             Ok(tilo_relay_protocol::rooms::JoinReply::Invitation {
                 name, room: named, ..
             }) if RoomId::parse(&named) == Some(room) => name,
@@ -318,8 +319,11 @@ impl ShellNetwork {
                 ));
             }
         };
-        let host = runtime
-            .block_on(tilo_relay_client::https::host_info(http.as_ref()))
+        let host = self
+            .wait_on({
+                let http = Arc::clone(&http);
+                async move { tilo_relay_client::https::host_info(http.as_ref()).await }
+            })?
             .map_err(|error| error.to_string())?
             .host_cert
             .device_public_key;

@@ -40,11 +40,25 @@ if [[ $(uname -s) == Linux ]]; then
     export CHROME="${CHROME:-/usr/lib64/chromium-browser/chromium-browser}"
 fi
 
+# A crashing test leaves no core file: it lands in the package's directory, where rcargo copies it
+# back into the worktree (hundreds of MB each); nextest's report already names the signal.
+ulimit -c 0
+
 tested=" "
 explicit=0
 nextest=0
 [[ ${1:-} == cargo && ${2:-} == nextest ]] && nextest=1
 arguments=("$@")
+# What follows `--` goes to the test binaries (`rcargo test -p NAME -- FILTER`): every option this
+# wrapper adds goes before it.
+tail=()
+for (( index = 0; index < ${#arguments[@]}; index++ )); do
+    if [[ ${arguments[index]} == -- ]]; then
+        tail=("${arguments[@]:index}")
+        arguments=("${arguments[@]:0:index}")
+        break
+    fi
+done
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     case ${arguments[index]} in
         -p|--package) tested+="${arguments[index + 1]:-} " ;;
@@ -55,13 +69,19 @@ done
 [[ $tested == " " && -n ${T_NEXTEST_PACKAGES:-} ]] && tested=" $T_NEXTEST_PACKAGES "
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
+# In CI, a build of named packages resolves every member's features as the whole workspace does,
+# its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
+# share each member's unit. That build compiles every member, so outside CI (a developer's
+# `rcargo test -p NAME` on one incremental target) an edit would rebuild every package that
+# depends on the edited one; there the named packages build alone.
+unify=()
+[[ -n ${CI:-} ]] && unify=(-p workspace-unify)
+
 if (( nextest )); then
     if [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
-        # A build of named packages resolves every member's features as the whole workspace does,
-        # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different
-        # packages share each member's unit. Not as --features too: `tilo-media/decode` there
-        # also turns on the optional tilo-media of every package selected beside it.
-        arguments+=(-p workspace-unify)
+        # Not as --features: `tilo-media/decode` there also turns on the optional tilo-media of
+        # every package selected beside it.
+        arguments+=("${unify[@]}")
     else
         # Package-qualified features: never enable inference for client-only apps.
         feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
@@ -86,6 +106,15 @@ fi
 if tests tilo-agent-participant; then
     cargo build --locked -p tilo-video-render --bin tilo-video-render
     export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
+fi
+
+# The shell's sandbox and desktop tests drive a Wayland client from its own
+# package, so a shell edit does not rebuild it; cargo only hands a test its own
+# package's binaries. It resolves as the test build does (with workspace-unify in
+# CI), so its units are the ones that build already made.
+if (( nextest )) && tests shell; then
+    cargo build --locked -p click-test-client "${unify[@]}" --bin click_test_client
+    export TILO_CLICK_TEST_CLIENT="${CARGO_TARGET_DIR:-$root/target}/debug/click_test_client"
 fi
 
 # The app-cli and app-host trust tests execute the installer, which no package
@@ -179,9 +208,11 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
         --test|--exact|--test-threads=*|--run-ignored=*|--retries=*) timed=0 ;;
     esac
 done
+# A name filter for the test binaries selects by hand too.
+(( ${#tail[@]} > 1 )) && timed=0
 
 if (( ! timed )); then
-    exec bash "$root/tools/test-env.sh" "${arguments[@]}"
+    exec bash "$root/tools/test-env.sh" "${arguments[@]}" "${tail[@]}"
 fi
 # nextest's output and libtest's JSON events stay the log's own, as they were
 # written: the events pass through as t's log already carries them, and the times
@@ -193,7 +224,7 @@ fi
 format=(--message-format json-pretty)
 [[ " $* " == *" --message-format "* || " $* " == *" --message-format="* ]] && format=()
 status=0
-bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" 2>&1 \
+bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" "${tail[@]}" 2>&1 \
     | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
 # The run's own verdict, not the recording's.
 exit "$status"

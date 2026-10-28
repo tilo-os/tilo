@@ -268,15 +268,8 @@ mod files_clipboard_tests {
             let session = Self::start_session(profile, !prepare);
             let source_grants = {
                 let tree = session.workspace_tree();
-                let mut tree = tree.write();
-                let workspace = &mut tree.workspaces[0];
-                let grant = |path: &PathBuf| Capability::Filesystem {
-                    path: path.clone(),
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_SESSION,
-                };
-                let source_grants = workspace.grant_app(APP, &grant(&folders[0]));
-                workspace.grant_app(APP, &grant(&folders[1]));
+                let source_grants = grant_files_folder(&tree, &folders[0]);
+                grant_files_folder(&tree, &folders[1]);
                 source_grants
             };
             let collab = session.broker.capnp_socket().to_path_buf();
@@ -1506,17 +1499,7 @@ mod files_clipboard_tests {
             std::fs::read(fixture.folders[1].join("report")).unwrap(),
             b"original source"
         );
-        {
-            let tree = fixture.session.workspace_tree();
-            tree.write().workspaces[0].grant_app(
-                APP,
-                &Capability::Filesystem {
-                    path: fixture.folders[0].clone(),
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_SESSION,
-                },
-            );
-        }
+        grant_files_folder(&fixture.session.workspace_tree(), &fixture.folders[0]);
         fixture.succeeds(1, "undo");
         assert_eq!(
             std::fs::read(fixture.folders[0].join("report")).unwrap(),
@@ -1612,15 +1595,139 @@ mod files_clipboard_tests {
         drop(fixture);
     }
 
+    /// Admit `agent` to the session's room as an Operator and let it use
+    /// Files and the fixture's two folders there, as the person admitting
+    /// it does: every change is asked of the room's governor, this device's
+    /// own host, and holds once the governor committed it and the room's
+    /// projection carries it here. The folders are the room's grants to
+    /// Files: the person's own consent to a folder in Files is theirs, and
+    /// an agent working in the window does not act on it.
+    fn admit_agent_with_files(fixture: &mut Fixture, agent: &str) {
+        let files = format!("{agent}-files");
+        let mut folder_grants = Vec::new();
+        {
+            let tree = fixture.session.workspace_tree();
+            let mut tree = tree.write();
+            let workspace = &tree.desktop.workspaces[0];
+            let (id, room, app) = (
+                workspace.id,
+                workspace.room().to_string(),
+                workspace.node().app(APP),
+            );
+            let person = workspace
+                .policy
+                .owner
+                .clone()
+                .expect("the session's person owns its room");
+            let granted_by = tilo_action_policy::Subject::Person(person.clone());
+            let mut changes: Vec<_> = tilo_action_policy::roles::AgentPreset::Operator
+                .grants(&room, agent, &granted_by)
+                .into_iter()
+                .map(tilo_action_policy::Change::Grant)
+                .collect();
+            changes.push(tilo_action_policy::Change::Grant(
+                tilo_action_policy::Grant::new(
+                    files.clone(),
+                    tilo_action_policy::Subject::agent(agent),
+                    app,
+                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_policy::Answer::Allow,
+                    granted_by,
+                ),
+            ));
+            tree.govern_in_workspace(id, &person, changes)
+                .expect("the room's owner may admit an agent");
+            let room = tree.desktop.workspaces[0].room();
+            for (index, folder) in fixture.folders.iter().enumerate() {
+                let capability = Capability::Filesystem {
+                    path: folder.clone(),
+                    mode: FsMode::ReadWrite,
+                    scope: GRANT_SESSION,
+                };
+                for (scope, access) in capability.requested_scopes() {
+                    let grant = collab_types::caps::CapOverride::grant(
+                        collab_types::caps::Subject::app(APP),
+                        scope,
+                        access,
+                    )
+                    .with_id(format!("{agent}-folder-{index}-{}", folder_grants.len()));
+                    folder_grants.push(grant.id.clone());
+                    tree.request_governance(
+                        room,
+                        crate::shell::state::GovernanceRequest::GrantSandbox(grant),
+                    );
+                }
+            }
+        }
+        // The person's change wakes the session's turn, as a change in the
+        // desktop's chrome asks for its next frame.
+        (fixture.session.network().loop_waker())();
+        let tree = fixture.session.workspace_tree();
+        let [first, second] = &mut fixture.shown;
+        until(
+            &mut [first, second],
+            format_args!("the governor commits {agent}'s admission"),
+            || {
+                let tree = tree.read();
+                let workspace = &tree.desktop.workspaces[0];
+                assert!(
+                    tree.governance_refusals.is_empty(),
+                    "{:?}",
+                    tree.governance_refusals
+                );
+                let admitted = workspace
+                    .agent_role_at(agent, tilo_clock::unix_now())
+                    .is_some()
+                    && workspace
+                        .policy
+                        .grants
+                        .iter()
+                        .any(|grant| grant.id.as_str() == files)
+                    && folder_grants
+                        .iter()
+                        .all(|id| workspace.sandbox.iter().any(|held| &held.id == id));
+                drop(tree);
+                admitted
+            },
+        );
+    }
+
     fn grant_native_trash(fixture: &Fixture) -> Vec<String> {
-        fixture.session.workspace_tree().write().workspaces[0].grant_app(
+        grant_files_folder(
+            &fixture.session.workspace_tree(),
+            &tilo_paths::data_dir().expect("isolated user data root"),
+        )
+    }
+
+    /// Let the Files windows read and write `folder` for this session, as
+    /// the person opening it in Files does: a session grant to Files that
+    /// this device remembers as the person's own consent, so the room's
+    /// next projection keeps it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the grant and the consent that keeps it are one write of the tree"
+    )]
+    fn grant_files_folder(
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        folder: &Path,
+    ) -> Vec<String> {
+        let mut tree = tree.write();
+        let tree = &mut *tree;
+        let workspace = &mut tree.desktop.workspaces[0];
+        let ids = workspace.grant_app(
             APP,
             &Capability::Filesystem {
-                path: tilo_paths::data_dir().expect("isolated user data root"),
+                path: folder.to_path_buf(),
                 mode: FsMode::ReadWrite,
                 scope: GRANT_SESSION,
             },
-        )
+        );
+        assert!(
+            tree.native_runtime
+                .remember_files_home_consent(workspace, &ids),
+            "this device remembers the person's Files consent"
+        );
+        ids
     }
 
     fn native_trash_pair(trash: &Path) -> PathBuf {
@@ -2156,26 +2263,7 @@ mod files_clipboard_tests {
             return;
         };
         let mut fixture = Fixture::new(&profile);
-        {
-            let tree = fixture.session.workspace_tree();
-            let mut tree = tree.write();
-            let owner = tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner);
-            tree.workspaces[0].admit_agent_preset(
-                "clipboard-helper",
-                tilo_action_policy::roles::AgentPreset::Operator,
-                &owner,
-            );
-            let app = tree.workspaces[0].node().app(APP);
-            tree.workspaces[0].grant(tilo_action_policy::Grant::new(
-                "clipboard-helper-files",
-                tilo_action_policy::Subject::agent("clipboard-helper"),
-                app,
-                tilo_action_policy::KindSet::ALL,
-                tilo_action_policy::Answer::Allow,
-                owner,
-            ));
-            drop(tree);
-        }
+        admit_agent_with_files(&mut fixture, "clipboard-helper");
         let agent = AgentDoor::open(&fixture.session, "clipboard-helper");
         for (index, action) in [(0, "copy"), (1, "paste")] {
             let update = fixture.agent_invoke(&agent, index, action);

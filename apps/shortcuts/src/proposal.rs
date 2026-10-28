@@ -152,6 +152,7 @@ impl Proposal {
             triggers: Vec::new(),
             step_timeout_secs: None,
             saved_by: None,
+            saved_proof: None,
         }
     }
 }

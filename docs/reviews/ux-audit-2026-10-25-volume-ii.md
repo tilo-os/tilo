@@ -1275,7 +1275,7 @@ not precise enough to have claimed anything smaller.
 
 **What a frame gate must therefore be.** Perceptual, with a *stated* tolerance,
 and the tolerance has to be small enough that a real layout difference is orders of
-magnitude beyond it. `tools/ci/capture_parity.py` (written during this pass) uses
+magnitude beyond it. [`capture_parity.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/ci/capture_parity.py) (written during this pass) uses
 64 pixels: 1 in 12,000 of a 768×1024 frame, and 4,300× smaller than the Settings
 difference it is there to catch. The number is in the file with the reason, not
 implied.
@@ -1319,7 +1319,7 @@ unreadable (it measured 12.9:1), a "contradiction" in Monitor's memory figure (t
 measures), and now a capture blocker that was a comparison of hashes. The lesson is not "measure
 carefully" but something sharper: **a difference is not evidence until the instrument that reports
 it can distinguish the classes of difference it might be.** Hashes cannot tell a rounding tie from a
-moved control, which is why `tools/ci/capture_parity.py` counts layout after a downsample, and why
+moved control, which is why [`capture_parity.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/ci/capture_parity.py) counts layout after a downsample, and why
 `M10`'s first assertion has to be stated in those terms rather than as "frames match".
 
 **What it changes about `M10`.** Nothing structural, and that is the good news: repeated runs *are*

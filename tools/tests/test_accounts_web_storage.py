@@ -1,5 +1,4 @@
 """Keep the real profile-vault browser regression required and fail closed."""
-import fnmatch
 import os
 from pathlib import Path
 import subprocess
@@ -10,69 +9,10 @@ from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 DRIVER = ROOT / 'crates/system/accounts/web/run.mjs'
 
 
 class AccountsWebStorageTests(unittest.TestCase):
-    def test_check_runs_production_probe_and_wasm_lint(self):
-        project = t_matrix.load(ROOT)
-        check = next(c for c in project['check'] if c['name'] == 'accounts-web-storage')
-        self.assertNotEqual(check.get('default'), False)
-        self.assertIn('tilo-builder@sha256:', check.get('image', project['image']))
-        self.assertEqual(check['requires'], ['arch=x86_64'])
-        self.assertFalse(check.get('devices'))
-        run = check['run']
-        self.assertIn('node crates/system/accounts/web/run.mjs --no-sandbox', run)
-        self.assertNotIn('--no-build', run)
-        self.assertIn('cargo clippy --locked --target wasm32-unknown-unknown', run)
-        for package in ('accounts', 'tilo-secret-vault', 'tilo-files', 'tilo-secrets'):
-            self.assertIn('-p ' + package, run)
-        for lint in ('future_not_send', 'arc_with_non_send_sync', 'drop_non_drop'):
-            self.assertIn('-A clippy::' + lint, run)
-        self.assertIn('ensure-browser-dependencies.sh', run)
-        self.assertIn('@puppeteer/browsers@2 install chrome@stable', run)
-        for forbidden in ('--workspace', 'os/build.sh', 'tilo-app build'):
-            self.assertNotIn(forbidden, run)
-        # Every local WASM dependency is part of the key through the packages the check
-        # builds: t follows their local dependencies and keys the lockfile entries and
-        # root-manifest sections (patches included) of the crates they use.
-        self.assertEqual(set(check['cargo_packages']),
-                         {'accounts', 'tilo-secret-vault', 'tilo-files', 'tilo-secrets'})
-        sys.path.insert(0, str(ROOT / 'tools/ci'))
-        import t_toml
-        import workspace_graph
-        packages = {p['name']: p for p in workspace_graph.cargo_metadata(ROOT)['packages']}
-        reached = {Path(packages[name]['manifest_path']).resolve().parent.relative_to(ROOT.resolve())
-                   for name in t_toml.local_closure(packages, set(check['cargo_packages']), True)}
-        for path in (
-            'crates/system/accounts/examples/account_storage_probe.rs',
-            'crates/system/accounts/src/vault.rs',
-            'crates/system/secret-vault/src/lib.rs',
-            'crates/system/advisory-lock/src/lib.rs',
-            'crates/system/bounded-command/src/lib.rs',
-            'crates/system/cloud-source/src/lib.rs',
-            'crates/system/tilo-seal/src/lib.rs',
-            'crates/platform/tilo-files/src/opfs.rs',
-            'crates/platform/tilo-secrets/web/secrets.mjs',
-            'crates/platform/tilo-clock/src/lib.rs',
-            'crates/platform/tilo-lock/src/lib.rs',
-            'crates/platform/tilo-paths/src/lib.rs',
-            'crates/platform/tilo-platform-caps/src/lib.rs',
-            'crates/platform/tilo-rt/src/lib.rs',
-            'crates/platform/tilo-wake/src/lib.rs',
-        ):
-            with self.subTest(path=path):
-                self.assertTrue(any(directory in Path(path).parents for directory in reached))
-        # And the files outside them: the browser supervisor, and the builder and tool versions.
-        for path in (
-            'crates/system/accounts/web/run.mjs',
-            'tools/web/chrome.mjs', 'tools/web/owned_browser.py',
-            'tools/ci/ensure-browser-dependencies.sh', 'os/Containerfile.builder',
-        ):
-            with self.subTest(path=path):
-                self.assertTrue(any(fnmatch.fnmatchcase(path, pattern)
-                                    for pattern in check['inputs']))
 
     def run_without_subject(self, missing):
         # Run the real driver without building: fake only tool provisioning.

@@ -238,7 +238,7 @@ pub struct ClipboardHistorySnapshot {
     /// Authenticated fabric author, or `None` when the copy originated in
     /// this compositor. The UI receives identity metadata, never payload
     /// bytes, until the person explicitly activates an item.
-    pub source_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub source_device: Option<tilo_network_actor::fabric::DeviceId>,
     pub created_unix_ms: u64,
 }
 
@@ -253,7 +253,7 @@ struct ClipboardHistoryItem {
     /// Imported fabric entries remain selectable locally but are not
     /// re-authored and rebroadcast as if they originated on this device.
     fabric_imported: bool,
-    source_device: Option<crate::shell::personal_continuity::DeviceId>,
+    source_device: Option<tilo_network_actor::fabric::DeviceId>,
 }
 
 /// Payload-safe export used only by the encrypted same-person device lane.
@@ -2710,8 +2710,9 @@ mod tests {
             assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
         }
         {
-            use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
-            use crate::shell::personal_continuity::DeviceId;
+            use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload};
+            use tilo_network_actor::fabric::DeviceId;
+            use tilo_network_actor::fabric::FabricStamp;
 
             let s = store();
             let origin = DeviceId::new("remote-device").unwrap();

@@ -7,8 +7,11 @@
 //! the model service's clients, which the first model request or provider
 //! settings change asks for, the pinned people overlay, which pinning
 //! who is here asks for, the emoji catalogue, which the first picker,
-//! reaction name or `:name:` completion asks for, and History, which the
-//! first window that registers it asks for.
+//! reaction name or `:name:` completion asks for, History, which the
+//! first window that registers it asks for, desktop search, which the
+//! desktop asks for as it first lays out, the notification centre,
+//! which opening it asks for, and stewarding the person's own room, which
+//! the page's first channel of it asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -291,6 +294,25 @@ split_code! {
 }
 
 split_code! {
+    /// Desktop search: the desktop asks for it as it first lays out.
+    mod desktop_search: tilo_desktop_search::MakeDesktopSearch = tilo_desktop_search::builtin_desktop_search()
+        => tilo_desktop_search::DESKTOP_SEARCH, module = "desktop_search", hash = "7be226dd82b8cdaa";
+}
+
+split_code! {
+    /// The notification centre: the first time it opens asks for it.
+    mod notification_centre: tilo_desktop_surface::notifications::MakeNotificationCentre = tilo_desktop_surface::notifications::builtin_notification_centre()
+        => tilo_desktop_surface::notifications::NOTIFICATION_CENTRE, module = "notification_centre", hash = "3d94b0e6a1c7f258";
+}
+
+split_code! {
+    /// Stewarding the person's own room: the first channel of it the page
+    /// takes up asks for it.
+    mod stewards: tilo_browser_peer::MakeStewards = tilo_browser_peer::builtin_stewards()
+        => tilo_browser_peer::STEWARDS, module = "stewards", hash = "ddbdc90ecc24a541";
+}
+
+split_code! {
     /// History: the first window that registers it asks for it.
     mod history: tilo_ui::history_mode::MakeHistory = tilo_ui::history_mode::builtin_history()
         => tilo_ui::history_mode::HISTORY, module = "history", hash = "e1a7c5039b6d2f84";
@@ -349,4 +371,7 @@ pub(crate) fn register() {
     action_palette::register();
     feedback_code::register();
     profile_card::register();
+    desktop_search::register();
+    notification_centre::register();
+    stewards::register();
 }

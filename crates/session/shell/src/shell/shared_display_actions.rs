@@ -49,7 +49,7 @@ pub(crate) fn published() -> Option<SharedDisplayView> {
 }
 
 fn view_of(facts: PersonDisplays) -> Option<SharedDisplayView> {
-    crate::shell::personal_continuity::DeviceId::new(facts.local_device.clone()).ok()?;
+    tilo_network_actor::fabric::DeviceId::new(facts.local_device.clone()).ok()?;
     let arrangement = Arrangement::load();
     let layout = Layout::resolve(&facts.devices, &arrangement);
     Some(SharedDisplayView {

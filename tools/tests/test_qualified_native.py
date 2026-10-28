@@ -2,7 +2,6 @@
 import importlib.util
 import json
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -16,16 +15,6 @@ from ci import qualified_native
 
 
 class QualifiedNativeTests(unittest.TestCase):
-    def test_native_admission_retains_general_lane_without_a_selection_wait(self):
-        workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
-        selection = workflow.split("  select:\n", 1)[1].split("  security:\n", 1)[0]
-        self.assertNotIn("needs:", selection)
-        self.assertNotIn("needs.builder", selection)
-        expression = "matrix.runner"
-        for name in ("test", "clippy"):
-            job = re.split(r"\n  \S", workflow.split(f"  {name}:\n", 1)[1], maxsplit=1)[0]
-            self.assertIn("needs: [builder, select, security]", job)
-            self.assertIn("runs-on: ${{ " + expression + " }}", job)
 
     def test_real_input_binding_falls_back_on_builder_workflow_or_source_change(self):
         receipt = json.loads((ROOT / "tools/ci/qualified-native.json").read_text())

@@ -32,6 +32,7 @@ if [ "$BUILD_ROLE" = home-capture ]; then
     esac
 fi
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
+THIN_APP_WRAPPER=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
 
 # TILO_THIN_KEEP_SYMBOLS=1 keeps the symbol tables of the apps, the runtime and its engines, for
 # reading what makes an app large (the app-binaries check); every package is built the same way
@@ -172,6 +173,21 @@ if [[ -n ${RUSTC_WRAPPER:-} && ${RUSTC_WRAPPER} != "$REPO"/tools/ci/thin-app/* ]
     extra_cargo_args+=(--config "build.rustc-wrapper=\"$RUSTC_WRAPPER\""
                       --config "env.TILO_THIN_SCCACHE.value=$cache_config"
                       --config "env.TILO_THIN_SCCACHE.force=true")
+elif [[ ${RUSTC_WRAPPER-unset} != "$REPO"/tools/ci/thin-app/* ]]; then
+    # The dispatcher runs every compile, also with no cache: it maps the tree's and the
+    # build directory's paths. An empty RUSTC_WRAPPER asks for no cache (and would keep
+    # cargo from running the dispatcher). A front end that runs cargo on another machine
+    # may give it a cache this script cannot see: as configuration
+    # (CARGO_BUILD_RUSTC_WRAPPER) the setting here replaces it and the dispatcher runs it
+    # behind the workspace wrapper; as RUSTC_WRAPPER it would run in front of it, where it
+    # cannot start the workspace wrapper (THIN_APP_WRAPPER names it from the compiler's
+    # working directory, which a cache server does not share).
+    if [[ ${RUSTC_WRAPPER+set} ]]; then
+        unset RUSTC_WRAPPER
+        extra_cargo_args+=(--config 'env.TILO_THIN_SCCACHE.value=""'
+                          --config 'env.TILO_THIN_SCCACHE.force=true')
+    fi
+    extra_cargo_args+=(--config 'build.rustc-wrapper="tools/ci/thin-app/sccache"')
 fi
 if [ "$BUILD_PHASE" != verify ] && [ -n "${SDK_COMPILER_UNITS:-}" ]; then
     extra_cargo_args+=(--message-format=json-render-diagnostics)
@@ -184,10 +200,19 @@ keep_symbols=()
 [ "$strip" = none ] && keep_symbols=(--config "profile.$PROFILE.strip=\"none\"")
 if [ "$BUILD_PHASE" != verify ]; then
 # Paths here stay relative to the tree's root -- this script cd's to it first --
-# because a Cargo front end may build the tree where it stages it (t builds under
-# /src), and an absolute path from this checkout does not exist there.
+# because a Cargo front end may build the tree where it stages it, and an
+# absolute path from this checkout does not exist there.
+#
+# Cargo hashes the workspace wrapper's path into every workspace crate's
+# `-C metadata`, and so into the crate hashes and symbol names of the runtime and
+# of everything built on a workspace crate. A checkout's absolute path there made
+# two builds of the same sources give different runtimes wherever the tree sat
+# (and every app and layer that names the runtime changed with it). Cargo runs a
+# workspace crate's compiler in the workspace root, so the wrapper is named
+# through the compiler process's own working directory: one path for every
+# checkout (THIN_APP_WRAPPER, which tools/ci/thin-app/* compare against).
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
-    --config "build.rustc-workspace-wrapper=\"tools/ci/rustc-thin-app-wrapper.sh\"" \
+    --config "build.rustc-workspace-wrapper=\"$THIN_APP_WRAPPER\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
     "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"

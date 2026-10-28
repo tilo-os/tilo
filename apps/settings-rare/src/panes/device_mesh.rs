@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
-use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
@@ -27,6 +26,9 @@ use crate::widgets::{StatusTone, error_caption, note, page, row, rows, section, 
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
+mod home_relay;
+#[cfg(test)]
+mod home_relay_tests;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -396,13 +398,6 @@ pub enum DeviceMeshEffect {
         service: String,
         on: bool,
     },
-    /// Keep a discovered workspace on this device, or stop keeping it.
-    #[effect(row, idempotent)]
-    SetSyncedWorkspace {
-        #[param("The workspace's id")]
-        workspace: u64,
-        on: bool,
-    },
     /// Look for a new home server nearby, then approve the one found.
     #[effect(label = "Pair home server")]
     PairHomeServer,
@@ -430,6 +425,14 @@ pub enum DeviceMeshEffect {
     RemoveHomeServer {
         #[param("The home server's node id")]
         device: String,
+    },
+    /// Have the person's home relay host a workspace this device hosts as
+    /// well, or no longer.
+    #[effect(row, idempotent)]
+    SetHomeRelayHosting {
+        #[param("The workspace's room id")]
+        room: String,
+        on: bool,
     },
     /// Ask, under a device's row, whether to remove it.
     #[effect(view, row, label = "Remove device")]
@@ -540,7 +543,9 @@ impl DeviceMeshArea {
             // stand-ins.
             if self.cx.reaches_devices() {
                 model.refresh_personal_devices();
+                model.refresh_home_relay();
             } else if let Some(scene) = self.cx.scene() {
+                model.home_relay.hosting.clone_from(&scene.home_relay);
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
                     Err(error) => model.personal_device_error = Some(error),
@@ -594,26 +599,10 @@ impl DeviceMeshArea {
         self.model.get().is_some()
     }
 
-    /// One row per discovered workspace, personal device and home server.
+    /// One row per personal device and home server.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
         let offer = |effect: DeviceMeshEffect| SettingsEffect::from(effect).bound();
-        let workspaces = model.discovered_workspaces.iter().map(|workspace| {
-            let kept = model
-                .config
-                .workspaces
-                .iter()
-                .any(|binding| binding.id == workspace.id);
-            LiveRow::new(
-                format!("settings.device-mesh-workspace:{}", workspace.id),
-                "settings.device-mesh-workspace",
-                workspace.name.clone(),
-            )
-            .operation(offer(DeviceMeshEffect::SetSyncedWorkspace {
-                workspace: workspace.id,
-                on: !kept,
-            }))
-        });
         let devices = model
             .personal_devices
             .iter()
@@ -639,7 +628,7 @@ impl DeviceMeshArea {
                 device: peer.device_node_id.clone(),
             }))
         });
-        workspaces.chain(devices).chain(servers).collect()
+        devices.chain(servers).collect()
     }
 }
 
@@ -655,7 +644,6 @@ pub struct DeviceMeshModel {
     cx: PaneCx,
     changed: bool,
     runtime_status: RelayRuntimeStatus,
-    discovered_workspaces: Vec<DiscoveredWorkspace>,
     registered_home_peers: usize,
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, String>,
@@ -706,6 +694,8 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     /// Home servers still to ask on opening, one after another.
     health_round: usize,
+    /// Which workspaces the home relay hosts too, as the host answers.
+    home_relay: home_relay::HomeRelay,
     /// A home server's removal still waits to be delivered; it is retried
     /// with the health checks.
     removals_pending: bool,
@@ -716,12 +706,6 @@ struct RevokeCall {
     call: ui::InvocationCall,
     label: String,
     reply: Option<EffectReply>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DiscoveredWorkspace {
-    id: u64,
-    name: String,
 }
 
 /// The device the host's discovery found, as its action answers it.
@@ -738,55 +722,6 @@ enum PairingTarget {
     #[default]
     HomePeer,
     PersonalDevice,
-}
-
-fn workspace_key(id: u64) -> String {
-    format!("device_mesh.workspace.{id}")
-}
-
-fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
-    let path = tilo_paths::config_dir().map_or_else(
-        || PathBuf::from("state.json"),
-        |dir| dir.join("tilo/state.json"),
-    );
-    let mut result = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|state| {
-            state
-                .get("workspaces")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-        })
-        .map(|workspaces| {
-            workspaces
-                .into_iter()
-                .filter_map(|workspace| {
-                    let id = workspace
-                        .get("room")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(|room| tilo_relay_protocol::room_workspace_id(room).ok())
-                        .or_else(|| workspace.get("id").and_then(serde_json::Value::as_u64))?;
-                    let name = workspace
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Workspace")
-                        .to_owned();
-                    Some(DiscoveredWorkspace { id, name })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    for binding in &config.workspaces {
-        if !result.iter().any(|workspace| workspace.id == binding.id) {
-            result.push(DiscoveredWorkspace {
-                id: binding.id,
-                name: format!("Workspace {}", binding.id),
-            });
-        }
-    }
-    result.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-    result
 }
 
 fn registered_home_peer_count() -> usize {
@@ -1017,7 +952,6 @@ pub(crate) struct MeshRead {
     config: RelayConfig,
     load_status: String,
     runtime_status: RelayRuntimeStatus,
-    discovered_workspaces: Vec<DiscoveredWorkspace>,
     home_peers: Vec<tilo_relay_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
     roaming_provenance_path: Option<PathBuf>,
@@ -1072,11 +1006,6 @@ impl MeshRead {
             ),
         };
         let runtime_status = RelayRuntimeStatus::read(&config, now);
-        let discovered_workspaces = if devices {
-            discover_workspaces(&config)
-        } else {
-            Vec::new()
-        };
         let home_peers = if devices {
             registered_home_peers()
         } else {
@@ -1091,7 +1020,6 @@ impl MeshRead {
             config,
             load_status,
             runtime_status,
-            discovered_workspaces,
             home_peers,
             home_peer_last_seen: if devices {
                 load_home_peer_last_seen()
@@ -1126,7 +1054,6 @@ impl DeviceMeshModel {
             cx,
             changed: false,
             runtime_status: read.runtime_status,
-            discovered_workspaces: read.discovered_workspaces,
             registered_home_peers: read.home_peers.len(),
             home_peers: read.home_peers,
             home_peer_health: HashMap::new(),
@@ -1146,6 +1073,7 @@ impl DeviceMeshModel {
             management_device: None,
             management_call: None,
             devices_call: None,
+            home_relay: home_relay::HomeRelay::default(),
             revoke_call: None,
             next_peer_health: 0,
             apply_child: None,
@@ -1180,12 +1108,11 @@ impl DeviceMeshModel {
     }
 
     fn common_replication(&self) -> ReplicationIntent {
-        self.config
-            .workspaces
-            .first()
-            .map_or(ReplicationIntent::OnDemand, |workspace| {
-                workspace.replication.clone()
-            })
+        if self.config.services.full_content_replication {
+            ReplicationIntent::FullWorkspace
+        } else {
+            ReplicationIntent::OnDemand
+        }
     }
 
     /// Carry out `effect`.
@@ -1201,9 +1128,6 @@ impl DeviceMeshModel {
             DeviceMeshEffect::SetReplication { replication } => {
                 let intent = replication_from_label(replication)
                     .ok_or_else(|| "unsupported replication policy".to_string())?;
-                for workspace in &mut self.config.workspaces {
-                    workspace.replication = intent.clone();
-                }
                 self.config.services.full_content_replication =
                     intent == ReplicationIntent::FullWorkspace;
                 true
@@ -1215,39 +1139,6 @@ impl DeviceMeshModel {
                     "app_serving" => self.config.services.app_serving = *on,
                     "compute" => self.config.services.compute = *on,
                     _ => return Err("unsupported device service".into()),
-                }
-                true
-            }
-            DeviceMeshEffect::SetSyncedWorkspace { workspace, on } => {
-                let id = *workspace;
-                if !self
-                    .discovered_workspaces
-                    .iter()
-                    .any(|workspace| workspace.id == id)
-                {
-                    return Err("workspace is no longer available on this device".into());
-                }
-                if *on
-                    && !self
-                        .config
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.id == id)
-                {
-                    self.config
-                        .workspaces
-                        .push(tilo_relay_protocol::WorkspaceBinding {
-                            id,
-                            pin: self.config.device_role.can_serve(),
-                            replication: ReplicationIntent::OnDemand,
-                            admitted_users: Vec::new(),
-                            // Workspace discovery proves only that the room exists. It
-                            // cannot confer the native shell governor's retained authority.
-                            shell_authority: None,
-                            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-                        });
-                } else if !*on {
-                    self.config.remove_workspace(id);
                 }
                 true
             }
@@ -1275,6 +1166,10 @@ impl DeviceMeshModel {
             DeviceMeshEffect::RemoveHomeServer { device } => {
                 let peer = self.home_peer(device)?;
                 self.start_home_peer_removal(&peer);
+                false
+            }
+            DeviceMeshEffect::SetHomeRelayHosting { room, on } => {
+                self.choose_home_relay(room, *on)?;
                 false
             }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
@@ -1347,9 +1242,11 @@ impl DeviceMeshModel {
         if self.devices_call.is_some()
             || self.revoke_call.is_some()
             || self.management_call.is_some()
+            || self.home_relay.waiting()
         {
             self.remote.poll();
         }
+        self.poll_home_relay();
         if let Some(answer) = self
             .devices_call
             .as_ref()
@@ -1504,31 +1401,9 @@ impl DeviceMeshModel {
         self.config.device_role = role;
         self.config.services.workspace_replication = role.can_serve();
         self.config.services.inbound_relay = role.can_serve();
-        for workspace in &mut self.config.workspaces {
-            workspace.pin = role.can_serve();
-        }
-        if role == DeviceRole::AlwaysOnServer {
-            if self.config.workspaces.is_empty() {
-                self.config.workspaces = self
-                    .discovered_workspaces
-                    .iter()
-                    .map(|workspace| tilo_relay_protocol::WorkspaceBinding {
-                        id: workspace.id,
-                        pin: true,
-                        replication: ReplicationIntent::FullWorkspace,
-                        admitted_users: Vec::new(),
-                        shell_authority: None,
-                        checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-                    })
-                    .collect();
-            }
-            self.config.services.full_content_replication = true;
-            for workspace in &mut self.config.workspaces {
-                workspace.replication = ReplicationIntent::FullWorkspace;
-            }
-        } else {
-            self.config.services.full_content_replication = false;
-        }
+        // Which rooms a server holds is the rooms' own: each workspace adds
+        // it as a hosting member. The role only says how much it keeps.
+        self.config.services.full_content_replication = role == DeviceRole::AlwaysOnServer;
         self.next_status_refresh = ui::time::now();
         true
     }
@@ -1633,13 +1508,15 @@ impl DeviceMeshModel {
         }
         roaming_rows.push(note(&t("mesh-roaming-caption")));
 
-        page(vec![
-            self.devices_section(),
+        let mut sections = vec![self.devices_section()];
+        sections.extend(self.home_relay_section());
+        sections.extend([
             section(&t("mesh-continue-title"), rows(continuation_rows)),
             section(&t("mesh-privacy-title"), rows(privacy_rows)),
             section(&t("mesh-roaming-title"), rows(roaming_rows)),
             section(&t("mesh-activity-title"), rows(audit_rows)),
-        ])
+        ]);
+        page(sections)
     }
 
     /// The row switching the mesh service `service` of this device.
@@ -1688,7 +1565,8 @@ impl DeviceMeshModel {
                 DeviceRole::Hybrid => "hybrid",
                 DeviceRole::AlwaysOnServer => "always-on",
             },
-            "workspace_ids": self.config.workspaces.iter().map(|workspace| workspace.id).collect::<Vec<_>>(),
+            // Rooms add this device as a host themselves; it binds none.
+            "workspace_ids": Vec::<u64>::new(),
             "replication": match self.common_replication() {
                 ReplicationIntent::WorkspaceOnly => "workspace-only",
                 ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "on-demand",
@@ -1760,19 +1638,8 @@ impl DeviceMeshModel {
         arguments.insert("device".into(), candidate.device.clone().into());
         arguments.insert("service".into(), candidate.service.clone().into());
         if target == PairingTarget::HomePeer {
-            let ids: Vec<u64> = if self.config.workspaces.is_empty() {
-                self.discovered_workspaces
-                    .iter()
-                    .map(|workspace| workspace.id)
-                    .collect()
-            } else {
-                self.config
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace.id)
-                    .collect()
-            };
-            arguments.insert("workspace_ids".into(), ids.into());
+            // A new home server hosts no room yet: each workspace adds it.
+            arguments.insert("workspace_ids".into(), Vec::<u64>::new().into());
         }
         // Choosing the button that shows the device's code is the person's
         // confirmation that both screens show it.
@@ -2087,7 +1954,6 @@ impl DeviceMeshModel {
 mod tests {
     use super::*;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
-    use tilo_relay_protocol::WorkspaceBinding;
     use ui::widget::DisclosureRow;
 
     /// `at` as milliseconds after the epoch, as the held clock reports it.
@@ -2356,16 +2222,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
-            let mut config = RelayConfig::default();
-            config.workspaces.push(WorkspaceBinding {
-                id: 7,
-                pin: true,
-                replication: ReplicationIntent::OnDemand,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-            });
-            config.save(&path).unwrap();
+            RelayConfig::default().save(&path).unwrap();
 
             let mut pane = DeviceMeshModel::with_path(&path);
             let _ = pane.poll();
@@ -2385,10 +2242,7 @@ mod tests {
 
             let saved = RelayConfig::load(&path).unwrap();
             assert_eq!(saved.device_role, DeviceRole::Hybrid);
-            assert_eq!(
-                saved.workspaces[0].replication,
-                ReplicationIntent::FullWorkspace
-            );
+            assert!(saved.services.full_content_replication);
             assert!(!saved.services.remote_control_relay);
         }
 
@@ -2495,19 +2349,11 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
-            let mut config = RelayConfig {
+            let config = RelayConfig {
                 device_role: DeviceRole::Interactive,
                 services: tilo_relay_protocol::ServiceCapabilities::default(),
                 ..RelayConfig::default()
             };
-            config.workspaces.push(WorkspaceBinding {
-                id: 7,
-                pin: false,
-                replication: ReplicationIntent::OnDemand,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-            });
             config.save(&path).unwrap();
 
             let mut pane = DeviceMeshModel::with_path(&path);
@@ -2522,20 +2368,11 @@ mod tests {
             assert!(saved.services.workspace_replication);
             assert!(saved.services.full_content_replication);
             assert!(saved.services.inbound_relay);
-            assert!(saved.workspaces[0].pin);
-            assert_eq!(
-                saved.workspaces[0].replication,
-                ReplicationIntent::FullWorkspace
-            );
         }
     }
 
-    /// Peer health, workspace bindings, fresh metrics and complete residency.
+    /// Peer health, fresh metrics and complete residency.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {
@@ -2543,35 +2380,6 @@ mod tests {
             assert_eq!(peer_health_badge("Online. Syncing files"), "Syncing");
             assert_eq!(peer_health_badge("Offline: Last seen 4 h ago"), "Offline");
             assert_eq!(peer_health_badge("Checking…"), "Checking");
-        }
-
-        // Case `discovered_workspace_toggle_updates_the_real_binding_set`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("relay.toml");
-            let mut pane = DeviceMeshModel::with_path(&path);
-            pane.discovered_workspaces = vec![DiscoveredWorkspace {
-                id: 44,
-                name: "Studio".into(),
-            }];
-            pane.apply(&DeviceMeshEffect::SetSyncedWorkspace {
-                workspace: 44,
-                on: true,
-            })
-            .unwrap();
-            assert!(
-                pane.config
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.id == 44)
-            );
-            assert!(
-                RelayConfig::load(&path)
-                    .unwrap()
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.id == 44)
-            );
         }
 
         // Case `fresh_daemon_metrics_drive_online_status`.
@@ -2850,12 +2658,12 @@ mod tests {
     /// The host's pairing actions, in process: it records what it was asked
     /// and answers the way the host does.
     #[derive(Default)]
-    struct PairingHost {
+    pub(super) struct PairingHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
     }
 
     impl PairingHost {
-        fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
+        pub(super) fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
             self.asked.lock().unwrap().clone()
         }
     }
@@ -2886,9 +2694,23 @@ mod tests {
                 ui::tilo_actions::remote::ActionHostError,
             >,
         > {
-            use ui::tilo_actions::remote::{device_pairing, identity_admin};
+            use ui::tilo_actions::remote::{device_pairing, home_relay_hosting, identity_admin};
             let invocation = request.invocation;
-            let value = if request.target.provider == identity_admin::PROVIDER {
+            let value = if request.target.provider == home_relay_hosting::PROVIDER {
+                let studio_on = self
+                    .asked
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|asked| asked.target.address.action == home_relay_hosting::SET);
+                serde_json::json!({
+                    "relay": "Home server",
+                    "workspaces": [
+                        { "room": super::home_relay_tests::PERSONAL_ROOM, "name": "Personal", "on_relay": true },
+                        { "room": super::home_relay_tests::STUDIO_ROOM, "name": "Studio", "on_relay": studio_on },
+                    ],
+                })
+            } else if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
                     identity_admin::DEVICES => serde_json::json!([
                         {
@@ -3087,14 +2909,6 @@ mod tests {
         use ui::tilo_actions::remote::{Confirmation, InvokeArgument, device_pairing};
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        pane.config.workspaces = vec![WorkspaceBinding {
-            id: 7,
-            pin: true,
-            replication: ReplicationIntent::OnDemand,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-        }];
         let host = Arc::new(PairingHost::default());
         pane.remote = ui::RemoteActions::with_host(
             host.clone(),
@@ -3139,7 +2953,7 @@ mod tests {
                     "role": "home-peer",
                     "device": NEARBY_DEVICE,
                     "service": NEARBY_SERVICE,
-                    "workspace_ids": [7],
+                    "workspace_ids": [],
                     "confirm": true,
                 })
                 .as_object()
@@ -3205,6 +3019,5 @@ mod tests {
         assert_eq!(here.load_status, there.load_status);
         assert_eq!(here.config.device_role, there.config.device_role);
         assert_eq!(here.runtime_status, there.runtime_status);
-        assert_eq!(here.discovered_workspaces, there.discovered_workspaces);
     }
 }
