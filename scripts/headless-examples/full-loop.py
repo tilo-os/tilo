@@ -59,6 +59,14 @@ def palette() -> dict:
     return state()["chrome"]["palette"]
 
 
+def has_target(name: str) -> bool:
+    """Whether the compositor offers `name` as a target with an area."""
+    return any(
+        t["name"] == name and t["rect"][2] > 0 and t["rect"][3] > 0
+        for t in call(SOCKET, {"op": "list_targets"})["targets"]
+    )
+
+
 def wait_until(description: str, predicate, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -241,6 +249,10 @@ def main() -> int:
         require_ok(call(SOCKET, {"op": "key_up", "key": "Super"}))
         wait_until("strip switcher to open",
                    lambda: state()["chrome"].get("strip_switcher_open"))
+        # The state flips at the key press; the open labels have a place to
+        # click only once a frame has laid them out.
+        wait_until("open strip switcher to be laid out",
+                   lambda: has_target("strip_switcher"))
         require_ok(call(SOCKET, {"op": "click_named", "name": "strip_switcher"}))
         print("  clicked strip_switcher")
         require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
@@ -274,7 +286,11 @@ def main() -> int:
         assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
 
-        # 5. Escape, snapshot final state.
+        # 5. Escape clears what was typed, a second Escape closes search;
+        # snapshot the final state.
+        require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
+        wait_until("palette query to clear",
+                   lambda: palette()["visible"] and palette()["query"] == "")
         require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
         wait_until("palette to close", lambda: not palette()["visible"])
         if any(
