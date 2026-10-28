@@ -320,15 +320,8 @@ impl Sink for OverlaySink<'_> {
         Ok(())
     }
 
-    fn words(
-        &mut self,
-        _resource: &str,
-        _old: Option<&str>,
-        _new: Option<&str>,
-        _weight: u8,
-    ) -> Result<(), IndexError> {
+    fn text_changed(&mut self, _resource: &str) {
         // Search reads the index once the record holds the writes.
-        Ok(())
     }
 
     fn keeps_columns(&self) -> bool {
