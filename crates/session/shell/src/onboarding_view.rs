@@ -2100,6 +2100,9 @@ impl OnboardingView {
                 Screen::Done => (3, t("onboarding-stage-backup")),
             }
         };
+        // The page's scroll region, a keyboard stop while it overflows, is
+        // named after the step it shows.
+        let region_label = stage.clone();
         let body: Box<dyn Widget> = if self.prepared_pending {
             self.prepared_body(theme)
         } else {
@@ -2254,6 +2257,7 @@ impl OnboardingView {
             // the form card and recovery copy; the full-height 672 px dialog
             // retains room for the acknowledgement and Continue action.
             .with_compact_bottom_content_inset(520.0, 0.0)
+            .with_label(region_label)
             .with_child(Box::new(content));
         let scroll = if fill_panel {
             scroll.fill_parent_height()
@@ -5457,6 +5461,10 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
     mod current_identity {
         include!("onboarding_current_identity_tests.rs");
+    }
+    mod ready_focus {
+        use super::*;
+        include!("onboarding_view/ready_focus_tests.rs");
     }
     #[test]
     fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
