@@ -31,7 +31,7 @@
 #            about the worker than the commit: budgets gate again once the
 #            suite runs on dedicated or GPU runners.
 #
-# vm-acceptance runs the suite in t's shards (t.toml `shards`, run.py SHARDS), and
+# vm-acceptance runs the suite in t's shards (a matrix over run.py SHARDS in t.toml), and
 # writes the selection it ran beside them, in /target/vm-acceptance/only, for
 # vm-acceptance-perf. Each shard t gives this job in T_SHARDS (all of them when it gives none) in a
 # VM of its own, with its report and performance records in

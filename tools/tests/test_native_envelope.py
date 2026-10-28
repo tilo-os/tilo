@@ -122,7 +122,7 @@ class NativeEnvelope(unittest.TestCase):
             with self.subTest(check=name):
                 check = checks[name]
                 self.assertEqual(check["requires"], ["arch=arm64"])
-                self.assertTrue(check["privileged"])
+                self.assertEqual(check["isolation"], "vm")
                 self.assertFalse(check["cache"])
                 self.assertEqual(check["dispatch_inputs"], {"memory_gib": "22"})
                 self.assertIn("tools/ci/native-envelope.sh", check["run"])
