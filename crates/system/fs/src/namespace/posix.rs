@@ -90,6 +90,8 @@ impl Namespace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::namespace::ROOT_INO;
+    use fuser::FileType;
 
     #[test]
     fn attributes_replicate_and_keep_only_what_is_portable() {
@@ -105,5 +107,59 @@ mod tests {
         let link = PosixAttrs::of_local(0o120_777, false, true);
         assert!(link.symlink);
         assert_eq!(PosixAttrs::default_for(true).mode, 0o755);
+    }
+
+    /// What the kernel is told about a record: its stored mode and, for a
+    /// link, that it is one — through `getattr`, `lookup` and `readdir`
+    /// alike, before and after the document is reloaded as a peer or a
+    /// restart would.
+    #[test]
+    fn the_kernel_reads_a_records_mode_and_sees_a_link_as_one() {
+        let mut ns = Namespace::new("posix-kernel").unwrap();
+        let script = ns.create_file(ROOT_INO, "run.sh", None, 0, 1).unwrap();
+        let script_record = ns.record_id_for(script).unwrap();
+        assert!(ns.put_posix_attrs(
+            script_record,
+            &PosixAttrs::of_local(0o100_755, false, false)
+        ));
+        let link = ns.create_file(ROOT_INO, "latest", None, 0, 1).unwrap();
+        let link_record = ns.record_id_for(link).unwrap();
+        assert!(ns.put_posix_attrs(link_record, &PosixAttrs::of_local(0, false, true)));
+        let saved = ns.save();
+
+        for ns in [ns, Namespace::from_bytes("reloaded", &saved).unwrap()] {
+            assert_eq!(
+                ns.getattr(script).map(|attr| attr.perm),
+                Some(0o755),
+                "the executable bit a record stores is the one getattr reports",
+            );
+            assert_eq!(
+                ns.getattr(link).map(|attr| attr.kind),
+                Some(FileType::Symlink),
+                "getattr reports a link as a link, not as the file holding it",
+            );
+            assert_eq!(
+                ns.lookup(ROOT_INO, b"latest").map(|attr| attr.kind),
+                Some(FileType::Symlink),
+            );
+            let listed = ns.readdir(ROOT_INO).expect("list root");
+            let kind_of = |name: &str| {
+                listed
+                    .iter()
+                    .find(|(_, _, entry)| entry.0 == name.as_bytes())
+                    .map(|(_, kind, _)| *kind)
+            };
+            assert_eq!(kind_of("latest"), Some(FileType::Symlink));
+            assert_eq!(
+                kind_of("run.sh"),
+                Some(FileType::RegularFile),
+                "a file whose content is not a link is still a file",
+            );
+            assert_eq!(
+                ns.structural_kind(link),
+                Some(FileType::RegularFile),
+                "a version describes the record, not the kernel's link view",
+            );
+        }
     }
 }
