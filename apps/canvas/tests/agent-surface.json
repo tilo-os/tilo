@@ -3144,7 +3144,7 @@
     "action": "render",
     "resource_kind": "canvas.artwork",
     "label": "See the app",
-    "description": "See the app's window as a picture: answers with the image and the revision of the document it shows.",
+    "description": "See the app's window as a picture: answers with the image and the revision of the document it shows. With an anchor, shows that item first.",
     "operation": "View",
     "params": [
       {
@@ -3157,6 +3157,12 @@
         "name": "version",
         "ty": "text",
         "description": "A past version: change id from history, or checkpoint name",
+        "nullable": true
+      },
+      {
+        "name": "anchor",
+        "ty": "text",
+        "description": "An item of the app's to show first: the anchor of a search hit",
         "nullable": true
       }
     ]
@@ -3949,6 +3955,25 @@
     "params": []
   },
   {
+    "resource": "tilo.control:canvas-layer-tree",
+    "action": "select",
+    "resource_kind": "tilo.control.choice",
+    "label": "Select",
+    "description": null,
+    "operation": "View",
+    "params": [
+      {
+        "name": "entry",
+        "ty": "text",
+        "required": true,
+        "description": "The entry to choose",
+        "choices": [
+          "1"
+        ]
+      }
+    ]
+  },
+  {
     "resource": "tilo.control:canvas-tools-scope",
     "action": "select",
     "resource_kind": "tilo.control.segmented",
@@ -4034,6 +4059,16 @@
         "name": "offer",
         "ty": "text",
         "description": "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}"
+      },
+      {
+        "name": "action",
+        "ty": "text",
+        "description": "An action of the scoped resource to open on, asking for its arguments"
+      },
+      {
+        "name": "anchor",
+        "ty": "text",
+        "description": "A resource of the app's to open on, selected, as JSON: {\"resource\": id, \"query\": text}"
       }
     ]
   }
