@@ -28,6 +28,10 @@ pub(super) struct CardSpec {
     pub image: Option<ImageData>,
     /// A person (an artist): a disc instead of a square cover.
     pub portrait: bool,
+    /// What the art stands for when there is no picture: the object's own
+    /// glyph on the tile (`MediaArt::Kind`), never a monogram. A playlist and
+    /// an album with no artwork are still a playlist and an album.
+    pub kind: Option<Icon>,
     /// What a press on the card does.
     pub action: Action,
     /// A Play action over the art while the card is under the pointer.
@@ -44,6 +48,7 @@ struct CardKey {
     meta: Vec<String>,
     image: Option<u64>,
     portrait: bool,
+    kind: Option<Icon>,
     action: Action,
     play: Option<Action>,
     menu: Option<Action>,
@@ -57,6 +62,7 @@ impl CardKey {
             meta: card.meta.clone(),
             image: card.image.as_ref().map(|image| image.data.id()),
             portrait: card.portrait,
+            kind: card.kind,
             action: card.action.clone(),
             play: card.play.clone(),
             menu: card.menu.clone(),
@@ -124,9 +130,14 @@ impl MediaGridHost {
     /// A card opens what it stands for through the published effect, where
     /// its action is one.
     fn build_card(&self, card: CardSpec, actions: Option<&Actions<Library>>) -> MediaCard {
-        let source = card
-            .image
-            .map_or(MediaSource::Placeholder, MediaSource::Image);
+        // No picture: the object's own glyph, on the same neutral tile every
+        // card without art stands on. The toolkit's initials placeholder
+        // reads as broken art ("DF", "ND") rather than as a designed tile.
+        let source = match (card.image, card.kind) {
+            (Some(image), _) => MediaSource::Image(image),
+            (None, Some(icon)) => MediaSource::Kind(icon),
+            (None, None) => MediaSource::Placeholder,
+        };
         let built = MediaCard::new(format!("music.card.{}", card.art_id), source).title(card.title);
         let mut built = bound(actions, built, &card.action)
             .unwrap_or_else(|built| built.on_activate(asking(&self.asked, card.action)));
