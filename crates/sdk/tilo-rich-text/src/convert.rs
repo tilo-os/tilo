@@ -174,35 +174,7 @@ pub(crate) const EDITOR_MARKS: [&str; 8] = [
 /// attributes, so an action can write it elsewhere (a comment reply, a
 /// message) as it was written.
 pub fn clip_block(view: &BlockView) -> tilo_document::ClipBlock {
-    use tilo_document::ClipAttr;
-    let attrs = view
-        .attrs
-        .iter()
-        .filter(|(key, _)| !matches!(key.as_str(), "level" | "ordered" | "align"))
-        .filter_map(|(key, value)| {
-            let value = match value {
-                tilo_doc::AttrVal::Bool(value) => ClipAttr::Bool(*value),
-                tilo_doc::AttrVal::Int(value) => ClipAttr::Int(*value),
-                tilo_doc::AttrVal::Str(value) => ClipAttr::Str(value.clone()),
-                tilo_doc::AttrVal::Float(_) => return None,
-            };
-            Some((key.clone(), value))
-        })
-        .collect();
-    tilo_document::ClipBlock {
-        kind: view.kind.clone(),
-        text: view.text.clone(),
-        marks: view
-            .marks
-            .iter()
-            .filter(|mark| mark.start < mark.end)
-            .cloned()
-            .collect(),
-        level: int_attr(view, "level"),
-        ordered: bool_attr(view, "ordered"),
-        align: str_attr(view, "align").map(str::to_owned),
-        attrs,
-    }
+    tilo_document::ClipBlock::from_view(view)
 }
 
 /// What a paragraph an action carries shows as in the editor.

@@ -469,6 +469,12 @@ pub enum RichTextAction {
     /// app brings with marks Markdown cannot carry (a note's links to other
     /// notes, a slide's runs, a copied fragment).
     ReplaceClips { blocks: Vec<ClipBlock> },
+    /// Make the body read as `blocks`, formatted as they are, as the fewest
+    /// edits: a paragraph that already reads so stays, a changed one is
+    /// spliced and re-marked in place, the rest inserted or removed. A whole
+    /// value written over a field (a tilolang assignment, an agent's rewrite)
+    /// merges with a concurrent edit this way, never as a replacement.
+    SyncClips { blocks: Vec<ClipBlock> },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
     /// refuses the action so the open document stays as it was. The
     /// document remembers the bytes' content address as the file it was
@@ -563,6 +569,7 @@ impl RichTextAction {
             | Self::EnsureRegionBlock { .. }
             | Self::ReplaceBody { .. }
             | Self::ReplaceClips { .. }
+            | Self::SyncClips { .. }
             | Self::ReplaceFormatted { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
@@ -1004,7 +1011,7 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
-            RichTextAction::ReplaceClips { blocks } => {
+            RichTextAction::ReplaceClips { blocks } | RichTextAction::SyncClips { blocks } => {
                 blocks.len() <= 10_000 && blocks.iter().all(Self::valid_clip)
             }
             RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
@@ -2236,6 +2243,12 @@ fn apply_replace_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
     keep_a_paragraph(dm);
 }
 
+fn apply_sync_clips(dm: &mut DocMut, blocks: &[ClipBlock]) {
+    let views: Vec<tilo_doc::snapshot::BlockView> = blocks.iter().map(ClipBlock::to_view).collect();
+    tilo_doc::reconcile_body(dm, &views);
+    keep_a_paragraph(dm);
+}
+
 /// A body replaced by nothing (an empty file, an empty template) still has
 /// a paragraph to write in, as a new document does.
 fn keep_a_paragraph(dm: &mut DocMut) {
@@ -2476,6 +2489,7 @@ fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         RichTextAction::ReplaceClips { blocks } => apply_replace_clips(dm, blocks),
+        RichTextAction::SyncClips { blocks } => apply_sync_clips(dm, blocks),
         RichTextAction::ReplaceFormatted { format, bytes } => {
             apply_replace_formatted(dm, *format, bytes);
         }

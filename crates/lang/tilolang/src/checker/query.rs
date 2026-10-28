@@ -662,6 +662,32 @@ impl Checker<'_> {
     }
 }
 
+impl Checker<'_> {
+    /// `.excerpt`, `.text`, `.references` and `.people` of a `RichText`.
+    pub(super) fn rich_part(&mut self, v: Ex, name: &ast::Ident) -> Ex {
+        let (part, ty) = match name.name.as_str() {
+            "excerpt" => (0, Ty::Text),
+            "text" => (1, Ty::Text),
+            "references" => (
+                2,
+                Ty::List(Box::new(Ty::Record(super::program::resource_key()))),
+            ),
+            "people" => (3, Ty::List(Box::new(Ty::Principal))),
+            other => {
+                self.err(
+                    "E021",
+                    name.span,
+                    format!(
+                        "`RichText` has the members `excerpt`, `text`, `references` and `people`, not `{other}`"
+                    ),
+                );
+                return Ex::error();
+            }
+        };
+        Ex::host(Imp::RichPart, vec![v, Ex::new(Ek::I32(part), Ty::Bool)], ty)
+    }
+}
+
 /// The orders a query of `info` may ask for: `.field_order`, per field that has one.
 fn sorts(info: &TypeInfo) -> Vec<String> {
     let mut out = Vec::new();

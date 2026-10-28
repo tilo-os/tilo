@@ -90,6 +90,38 @@ pub fn reconcile_under(
     Ok(Some(stats))
 }
 
+/// Bring only the body of the rich text under `root` to read as `blocks`, as
+/// the fewest edits: a paragraph that reads the same stays as it is, a changed
+/// one is spliced and re-marked in place (keeping its id and text object), the
+/// rest are inserted or removed. Styles, notes and page settings are left
+/// alone. This is how a value assigned to a rich-text field merges with a
+/// concurrent edit of it: as splices and marks, never a replacement.
+///
+/// # Errors
+///
+/// [`DocError::Invalid`] when `root` holds no rich text, otherwise as
+/// [`reconcile_document`].
+pub fn reconcile_body_under(
+    doc: &mut AutoCommit,
+    root: &automerge::ObjId,
+    blocks: &[BlockView],
+) -> Result<ReconcileStats, DocError> {
+    let c = crate::model::open(doc, root)?;
+    let ids = &mut crate::model::try_seeded_id_gen(doc, &c)?;
+    Ok(reconcile_body(&mut DocMut { doc, c: &c, ids }, blocks))
+}
+
+/// [`reconcile_body_under`] through an editing view whose ids the caller
+/// mints (an action's deterministic ids, so a replay writes the same blocks).
+pub fn reconcile_body(d: &mut DocMut<'_>, blocks: &[BlockView]) -> ReconcileStats {
+    let mut w = Writer {
+        d,
+        stats: ReconcileStats::default(),
+    };
+    w.blocks(&Place::Region(Region::Body), blocks);
+    w.stats
+}
+
 /// Reconcile every region, note, style, property and page setting of the
 /// document `d` drives into the state `source` describes.
 ///

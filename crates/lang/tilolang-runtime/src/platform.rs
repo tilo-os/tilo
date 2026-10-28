@@ -281,7 +281,12 @@ impl Core {
 
     /// The title of `target`: its field marked `title`, when it holds more than spaces; else,
     /// for a root of its package, the package's title; else its type's name.
-    fn title_of(&self, target: &ResourceRef, meta: &Meta, ty: &TypeMeta) -> HResult<String> {
+    pub(crate) fn title_of(
+        &self,
+        target: &ResourceRef,
+        meta: &Meta,
+        ty: &TypeMeta,
+    ) -> HResult<String> {
         if let Some(field) = ty
             .fields
             .iter()

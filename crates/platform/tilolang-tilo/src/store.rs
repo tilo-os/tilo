@@ -1987,6 +1987,7 @@ fn field_of(m: &Mutation) -> String {
         Mutation::SetRegister { field, .. }
         | Mutation::AddCounter { field, .. }
         | Mutation::SetText { field, .. }
+        | Mutation::SetRich { field, .. }
         | Mutation::CollInsert { field, .. }
         | Mutation::CollRemove { field, .. }
         | Mutation::CollMove { field, .. }
@@ -2028,6 +2029,19 @@ fn edit_of(
         ),
         Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }, None),
         Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }, None),
+        // A rich text is brought to read as the value by splices and marks of the paragraphs
+        // that differ, the edit native rich text takes.
+        Mutation::SetRich { field, value } => {
+            let action = tilo_document::RichTextAction::SyncClips {
+                blocks: value
+                    .blocks
+                    .iter()
+                    .map(tilo_document::ClipBlock::from_view)
+                    .collect(),
+            };
+            let rich = serde_json::to_value(&action).map_err(backend)?;
+            (field, EditOp::Rich { rich }, None)
+        }
         Mutation::CollInsert { field, item, .. } => {
             let schema = lookup(&item.ty)
                 .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;

@@ -153,6 +153,9 @@ imports! {
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
+    RichNew = "rich_new" ([H] -> [H]);
+    RichPart = "rich_part" ([H, I32] -> [H]);
+    RichEmpty = "rich_empty" ([H] -> [I32]);
     Phrase = "phrase" ([H, H] -> [H]);
 
     SpaceI = "space_i" ([H] -> [I64]);

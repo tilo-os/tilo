@@ -254,6 +254,10 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             };
             Ok(Value::Principal(Principal::new(principal)))
         }
+        // Rich text given as text: its lines as paragraphs.
+        (Ty::RichText, Json::String(text)) => Ok(Value::Rich(
+            tilolang_runtime::rich::RichValue::from_text(text),
+        )),
         (Ty::Option(_), Json::Null) => Ok(Value::none()),
         (Ty::Option(_), Json::Object(encoded))
             if encoded.contains_key("some") || encoded.contains_key("none") =>

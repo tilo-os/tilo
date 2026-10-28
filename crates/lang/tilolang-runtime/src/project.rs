@@ -38,6 +38,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         }
         Value::Bool(b) => json!(b),
         Value::Text(s) => project_text(s, opts),
+        Value::Rich(r) => project_text(&r.plain_text(), opts),
         Value::List(items) => {
             let shown: Vec<Json> = items
                 .iter()

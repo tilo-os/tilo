@@ -318,6 +318,10 @@ fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldV
             Some(text) => Ok(FieldValue::Text(doc.text(&text).map_err(backend)?)),
             None => Ok(FieldValue::Text(String::new())),
         },
+        FieldKind::RichText => Ok(FieldValue::Rich(match child_obj(doc, obj, key)? {
+            Some(rich) => crate::rich::read_under(doc, &rich),
+            None => crate::rich::RichValue::default(),
+        })),
         FieldKind::Collection => {
             let Some(coll) = child_obj(doc, obj, key)? else {
                 return Ok(FieldValue::Items(Vec::new()));
@@ -359,6 +363,9 @@ fn init_fields(doc: &mut AutoCommit, obj: &ObjId, fields: &[FieldSpec]) -> Resul
                 .map_err(backend)?,
             FieldKind::Text => {
                 doc.put_object(obj, key, ObjType::Text).map_err(backend)?;
+            }
+            FieldKind::RichText => {
+                crate::rich::ensure_field(doc, obj, key).map_err(backend)?;
             }
             FieldKind::Collection => {
                 let coll = doc.put_object(obj, key, ObjType::Map).map_err(backend)?;
@@ -479,6 +486,7 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
         Mutation::SetRegister { field, .. }
         | Mutation::AddCounter { field, .. }
         | Mutation::SetText { field, .. }
+        | Mutation::SetRich { field, .. }
         | Mutation::CollInsert { field, .. }
         | Mutation::CollRemove { field, .. }
         | Mutation::CollMove { field, .. }
@@ -528,6 +536,10 @@ impl Inner {
                     .map_err(backend)?;
             }
             Mutation::SetText { field, text } => set_text(doc, &obj, field, text)?,
+            Mutation::SetRich { field, value } => {
+                let rich = crate::rich::ensure_field(doc, &obj, field).map_err(backend)?;
+                crate::rich::store_under(doc, &rich, value).map_err(backend)?;
+            }
             Mutation::CollInsert { field, item, index } => {
                 let id = new_item.unwrap_or_default();
                 let t = coll_target(doc, &obj, field)?;

@@ -77,6 +77,10 @@ pub enum Ty {
     /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
     /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
     Identifier,
+    /// `RichText`: formatted text in which resources are referenced (a person, a channel, a
+    /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
+    /// it merges by splices and marks.
+    RichText,
     /// No value.
     #[default]
     Unit,
@@ -201,6 +205,7 @@ impl Ty {
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
             Self::Identifier => "std.Identifier".into(),
+            Self::RichText => "RichText".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -404,6 +409,7 @@ impl MetaTy<'_> {
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
             "std.Identifier" => Some(Ty::Identifier),
+            "RichText" | "std.RichText" => Some(Ty::RichText),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {

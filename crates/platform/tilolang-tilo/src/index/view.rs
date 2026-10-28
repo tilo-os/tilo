@@ -177,8 +177,8 @@ impl View<'_> {
         fields.sort_by(|a, b| a.id.cmp(&b.id));
         for field in fields {
             match field.kind {
-                MergeKind::Text => {
-                    if let Some(FieldValue::Text(text)) = self.field(path, &field.id)?
+                MergeKind::Text | MergeKind::RichText => {
+                    if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
                         && !text.is_empty()
                     {
                         return Ok(Some((text, path.to_owned())));
@@ -233,7 +233,7 @@ impl View<'_> {
             let texts: Vec<String> = schema
                 .fields
                 .iter()
-                .filter(|f| f.kind == MergeKind::Text)
+                .filter(|f| f.kind.holds_text())
                 .filter_map(|f| held.texts.get(&f.id))
                 .filter(|text| !text.trim().is_empty())
                 .cloned()
@@ -284,8 +284,8 @@ impl View<'_> {
     /// The index cannot be read or is corrupt.
     pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<String>, IndexError> {
         let mut out = Vec::new();
-        for field in schema.fields.iter().filter(|f| f.kind == MergeKind::Text) {
-            if let Some(FieldValue::Text(text)) = self.field(path, &field.id)?
+        for field in schema.fields.iter().filter(|f| f.kind.holds_text()) {
+            if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
                 && !text.trim().is_empty()
             {
                 out.push(text);

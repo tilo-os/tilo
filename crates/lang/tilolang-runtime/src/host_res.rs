@@ -53,6 +53,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Float => Value::Float(0.0),
         Ty::Bool => Value::Bool(false),
         Ty::Text => Value::text(""),
+        Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
         Ty::Option(_) => Value::none(),
         Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => Value::List(Vec::new()),
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
@@ -318,6 +319,7 @@ impl Core {
                     FieldKind::Map => FieldValue::Entries(Vec::new()),
                     FieldKind::Counter => FieldValue::Counter(0),
                     FieldKind::Text => FieldValue::Text(String::new()),
+                    FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
                     FieldKind::Register => FieldValue::Absent,
                 }
             }
@@ -334,6 +336,7 @@ impl Core {
                 Value::Int(c)
             }),
             (FieldKind::Text, FieldValue::Text(t)) => Ok(Value::Text(t)),
+            (FieldKind::RichText, FieldValue::Rich(r)) => Ok(Value::Rich(r)),
             (FieldKind::Collection, FieldValue::Items(ids)) => {
                 let item = self.item_type(&field.ty)?;
                 Ok(Value::List(
@@ -513,6 +516,13 @@ impl Core {
                 },
                 other => return trap(format!("expected text, got {}", other.kind_name())),
             },
+            FieldKind::RichText => match v {
+                Value::Rich(r) => Mutation::SetRich {
+                    field: id,
+                    value: r.clone(),
+                },
+                other => return trap(format!("expected rich text, got {}", other.kind_name())),
+            },
             FieldKind::Counter => {
                 return trap("`=` on a counter field loses concurrent updates; use res_add");
             }
@@ -628,6 +638,10 @@ impl Core {
                 (FieldKind::Text, Value::Text(t)) => Mutation::SetText {
                     field: f.id.clone(),
                     text: t.clone(),
+                },
+                (FieldKind::RichText, Value::Rich(r)) => Mutation::SetRich {
+                    field: f.id.clone(),
+                    value: r.clone(),
                 },
                 _ => {
                     return trap(format!(

@@ -178,6 +178,12 @@ pub fn field_of_slot(
             FieldValue::Counter(load_slot::<Counter>(doc, slot, id).map_err(backend)?.get())
         }
         MergeKind::Text => FieldValue::Text(load_slot::<String>(doc, slot, id).map_err(backend)?),
+        MergeKind::RichText => FieldValue::Rich(match slot {
+            Some((AmValue::Object(ObjType::Map), obj)) => {
+                tilolang_runtime::rich::read_under(doc, &obj)
+            }
+            _ => tilolang_runtime::rich::RichValue::default(),
+        }),
         MergeKind::Set => {
             let set: Set<Json> = load_slot(doc, slot, id).map_err(backend)?;
             let mut keys: Vec<String> = set.iter().map(element_key).collect();
@@ -207,6 +213,17 @@ pub fn field_of_slot(
     })
 }
 
+/// The text search finds a field value by: a text as it is, a rich text's text (each
+/// reference read as its run, the referenced resource's title or the person's name).
+#[must_use]
+pub fn text_of(value: FieldValue) -> Option<String> {
+    match value {
+        FieldValue::Text(text) => Some(text),
+        FieldValue::Rich(rich) => Some(rich.plain_text()),
+        _ => None,
+    }
+}
+
 /// What `field` of an item stored as its order key alone reads as.
 #[must_use]
 pub fn default_value(field: &FieldSchema) -> FieldValue {
@@ -215,6 +232,7 @@ pub fn default_value(field: &FieldSchema) -> FieldValue {
         MergeKind::Register => FieldValue::Scalar(scalar_of_json(&field.default, field.composite)),
         MergeKind::Counter => FieldValue::Counter(0),
         MergeKind::Text => FieldValue::Text(String::new()),
+        MergeKind::RichText => FieldValue::Rich(tilolang_runtime::rich::RichValue::default()),
         MergeKind::Set => FieldValue::Keys(Vec::new()),
         MergeKind::Map => FieldValue::Entries(Vec::new()),
         MergeKind::Collection | MergeKind::Record => FieldValue::Items(Vec::new()),
@@ -444,7 +462,7 @@ pub fn may_hold_text(schema: &TypeSchema) -> bool {
         }
         seen.push(schema.id.clone());
         schema.fields.iter().any(|field| match field.kind {
-            MergeKind::Text => true,
+            MergeKind::Text | MergeKind::RichText => true,
             MergeKind::Record | MergeKind::Collection => field
                 .record
                 .as_deref()

@@ -915,7 +915,8 @@ impl Resolver<'_> {
             self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text", m.name));
             return None;
         }
-        if info.ty != Ty::Text {
+        let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);
+        if !fits {
             let t = info.ty.display(&self.env.app);
             self.err("E092", m.span, format!("only a Text field can be the {}; `{}` is {t}. Mark a Text field instead, or remove `({})`", m.name, f.name.name, m.name));
             return None;
@@ -937,6 +938,8 @@ impl Resolver<'_> {
                 &[MergeKind::Register, MergeKind::Counter],
             ),
             Ty::Text => (MergeKind::Text, &[MergeKind::Text, MergeKind::Register]),
+            // Rich text merges by splices and marks, never as a whole value.
+            Ty::RichText => (MergeKind::Text, &[MergeKind::Text]),
             Ty::Set(_) | Ty::Map(_) | Ty::Collection(_) => (MergeKind::Structural, &[]),
             _ => (MergeKind::Register, &[MergeKind::Register]),
         };
@@ -1213,6 +1216,7 @@ impl Resolver<'_> {
                 "Principal" => return Ty::Principal,
                 "Date" => return Ty::Date,
                 "Time" => return Ty::Time,
+                "RichText" => return Ty::RichText,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
                 name if self.own_types.contains(name) => {
@@ -1241,11 +1245,14 @@ impl Resolver<'_> {
             } else {
                 known.join(", ")
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, Principal, Date, Time, Action, View and {known}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Action, View and {known}"));
             return Ty::Error;
         }
         if dotted == ["std", "Identifier"] {
             return Ty::Identifier;
+        }
+        if dotted == ["std", "RichText"] {
+            return Ty::RichText;
         }
         let (prefix, name) = dotted.split_at(dotted.len().saturating_sub(1));
         let prefix = prefix.join(".");
@@ -1254,7 +1261,7 @@ impl Resolver<'_> {
             self.err(
                 "E013",
                 span,
-                format!("the standard library has no type `{name}`; its type is `std.Identifier`"),
+                format!("the standard library has no type `{name}`; its types are `std.Identifier` and `std.RichText`"),
             );
             return Ty::Error;
         }
