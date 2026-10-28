@@ -126,7 +126,10 @@ jobs:
             # toolchain that answered too: the image carries the builder's
             # rustup home, and a second rustup on PATH would report its own.
             command -v rustup rustc cargo
+            printf "PATH=%s\n" "$PATH"
             env | grep -E "^(RUSTUP|CARGO)_" || true
+            ls -l /usr/local/cargo/bin /opt/cargo/bin 2>&1 | head -20
+            ls -ld /usr/local/rustup /opt/rust /usr/local/cargo /opt/cargo 2>&1
             rustc --print sysroot
             ls "$(rustc --print sysroot)/lib/rustlib"
             test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown"
