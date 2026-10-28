@@ -5723,10 +5723,8 @@ impl FrameHarness {
     /// # Panics
     /// When the root was not mounted as an [`EmbeddedApp`].
     pub fn embedded_targets(&mut self) -> std::collections::HashMap<String, Rect> {
-        let root = self
-            .root_mut::<crate::app::EmbeddedApp>()
-            .app_mut()
-            .root_widget_mut();
+        let mut embedded = self.root_mut::<crate::app::EmbeddedApp>();
+        let root = embedded.app_mut().root_widget_mut();
         let mut out = std::collections::HashMap::new();
         collect_targets(root, "", &mut std::collections::HashMap::new(), &mut out);
         out
