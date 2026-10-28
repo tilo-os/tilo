@@ -25,11 +25,23 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 
 ## Syntax
 
-1. **Optional chaining and fallback:** `c.messages.last()?.at`, `x ?? "No messages yet"`.
-2. **`if let`, with several bindings:** `if let todos = b.todos, nb = b.notebook { ... }`, in
+UI code should read like a description of the screen. Views are also what agents compose, so
+terse views make agent answers cheaper and more reliable.
+
+1. **Absent renders nothing.** In a view, a `match` without an arm for a case renders nothing
+   for it; `if let` works in views; an optional passed where a view goes renders only when
+   present.
+2. **Key paths:** `.author` where a lambda would only read a field (`author: .author`,
+   `sort_by(.due)`).
+3. **Optional chaining and fallback:** `c.messages.last()?.said ?? "No messages yet"`.
+4. **`if let`, with several bindings:** `if let todos = b.todos, nb = b.notebook { ... }`, in
    actions and views.
-3. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
+5. **`let` in view bodies,** so a row doesn't need helper functions for derived values.
+6. **Date and time literals:** `2026-06-29`, `2026-06-29T07:02Z`, `2026-08`, matching search's
    literals. Duration literals (`15m`) already exist.
+
+Values present themselves: a `Time`, a person or an amount passed to a component renders in the
+platform's format (relative times, avatar and name, localized money), never formatted by hand.
 
 ## Library
 
