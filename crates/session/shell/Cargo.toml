@@ -20,14 +20,13 @@ netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
 test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-joined-room/test-support"]
+default = []
 # Deterministic test seams for the `shots` renderer and the integration
-# tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
-# The name outlived the removed `--mode hosted` loop whose input socket it
-# first gated. Disable in production builds to drop the test surface
-# (`--no-default-features --features ...`).
-default = ["hosted-test-control"]
-# Also installs the sampling heap profiler as the global allocator
-# (`shell::heap_profile`), idle unless `PPROF_ALLOC_SAMPLE_RATE` is set.
+# tests (the `*_for_shots` setters), and the sampling heap profiler installed
+# as the global allocator (`shell::heap_profile`), idle unless
+# `PPROF_ALLOC_SAMPLE_RATE` is set. Test builds only: never in a shipped
+# shell. The name outlived the removed `--mode hosted` loop whose input
+# socket it first gated.
 hosted-test-control = ["dep:pprof-alloc", "dep:prost", "dep:flate2"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
@@ -61,6 +60,13 @@ name = "pressure_fixture"
 path = "src/bin/pressure_fixture.rs"
 test = false
 bench = false
+
+# The deterministic screenshot renderer drives the shell through its test
+# seams.
+[[bin]]
+name = "shots"
+path = "src/bin/shots/main.rs"
+required-features = ["hosted-test-control"]
 
 [[bin]]
 name = "tilo-runtime-mcp"
@@ -521,9 +527,11 @@ wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 
+# The integration tests drive the compositor through its test seams.
 [[test]]
 name = "it"
 path = "tests/it.rs"
+required-features = ["hosted-test-control"]
 
 # Examples that carry unit tests build as test targets too, so `cargo test`
 # and the CI test jobs run those tests.

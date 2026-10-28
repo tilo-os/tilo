@@ -34,21 +34,21 @@ Best for: regression captures, golden-image diffs, video walkthroughs of known U
 
 ```bash
 # Inventory the catalogue (currently ~22 scenarios — palette typing, workspace switch, etc.):
-cargo run --bin shots --quiet -- --list-scenarios
+cargo run -p shell --features hosted-test-control --bin shots --quiet -- --list-scenarios
 
 # Capture every scenario in offscreen mode (default). Produces one PNG per scene
 # under `target/<dir>/`. Pixel-identical to a live run.
-cargo run --bin shots --quiet -- --mode offscreen --out target/snapshots
+cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode offscreen --out target/snapshots
 
 # A single scenario, with explicit viewport:
-cargo run --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
+cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
 
 # H.264 video of a scenario (30 fps default; one second per scenario step).
 # Output is raw Annex-B NALU stream — playable by mpv / ffplay / vlc.
-cargo run --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
+cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
 
 # Interactive window mode (real winit window — useful for eyeballing while developing):
-cargo run --bin shots --quiet -- --mode window --scenario palette_typing
+cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
 Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
@@ -688,7 +688,7 @@ Over budget, or with `TILO_IDLE_HEAP_PROFILE` set, it then starts a second
 idle desktop with `PPROF_ALLOC_SAMPLE_RATE` set and prints where that
 compositor's live Rust heap was allocated: per crate that asked for it and the
 largest stacks, from `raw '{"op":"heap_profile"}'`. Builds with
-`hosted-test-control` (the default features, not production) install
+`hosted-test-control` (test builds only, never production) install
 `pprof-alloc` as the global allocator; it passes calls straight to glibc
 unless the variable is set at startup, then samples one allocation per that
 many bytes (`shell::heap_profile`). A `TILO_IDLE_HEAP_PROFILE` other than `1`

@@ -49,8 +49,8 @@ check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 # ---------------------------------------------------------------------------
 # 1. The binaries.
 # ---------------------------------------------------------------------------
-# `shell` is built with --no-default-features on purpose: that drops
-# `hosted-test-control`, which a normal login session never reaches. Video
+# `shell` is built with --no-default-features on purpose: a normal login
+# session needs none of its optional features. Video
 # goes through GStreamer, whose library ABI is stable across Fedora releases.
 if (( run_cargo )); then
     check_rpmbuild

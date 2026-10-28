@@ -58,8 +58,8 @@ class WasmPassTests(unittest.TestCase):
             media = table.get("dependencies", {}).get("tilo-media")
             if media is not None:
                 self.assertLessEqual(set(package_features.NATIVE_TEST_FEATURES["tilo-media"]), set(media["features"]))
-        self.assertEqual(t_cargo_compile.with_test_features(["cargo", "clippy", "-p", "shell"]),
-                         ["cargo", "clippy", "-p", "shell"])
+        self.assertEqual(t_cargo_compile.with_test_features(["cargo", "clippy", "-p", "notes"]),
+                         ["cargo", "clippy", "-p", "notes"])
 
     def test_the_workspace_form_lints_every_package_s_test_features_and_default_builds(self):
         argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
@@ -71,7 +71,7 @@ class WasmPassTests(unittest.TestCase):
             for name in sorted(package_features.DEFAULT_BUILDS_ALSO_CHECKED)])
 
     def test_a_package_tested_with_features_it_does_not_ship_is_also_linted_as_it_ships(self):
-        argv = ["cargo", "clippy", *FORMAT, "-p", "imager", "-p", "shell",
+        argv = ["cargo", "clippy", *FORMAT, "-p", "imager", "-p", "notes",
                 "--locked", "--all-targets", "--", "-D", "warnings"]
         self.assertIn("imager", package_features.DEFAULT_BUILDS_ALSO_CHECKED)
         self.assertEqual(t_cargo_compile.default_build_passes(argv), [

@@ -71,6 +71,10 @@ NATIVE_TEST_FEATURES = {
     # fixtures every application test draws with (the headless app driver, the
     # pinned font catalogue) are behind its `test-support`.
     "tilo-ui": ("test-support",),
+    # The compositor's test seams (the `*_for_shots` setters, the `shots`
+    # renderer, the sampling heap profiler the idle-memory test reads) are
+    # never in the shell the OS image ships.
+    "shell": ("hosted-test-control",),
 }
 
 # Packages whose tested features above are not their default build. The
@@ -83,9 +87,11 @@ NATIVE_TEST_FEATURES = {
 # backend, tilo-net's development proxy, tilo-moq's relay, tilo-crypto's test
 # SRP server) ship to clients without them; every other build has them
 # (workspace-unify), so code that compiles only with them would pass unseen.
+# The shell ships without its test seams.
 DEFAULT_BUILDS_ALSO_CHECKED = (
     "imager",
     "imager-backend",
+    "shell",
     "tilo-crypto",
     "tilo-model-gateway",
     "tilo-moq",
