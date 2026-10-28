@@ -622,6 +622,58 @@ mod tests {
         assert_eq!(learned.showings("move-window"), 1);
     }
 
+    /// A hint asks for frames only while it moves: as it arrives and plays
+    /// its gesture, then not while it rests, and not at all once it went.
+    /// An idle desktop with a hint on it comes to rest; a hint still asking
+    /// for frames would repaint its corner of the page sixty times a second.
+    #[test]
+    fn a_hint_asks_for_frames_only_while_it_moves() {
+        use ui::control_hints::coach::{IGNORED_AFTER, MIN_GAP};
+        use ui::motion::Beckon;
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let frame = frame();
+        performed::note(Performed::OpenedWindow);
+        hints.update(&frame, start);
+        assert!(hints.is_showing());
+        let loops = Beckon::GESTURE_PERIOD
+            .mul_f64(f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
+        let gone = IGNORED_AFTER + Beckon::leaving_time(EffectiveMotion::default());
+        // A host that draws a frame whenever one is asked for, or a wake
+        // comes due, as the page does.
+        let mut now = start;
+        let mut last_asked = None;
+        while now < start + Duration::from_secs(40) {
+            let due = hints.next_wake_deadline(now).is_some_and(|at| at <= now);
+            if hints.needs_animation_frame(now) || due {
+                hints.update(&frame, now);
+                if hints.needs_animation_frame(now) {
+                    last_asked = Some(now.saturating_duration_since(start));
+                    assert!(
+                        now < start + loops + Duration::from_millis(20)
+                            || (now + Duration::from_millis(20) >= start + IGNORED_AFTER
+                                && now < start + gone + Duration::from_millis(40)),
+                        "a hint at rest, or gone, asked for a frame {:?} after it came",
+                        now.saturating_duration_since(start)
+                    );
+                }
+            }
+            now += Duration::from_millis(16);
+        }
+        assert!(!hints.is_showing(), "an unanswered hint goes");
+        assert!(
+            last_asked.is_some_and(|at| at + Duration::from_millis(20) >= IGNORED_AFTER),
+            "it faded out"
+        );
+        assert!(!hints.needs_animation_frame(now));
+        assert!(
+            hints
+                .next_wake_deadline(now)
+                .is_none_or(|at| at >= start + MIN_GAP),
+            "nothing wakes the desktop before another hint may begin"
+        );
+    }
+
     /// A hint coming onto the page repaints where it painted, a part of the
     /// page's scene of its own, not the page.
     #[test]
