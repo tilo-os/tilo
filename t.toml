@@ -6284,7 +6284,7 @@ outputs = ["/target/publish/web-entry/release/image.oci.tar", "/target/publish/w
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
-on = ["stable"]
+on = ["dispatch"]
 default = false
 cache = false
 
@@ -6298,7 +6298,7 @@ outputs = ["/target/publish/web-entry/release/payload.json", "/target/publish/we
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=any"]
-on = ["stable"]
+on = ["dispatch"]
 
 [[check]]
 name = "publish-web-entry"
@@ -6313,7 +6313,7 @@ id_token = ["registry.tilo.so"]
 env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-on = ["dispatch", "stable"]
+on = ["dispatch"]
 
 # The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
 # runs in. Rust compiles inside the Containerfile; the image is tested before it is published, and
@@ -6812,6 +6812,8 @@ default = false
 # open tabs only when the web entry changed. `t dispatch cloud-deploy --ref stable` runs it at
 # once: `--input dry_run=true` stops before the commit, `--input revision=<commit> --input
 # allow_rollback=true` redeploys an older release. `t outputs cloud-deploy` has the plan.
+# Only when dispatched: production (tilo.coffee, eu1) is released by its own session, by hand
+# and independently of stable, so a push to stable never deploys it.
 [[check]]
 name = "cloud-deploy"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
@@ -6830,7 +6832,7 @@ secrets = ["INFRA_PROMOTION_TOKEN"]
 # A rollout and, when it fails, the rollback each wait up to the target's timeout and settle time.
 timeout_secs = 3600
 cost = "minutes"
-on = ["stable", "dispatch"]
+on = ["dispatch"]
 default = false
 
 [check.dispatch_inputs]
