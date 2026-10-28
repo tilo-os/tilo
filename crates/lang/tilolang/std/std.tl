@@ -256,10 +256,8 @@ view transcript<R, T>(
         content: {
             ui.Docked {
                 foot: {
-                    page(full) {
-                        stack {
-                            composer
-                        }
+                    stack {
+                        composer
                     }
                 }
                 ui.VirtualList(transcript: true) {
