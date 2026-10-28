@@ -1,0 +1,21 @@
+# What tools/ci/publish/dev-installer-medium.sh needs beside the builder image: podman for the
+# OS image and the installer layer, and what the canonical disk step (os/dev/disk-image.sh)
+# installs with, plus mtools for the ESP fallback.
+podman
+skopeo
+fuse-overlayfs
+e2fsprogs
+util-linux
+jq
+python3
+dosfstools
+btrfs-progs
+systemd
+mtools
+qemu-img
+sudo
+curl
+tar
+gzip
+zstd
+shadow-utils

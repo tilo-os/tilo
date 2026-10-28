@@ -1309,6 +1309,25 @@ timeout_secs = 3600
 default = false
 
 [[matrix.check]]
+name = "bootc-alongside-helper-{arch}"
+comment = """
+The installer-only bootc the live installer bind-mounts into its target container
+(os/Containerfile.bootc-alongside-helper: a pinned upstream release with Tilo's two patches,
+compiled in the pinned builder image; tools/ci/publish/bootc-alongside-helper.sh). Keyed by that
+Containerfile and the patches alone, so dev-installer-medium-{arch} takes the binary from t's
+cache instead of compiling bootc on every medium."""
+run = "bash tools/ci/publish/bootc-alongside-helper.sh {arch} /target/os/{arch}/bootc-alongside"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/dev-installer-medium.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/dev-installer-medium.txt"] }
+inputs = ["tools/ci/publish/bootc-alongside-helper.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/install-packages.sh", "tools/ci/packages/dev-installer-medium.txt", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/0001-probe-missing-partition-metadata.patch", "os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch"]
+outputs = ["/target/os/{arch}/bootc-alongside/bootc"]
+requires = ["{node}"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "12GiB" }
+timeout_secs = 3600
+default = false
+
+[[matrix.check]]
 name = "dev-installer-medium-{arch}"
 comment = """
 A bootable development installer medium from os-image-{arch}'s exact output
@@ -1319,10 +1338,10 @@ finished medium. It is unsigned and never published, and needs no capture qualif
 assets or signing identity. `t outputs dev-installer-medium-{arch}` gives disk.qcow2, its
 SHA-256 and source.json; boot it in a throwaway VM with `tilo-vm scenario install --medium`."""
 run = "bash tools/ci/publish/dev-installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
-inputs = ["tools/ci/publish/dev-installer-medium.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "os/dev/build-custom-installer.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/_common.sh", "os/dev/check-disk-sectors.py", "os/dev/check-composefs-verity.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/installer-offline-target.py", "os/dev/hardware_profile.py", "os/Containerfile.installer", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/**", "os/external-assets/bootc-install-reseal/**", "os/etc/greetd/**", "os/usr/**", "apps/imager/packaging/media-provenance.py"]
-needs = ["os-image-{arch}"]
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/dev-installer-medium.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/dev-installer-medium.txt"] }
+inputs = ["tools/ci/publish/dev-installer-medium.sh", "tools/ci/install-packages.sh", "tools/ci/packages/dev-installer-medium.txt", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "os/dev/build-custom-installer.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/_common.sh", "os/dev/check-disk-sectors.py", "os/dev/check-composefs-verity.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/installer-offline-target.py", "os/dev/hardware_profile.py", "os/Containerfile.installer", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/**", "os/external-assets/bootc-install-reseal/**", "os/etc/greetd/**", "os/usr/**", "apps/imager/packaging/media-provenance.py"]
+needs = ["os-image-{arch}", "bootc-alongside-helper-{arch}"]
 outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
-git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 cost = "heavy"

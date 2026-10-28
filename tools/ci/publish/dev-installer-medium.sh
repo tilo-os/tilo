@@ -7,7 +7,7 @@
 # layout (oci/) and its digest. This check consumes that exact image, never a registry tag, and
 # writes OUT/disk.qcow2 with its
 # SHA-256, the media-provenance sidecar the canonical disk step records, and source.json naming
-# the image commit and OCI digest the medium was made from.
+# the OCI digest the medium was made from.
 #
 # The image is an ordinary development build: its UKI seals a placeholder composefs digest, so
 # it is not installable by itself. os/dev/build-custom-installer.sh is the canonical way to
@@ -33,9 +33,10 @@ case $arch in
 esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch medium builds natively, not on $(uname -m)"
 
-# The image is composed from layer actions keyed by what they read, so it names no commit
-# itself; the medium is of this check's commit, whose run composed it.
-revision=$(git rev-parse --verify HEAD) || die 'the medium names its commit: git = true'
+# The image is composed from layer actions keyed by what they read, and so is the medium: it is
+# of the image's digest, never of a commit (the check reads no Git metadata), so a commit that
+# leaves the image and these scripts as they were takes the medium, and what boots it, from t's
+# cache.
 expected_digest=$(tr -d '[:space:]' < "$in/digest") || die "$in/digest is not readable"
 [[ $expected_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$in/digest does not name an image: $expected_digest"
 [[ -f $in/oci/index.json ]] || die "$in holds no OS image layout (oci/)"
@@ -46,11 +47,9 @@ case $rootfs in
   *) die "the live medium's root filesystem must be btrfs or ext4, not $rootfs" ;;
 esac
 
-# Root's tools in the guest: podman for the image and the installer layer, and what the
-# canonical disk step installs with (os-release.sh's list, plus mtools for the ESP fallback).
-dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \
-  util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \
-  shadow-utils >/dev/null
+# Root's tools in the guest: the check's setup layer has them already (t.toml); without it,
+# they come from dnf.
+bash tools/ci/install-packages.sh tools/ci/packages/dev-installer-medium.txt
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 
@@ -74,9 +73,6 @@ podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c '
 ' || die "$in/oci has no graphical installer or no single sealed UKI"
 
 source_epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id" 2>/dev/null || true)
-if ! [[ $source_epoch =~ ^[1-9][0-9]*$ ]] && git cat-file -e "$revision^{commit}" 2>/dev/null; then
-  source_epoch=$(git show -s --format=%ct "$revision")
-fi
 if [[ $source_epoch =~ ^[1-9][0-9]*$ ]]; then
   export SOURCE_DATE_EPOCH=$source_epoch
 fi
@@ -86,7 +82,7 @@ medium="$out/disk.qcow2"
 installer_output="$out/installer"
 rm -rf "$medium" "$medium.sha256" "$medium.hardware.json" "$out/source.json" "$installer_output"
 # A unique local tag keeps this check apart from another architecture's images in one guest.
-tag="dev-installer-medium-$arch-${revision:0:12}"
+tag="dev-installer-medium-$arch-${actual_digest:7:12}"
 export TILO_DISTROBOX=
 export TILO_LOCAL_TAG=$tag
 export TILO_IMAGE="localhost/tilo:$tag"
@@ -113,6 +109,27 @@ export TMPDIR="$out/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"
 
+# The installer-only bootc is compiled once per pinned source by bootc-alongside-helper-ARCH
+# (t.toml `needs`), not here: build-custom-installer.sh builds it only when podman lacks the
+# image it names by the hash of its Containerfile and patches, so that image is made here from
+# the cached binary. The hash is build-custom-installer.sh's own; the loop below
+# refuses a medium whose builder keys it by other files.
+helper="$(dirname -- "$in")/bootc-alongside/bootc"
+[[ -f $helper ]] || die "no installer bootc at $helper: the check needs bootc-alongside-helper-$arch"
+for part in Containerfile.bootc-alongside-helper external-assets/bootc/0001-probe-missing-partition-metadata.patch \
+    external-assets/bootc-install-reseal/0002-select-mounted-esp.patch; do
+  grep -qF "\$TILO_OS_DIR/$part" os/dev/build-custom-installer.sh \
+    || die "build-custom-installer.sh no longer keys its bootc by $part: update this hash"
+done
+helper_key="$(cat os/Containerfile.bootc-alongside-helper \
+  os/external-assets/bootc/0001-probe-missing-partition-metadata.patch \
+  os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch | sha256sum | cut -c1-16)"
+helper_context=$(mktemp -d "$TMPDIR/bootc-alongside.XXXXXX")
+install -m 0755 "$helper" "$helper_context/bootc"
+printf 'FROM scratch\nCOPY bootc /bootc\n' > "$helper_context/Containerfile"
+podman build -q -t "localhost/tilo-bootc-alongside-helper:$helper_key" "$helper_context" >/dev/null
+rm -rf "$helper_context"
+
 if ! bash os/dev/build-custom-installer.sh --reuse-image-installer; then
   # The disk step keeps bootc's own words in a log beside the disk, which t does not keep.
   log="$installer_output/qcow2/.install.log"
@@ -133,13 +150,13 @@ python3 apps/imager/packaging/media-provenance.py validate "$medium" "$arch" gen
   || die "the medium does not match the media provenance the disk step recorded"
 
 sha256sum "$medium" | awk '{print $1 "  disk.qcow2"}' > "$medium.sha256"
-python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$revision" "$actual_digest" "$rootfs" <<'PY'
+python3 - "$medium" "$medium.hardware.json" "$out/source.json" "$arch" "$actual_digest" "$rootfs" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-medium, hardware, destination, arch, revision, digest, rootfs = sys.argv[1:]
+medium, hardware, destination, arch, digest, rootfs = sys.argv[1:]
 medium_path = Path(medium)
 with medium_path.open("rb") as stream:
     medium_digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -147,7 +164,6 @@ record = json.loads(Path(hardware).read_text())
 source = {
     "schema": "tilo.dev-installer-medium.v1",
     "architecture": arch,
-    "source_commit": revision,
     "source_image_digest": digest,
     "source_image_id": record["source_image_id"],
     "hardware_profile": record["hardware_profile"],
@@ -161,4 +177,4 @@ source = {
 }
 Path(destination).write_text(json.dumps(source, indent=2, sort_keys=True) + "\n")
 PY
-printf 'built %s of %s from %s\n' "$medium" "$revision" "$actual_digest"
+printf 'built %s from %s\n' "$medium" "$actual_digest"
