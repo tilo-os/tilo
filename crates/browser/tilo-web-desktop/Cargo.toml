@@ -25,6 +25,9 @@ tilo-desktop-surface = { path = "../../session/desktop-surface", features = ["la
 tilo-desktop = { path = "../../session/desktop", features = ["lazy-profile-card"] }
 # Desktop search loads as the desktop first lays out.
 tilo-desktop-search = { path = "../../session/desktop-search", features = ["lazy-search"] }
+# Stewarding the person's own room loads the first time the page takes up
+# one of its channels.
+tilo-browser-peer = { path = "../tilo-browser-peer", default-features = false, features = ["toolkit", "lazy-stewards"] }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches
 # (src/lazy.rs).

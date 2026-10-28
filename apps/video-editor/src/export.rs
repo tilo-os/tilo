@@ -953,6 +953,33 @@ pub fn renders_by_steps() -> bool {
     cfg!(not(any(feature = "gst", feature = "decode"))) && media::edit::ClipEncoder::available()
 }
 
+/// The audio frame video frame `i` starts at.
+#[cfg(any(feature = "gst", not(feature = "decode")))]
+fn audio_frame_at(i: u64, fps: f64) -> u64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "frame and sample counts of a render are far inside f64's exact range, and positive"
+    )]
+    let at = (i as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
+    at
+}
+
+/// How many audio frames belong to video frame `i`.
+///
+/// The sample rate is not a whole multiple of most frame rates — 48000 at
+/// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
+/// an integer at all. Deriving each frame's count from the difference
+/// between two cumulative totals means the rounding error never
+/// accumulates, so an hour of audio still ends where the video does
+/// instead of drifting seconds out of sync.
+#[cfg(any(feature = "gst", not(feature = "decode")))]
+fn audio_frames_for(i: u64, fps: f64) -> usize {
+    let frames = audio_frame_at(i + 1, fps).saturating_sub(audio_frame_at(i, fps));
+    usize::try_from(frames).unwrap_or(usize::MAX)
+}
+
 /// What a person reads when this copy has no video encoder, in their terms:
 /// where they are and what they cannot do, never how the app was built.
 #[cfg(any(not(feature = "gst"), test))]
@@ -1082,19 +1109,6 @@ mod gst_pipeline {
     /// frame, which otherwise shortens the file and drifts against the PCM.
     pub(super) fn frame_time(i: u64, fps: f64) -> gst::ClockTime {
         gst::ClockTime::from_nseconds((i as f64 * 1_000_000_000.0 / fps).round() as u64)
-    }
-
-    /// How many audio frames belong to video frame `i`.
-    ///
-    /// The sample rate is not a whole multiple of most frame rates — 48000 at
-    /// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
-    /// an integer at all. Deriving each frame's count from the difference
-    /// between two cumulative totals means the rounding error never
-    /// accumulates, so an hour of audio still ends where the video does
-    /// instead of drifting seconds out of sync.
-    fn audio_frames_for(i: u64, fps: f64) -> usize {
-        let at = |n: u64| (n as f64 / fps * f64::from(crate::audio::SAMPLE_RATE)).round() as u64;
-        (at(i + 1) - at(i)) as usize
     }
 
     /// How long the flush may go without progress before the export gives up.

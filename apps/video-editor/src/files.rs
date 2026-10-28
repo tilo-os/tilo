@@ -101,6 +101,14 @@ fn media_type(name: &str) -> &'static str {
         "mkv" => "video/x-matroska",
         "mov" => "video/quicktime",
         "ogv" => "video/ogg",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
         _ => "video/mp4",
     }
 }

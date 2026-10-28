@@ -657,6 +657,7 @@ save-status-not-saved-named = { $document } wasn't saved
 save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
+save-status-failed-detail = Your latest changes are not stored yet.
 save-status-retry = Try again
 
 # Find bar: the band at the top of a document that finds in it.

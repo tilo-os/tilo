@@ -211,7 +211,63 @@ fn threads() -> usize {
 }
 
 fn kib(kb: u64) -> f64 {
-    kb as f64 / 1024.0
+    f64::from(u32::try_from(kb).unwrap_or(u32::MAX)) / 1024.0
+}
+
+fn per(total_kb: u64, count: usize) -> f64 {
+    kib(total_kb) / f64::from(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// The first frame, cold (the first instance and window of the process) and
+/// warm (as a UI host and an app host that already run).
+fn first_frame(
+    app: &str,
+    platform: &Rc<Packages>,
+    scenario: Option<&str>,
+    text: &mut ui::TextRenderer,
+    theme: &ui::Theme,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut first = open(app, platform, scenario);
+    let opened = started.elapsed();
+    let shown = show(first.window.take().ok_or("no window")?, text, theme);
+    let cold = started.elapsed();
+    println!(
+        "a window shows {} nodes, {} rows ({} paths drawn)",
+        shown
+            .window
+            .composed()
+            .map_or(0, tilo_ui_host::UiNode::count),
+        shown
+            .window
+            .lists()
+            .iter()
+            .filter_map(|list| shown.window.rows_of(list))
+            .map(|rows| rows.borrow().rendered().len())
+            .sum::<usize>(),
+        shown.scene.encoding().n_paths
+    );
+    drop((shown, first));
+    // And warm, as a UI host and an app host that already run.
+    let mut warm = Vec::new();
+    for _ in 0..5 {
+        let started = Instant::now();
+        let mut again = open(app, platform, scenario);
+        let opened = started.elapsed();
+        let shown = show(again.window.take().ok_or("no window")?, text, theme);
+        warm.push((opened, started.elapsed()));
+        drop((shown, again));
+    }
+    warm.sort();
+    let (warm_open, warm_frame) = warm.get(warm.len() / 2).copied().ok_or("no warm frame")?;
+    println!(
+        "first frame: cold {:.1} ms (instance {:.1} ms), warm {:.1} ms (instance {:.1} ms)",
+        cold.as_secs_f64() * 1000.0,
+        opened.as_secs_f64() * 1000.0,
+        warm_frame.as_secs_f64() * 1000.0,
+        warm_open.as_secs_f64() * 1000.0,
+    );
+    Ok(())
 }
 
 fn main() -> Result<(), String> {
@@ -252,73 +308,33 @@ fn main() -> Result<(), String> {
     let theme = ui::Theme::dark();
     let mut text = ui::TextRenderer::new();
 
-    // The first frame, cold: the first instance and window of the process.
-    let started = Instant::now();
-    let mut first = open(&app, &platform, scenario.as_deref());
-    let opened = started.elapsed();
-    let shown = show(first.window.take().ok_or("no window")?, &mut text, &theme);
-    let cold = started.elapsed();
-    println!(
-        "a window shows {} nodes, {} rows ({} paths drawn)",
-        shown
-            .window
-            .composed()
-            .map_or(0, tilo_ui_host::UiNode::count),
-        shown
-            .window
-            .lists()
-            .iter()
-            .filter_map(|list| shown.window.rows_of(list))
-            .map(|rows| rows.borrow().rendered().len())
-            .sum::<usize>(),
-        shown.scene.encoding().n_paths
-    );
-    drop((shown, first));
-    // And warm, as a UI host and an app host that already run.
-    let mut warm = Vec::new();
-    for _ in 0..5 {
-        let started = Instant::now();
-        let mut again = open(&app, &platform, scenario.as_deref());
-        let opened = started.elapsed();
-        let shown = show(again.window.take().ok_or("no window")?, &mut text, &theme);
-        warm.push((opened, started.elapsed()));
-        drop((shown, again));
-    }
-    warm.sort();
-    let (warm_open, warm_frame) = warm[warm.len() / 2];
-    println!(
-        "first frame: cold {:.1} ms (instance {:.1} ms), warm {:.1} ms (instance {:.1} ms)",
-        cold.as_secs_f64() * 1000.0,
-        opened.as_secs_f64() * 1000.0,
-        warm_frame.as_secs_f64() * 1000.0,
-        warm_open.as_secs_f64() * 1000.0,
-    );
+    first_frame(&app, &platform, scenario.as_deref(), &mut text, &theme)?;
 
     let mut apps: Vec<Open> = Vec::new();
     let mut windows: Vec<Shown> = Vec::new();
     let base = status("RssAnon:");
-    let mut instances_kb = 0;
-    let mut windows_kb = 0;
+    let mut instances_kb: u64 = 0;
+    let mut windows_kb: u64 = 0;
     println!("open  app-host-total  per-instance  ui-host-total  per-window  threads");
     for count in counts {
         while apps.len() < count {
             let before = status("RssAnon:");
             apps.push(open(&app, &platform, scenario.as_deref()));
-            instances_kb += status("RssAnon:").saturating_sub(before);
+            instances_kb = instances_kb.saturating_add(status("RssAnon:").saturating_sub(before));
         }
         for opened in &mut apps {
             if let Some(end) = opened.window.take() {
                 let before = status("RssAnon:");
                 windows.push(show(end, &mut text, &theme));
-                windows_kb += status("RssAnon:").saturating_sub(before);
+                windows_kb = windows_kb.saturating_add(status("RssAnon:").saturating_sub(before));
             }
         }
         println!(
             "{count:>4}  {:>11.2} MiB  {:>9.2} MiB  {:>10.2} MiB  {:>7.2} MiB  {:>7}",
             kib(instances_kb),
-            kib(instances_kb) / count as f64,
+            per(instances_kb, count),
             kib(windows_kb),
-            kib(windows_kb) / count as f64,
+            per(windows_kb, count),
             threads(),
         );
     }

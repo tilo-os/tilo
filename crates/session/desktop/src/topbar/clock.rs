@@ -5,7 +5,7 @@
 
 use super::{
     Affine, BAR_CONTROL_PX, ButtonRole, CENTER_INSET_PX, CacheFingerprint, ChromeIntent,
-    ClockActivity, ClockSnapshot, Duration, Fill, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
+    ClockActivity, ClockSnapshot, Duration, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
     RoundedRect, Scene, Stroke, TextRenderer, TextRole, TextStyle, TextWeight, Theme, TopBarChrome,
     TopBarPresence, Widget, WindowEvent, at, paint_bar_selector, t,
 };
@@ -555,13 +555,18 @@ impl TopBarChrome {
         let panel = Rect::from_origin_size(clamped, (width, height));
         self.clock_overlay_pos = Some(clamped);
         self.clock_overlay_rect = panel;
-        scene.fill(
-            Fill::NonZero,
+        // A Panel (HIG §9.1): `radii.panel`, the floating material and a
+        // floating shadow. Was `surfaces.raised` at a literal 18 px radius
+        // with no shadow: the tone of a field well, floating over the desktop.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+        ui::surface::shadow(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(panel, 18.0),
+            panel,
+            radius,
+            &theme.tokens.elevation.floating,
         );
+        ui::surface::panel(scene, transform, panel, radius, theme);
         let grip = Line::new(
             Point::new(panel.center().x - 14.0, panel.y0 + 9.0),
             Point::new(panel.center().x + 14.0, panel.y0 + 9.0),

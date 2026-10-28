@@ -194,94 +194,55 @@ impl Writer {
         if provider == WORKSPACE {
             return workspace_rows();
         }
-        let path = || ActionParam::optional("path", ParamType::Text, "Direct filesystem path");
-        let mut rows =
-            vec![CatalogueRow {
-                action: None,
-                has_children: true,
-                ..row("", APP, "applications.app", "", Vec::new())
-            }]
-            .into_iter()
-            .filter(|_| self.nested)
-            .chain(
-                vec![
-                    row(
+        let mut rows = vec![CatalogueRow {
+            action: None,
+            has_children: true,
+            ..row("", APP, "applications.app", "", Vec::new())
+        }]
+        .into_iter()
+        .filter(|_| self.nested)
+        .chain(
+            vec![
+                row(
+                    "",
+                    RICH,
+                    "tilo.rich-text",
+                    "apply",
+                    vec![
+                        ActionParam::required("action", ParamType::Object, "An edit")
+                            .with_schema(json!({"oneOf": []})),
+                    ],
+                ),
+                // The row naming the document. A browser publishes none: its
+                // page is one resource whose actions hang under its own id.
+                CatalogueRow {
+                    action: None,
+                    has_children: true,
+                    ..row(
+                        &self.document_parent(),
+                        DOC,
+                        "word_processor.document",
                         "",
-                        RICH,
-                        "tilo.rich-text",
-                        "apply",
-                        vec![
-                            ActionParam::required("action", ParamType::Object, "An edit")
-                                .with_schema(json!({"oneOf": []})),
-                        ],
-                    ),
-                    // The row naming the document. A browser publishes none: its
-                    // page is one resource whose actions hang under its own id.
-                    CatalogueRow {
-                        action: None,
-                        has_children: true,
-                        ..row(
-                            &self.document_parent(),
-                            DOC,
-                            "word_processor.document",
-                            "",
-                            Vec::new(),
-                        )
-                    },
-                ]
-                .into_iter()
-                .filter(|row| !self.floating || row.resource.id != DOC),
-            )
-            .chain(vec![
-                row(
-                    DOC,
-                    DOC,
-                    "word_processor.document",
-                    "read-text",
-                    vec![
-                        ActionParam::required(
-                            "pageSize",
-                            ParamType::Integer,
-                            "Maximum items in this page",
-                        )
-                        .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
-                        ActionParam::optional("cursor", ParamType::Text, "Opaque nextCursor"),
-                    ],
-                ),
-                row(DOC, DOC, "word_processor.document", "save-as", vec![path()]),
-                row(
-                    DOC,
-                    DOC,
-                    "word_processor.document",
-                    "select-block",
-                    vec![ActionParam::required("block", ParamType::Text, "Paragraph")],
-                ),
-                apply_style_row(),
-                row(
-                    DOC,
-                    DOC,
-                    "word_processor.document",
-                    "set-paragraph-style",
-                    vec![
-                        ActionParam::required("kind", ParamType::Text, "Block kind")
-                            .with_choices(["paragraph", "heading", "list_item"]),
-                        ActionParam::optional("level", ParamType::Integer, "Heading level"),
-                    ],
-                ),
-                row(
-                    DOC,
-                    STYLE,
-                    "word_processor.style",
-                    "toggle-bold",
-                    Vec::new(),
-                ),
-            ])
-            .collect::<Vec<_>>();
+                        Vec::new(),
+                    )
+                },
+            ]
+            .into_iter()
+            .filter(|row| !self.floating || row.resource.id != DOC),
+        )
+        .chain(document_rows())
+        .collect::<Vec<_>>();
         if self.document.is_some() {
             rows.extend(text_edit_rows());
         }
         if let Some(opener) = self.opener {
-            let mut row = row(DOC, DOC, "word_processor.document", opener, vec![path()]);
+            let mut row = row(
+                DOC,
+                DOC,
+                "word_processor.document",
+                opener,
+                vec![path_param()],
+            );
             if let Some(action) = row.action.as_mut() {
                 let tags = &mut action.contract.tags;
                 tags.push(tilo_actions::OPENS_PATH_TAG.into());
@@ -300,7 +261,7 @@ impl Writer {
                 DOC,
                 "word_processor.document",
                 action,
-                vec![path()],
+                vec![path_param()],
             ));
         }
         for action in rows.iter_mut().filter_map(|row| row.action.as_mut()) {
@@ -313,6 +274,63 @@ impl Writer {
         }
         rows
     }
+}
+
+/// The fixture document's own rows, whatever else it offers.
+fn document_rows() -> Vec<CatalogueRow> {
+    vec![
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "read-text",
+            vec![
+                ActionParam::required("pageSize", ParamType::Integer, "Maximum items in this page")
+                    .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
+                ActionParam::optional("cursor", ParamType::Text, "Opaque nextCursor"),
+            ],
+        ),
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "save-as",
+            vec![path_param()],
+        ),
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "select-block",
+            vec![ActionParam::required("block", ParamType::Text, "Paragraph")],
+        ),
+        apply_style_row(),
+        row(
+            DOC,
+            DOC,
+            "word_processor.document",
+            "set-paragraph-style",
+            vec![
+                ActionParam::required("kind", ParamType::Text, "Block kind").with_choices([
+                    "paragraph",
+                    "heading",
+                    "list_item",
+                ]),
+                ActionParam::optional("level", ParamType::Integer, "Heading level"),
+            ],
+        ),
+        row(
+            DOC,
+            STYLE,
+            "word_processor.style",
+            "toggle-bold",
+            Vec::new(),
+        ),
+    ]
+}
+
+fn path_param() -> ActionParam {
+    ActionParam::optional("path", ParamType::Text, "Direct filesystem path")
 }
 
 /// The fixture workspace offers opening its app and assigning permissions.

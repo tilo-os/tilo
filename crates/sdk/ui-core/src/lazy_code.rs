@@ -60,6 +60,19 @@ impl<F: Copy + 'static> LazyCode<F> {
         }
     }
 
+    /// The code once it is in, for work that can wait for it (an
+    /// asynchronous task): fetched if no fetch is running. `None` when the
+    /// fetch fails.
+    pub async fn wait(&self) -> Option<F>
+    where
+        F: Send + Sync,
+    {
+        match self.linked {
+            Some(maker) => Some(maker()),
+            None => self.fetched.wait().await,
+        }
+    }
+
     /// How the program fetches the code: `load` starts the fetch and, once
     /// the code is in, calls [`Self::install`] (or [`Self::load_failed`]).
     pub fn defer(&self, load: fn()) {

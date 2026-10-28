@@ -680,8 +680,8 @@ pub enum BrowserEffect {
     },
     /// Press key on page
     ///
-    /// Scrolls the page too, with the keys that scroll it: PageDown,
-    /// PageUp, Home, End, ArrowDown and ArrowUp, or Space for a screenful.
+    /// Scrolls the page too, with the keys that scroll it: `PageDown`,
+    /// `PageUp`, `Home`, `End`, `ArrowDown` and `ArrowUp`, or `Space` for a screenful.
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
     PressPage {
         #[param("Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a")]

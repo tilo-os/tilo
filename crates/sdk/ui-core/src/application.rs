@@ -1519,8 +1519,10 @@ impl AppComponent {
         let captured = self.callback_binding();
         let context = &self.context;
         let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
+            // The store's write moving on changes the save status and
+            // nothing the model holds: the owner shows the status alone.
             let handle = context.wake_handle();
-            std::sync::Arc::new(move || handle.wake())
+            std::sync::Arc::new(move || handle.wake_save_progress())
         }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
@@ -1580,12 +1582,25 @@ impl AppComponent {
         changed
     }
 
-    /// Whether the record's last sampled durability is still being written.
+    /// Whether the record's durability is still being written. A save that
+    /// landed since the last sample is asked of the store: its status is
+    /// shown without a sync of this component
+    /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]), which
+    /// leaves the sample behind.
     pub(crate) fn record_saving(&self) -> bool {
-        matches!(
+        if !matches!(
             &self.record_save,
             Some(crate::record::RecordSaveStatus::Saving)
-        )
+        ) {
+            return false;
+        }
+        let binding = self.callback_binding();
+        binding
+            .records
+            .save_status(&binding.checkout.id)
+            .map_or(true, |status| {
+                status == crate::record::RecordSaveStatus::Saving
+            })
     }
 
     /// Whether the delivered durability changed since this was last asked,

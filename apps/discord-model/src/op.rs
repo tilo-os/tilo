@@ -501,6 +501,12 @@ pub enum DiscordResult {
     Message {
         message_id: String,
         tilo: String,
+        /// The webhook the message went out through, when it is not the
+        /// one the op named: that one was gone from Discord, so the
+        /// worker made the channel a new one, which the bridge maps in
+        /// its place. Null otherwise, so the program can test it.
+        #[serde(default)]
+        webhook_id: Option<String>,
     },
     Thread {
         thread_id: String,
@@ -636,11 +642,12 @@ mod tests {
         let result = DiscordResult::Message {
             message_id: "9".into(),
             tilo: "m1".into(),
+            webhook_id: None,
         };
         let value = serde_json::to_value(&result).unwrap();
         assert_eq!(
             value,
-            json!({"result": "message", "message_id": "9", "tilo": "m1"})
+            json!({"result": "message", "message_id": "9", "tilo": "m1", "webhook_id": null})
         );
         assert_eq!(DiscordResult::default(), DiscordResult::Done);
     }

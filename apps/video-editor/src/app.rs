@@ -1070,6 +1070,10 @@ pub struct VideoEditorApp {
     /// something on the other end of them.
     #[cfg(any(feature = "gst", feature = "decode"))]
     monitor: Option<crate::audio::AudioMonitor>,
+    /// The same, on a host whose thread may not wait (a browser page): the
+    /// mix is made a stretch at a time each frame and played by the page.
+    #[cfg(not(any(feature = "gst", feature = "decode")))]
+    page_monitor: crate::page_sound::PageMonitor,
     /// The level the mix is running at, written by whatever is mixing and
     /// read here. **Not** feature-gated: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
@@ -1464,6 +1468,8 @@ impl VideoEditorApp {
             composite_later: None,
             #[cfg(any(feature = "gst", feature = "decode"))]
             monitor: None,
+            #[cfg(not(any(feature = "gst", feature = "decode")))]
+            page_monitor: crate::page_sound::PageMonitor::new(),
             mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
             mix: crate::audio::MixSnapshot::default(),
             mix_sig: None,
@@ -6189,6 +6195,16 @@ impl VideoEditorApp {
         self.advance_playback();
         #[cfg(any(feature = "gst", feature = "decode"))]
         self.pump_monitor();
+        // A capture or a past version must make no sound: it stays hermetic.
+        #[cfg(not(any(feature = "gst", feature = "decode")))]
+        if !self.seed.hermetic {
+            self.page_monitor.pump(
+                &self.project,
+                self.playhead,
+                self.playback.playing,
+                &self.mix_meters,
+            );
+        }
         self.advance_flap_with_motion(theme.reduce_motion);
         self.poll_export();
         #[cfg(feature = "decode")]

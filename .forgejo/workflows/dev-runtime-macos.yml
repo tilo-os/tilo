@@ -152,6 +152,27 @@ jobs:
         with:
           fetch-depth: 1
       - uses: ./.forgejo/actions/stable-source
+      # Jobs run on the host, so the build's temporary directory is the
+      # runner's TMPDIR (/private/tmp/forgejo-runner). When that directory is
+      # gone, every C compiler invocation dies with "clang: error: unable to
+      # make temporary file: No such file or directory", which says nothing
+      # about the cause. Report it and fall back to a directory this job makes.
+      - name: Check the build's temporary directory
+        run: |
+          set -euo pipefail
+          printf 'TMPDIR=%s\n' "${TMPDIR:-<unset>}"
+          if [ -n "${TMPDIR:-}" ] && mkdir -p "$TMPDIR" 2>/dev/null \
+             && probe=$(mktemp "$TMPDIR/tilo-probe.XXXXXX" 2>/dev/null); then
+            rm -f "$probe"
+            echo "the runner's temporary directory works"
+            exit 0
+          fi
+          fallback="${RUNNER_TEMP:?}/tilo-tmp"
+          mkdir -p "$fallback"
+          echo "::warning::$TMPDIR is not writable; building with TMPDIR=$fallback"
+          echo "TMPDIR=$fallback" >> "$GITHUB_ENV"
+          df -h / "$fallback"
+
       - name: Check the runtime, its tests and executable on macOS
         working-directory: ${{ env.SRC }}
         run: cargo check -p tilo-runtime --all-targets --locked

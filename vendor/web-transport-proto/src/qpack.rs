@@ -252,41 +252,6 @@ impl Headers {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{encode_prefix, DecodeError, Headers};
-
-    fn literal_block(fields: &[(&str, &str)]) -> Vec<u8> {
-        let mut block = Vec::new();
-        encode_prefix(&mut block, 8, 0, 0);
-        encode_prefix(&mut block, 7, 0, 0);
-        for (name, value) in fields {
-            Headers::encode_literal(&mut block, name, value);
-        }
-        block
-    }
-
-    #[test]
-    fn duplicate_pseudoheaders_are_rejected_before_collection() {
-        for fields in [
-            [(":path", "/one"), (":path", "/one")],
-            [(":path", "/one"), (":path", "/two")],
-            [(":authority", "one.test"), (":authority", "one.test")],
-            [(":authority", "one.test"), (":authority", "two.test")],
-        ] {
-            let error = Headers::decode(&mut literal_block(&fields).as_slice()).unwrap_err();
-            assert!(matches!(error, DecodeError::DuplicatePseudoHeader));
-        }
-    }
-
-    #[test]
-    fn duplicate_ordinary_headers_preserve_last_value_behavior() {
-        let block = literal_block(&[("x-test", "first"), ("x-test", "second")]);
-        let headers = Headers::decode(&mut block.as_slice()).unwrap();
-        assert_eq!(headers.get("x-test"), Some("second"));
-    }
-}
-
 // An integer that uses a fixed number of bits, otherwise a variable number of bytes if it's too large.
 // https://www.rfc-editor.org/rfc/rfc7541#section-5.1
 
@@ -677,3 +642,38 @@ const PREDEFINED_HEADERS: [(&str, &str); 99] = [
     ("x-frame-options", "deny"),
     ("x-frame-options", "sameorigin"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_prefix, DecodeError, Headers};
+
+    fn literal_block(fields: &[(&str, &str)]) -> Vec<u8> {
+        let mut block = Vec::new();
+        encode_prefix(&mut block, 8, 0, 0);
+        encode_prefix(&mut block, 7, 0, 0);
+        for (name, value) in fields {
+            Headers::encode_literal(&mut block, name, value);
+        }
+        block
+    }
+
+    #[test]
+    fn duplicate_pseudoheaders_are_rejected_before_collection() {
+        for fields in [
+            [(":path", "/one"), (":path", "/one")],
+            [(":path", "/one"), (":path", "/two")],
+            [(":authority", "one.test"), (":authority", "one.test")],
+            [(":authority", "one.test"), (":authority", "two.test")],
+        ] {
+            let error = Headers::decode(&mut literal_block(&fields).as_slice()).unwrap_err();
+            assert!(matches!(error, DecodeError::DuplicatePseudoHeader));
+        }
+    }
+
+    #[test]
+    fn duplicate_ordinary_headers_preserve_last_value_behavior() {
+        let block = literal_block(&[("x-test", "first"), ("x-test", "second")]);
+        let headers = Headers::decode(&mut block.as_slice()).unwrap();
+        assert_eq!(headers.get("x-test"), Some("second"));
+    }
+}

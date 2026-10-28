@@ -936,6 +936,109 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 }
 
+/// Someone deletes the bridge's webhook in the channel's settings (or the
+/// server forgets it): the next Tilo message still arrives under its
+/// author's name, file and all, through a webhook made in its place, which
+/// the bridge maps from then on. Its echo stays out of Chat, and editing a
+/// message only the old webhook could change is let go without a dead
+/// letter.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
+    let (bridge, mut runner) = Bridge::start().await;
+    let before = bridge.ada_says("before").await;
+    let first = settle(&mut runner, "first post", || async {
+        bridge.in_discord("before")
+    })
+    .await;
+    let old = first["webhook_id"].as_str().unwrap().to_owned();
+    assert!(bridge.fake.delete_webhook(&old), "the webhook was there");
+
+    let bytes = b"the minutes".to_vec();
+    let blob = bridge.blobs.store(&bytes).unwrap();
+    bridge
+        .as_ada_on_messages(
+            chat::parts::ChatPart::POST.with(chat::messages::chat_part::Post {
+                message: chat::messages::NewMessage {
+                    channel: Id::from_raw(&bridge.general),
+                    text: "after".into(),
+                    parent: None,
+                    body: None,
+                    attachment: Some(chat::record::AttachmentUpdate {
+                        kind: "file".into(),
+                        name: "notes.txt".into(),
+                        blob,
+                        width: 0,
+                        height: 0,
+                        size: bytes.len() as u64,
+                    }),
+                    mentions: None,
+                    written: None,
+                },
+            }),
+        )
+        .await;
+    let sent = settle(&mut runner, "post after the webhook is gone", || async {
+        bridge.in_discord("after")
+    })
+    .await;
+    assert_eq!(sent["author"]["username"], "Ada", "{sent:#}");
+    assert_eq!(sent["attachments"][0]["filename"], "notes.txt", "{sent:#}");
+    let new = sent["webhook_id"].as_str().unwrap().to_owned();
+    assert_ne!(new, old, "a new webhook: {sent:#}");
+    settle(&mut runner, "the new webhook mapped", || async {
+        let guild = bridge.room.guild().await;
+        let mapped = guild.mapping(MappedKind::Webhook, &bridge.general)?;
+        (mapped.discord == new).then_some(())
+    })
+    .await;
+
+    // The old webhook's message cannot be edited any more; that is let go.
+    bridge
+        .as_ada_on_messages(chat::parts::ChatPart::EDIT_MESSAGE.with(
+            chat::messages::chat_part::EditMessage {
+                message: Id::from_raw(&before),
+                text: "before, edited".into(),
+                body: None,
+                mentions: None,
+            },
+        ))
+        .await;
+    bridge.ada_says("and again").await;
+    let again = settle(&mut runner, "the next post", || async {
+        bridge.in_discord("and again")
+    })
+    .await;
+    assert_eq!(again["webhook_id"], new.as_str(), "{again:#}");
+    let _ = quiet(&mut runner, &bridge, "all settled").await;
+    let dead: Vec<_> = runner.dead_letters().collect();
+    assert!(dead.is_empty(), "{dead:#?}");
+    assert_eq!(
+        bridge
+            .fake
+            .webhooks()
+            .iter()
+            .filter(|(_, channel)| channel == CHANNEL_GENERAL)
+            .count(),
+        1,
+        "one webhook made in the old one's place"
+    );
+    let texts: Vec<String> = bridge
+        .room
+        .part_messages()
+        .await
+        .messages
+        .values()
+        .map(|message| message.text.clone())
+        .collect();
+    for text in ["after", "and again"] {
+        assert_eq!(
+            texts.iter().filter(|t| *t == text).count(),
+            1,
+            "the echo of {text:?} is not posted again: {texts:?}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     let (bridge, mut runner) = Bridge::start().await;

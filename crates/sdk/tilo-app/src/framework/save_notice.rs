@@ -1,25 +1,25 @@
-//! The notification a note raises when its save gave up while nobody could
-//! see it, and that notification's "Try again" coming back.
+//! The notification a framework window raises when its save gave up while
+//! nobody could see it, and that notification's "Try again" coming back.
 //!
 //! The save status surface decides when (see
-//! [`ui::SaveStatusSurface::take_notice`]); this posts it through the host's
-//! notifications under a tag of this window's own, and routes the click back
-//! to the window that raised it.
+//! [`ui_core::SaveStatusSurface::take_notice`]); this posts it through the
+//! host's notifications under a tag of this window's own, and routes the
+//! click back to the window that raised it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Once};
-use ui::lock::MutexRecover as _;
+use ui_core::lock::MutexRecover as _;
 
-/// The activation URI scheme Notes owns.
-const SCHEME: &str = "tilo-notes";
+/// The activation URI scheme of framework windows' save notifications.
+const SCHEME: &str = "tilo-save";
 /// The activation of "Try again", followed by the window's id.
-const RETRY: &str = "tilo-notes:save-retry/";
+const RETRY: &str = "tilo-save:retry/";
 
 /// Windows waiting for a "Try again", and those it reached.
 #[derive(Default)]
 struct Retries {
-    windows: HashMap<u64, ui::wake::WakeHandle>,
+    windows: HashMap<u64, ui_core::wake::WakeHandle>,
     asked: HashSet<u64>,
 }
 
@@ -48,16 +48,18 @@ fn activated(uri: &str) {
 /// One window's save notification.
 pub(crate) struct SaveNotices {
     id: u64,
-    notifier: Option<Arc<dyn ui::notify::Notifier>>,
+    notifier: Option<Arc<dyn ui_core::notify::Notifier>>,
 }
 
 impl SaveNotices {
     pub(crate) fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         static HANDLER: Once = Once::new();
-        HANDLER.call_once(|| ui::notify::set_activation_handler(SCHEME, activated));
+        HANDLER.call_once(|| ui_core::notify::set_activation_handler(SCHEME, activated));
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        retries().windows.insert(id, ui::wake::WakeHandle::new());
+        retries()
+            .windows
+            .insert(id, ui_core::wake::WakeHandle::new());
         Self { id, notifier: None }
     }
 
@@ -68,21 +70,22 @@ impl SaveNotices {
     }
 
     /// The host's notifications, resolved once.
-    fn notifier(&mut self) -> Arc<dyn ui::notify::Notifier> {
+    fn notifier(&mut self) -> Arc<dyn ui_core::notify::Notifier> {
         self.notifier
-            .get_or_insert_with(|| ui::host::current().notifications)
+            .get_or_insert_with(|| ui_core::host::current().notifications)
             .clone()
     }
 
-    /// Raise or take down what `surface` asks at `now` about the note
-    /// titled `title`, and take a "Try again" chosen on the notification.
-    /// Returns whether the person asked to try again, so the note's changes
-    /// are submitted once more.
+    /// Raise or take down what `surface` asks at `now` about the document
+    /// titled `title` in `app`, and take a "Try again" chosen on the
+    /// notification. Returns whether the person asked to try again, so the
+    /// document's changes are submitted once more.
     pub(crate) fn deliver(
         &mut self,
-        surface: &mut ui::SaveStatusSurface,
+        surface: &mut ui_core::SaveStatusSurface,
         title: Option<&str>,
-        now: ui::time::Instant,
+        app: &str,
+        now: ui_core::time::Instant,
     ) -> bool {
         let asked = retries().asked.remove(&self.id);
         if asked {
@@ -93,11 +96,12 @@ impl SaveNotices {
         {
             tracing::debug!(%error, "withdrawing the note's save notification");
         }
-        if let Some(notice) = surface.take_notice(now, title, &ui::i18n!("notes-title")) {
-            let notification = ui::notify::Notification::new(self.tag(), notice.title, notice.body)
-                .with_activation(format!("{RETRY}{}", self.id))
-                .with_action(notice.action)
-                .with_severity(ui::notify::Severity::Warning);
+        if let Some(notice) = surface.take_notice(now, title, app) {
+            let notification =
+                ui_core::notify::Notification::new(self.tag(), notice.title, notice.body)
+                    .with_activation(format!("{RETRY}{}", self.id))
+                    .with_action(notice.action)
+                    .with_severity(ui_core::notify::Severity::Warning);
             if let Err(error) = self.notifier().show(&notification) {
                 tracing::warn!(%error, "telling the person a note was not saved");
             }
@@ -107,7 +111,7 @@ impl SaveNotices {
 
     /// Use `notifier` instead of the host's.
     #[cfg(test)]
-    pub(crate) fn set_notifier(&mut self, notifier: Arc<dyn ui::notify::Notifier>) {
+    pub(crate) fn set_notifier(&mut self, notifier: Arc<dyn ui_core::notify::Notifier>) {
         self.notifier = Some(notifier);
     }
 

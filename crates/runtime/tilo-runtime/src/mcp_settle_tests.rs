@@ -30,13 +30,9 @@ pub(crate) struct GatedHost {
     /// Take every invocation without ever answering its admission, as a
     /// broker whose admission journal waits on a slow disk.
     admission_unanswered: bool,
-    /// Refuse a read naming a revision other than `revision`, as a
-    /// directory does once it moved on: [`CataloguePage::stale_cursor`]
-    /// answers a resolve that named one, and the read itself refuses.
-    stale_reads: bool,
-    /// Refuse an invocation naming any revision other than `revision`, as a
-    /// directory that moved on since the caller read it.
-    stale_invokes: bool,
+    /// What, naming a revision other than `revision`, is refused as a
+    /// directory that moved on refuses it.
+    stale: Option<Stale>,
     revision: Arc<StdMutex<String>>,
     unanswered: Arc<StdMutex<Vec<AdmissionCompleter>>>,
     queries: Arc<StdMutex<Vec<CatalogueQuery>>>,
@@ -54,6 +50,16 @@ enum WithoutRevision {
     /// As the broker refuses a directory action that asks for confirmation
     /// without one.
     NeedsConfirmation,
+}
+
+/// What a host that moved past the revision a caller named refuses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stale {
+    /// A read: [`CataloguePage::stale_cursor`] answers a resolve that named
+    /// one, and the read itself refuses.
+    Reads,
+    /// An invocation, as a directory that moved on since the caller read it.
+    Invokes,
 }
 
 /// A half-polled answer put back as a [`Pending`], for the few tests that
@@ -125,7 +131,7 @@ impl ActionHost for GatedHost {
         let revision = self.revision.lock().unwrap().clone();
         let named = query.revision.clone();
         let moved = named.as_deref().is_some_and(|named| named != revision);
-        if self.stale_reads && moved {
+        if self.stale == Some(Stale::Reads) && moved {
             return Pending::ready(Err(ActionHostError::StaleRevision));
         }
         let mut answer = self.stub.query(caller, query);
@@ -161,7 +167,7 @@ impl ActionHost for GatedHost {
                 None => {}
             }
         }
-        if self.stale_invokes
+        if self.stale == Some(Stale::Invokes)
             && request
                 .revision
                 .as_deref()
@@ -865,17 +871,6 @@ fn phrase_retry_names_the_revision_it_read() {
     );
 }
 
-/// The revisions every resolve asked the directory for.
-fn resolved_revisions(host: &GatedHost) -> Vec<Option<String>> {
-    host.queries
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|query| query.target.is_some())
-        .map(|query| query.revision.clone())
-        .collect()
-}
-
 fn current_resolve() -> Value {
     json!({"peer_id": 71, "resource": "test.note:1", "action": tilo_resource::APPLY})
 }
@@ -886,10 +881,10 @@ fn current_resolve() -> Value {
 #[test]
 fn a_stale_read_says_what_happened_and_what_to_do() {
     let host = GatedHost {
-        stale_reads: true,
+        stale: Some(Stale::Reads),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let endpoint = gated_endpoint(host);
     run(async {
         let session = gated_session(&endpoint).await;
         let mut args = current_resolve();
@@ -911,10 +906,10 @@ fn a_stale_read_says_what_happened_and_what_to_do() {
 fn a_stale_invoke_says_what_to_do_rather_than_a_code() {
     let host = GatedHost {
         at_once: true,
-        stale_invokes: true,
+        stale: Some(Stale::Invokes),
         ..GatedHost::default()
     };
-    let endpoint = gated_endpoint(host.clone());
+    let endpoint = gated_endpoint(host);
     run(async {
         let session = gated_session(&endpoint).await;
         let mut args = current_invoke();

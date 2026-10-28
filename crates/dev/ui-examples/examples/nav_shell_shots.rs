@@ -263,7 +263,7 @@ fn shoot(
 ) {
     let mut harness = FrameHarness::for_root(State::new(), shell, size, theme.clone());
     for _ in 0..2 {
-        set(&mut *harness.root_mut::<NavShell>());
+        set(&mut harness.root_mut::<NavShell>());
         harness.root_mut::<NavShell>().snap();
         if let Err(error) = harness.relayout_at(size) {
             eprintln!("nav_shell_shots: layout failed: {error}");
@@ -304,7 +304,7 @@ fn shoot_history_at(
         std::process::exit(1);
     }
     for _ in 0..2 {
-        set(&mut *harness.root_mut::<NavShell>());
+        set(&mut harness.root_mut::<NavShell>());
         harness.root_mut::<NavShell>().snap();
         if let Err(error) = harness.relayout_at(size) {
             eprintln!("nav_shell_shots: layout failed: {error}");

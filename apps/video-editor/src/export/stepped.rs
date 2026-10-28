@@ -10,12 +10,20 @@
 //! every frame is encoded the file is written to the destination the person
 //! chose before the render began: a page saves by contents, and its Save
 //! dialog needs the press that started the export, not one a minute later.
+//!
+//! Sound is mixed by the same mixer the preview plays, a video frame's worth
+//! after each frame, from sources the page decoded
+//! ([`crate::page_sound::PagePcm`]); the render waits for every source's
+//! sound before the first frame, so the file never starts silent.
 
 use std::sync::atomic::Ordering;
 
 use media::edit::{ClipEncoder, EncoderState};
 
-use super::{CANCELLED, ExportSettings, ExportStatus, JobState, RenderPlan, output_dims};
+use super::{
+    CANCELLED, ExportSettings, ExportStatus, JobState, RenderPlan, audio_frame_at,
+    audio_frames_for, output_dims,
+};
 use crate::gpu::seek_source::{Fetch, SeekFrameSource};
 use crate::gpu::{HeadlessCompositor, PendingFrame};
 use crate::model::Project;
@@ -24,6 +32,7 @@ use crate::model::Project;
 const BACKLOG: u32 = 8;
 
 /// Seconds between key frames, so a player can seek in the file.
+// ratchet-allow(pixel_const): a span of seconds in the encoded file, not spacing
 const KEY_EVERY_S: f64 = 2.0;
 
 /// A render in progress; [`Self::step`] advances it.
@@ -36,6 +45,8 @@ pub(super) struct SteppedRender {
     compositor: Option<HeadlessCompositor>,
     sources: SeekFrameSource,
     encoder: ClipEncoder,
+    /// The sources' sound, when the project has any.
+    sound: Option<crate::page_sound::PagePcm>,
     destination: ui::portal::SaveDestination,
     /// The next frame to composite, and the composite of it on its way back.
     next: u64,
@@ -65,11 +76,14 @@ impl SteppedRender {
         let fps = settings.frame_rate.fps();
         let plan = RenderPlan::new(project, fps);
         state.total.store(plan.total, Ordering::Relaxed);
+        let sound =
+            crate::audio::has_audio(project).then(|| crate::page_sound::PagePcm::new(project));
         let encoder = ClipEncoder::start(
             width,
             height,
             fps,
             settings.resolution.target_mbps() * 1_000_000.0,
+            sound.is_some(),
         )
         .map_err(|why| format!("Cannot export: {why}"))?;
         Ok(Self {
@@ -83,6 +97,7 @@ impl SteppedRender {
                 .strict()
                 .with_max_side(width.max(height)),
             encoder,
+            sound,
             destination,
             next: 0,
             pending: None,
@@ -110,8 +125,9 @@ impl SteppedRender {
             return match saving.try_recv() {
                 Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
                 Ok(ui::portal::SaveOutcome::Saved) => Err(ExportStatus::Done {
-                    path: if crate::audio::has_audio(&self.project) {
-                        // Said rather than left for the person to discover.
+                    path: if self.sound.is_some() && !self.encoder.has_sound() {
+                        // A browser that encodes no Opus: said rather than
+                        // left for the person to discover.
                         format!("{} (picture only, without sound)", self.destination.name())
                     } else {
                         self.destination.name().to_string()
@@ -142,7 +158,7 @@ impl SteppedRender {
                 Some(Err(why)) => return Err(failed(format!("Cannot export: {why}"))),
                 Some(Ok(rgba)) => {
                     let key = self.next.is_multiple_of(self.key_interval());
-                    if !self.encoder.encode(&rgba, self.next, key) {
+                    if !self.encoder.encode(&rgba, self.next, key) || !self.encode_sound() {
                         // The encoder says why on the next step.
                         return Ok(());
                     }
@@ -158,6 +174,14 @@ impl SteppedRender {
             return Ok(());
         }
         if self.encoder.backlog() > BACKLOG {
+            return Ok(());
+        }
+        if let Some(sound) = self.sound.as_mut()
+            && self.encoder.has_sound()
+            && !sound.settled()
+        {
+            // Sources' sound still decoding: nothing is mixed from a source
+            // that would come in as silence.
             return Ok(());
         }
         if self.compositor.is_none() {
@@ -200,6 +224,21 @@ impl SteppedRender {
         }
         self.pending = Some(pending);
         Ok(())
+    }
+
+    /// Mix and encode the sound of the frame just encoded, `self.next`.
+    fn encode_sound(&mut self) -> bool {
+        let Some(pcm) = self.sound.as_mut() else {
+            return true;
+        };
+        if !self.encoder.has_sound() {
+            return true;
+        }
+        let at = self.plan.time_of(self.next);
+        let frames = audio_frames_for(self.next, self.fps);
+        let samples = crate::audio::mix_block(&self.project, at, frames, pcm);
+        self.encoder
+            .encode_sound(&samples, audio_frame_at(self.next, self.fps))
     }
 
     /// Frames between key frames.

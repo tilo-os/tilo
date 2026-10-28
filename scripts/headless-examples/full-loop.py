@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 
-from _control import call, require_ok, runtime_socket_path
+from _control import call, hang_bound, require_ok, runtime_socket_path
 from tilo_client import scratch_session_env
 
 SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("full-loop.sock")
@@ -44,6 +44,9 @@ BINARY = pathlib.Path(
         SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell",
     )
 ).resolve()
+# A snapshot renders a whole frame, and the first one on a software adapter
+# compiles every pipeline first: it is bounded as a hang, not as a reply.
+SNAPSHOT_TIMEOUT = hang_bound(otherwise=5.0)
 PALETTE_PNG = pathlib.Path("/tmp/full-loop-palette.png")
 FINAL_PNG = pathlib.Path("/tmp/full-loop-final.png")
 
@@ -281,7 +284,8 @@ def main() -> int:
         if input_target is None:
             raise RuntimeError("palette is live in state but has no visible semantic target")
         time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)}))
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT))
         assert_nonblank_png(PALETTE_PNG)
         assert_palette_input_painted(PALETTE_PNG, input_target["rect"])
         print(f"  {PALETTE_PNG} written and verified")
@@ -299,7 +303,8 @@ def main() -> int:
         ):
             raise RuntimeError("closed palette still exports a visible semantic input target")
         time.sleep(0.5)  # let the close transition finish before judging pixels
-        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)}))
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)},
+                        timeout=SNAPSHOT_TIMEOUT))
         assert_nonblank_png(FINAL_PNG)
         assert_palette_is_visually_gone(PALETTE_PNG, FINAL_PNG)
         print(f"  {FINAL_PNG} written and verified")
