@@ -27,7 +27,7 @@ impl Selection {
             Service::Discord => "Discord",
         }
     }
-    pub fn resource(&self) -> tilo_actions::ResourceSpec {
+    pub fn resource(&self) -> ui::tilo_actions::ResourceSpec {
         let mut forget = crate::effects::BrowserEffect::ForgetServiceSession {
             session_id: self.id.clone(),
         }
@@ -43,7 +43,7 @@ impl Selection {
         }
         .bound();
         open.type_mut().label = format!("Open {}", self.label());
-        tilo_actions::ResourceSpec::new(
+        ui::tilo_actions::ResourceSpec::new(
             format!("browser.service.{}", self.id),
             "browser.service",
             self.label(),
@@ -700,9 +700,9 @@ mod lifecycle_tests {
             .unwrap();
         assert_eq!(
             action.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
+            ui::tilo_actions::ConfirmationPolicy::Confirm
         );
-        assert_eq!(action.contract.kind, tilo_actions::ActionKind::Outside);
+        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
         let decoded = crate::effects::BrowserEffect::decode(
@@ -731,11 +731,14 @@ mod lifecycle_tests {
             .iter()
             .find(|action| action.label == CATALOG.t("browser-service-forget-retry"))
             .unwrap();
-        assert_eq!(action.contract.kind, tilo_actions::ActionKind::Outside);
-        assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+        assert_eq!(action.contract.kind, ui::tilo_actions::ActionKind::Outside);
+        assert_eq!(
+            action.contract.risk,
+            ui::tilo_actions::RiskLevel::Destructive
+        );
         assert_eq!(
             action.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
+            ui::tilo_actions::ConfirmationPolicy::Confirm
         );
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();

@@ -162,8 +162,6 @@ ENGINES = {
     # Notes and the on-screen keyboard still name is emptied out as they
     # migrate.
     "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
-    "browser-parts": "the parts of Browser people rarely use, which Browser loads from "
-                     "libtilo_browser_import_engine.so",
     "tilo-archive-engine": "the archive codecs' engine library (libtilo_archive_engine.so)",
     "tilo-archive": "the archive reader and writer, which Files loads from "
                     "libtilo_archive_engine.so",

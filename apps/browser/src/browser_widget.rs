@@ -319,7 +319,7 @@ pub(crate) use crate::effects::{BrowserOperation, LibrarySection};
 
 const MAX_LIBRARY_FILTER_BYTES: usize = 256;
 
-pub(crate) use browser_parts::rows::library_filter_matches;
+pub(crate) use crate::rows::library_filter_matches;
 
 fn bounded_library_filter(query: &str) -> String {
     let query = query.trim();

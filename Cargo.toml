@@ -93,7 +93,6 @@ members = [
     "apps/api-tester",
     "apps/backups",
     "apps/browser",
-    "apps/browser-parts",
     "apps/calculator",
     "apps/calendar",
     "apps/camera",

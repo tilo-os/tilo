@@ -1108,7 +1108,7 @@ pub fn startup_paths() -> Vec<PathBuf> {
 
 /// The script that gives an extension the tab APIs Chromium does not give it
 /// here: the engine answers them (`extension_tabs.h` in the engine host).
-const TABS_SCRIPT: &str = include_str!("../../browser/chromium/src/extension_tabs.js");
+const TABS_SCRIPT: &str = include_str!("../chromium/src/extension_tabs.js");
 const TABS_FILE: &str = "tilo-extension-tabs.js";
 /// The worker earlier Browsers put in place of the extension's own, which
 /// named it on its first line after [`WORKER_MARK`].

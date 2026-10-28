@@ -26,17 +26,23 @@ thin = ["dep:runtime-dylib"]
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
 # links them statically, because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh. Signed-in website sessions' custody
-# (account-custody's service sessions, through tilo-browser-sessions in
-# browser-parts) comes from the accounts engine (libtilo_accounts_engine.so)
-# Mail and Settings already load, rather than a second copy in the tapp: the
-# import engine, which carries browser-parts, names it DT_NEEDED, so Browser
-# loads it through that engine (tools/apps/release-smoke.sh checks the chain).
+# (account-custody's service sessions, through tilo-browser-sessions) comes
+# from the accounts engine (libtilo_accounts_engine.so) Mail and Settings
+# already load, rather than a second copy in the tapp: the import engine,
+# which carries tilo-browser-sessions, names it DT_NEEDED, so Browser loads it
+# through that engine (tools/apps/release-smoke.sh checks the chain).
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
-# Extensions, site controls and site capabilities: from Browser's engine
-# library in a release.
-browser-parts = { path = "../browser-parts" }
+tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
+fnv.workspace = true
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+host-info = { path = "../../crates/system/host-info" }
+sha2.workspace = true
+base64.workspace = true
+# CRX3 proofs are RSA PKCS#1 v1.5 or ECDSA P-256 signatures over SHA-256.
+ring = "0.17"
+uuid.workspace = true
 browser-continuity = { workspace = true, features = ["native"] }
 chrono.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
@@ -58,6 +64,10 @@ reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 url.workspace = true
 
+# Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
+# (.crx behind a small binary header); manifest.json describes them. Read
+# under the shared zip-bomb bounds before anything is extracted.
+bounded-zip = { path = "../../crates/doc/bounded-zip" }
 zip.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
@@ -76,26 +86,10 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Browser's tests compile the parts in (src/lib.rs), with what they use.
-tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
-# The parts' sources name the action types the crate behind `ui::tilo_actions`
-# defines, and Browser compiles them into its own tests; Browser's shipped code
-# reaches them through `ui`.
-tilo-actions = { path = "../../crates/collab/actions" }
-fnv.workspace = true
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
-host-info = { path = "../../crates/system/host-info" }
-sha2.workspace = true
-base64.workspace = true
-ring = "0.17"
-bounded-zip = { path = "../../crates/doc/bounded-zip" }
-uuid.workspace = true
 hex.workspace = true
 # The import tests write the Chromium and Firefox databases they read.
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-# extension install tests unpack into throwaway directories
-tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]

@@ -1480,7 +1480,6 @@ dependencies = [
  "blake3",
  "bounded-zip",
  "browser-continuity",
- "browser-parts",
  "chrono",
  "fnv",
  "hex",
@@ -1495,7 +1494,6 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-accounts-engine",
- "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-browser-import-engine",
@@ -1547,38 +1545,6 @@ dependencies = [
  "tilo-sandbox-core",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "browser-parts"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "bounded-zip",
- "browser-continuity",
- "fnv",
- "host-info",
- "reqwest 0.13.4",
- "ring",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-browser-sessions",
- "tilo-files",
- "tilo-net",
- "tilo-paths",
- "tilo-vello",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
- "zip",
 ]
 
 [[package]]
@@ -17705,7 +17671,6 @@ name = "tilo-browser-import-engine"
 version = "0.1.0"
 dependencies = [
  "browser-continuity",
- "browser-parts",
  "runtime-dylib",
  "rusqlite",
  "tempfile",
@@ -25956,7 +25921,6 @@ dependencies = [
  "browser",
  "browser-continuity",
  "browser-continuity-core",
- "browser-parts",
  "btoi",
  "buffa",
  "buffa-build",

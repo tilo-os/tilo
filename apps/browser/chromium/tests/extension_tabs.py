@@ -166,7 +166,7 @@ from native_regressions import HANG_BOUND, Host
 FIXTURES = Path(__file__).parent.joinpath('extension-tabs').resolve()
 # The Browser's own extension, loaded with every profile: it tells which tab
 # a page is.
-MANAGER = Path(__file__).parents[3].joinpath('browser-parts/assets/extension-manager').resolve()
+MANAGER = Path(__file__).parents[2].joinpath('assets/extension-manager').resolve()
 SCRIPT = Path(__file__).parents[1].joinpath('src/extension_tabs.js').read_text()
 # What the Browser's toolbar evaluates in an extension's worker to show its
 # button (extension_toolbar.rs), as Rust spells the string.

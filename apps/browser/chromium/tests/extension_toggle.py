@@ -4,7 +4,7 @@
 Chromium's DevTools can only uninstall an extension, which deletes what it
 stored: an ad blocker's settings and allowed sites, a password manager's
 login. The Browser turns extensions off and on instead through its own
-manager extension (apps/browser-parts/assets/extension-manager), with
+manager extension (apps/browser/assets/extension-manager), with
 `chrome.management.setEnabled`, as Chrome's extensions page does. The MV3
 fixture counts its visits in chrome.storage: off and on again, it goes on
 counting; uninstalled and added again, it starts over.
@@ -19,7 +19,7 @@ from extensions import extension_page
 
 TESTS = Path(__file__).parent
 FIXTURE = str(TESTS.joinpath('mv3-fixture').resolve())
-MANAGER = str(TESTS.parents[1].joinpath('..', 'browser-parts', 'assets', 'extension-manager').resolve())
+MANAGER = str(TESTS.parents[1].joinpath('assets', 'extension-manager').resolve())
 
 
 class ExtensionToggle(unittest.TestCase):

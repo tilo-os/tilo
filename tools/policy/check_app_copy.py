@@ -267,11 +267,6 @@ INDIRECT = {"apps/settings"}
 # resolves the shared provider administration copy it embeds
 # (apps/settings/src/i18n.rs).
 FALLBACK = {"apps/settings": ["crates/sdk/provider-settings-ui"]}
-# Crates whose copy is another crate's catalogue: Browser resolves
-# browser-parts'.
-SOURCES = {
-    "apps/browser-parts": ["apps/browser"],
-}
 
 
 def catalogues(crate: Path) -> dict[str, set[str]]:
@@ -295,8 +290,7 @@ def missing_copy(root: Path) -> list[str]:
         shared = [catalogues(root / fallback) for fallback in FALLBACK.get(name, [])]
         indirect = name in INDIRECT
         namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
-        sources = [crate] + [root / other for other in SOURCES.get(name, [])]
-        for path in sorted(p for source in sources for p in (source / "src").rglob("*.rs")):
+        for path in sorted((crate / "src").rglob("*.rs")):
             # Settings' scenarios name capture-only states, not live panes.
             if indirect and path.name == "scenarios.rs":
                 continue

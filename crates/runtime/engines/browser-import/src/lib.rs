@@ -9,10 +9,8 @@
 //! library of its own in the runtime bundle that only Browser names
 //! `DT_NEEDED`, and the tapp carries only Browser's own code.
 //!
-//! The parts of Browser people rarely use are here too (`browser-parts`:
-//! extensions, site controls with the content blocker's lists, site
-//! capabilities), with the website-session codec check
-//! (`tilo-browser-sessions`), so the tapp carries the browsing itself.
+//! The website-session codecs (`tilo-browser-sessions`) are here too, so
+//! their account custody resolves to the accounts engine.
 //!
 //! Imager reads profiles too, but its own code calls `SQLite`'s inline
 //! statement API, whose C calls must resolve in the app's link (a Rust dylib
@@ -33,8 +31,6 @@ extern crate tilo_accounts_engine;
 
 #[cfg(feature = "thin")]
 pub use browser_continuity;
-#[cfg(feature = "thin")]
-pub use browser_parts;
 #[cfg(feature = "thin")]
 pub use tilo_browser_sessions;
 

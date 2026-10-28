@@ -1288,27 +1288,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "browser"
-inputs = [
-  # Its own tests compile browser-parts in, and its views read the parts'
-  # English catalogue.
-  "apps/browser-parts/**",
-  "apps/browser/chromium/src/extension_tabs.js",
-]
-readers = [
-  "apps/browser/src/lib.rs",
-  "apps/browser/src/personal_bookmark_view.rs",
-]
-
-[[cargo]]
-package = "browser-parts"
-inputs = [
-  # The engine's tab script, which it writes into each extension's worker.
-  "apps/browser/chromium/src/extension_tabs.js",
-]
-readers = ["apps/browser-parts/src/extensions.rs"]
-
-[[cargo]]
 package = "tilo-fs"
 inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
