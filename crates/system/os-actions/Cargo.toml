@@ -9,8 +9,8 @@ license.workspace = true
 name = "os_actions"
 path = "src/lib.rs"
 
-# Pure shell-out wrappers around brightnessctl / wpctl / nmcli /
-# bluetoothctl / powerprofilesctl. No GUI or compositor deps — this crate
+# Shell-out wrappers around brightnessctl / wpctl / powerprofilesctl, and
+# the NetworkManager and BlueZ D-Bus clients. No GUI or compositor deps — this crate
 # exists so the `shell` compositor and the standalone `settings` app can
 # both drive the same hardware controls without cross-depending. See the
 # crate docstring in `src/lib.rs` for the design intent.
@@ -36,8 +36,8 @@ tilo-crypto = { path = "../tilo-crypto" }
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.
 tilo-bluez = { path = "../tilo-bluez" }
-# Connectivity, metering and the primary link come from the one
-# NetworkManager client every OS reader shares.
+# Every network read and change goes through the one NetworkManager client
+# every OS reader shares.
 tilo-nm = { path = "../tilo-nm" }
 tilo-power-mgmt = { path = "../power" }
 tilo-rt.workspace = true

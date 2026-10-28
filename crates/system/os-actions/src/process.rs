@@ -66,7 +66,7 @@ fn path_lookup(binary: &str) -> bool {
 
 /// Run `binary args...` under [`DEFAULT_TIMEOUT`], capturing stdout.
 ///
-/// The deadline is the point: these helpers drive OS tools (`nmcli`, `bluetoothctl`, `wpctl`)
+/// The deadline is the point: these helpers drive OS tools (`wpctl`, `brightnessctl`, `iw`)
 /// that talk to daemons over D-Bus, and a wedged or restarting daemon leaves its client
 /// blocked with no bound — if that thread is the compositor's, the whole desktop stops
 /// painting. A deadline turns that into a stale reading, which every caller already handles
@@ -74,7 +74,7 @@ fn path_lookup(binary: &str) -> bool {
 ///
 /// stdout and stderr are drained on their own threads: polling `try_wait` while the child
 /// writes into an unread pipe deadlocks once the child outfills the pipe buffer, which
-/// `nmcli device wifi list` on a busy band is comfortably large enough to do.
+/// `iw dev … station dump` with a busy hotspot is comfortably large enough to do.
 pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String> {
     run_capture_within(binary, args, DEFAULT_TIMEOUT)
 }
@@ -105,29 +105,6 @@ pub(crate) fn run_capture_within(
 pub(crate) fn run(binary: &str, args: &[&str]) -> Result<(), String> {
     let _ = run_capture(binary, args)?;
     Ok(())
-}
-
-/// Run a client with bounded stdin, keeping secrets out of argv and the
-/// process list. Used for `NetworkManager`'s `--ask` flow.
-pub(crate) fn run_with_input(
-    binary: &str,
-    args: &[&str],
-    input: &[u8],
-    timeout: std::time::Duration,
-) -> Result<String, String> {
-    if !which(binary) {
-        return Err(format!("{binary} not installed"));
-    }
-    let output = bounded_command::run(binary, args, Some(input), MAX_CAPTURE_BYTES, timeout)
-        .map_err(|error| bounded_error(binary, error))?;
-    // Never return stderr: interactive clients may echo a rejected secret in diagnostics.
-    if !output.status.success() {
-        return Err(format!(
-            "{binary} rejected the request (status {:?})",
-            output.status.code()
-        ));
-    }
-    String::from_utf8(output.stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
 }
 
 fn bounded_error(binary: &str, error: bounded_command::Error) -> String {
@@ -165,10 +142,6 @@ mod tests {
             let capture = run_capture_within("head", &args, tilo_test_env::hang_bound())
                 .expect_err("oversized stdout must be rejected");
             assert!(capture.contains("output exceeded"), "{capture}");
-
-            let with_input = run_with_input("head", &args, b"", tilo_test_env::hang_bound())
-                .expect_err("secret-input helper must share the same output ceiling");
-            assert!(with_input.contains("output exceeded"), "{with_input}");
         }
         // Phase `a_hanging_command_is_killed_at_the_deadline`.
         // A command that never exits is killed at the deadline and reported as a timeout rather

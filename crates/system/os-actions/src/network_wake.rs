@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::network::validate_uuid;
+use crate::network::{validate_uuid, with_nm};
 use crate::process::{run_capture, which};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ pub struct NetworkWakeStatus {
 /// # Errors
 /// Refuses invalid profiles, unsupported profile types and unreadable settings.
 pub fn status(profile: &str) -> Result<NetworkWakeStatus, String> {
-    observe(profile, &system_command)
+    observe(profile, &SystemProfiles, &system_command)
 }
 
 /// Change only magic-packet wake, persisting through subsequent activations.
@@ -33,7 +33,7 @@ pub fn status(profile: &str) -> Result<NetworkWakeStatus, String> {
 /// Enabling requires an active interface whose driver reports magic-packet
 /// support. `NetworkManager` retains its normal authorization checks.
 pub fn configure(profile: &str, enabled: bool) -> Result<NetworkWakeStatus, String> {
-    change(profile, enabled, &system_command)
+    change(profile, enabled, &SystemProfiles, &system_command)
 }
 
 // Host services can retain a PATH without sbin. Locate these two read-only
@@ -50,48 +50,128 @@ fn system_command(tool: &str, args: &[&str]) -> Result<String, String> {
 
 type Runner<'a> = dyn Fn(&str, &[&str]) -> Result<String, String> + 'a;
 
-fn property(profile: &str, run: &Runner<'_>) -> Result<&'static str, String> {
-    validate_uuid(profile)?;
-    let kind = run(
-        "nmcli",
-        &[
-            "-g",
-            "connection.type",
-            "connection",
-            "show",
-            "uuid",
-            profile,
-        ],
-    )?;
-    match kind.trim() {
-        "802-11-wireless" => Ok("802-11-wireless.wake-on-wlan"),
-        "802-3-ethernet" => Ok("802-3-ethernet.wake-on-lan"),
-        _ => Err("magic-packet wake is offered only for Wi-Fi and Ethernet profiles".into()),
+/// Which wake setting a profile has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Medium {
+    /// `802-11-wireless.wake-on-wlan`; `NM_SETTING_WIRELESS_WAKE_ON_WLAN_MAGIC`
+    /// is `0x08`, its 4-way-handshake flag `0x40`.
+    Wifi,
+    /// `802-3-ethernet.wake-on-lan`; `NM_SETTING_WIRED_WAKE_ON_LAN_MAGIC` is
+    /// `0x40`, its ARP flag `0x20`.
+    Ethernet,
+}
+
+impl Medium {
+    const fn setting(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Wifi => ("802-11-wireless", "wake-on-wlan"),
+            Self::Ethernet => ("802-3-ethernet", "wake-on-lan"),
+        }
+    }
+
+    const fn magic(self) -> u32 {
+        match self {
+            Self::Wifi => 0x08,
+            Self::Ethernet => 0x40,
+        }
     }
 }
 
-fn active_interface(profile: &str, run: &Runner<'_>) -> Result<Option<String>, String> {
-    let output = run(
-        "nmcli",
-        &["-t", "-f", "UUID,DEVICE", "connection", "show", "--active"],
-    )?;
-    for line in output.lines() {
-        let Some((uuid, interface)) = line.split_once(':') else {
-            continue;
-        };
-        if uuid == profile && interface != "--" && !interface.is_empty() {
-            if interface.len() > 15
-                || interface.starts_with('-')
-                || !interface
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-            {
-                return Err("NetworkManager returned an invalid interface name".into());
+/// What this needs of `NetworkManager`, behind one seam so the sequence is
+/// tested against a fake.
+trait Profiles {
+    /// The profile's medium and its wake flags.
+    fn wake(&self, profile: &str) -> Result<(Medium, u32), String>;
+    /// The interface the profile is active on, if it is.
+    fn active_interface(&self, profile: &str) -> Result<Option<String>, String>;
+    /// Save the wake flags.
+    fn set_wake(&self, profile: &str, medium: Medium, flags: u32) -> Result<(), String>;
+    /// Apply the saved profile to `interface` without reconnecting it.
+    fn reapply(&self, interface: &str) -> Result<(), String>;
+}
+
+/// `NetworkManager` on the system bus.
+struct SystemProfiles;
+
+impl Profiles for SystemProfiles {
+    fn wake(&self, profile: &str) -> Result<(Medium, u32), String> {
+        let settings = with_nm(|nm| async move { Ok(nm.profile(profile).await?.settings) })?;
+        let medium = match settings.kind().as_str() {
+            "802-11-wireless" => Medium::Wifi,
+            "802-3-ethernet" => Medium::Ethernet,
+            _ => {
+                return Err(
+                    "magic-packet wake is offered only for Wi-Fi and Ethernet profiles".into(),
+                );
             }
-            return Ok(Some(interface.into()));
-        }
+        };
+        let (setting, key) = medium.setting();
+        // NetworkManager's DEFAULT (1) when the profile leaves it out.
+        Ok((medium, settings.uint(setting, key).unwrap_or(1)))
     }
-    Ok(None)
+
+    fn active_interface(&self, profile: &str) -> Result<Option<String>, String> {
+        with_nm(|nm| async move {
+            let Some(active) = nm
+                .active_connections()
+                .await?
+                .into_iter()
+                .find(|active| active.uuid == profile)
+            else {
+                return Ok(None);
+            };
+            Ok(nm
+                .devices()
+                .await?
+                .into_iter()
+                .find(|device| active.devices.contains(&device.path))
+                .map(|device| device.interface))
+        })
+    }
+
+    fn set_wake(&self, profile: &str, medium: Medium, flags: u32) -> Result<(), String> {
+        with_nm(|nm| async move {
+            nm.edit(profile, |settings| {
+                let (setting, key) = medium.setting();
+                settings.set(setting, key, flags);
+                Ok(())
+            })
+            .await
+        })
+    }
+
+    fn reapply(&self, interface: &str) -> Result<(), String> {
+        with_nm(|nm| async move {
+            let device = nm
+                .devices()
+                .await?
+                .into_iter()
+                .find(|device| device.interface == interface)
+                .ok_or_else(|| tilo_nm::NmError::NotFound(format!("{interface} is gone")))?;
+            nm.reapply(&device).await
+        })
+    }
+}
+
+fn medium(profile: &str, nm: &dyn Profiles) -> Result<(Medium, u32), String> {
+    validate_uuid(profile)?;
+    nm.wake(profile)
+}
+
+fn active_interface(profile: &str, nm: &dyn Profiles) -> Result<Option<String>, String> {
+    let Some(interface) = nm.active_interface(profile)? else {
+        return Ok(None);
+    };
+    if interface.is_empty()
+        || interface.len() > 15
+        || interface.starts_with('-')
+        || !interface
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    {
+        return Err("NetworkManager returned an invalid interface name".into());
+    }
+    Ok(Some(interface))
 }
 
 fn driver(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<(bool, bool), String> {
@@ -145,29 +225,15 @@ fn wowlan_magic_packet(phy: &str, run: &Runner<'_>) -> Result<bool, String> {
     Ok(state.contains("wake up on magic packet") && state.contains("is enabled"))
 }
 
-fn observe(profile: &str, run: &Runner<'_>) -> Result<NetworkWakeStatus, String> {
-    let property = property(profile, run)?;
-    let wifi = property == "802-11-wireless.wake-on-wlan";
-    let setting = run(
-        "nmcli",
-        &["-g", property, "connection", "show", "uuid", profile],
-    )?;
-    let number = setting
-        .split_whitespace()
-        .next()
-        .and_then(|value| {
-            value
-                .strip_prefix("0x")
-                .or_else(|| value.strip_prefix("0X"))
-                .map_or_else(
-                    || value.parse::<u32>().ok(),
-                    |hex| u32::from_str_radix(hex, 16).ok(),
-                )
-        })
-        .ok_or("NetworkManager returned an unreadable wake setting")?;
-    let interface = active_interface(profile, run)?;
+fn observe(
+    profile: &str,
+    nm: &dyn Profiles,
+    run: &Runner<'_>,
+) -> Result<NetworkWakeStatus, String> {
+    let (medium, flags) = medium(profile, nm)?;
+    let interface = active_interface(profile, nm)?;
     let (supported, applied, problem) = match interface.as_deref() {
-        Some(interface) => match driver(interface, wifi, run) {
+        Some(interface) => match driver(interface, medium == Medium::Wifi, run) {
             Ok((supported, applied)) => (Some(supported), Some(applied), None),
             Err(error) => (None, None, Some(error)),
         },
@@ -176,15 +242,20 @@ fn observe(profile: &str, run: &Runner<'_>) -> Result<NetworkWakeStatus, String>
     Ok(NetworkWakeStatus {
         profile: profile.into(),
         interface,
-        configured: number & if wifi { 0x08 } else { 0x40 } != 0,
+        configured: flags & medium.magic() != 0,
         supported,
         applied,
         problem,
     })
 }
 
-fn change(profile: &str, enabled: bool, run: &Runner<'_>) -> Result<NetworkWakeStatus, String> {
-    let before = observe(profile, run)?;
+fn change(
+    profile: &str,
+    enabled: bool,
+    nm: &dyn Profiles,
+    run: &Runner<'_>,
+) -> Result<NetworkWakeStatus, String> {
+    let before = observe(profile, nm, run)?;
     if enabled && before.supported != Some(true) {
         return Err(before.problem.unwrap_or_else(|| {
             if before.interface.is_none() {
@@ -194,28 +265,19 @@ fn change(profile: &str, enabled: bool, run: &Runner<'_>) -> Result<NetworkWakeS
             }
         }));
     }
-    let property = property(profile, run)?;
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            "uuid",
-            profile,
-            property,
-            if enabled { "magic" } else { "none" },
-        ],
-    )?;
-    let reapply = if active_interface(profile, run)? == before.interface {
+    let (medium, _) = medium(profile, nm)?;
+    // Magic packet alone, or nothing at all (`NONE`).
+    nm.set_wake(profile, medium, if enabled { medium.magic() } else { 0 })?;
+    let reapply = if active_interface(profile, nm)? == before.interface {
         before
             .interface
             .as_deref()
-            .map(|interface| run("nmcli", &["device", "reapply", interface]))
+            .map(|interface| nm.reapply(interface))
             .transpose()
     } else {
         Err("the active connection changed; its wake setting was not reapplied".into())
     };
-    let mut after = observe(profile, run)?;
+    let mut after = observe(profile, nm, run)?;
     if after.configured != enabled {
         return Err("NetworkManager did not retain the requested wake setting".into());
     }
@@ -236,9 +298,12 @@ mod tests {
 
     const PROFILE: &str = "11111111-1111-4111-8111-111111111111";
 
-    #[derive(Default)]
+    /// `NetworkManager` and the driver tools as far as wake goes.
     struct NetworkManager {
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: RefCell<Vec<String>>,
+        medium: Cell<Medium>,
+        /// The saved flags; `None` follows `configured`.
+        flags: Cell<Option<u32>>,
         configured: Cell<bool>,
         applied: Cell<bool>,
         inactive: Cell<bool>,
@@ -246,24 +311,55 @@ mod tests {
         reapply_failed: Cell<bool>,
     }
 
+    impl Default for NetworkManager {
+        fn default() -> Self {
+            Self {
+                calls: RefCell::default(),
+                medium: Cell::new(Medium::Wifi),
+                flags: Cell::default(),
+                configured: Cell::default(),
+                applied: Cell::default(),
+                inactive: Cell::default(),
+                unsupported: Cell::default(),
+                reapply_failed: Cell::default(),
+            }
+        }
+    }
+
+    impl Profiles for NetworkManager {
+        fn wake(&self, _profile: &str) -> Result<(Medium, u32), String> {
+            let medium = self.medium.get();
+            let configured = if self.configured.get() {
+                medium.magic()
+            } else {
+                0
+            };
+            let flags = self.flags.get().unwrap_or(configured);
+            Ok((medium, flags))
+        }
+        fn active_interface(&self, _profile: &str) -> Result<Option<String>, String> {
+            Ok((!self.inactive.get()).then(|| "wlan0".into()))
+        }
+        fn set_wake(&self, profile: &str, medium: Medium, flags: u32) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("modify {profile} {medium:?} {flags:#x}"));
+            self.configured.set(flags & medium.magic() != 0);
+            Ok(())
+        }
+        fn reapply(&self, interface: &str) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("reapply {interface}"));
+            if self.reapply_failed.get() {
+                return Err("not authorized".into());
+            }
+            self.applied.set(self.configured.get());
+            Ok(())
+        }
+    }
+
     impl NetworkManager {
         fn run(&self, tool: &str, args: &[&str]) -> Result<String, String> {
-            self.calls.borrow_mut().push(
-                std::iter::once(tool)
-                    .chain(args.iter().copied())
-                    .map(str::to_owned)
-                    .collect(),
-            );
             match (tool, args) {
-                ("nmcli", ["-g", "connection.type", ..]) => Ok("802-11-wireless\n".into()),
-                ("nmcli", ["-g", "802-11-wireless.wake-on-wlan", ..]) => {
-                    Ok(if self.configured.get() { "0x8" } else { "0x0" }.into())
-                }
-                ("nmcli", ["-t", ..]) => Ok(if self.inactive.get() {
-                    String::new()
-                } else {
-                    format!("{PROFILE}:wlan0\n")
-                }),
                 ("iw", ["dev", "wlan0", "info"]) => Ok("Interface wlan0\n\twiphy 0\n".into()),
                 ("iw", ["phy", "phy0", "info"]) => Ok(if self.unsupported.get() {
                     "WoWLAN support:\n\t* wake up on disconnect\n"
@@ -277,27 +373,7 @@ mod tests {
                     "WoWLAN is disabled.\n"
                 }
                 .into()),
-                (
-                    "nmcli",
-                    [
-                        "connection",
-                        "modify",
-                        "uuid",
-                        PROFILE,
-                        "802-11-wireless.wake-on-wlan",
-                        mode,
-                    ],
-                ) => {
-                    self.configured.set(*mode == "magic");
-                    Ok(String::new())
-                }
-                ("nmcli", ["device", "reapply", "wlan0"]) => {
-                    if self.reapply_failed.get() {
-                        return Err("not authorized".into());
-                    }
-                    self.applied.set(self.configured.get());
-                    Ok(String::new())
-                }
+                ("ethtool", ["wlan0"]) => Ok("Supports Wake-on: g\nWake-on: d\n".into()),
                 _ => Err(format!("unexpected command: {tool} {args:?}")),
             }
         }
@@ -307,37 +383,22 @@ mod tests {
     fn network_wake_reads_networkmanager_magic_and_not_handshake_flags() {
         let nm = NetworkManager::default();
         // NMSettingWirelessWakeOnWLan: MAGIC = 0x08, 4WAY_HANDSHAKE = 0x40.
-        for (flags, expected) in [(8, true), (64, false), (72, true), (0, false)] {
-            let status = observe(PROFILE, &|tool, args| {
-                if tool == "nmcli" && args.starts_with(&["-g", "802-11-wireless.wake-on-wlan"]) {
-                    Ok(format!("0x{flags:x}"))
-                } else {
-                    nm.run(tool, args)
-                }
-            })
-            .unwrap();
+        for (flags, expected) in [(8, true), (64, false), (72, true), (0, false), (1, false)] {
+            nm.flags.set(Some(flags));
+            let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
             assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
         }
-        assert!(
-            !nm.calls
-                .borrow()
-                .iter()
-                .any(|call| call.iter().any(|arg| arg == "modify"))
-        );
+        assert!(nm.calls.borrow().is_empty(), "reading changes nothing");
     }
 
     #[test]
     fn network_wake_reads_wired_magic_and_not_arp_flags() {
         let nm = NetworkManager::default();
+        nm.medium.set(Medium::Ethernet);
         // NMSettingWiredWakeOnLan: MAGIC = 0x40, ARP = 0x20.
         for (flags, expected) in [(64, true), (32, false), (96, true), (0, false)] {
-            let status = observe(PROFILE, &|tool, args| match (tool, args) {
-                ("nmcli", ["-g", "connection.type", ..]) => Ok("802-3-ethernet".into()),
-                ("nmcli", ["-g", "802-3-ethernet.wake-on-lan", ..]) => Ok(format!("0x{flags:x}")),
-                ("ethtool", ["wlan0"]) => Ok("Supports Wake-on: g\nWake-on: d\n".into()),
-                _ => nm.run(tool, args),
-            })
-            .unwrap();
+            nm.flags.set(Some(flags));
+            let status = observe(PROFILE, &nm, &|tool, args| nm.run(tool, args)).unwrap();
             assert_eq!(status.configured, expected, "NetworkManager flags {flags}");
             assert_eq!(status.supported, Some(true));
         }
@@ -346,31 +407,17 @@ mod tests {
     #[test]
     fn persists_and_reapplies_supported_magic_packet_without_reconnecting() {
         let nm = NetworkManager::default();
-        let status = change(PROFILE, true, &|tool, args| nm.run(tool, args)).unwrap();
+        let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
         assert!(status.configured);
         assert_eq!(status.applied, Some(true));
         assert_eq!(status.supported, Some(true));
         assert_eq!(status.problem, None);
-        let calls = nm.calls.borrow();
-        assert!(calls.iter().any(|call| call
-            == &[
-                "nmcli",
-                "connection",
-                "modify",
-                "uuid",
-                PROFILE,
-                "802-11-wireless.wake-on-wlan",
-                "magic"
-            ]));
-        assert!(
-            !calls
-                .iter()
-                .flatten()
-                .any(|arg| matches!(arg.as_str(), "up" | "down" | "disconnect"))
+        assert_eq!(
+            nm.calls.borrow().as_slice(),
+            [format!("modify {PROFILE} Wifi 0x8"), "reapply wlan0".into()]
         );
-        drop(calls);
         assert!(
-            !change(PROFILE, false, &|tool, args| nm.run(tool, args))
+            !change(PROFILE, false, &nm, &|tool, args| nm.run(tool, args))
                 .unwrap()
                 .configured
         );
@@ -382,17 +429,11 @@ mod tests {
             let nm = NetworkManager::default();
             nm.inactive.set(inactive);
             nm.unsupported.set(!inactive);
-            assert!(change(PROFILE, true, &|tool, args| nm.run(tool, args)).is_err());
-            assert!(
-                !nm.calls
-                    .borrow()
-                    .iter()
-                    .flatten()
-                    .any(|arg| arg == "modify")
-            );
+            assert!(change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).is_err());
+            assert!(nm.calls.borrow().is_empty());
         }
         let nm = NetworkManager::default();
-        assert!(change("--hostile", true, &|tool, args| nm.run(tool, args)).is_err());
+        assert!(change("--hostile", true, &nm, &|tool, args| nm.run(tool, args)).is_err());
         assert!(nm.calls.borrow().is_empty());
     }
 
@@ -400,7 +441,7 @@ mod tests {
     fn reports_saved_but_not_applied_instead_of_claiming_enabled() {
         let nm = NetworkManager::default();
         nm.reapply_failed.set(true);
-        let status = change(PROFILE, true, &|tool, args| nm.run(tool, args)).unwrap();
+        let status = change(PROFILE, true, &nm, &|tool, args| nm.run(tool, args)).unwrap();
         assert!(status.configured);
         assert_eq!(status.applied, Some(false));
         assert!(status.problem.unwrap().contains("saved"));

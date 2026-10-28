@@ -678,31 +678,68 @@ fn a_modem_without_a_sim_says_why() {
     assert!(!modem.usable());
 }
 
+fn mobile(uuid: &str, kind: &str, autoconnect: bool, timestamp: u64) -> Profile {
+    let mut settings = Settings::default();
+    settings.set("connection", "uuid", uuid);
+    settings.set("connection", "type", kind);
+    settings.set("connection", "autoconnect", autoconnect);
+    settings.set("connection", "timestamp", timestamp);
+    Profile {
+        path: format!("/profile/{uuid}"),
+        settings,
+        filename: String::new(),
+    }
+}
+
 #[test]
 fn the_mobile_data_profile_is_the_connected_one_else_the_automatic_one() {
-    let list = "\
-0d7f5e66-3b1b-4a0b-9a59-0f1a2c3d4e5f:802-11-wireless:yes:yes:1700000900
-5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10:gsm:no:no:1700000800
-9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64:gsm:yes:no:1700000100
-";
-    let chosen = choose_mobile_profile(list).unwrap();
-    assert_eq!(chosen.uuid, "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64");
-    assert_eq!(choose_mobile_profile("x:802-3-ethernet:yes:yes:1\n"), None);
-
-    let profile = parse_mobile_profile(
-        chosen.clone(),
-        "connection.id:Mobile data\nconnection.autoconnect:yes\nconnection.metered:yes\ngsm.apn:\ngsm.auto-config:yes\ngsm.home-only:yes\n",
+    let wifi = mobile(
+        "0d7f5e66-3b1b-4a0b-9a59-0f1a2c3d4e5f",
+        "802-11-wireless",
+        true,
+        1_700_000_900,
     );
-    assert_eq!(profile.name, "Mobile data");
-    assert!(profile.automatic_apn);
+    let manual = mobile(
+        "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10",
+        "gsm",
+        false,
+        1_700_000_800,
+    );
+    let automatic = mobile(
+        "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64",
+        "gsm",
+        true,
+        1_700_000_100,
+    );
+    let profiles = [wifi.clone(), manual.clone(), automatic];
+    let chosen = choose_mobile_profile(&profiles, |profile| profile.path == wifi.path).unwrap();
+    assert_eq!(chosen.uuid, "9e41c2d8-6a35-4b9f-8c07-2f5d1e8a3b64");
+    let connected =
+        choose_mobile_profile(&profiles, |profile| profile.path == manual.path).unwrap();
+    assert_eq!(connected.uuid, "5b2e8a70-1c7d-4f2e-9a61-0d3c9e4b7a10");
+    assert!(connected.active);
+    assert_eq!(choose_mobile_profile(&[wifi], |_| true), None);
+
+    let mut settings = Settings::default();
+    settings.set("connection", "metered", 1_i32);
+    settings.set("gsm", "auto-config", true);
+    settings.set("gsm", "home-only", true);
+    let profile = mobile_profile_of(&settings, false);
+    assert_eq!(
+        profile.name, MOBILE_PROFILE_NAME,
+        "unnamed reads as the default"
+    );
+    assert!(profile.automatic_apn && profile.autoconnect);
     assert_eq!(profile.apn, None);
     assert!(!profile.roaming, "home only means no roaming");
     assert_eq!(profile.metered, MeteredPolicy::Metered);
 
-    let typed = parse_mobile_profile(
-        chosen,
-        "connection.id:Work\nconnection.autoconnect:no\nconnection.metered:unknown\ngsm.apn:internet.telekom\ngsm.auto-config:no\ngsm.home-only:no\n",
-    );
+    let mut settings = Settings::default();
+    settings.set("connection", "id", "Work");
+    settings.set("connection", "autoconnect", false);
+    settings.set("gsm", "apn", "internet.telekom");
+    let typed = mobile_profile_of(&settings, true);
+    assert_eq!(typed.name, "Work");
     assert_eq!(typed.apn.as_deref(), Some("internet.telekom"));
     assert!(!typed.automatic_apn && typed.roaming && !typed.autoconnect);
     assert_eq!(typed.metered, MeteredPolicy::Automatic);
