@@ -17,8 +17,14 @@ native-editor = ["dep:runtime-portal"]
 # Independent jobs (`job`): a child process in a cgroup of its own below its
 # app's, through the session's app spawner.
 jobs = ["dep:runtime-portal"]
+# The host inputs' native fallback (`environment::process_environment`): what
+# a launcher passes through the process environment.
+native = ["dep:hex"]
 
 [dependencies]
+# The host inputs (`environment`): the message locale.
+unic-langid.workspace = true
+hex = { workspace = true, optional = true }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 

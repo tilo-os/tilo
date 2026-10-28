@@ -50,7 +50,7 @@ lazy-highlight = ["dep:tilo-engine-loader"]
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not gated here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
+local-daemons = ["dep:runtime-portal", "dep:runtime-identity", "collaboration/local-daemons"]
 # The collaboration manager's built-in transport: the Tilo collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -215,8 +215,8 @@ tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", 
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
-# The collab client without the toolkit: record identities, the app surface
-# and local action reports, under their toolkit paths.
+# The collab client without the toolkit: record identities, the app surface,
+# the local identity seam and local action reports, under their toolkit paths.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
