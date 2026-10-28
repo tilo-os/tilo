@@ -1979,22 +1979,16 @@ impl Action {
             keywords: "search-kw-presence-status-sharing-set",
             params: PRESENCE_SHARING_PARAMS,
             apply: |st, args| {
-                let mode = match args
-                    .text("mode")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "off" => ui::StatusSharing::Off,
-                    "manual" | "manual-only" => ui::StatusSharing::ManualOnly,
-                    "automatic" => ui::StatusSharing::Automatic,
-                    _ => {
-                        return Err(ActionError::Refused(
-                            "status privacy must be off, manual, or automatic".into(),
-                        ));
-                    }
-                };
+                let mode = ui::StatusSharing::from_word(
+                    &args
+                        .text("mode")
+                        .unwrap_or_default()
+                        .trim()
+                        .to_ascii_lowercase(),
+                )
+                .ok_or_else(|| {
+                    ActionError::Refused("status privacy must be off, manual, or automatic".into())
+                })?;
                 st.push_presence_request(
                     crate::shell::chrome_state::PresenceRequest::SetStatusSharing(mode),
                 );

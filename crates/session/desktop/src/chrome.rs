@@ -79,6 +79,20 @@ pub struct ClockSnapshot {
     pub weekday: String,
     pub date: String,
 }
+impl ClockSnapshot {
+    /// The wall clock now, in the person's time style and locale: what the
+    /// bar shows on every desktop, native or in a page.
+    #[must_use]
+    pub fn now() -> Self {
+        let now = ui::clock::local_now();
+        Self {
+            unix_seconds: now.timestamp(),
+            clock: ui::clock::time_of_day(&now),
+            weekday: ui::format::weekday_short(chrono::Datelike::weekday(&now)),
+            date: ui::format::month_day(now.date_naive()),
+        }
+    }
+}
 impl Default for ClockSnapshot {
     fn default() -> Self {
         Self {

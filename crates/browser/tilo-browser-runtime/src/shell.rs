@@ -103,25 +103,6 @@ pub(crate) enum HostRequest {
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
 }
 
-/// How a person shares what they are doing, as their profile keeps it.
-pub(crate) fn sharing_word(sharing: ui::StatusSharing) -> &'static str {
-    match sharing {
-        ui::StatusSharing::Automatic => "automatic",
-        ui::StatusSharing::ManualOnly => "manual",
-        ui::StatusSharing::Off => "off",
-    }
-}
-
-/// The sharing a profile's word names, if any.
-pub(crate) fn sharing_of(word: &str) -> Option<ui::StatusSharing> {
-    Some(match word {
-        "automatic" => ui::StatusSharing::Automatic,
-        "manual" => ui::StatusSharing::ManualOnly,
-        "off" => ui::StatusSharing::Off,
-        _ => return None,
-    })
-}
-
 /// The page's host action that lets the person choose their name; the
 /// People panel offers it on the own name when the page lists it.
 const RENAME_ACTION: &str = "set-name";
@@ -201,7 +182,7 @@ struct PageChrome {
 
 impl DesktopChromeSource for PageChrome {
     fn snapshot(&self) -> DesktopChromeSnapshot {
-        let clock = clock_snapshot();
+        let clock = ClockSnapshot::now();
         let seen = (
             self.handle.revision(),
             clock.unix_seconds.div_euclid(60),
@@ -462,17 +443,6 @@ fn own_row(here: &tilo_desktop::here::HereState, theme: &Theme) -> RosterRow {
 /// The wall clock's minute, which the bar shows.
 fn minute() -> i64 {
     ui::time::unix_now_i64().div_euclid(60)
-}
-
-/// The page's wall clock as the bar shows it.
-fn clock_snapshot() -> ClockSnapshot {
-    let now = ui::clock::local_now();
-    ClockSnapshot {
-        unix_seconds: now.timestamp(),
-        clock: ui::clock::time_of_day(&now),
-        weekday: now.format("%a").to_string(),
-        date: now.format("%-d %B").to_string(),
-    }
 }
 
 /// The launchpad, shown while the desk shown has no windows.
@@ -1629,7 +1599,7 @@ impl BrowserShell {
         let here = self.chrome.here.borrow();
         let request = HostRequest::Status {
             status: here.own_words().unwrap_or_default().to_owned(),
-            sharing: sharing_word(here.sharing()).to_owned(),
+            sharing: here.sharing().word().to_owned(),
         };
         drop(here);
         self.requests.borrow_mut().push(request);
