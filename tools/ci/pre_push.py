@@ -97,7 +97,12 @@ def policy_steps(root: Path = ROOT) -> set[str]:
     names = set()
     for step in steps.load(root):
         if step.pre_push:
-            names.add("policy/tests/" + step.name if step.tests else step.covered_by or "policy/" + step.name)
+            names.add(step.check)
+            if step.split:
+                # Its test files' own checks, as t.toml names them (steps.split_checks): reading
+                # them there spares a push working out what each test reads.
+                checks = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
+                names |= {check["name"] for check in checks if check["name"].startswith(step.check + "/")}
     return names
 
 

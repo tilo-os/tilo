@@ -22,7 +22,13 @@ each a share of the file's tests as discover finds them (`--shard`), and those s
 first; the file is still reported as one. The slowest files are listed at the end of every run:
 one that holds the run up belongs in SHARDS.
 
-Usage: run_unit_tests.py [--jobs N] DIR [DIR ...]
+With --pruned, the one file named runs in a copy of the tree holding only what it reads
+(tools/policy/unit_test_inputs.py), as its own t check does (tools/policy/steps.py,
+split_checks): a read of anything its inputs leave out finds nothing and fails the test, so a check
+keyed too narrowly fails instead of passing on another commit's result.
+
+Usage: run_unit_tests.py [--jobs N] DIR|FILE [DIR|FILE ...]
+       run_unit_tests.py --pruned FILE
        run_unit_tests.py --shard I N FILE    (the I-th of N shares of FILE's tests, from 0)
 """
 from __future__ import annotations
@@ -83,12 +89,35 @@ class Result:
     cpu: float = 0.0
 
 
-def files(directories: list[Path]) -> list[Path]:
-    found = [path for directory in directories for path in sorted(directory.glob(PATTERN)) if path.is_file()]
-    missing = [str(directory) for directory in directories if not directory.is_dir()]
+def files(arguments: list[Path]) -> list[Path]:
+    """The test files of the directories named, and the files named."""
+    found = [path for argument in arguments
+             for path in (sorted(argument.glob(PATTERN)) if argument.is_dir() else [argument]) if path.is_file()]
+    missing = [str(argument) for argument in arguments if not argument.exists()]
     if missing:
-        raise SystemExit(f"run_unit_tests.py: no such directory: {', '.join(missing)}")
+        raise SystemExit(f"run_unit_tests.py: no such file or directory: {', '.join(missing)}")
     return found
+
+
+def pruned(test: Path) -> Path:
+    """A copy of the tree holding only what `test` reads (tools/policy/unit_test_inputs.py), where
+    it then runs: a read of anything its inputs leave out finds nothing, so a test whose check is
+    keyed too narrowly fails instead of passing on a stale result."""
+    import tempfile
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import unit_test_inputs
+
+    root = Path(__file__).resolve().parents[2]
+    tree = unit_test_inputs.Tree(root)
+    relative = test.resolve().relative_to(root).as_posix()
+    found, why = unit_test_inputs.inputs(relative, tree)
+    if found is None:
+        raise SystemExit(f"run_unit_tests.py: {relative} reads the whole tree ({why}): run it without --pruned")
+    destination = Path(tempfile.mkdtemp(prefix="unit-pruned-"))
+    count = unit_test_inputs.prune(tree, found, destination)
+    print(f"run_unit_tests.py: {relative} runs with {count} files of the tree, its inputs:\n  "
+          + "\n  ".join(found), flush=True)
+    return destination
 
 
 def run(path: Path, shard: tuple[int, int] | None = None) -> Result:
@@ -175,10 +204,25 @@ def main(argv: list[str]) -> int:
             parser.error("--shard I N FILE")
         return run_shard(int(argv[1]), int(argv[2]), Path(argv[3]))
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
+    parser.add_argument("--pruned", action="store_true",
+                        help="run each file in a copy of the tree holding only what it reads")
     parser.add_argument("directories", nargs="+", type=Path)
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
+    if args.pruned:
+        if len(args.directories) != 1 or args.directories[0].is_dir():
+            parser.error("--pruned runs one test file")
+        test = args.directories[0]
+        name = test.resolve().relative_to(Path(__file__).resolve().parents[2])
+        top = pruned(test)
+        try:
+            # From the copy's top, so the file is reported by the same path as from the tree's.
+            os.chdir(top)
+            return main([*([] if args.jobs == DEFAULT_JOBS else ["--jobs", str(args.jobs)]), str(name)])
+        finally:
+            import shutil
+            shutil.rmtree(top, ignore_errors=True)
     paths = files(args.directories)
     if not paths:
         print(f"run_unit_tests.py: no {PATTERN} in {', '.join(map(str, args.directories))}", file=sys.stderr)

@@ -120,3 +120,47 @@ fn a_window_shows_the_rooms_record_in_the_frame_after_its_first_sync() {
     })
     .unwrap();
 }
+
+/// A board whose view is one button adding a card.
+struct ButtonBoards;
+
+impl ResourceApp for ButtonBoards {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-room-arrival";
+    const TITLE: &'static str = "Boards";
+    const ROOM_RECORD: bool = true;
+
+    fn view(cx: &mut ViewCx<Board>) -> Element {
+        Box::new(cx.button("board-add-card", Board::ADD.with("card".to_owned())))
+    }
+}
+
+/// A room whose first sync outlasts the grace shows a skeleton, then the
+/// app's view, cross-faded in and settled in the arrival's place: its
+/// buttons work from then on, as they do when the room synced at once.
+#[test]
+fn a_button_works_after_a_first_sync_slow_enough_to_show_the_skeleton() {
+    room_sync::hosted_by_shell();
+    room_sync::set(Some(sync(RoomSyncState::Connecting)));
+    let mut app = TestApp::<ButtonBoards>::new().unwrap();
+    app.harness().relayout();
+    // Past the grace, the arrival shows its skeleton.
+    std::thread::sleep(tilo_app::arriving::GRACE + tilo_app::time::Duration::from_millis(50));
+    app.harness().relayout();
+    assert!(room_sync::set(Some(sync(RoomSyncState::Synced))));
+    assert!(
+        app.harness()
+            .wait_until(tilo_app::time::Duration::from_secs(30), |harness| {
+                harness.a11y_node_named("board-add-card").is_some()
+                    && !harness.frame_output().needs_animation_frame
+            }),
+        "the view arrives and settles once the room synced"
+    );
+    let harness = app.harness();
+    let button = harness.a11y_node_named("board-add-card").unwrap();
+    harness
+        .perform_a11y_action(button, &tilo_app::a11y::Action::Activate)
+        .expect("the button is pressed");
+    app.settle();
+    assert_eq!(app.state().cards, ["card"], "the press added the card");
+}

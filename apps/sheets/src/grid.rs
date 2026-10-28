@@ -374,13 +374,6 @@ impl Default for GridMetrics {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "selecting/point_selecting/show_formulas/needs_autofit/dirty are independent \
-              interaction and render-invalidation flags, not exclusive states an enum would \
-              simplify; consolidating them would touch this widget's many call sites for no \
-              behavioural gain"
-)]
 /// A structural change on its way: the `count` rows (or columns) at `at`
 /// opening as they arrive or closing as they leave, and everything after
 /// them moving with the band on the standard disclosure
@@ -436,6 +429,15 @@ impl Shift {
     }
 }
 
+/// What a held pointer extends, one at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Dragging {
+    /// The cell selection grows to the cell under the pointer.
+    Selection,
+    /// A formula's pending point-mode reference grows into a range.
+    PointReference,
+}
+
 pub struct Grid {
     pub rect: Rect,
     /// Geometry follows the active accessibility text scale. The grid is a
@@ -487,7 +489,6 @@ pub struct Grid {
     /// this frame draws them on their way from ([`Shift`]).
     row_shift: Option<Shift>,
     col_shift: Option<Shift>,
-    selecting: bool,
     /// Formula "point mode": while editing a formula, clicking/dragging cells
     /// inserts their references. `point_anchor` is the char index in the edit
     /// buffer where the last click-inserted reference begins — a subsequent
@@ -496,8 +497,9 @@ pub struct Grid {
     point_anchor: Option<usize>,
     /// The cell a point-mode drag started on, so the range grows from it.
     point_drag_start: Addr,
-    /// Whether a point-mode drag is in progress (a held click after pointing).
-    point_selecting: bool,
+    /// What a held pointer is extending, if anything: the selection, or the
+    /// pending point-mode reference.
+    dragging: Option<Dragging>,
     /// "Formula view": when on, cells that hold a raw input show that raw text
     /// (formulas verbatim) instead of their computed / formatted value.
     show_formulas: bool,
@@ -550,10 +552,9 @@ impl Grid {
             pending_fill: None,
             row_shift: None,
             col_shift: None,
-            selecting: false,
             point_anchor: None,
             point_drag_start: (0, 0),
-            point_selecting: false,
+            dragging: None,
             show_formulas: false,
             needs_autofit: true,
             dirty: true,
@@ -634,34 +635,54 @@ impl Grid {
     /// The rows `at..at + count` just appeared: they arrive on the standard
     /// disclosure, and the rows below make room for them.
     pub fn rows_inserted(&mut self, at: u32, count: u32) {
-        self.row_shift =
-            Some(self.arrival(at, count, false, &self.row_y, self.metrics.default_row_h()));
+        self.row_shift = Some(Self::arrival(
+            at,
+            count,
+            false,
+            &self.row_y,
+            self.metrics.default_row_h(),
+        ));
     }
 
     /// The rows `at..at + count` just left: the rows below close the gap.
     pub fn rows_removed(&mut self, at: u32, count: u32) {
-        self.row_shift =
-            Some(self.arrival(at, count, true, &self.row_y, self.metrics.default_row_h()));
+        self.row_shift = Some(Self::arrival(
+            at,
+            count,
+            true,
+            &self.row_y,
+            self.metrics.default_row_h(),
+        ));
     }
 
     /// The columns `at..at + count` just appeared, and the ones after them
     /// make room.
     pub fn columns_inserted(&mut self, at: u32, count: u32) {
-        self.col_shift =
-            Some(self.arrival(at, count, false, &self.col_x, self.metrics.default_col_w()));
+        self.col_shift = Some(Self::arrival(
+            at,
+            count,
+            false,
+            &self.col_x,
+            self.metrics.default_col_w(),
+        ));
     }
 
     /// The columns `at..at + count` just left, and the ones after them close
     /// the gap.
     pub fn columns_removed(&mut self, at: u32, count: u32) {
-        self.col_shift =
-            Some(self.arrival(at, count, true, &self.col_x, self.metrics.default_col_w()));
+        self.col_shift = Some(Self::arrival(
+            at,
+            count,
+            true,
+            &self.col_x,
+            self.metrics.default_col_w(),
+        ));
     }
 
     /// The change `at..at + count` on its way, over the prefix sums of the
     /// layout it has now: the band is as tall as the rows in it (or as one
     /// default row apiece, for rows past the layout's end).
-    fn arrival(&self, at: u32, count: u32, leaving: bool, sums: &[f64], default: f64) -> Shift {
+    fn arrival(at: u32, count: u32, leaving: bool, sums: &[f64], default: f64) -> Shift {
         let count = count.max(1);
         let from = sums.get(at as usize).copied();
         let to = sums.get(at.saturating_add(count) as usize).copied();
@@ -1474,8 +1495,16 @@ impl Grid {
             text,
         });
         self.point_anchor = None;
-        self.point_selecting = false;
+        self.stop_dragging(Dragging::PointReference);
         self.dirty = true;
+    }
+
+    /// End `dragging` if that is what the pointer is doing; a drag of the
+    /// other kind is left as it was.
+    fn stop_dragging(&mut self, dragging: Dragging) {
+        if self.dragging == Some(dragging) {
+            self.dragging = None;
+        }
     }
 
     fn commit_edit(&mut self, out: &mut Vec<GridCmd>) {
@@ -1486,7 +1515,7 @@ impl Grid {
             });
             out.push(GridCmd::Commit);
             self.point_anchor = None;
-            self.point_selecting = false;
+            self.stop_dragging(Dragging::PointReference);
             self.dirty = true;
         }
     }
@@ -1494,7 +1523,7 @@ impl Grid {
     fn cancel_edit(&mut self) {
         self.edit = None;
         self.point_anchor = None;
-        self.point_selecting = false;
+        self.stop_dragging(Dragging::PointReference);
         self.dirty = true;
     }
 
@@ -1580,7 +1609,7 @@ impl Grid {
         }
         self.point_anchor = Some(insert_at);
         self.point_drag_start = addr;
-        self.point_selecting = true;
+        self.dragging = Some(Dragging::PointReference);
         self.dirty = true;
     }
 
@@ -1775,7 +1804,7 @@ impl Grid {
                 self.anchor = (c, bottom);
             }
             self.active = (c, 0);
-            self.selecting = true;
+            self.dragging = Some(Dragging::Selection);
             self.dirty = true;
             return true;
         }
@@ -1807,7 +1836,7 @@ impl Grid {
                 self.anchor = (right, r);
             }
             self.active = (0, r);
-            self.selecting = true;
+            self.dragging = Some(Dragging::Selection);
             self.dirty = true;
             return true;
         }
@@ -1836,7 +1865,7 @@ impl Grid {
             // Shift extends the live range: it keeps its anchor and any other
             // ranges, and only the active cell moves.
             self.active = addr;
-            self.selecting = true;
+            self.dragging = Some(Dragging::Selection);
             self.dirty = true;
             return true;
         }
@@ -1878,7 +1907,7 @@ impl Grid {
             return true;
         }
         // A held point-mode drag grows the pending reference into a range.
-        if self.point_selecting {
+        if self.dragging == Some(Dragging::PointReference) {
             if let Some(addr) = self.cell_at(p) {
                 self.point_drag_to(addr);
             }
@@ -1901,7 +1930,7 @@ impl Grid {
             self.dirty = true;
             return true;
         }
-        if self.selecting {
+        if self.dragging == Some(Dragging::Selection) {
             if let Some(addr) = self.cell_at(p)
                 && addr != self.active
             {
@@ -1917,11 +1946,10 @@ impl Grid {
         self.resize = None;
         self.hbar.release();
         self.vbar.release();
-        self.selecting = false;
         // Keep `point_anchor` so the next click replaces the just-inserted
         // reference (Excel keeps a click-inserted ref "hot" until you type);
         // only the drag itself ends here.
-        self.point_selecting = false;
+        self.dragging = None;
         // A fill-handle drag commits its projected region for the app to fill,
         // then extends the visible selection over it.
         if let Some(fd) = self.fill_drag.take()
@@ -2318,7 +2346,7 @@ impl Grid {
     /// address so it works before the grid has a laid-out geometry.
     pub fn point_click_addr(&mut self, addr: Addr) {
         self.begin_point(addr);
-        self.point_selecting = false;
+        self.stop_dragging(Dragging::PointReference);
     }
 
     /// Shots/test hook: type literal text into the active edit buffer.
@@ -2442,52 +2470,7 @@ impl Grid {
                 Self::draw_reference_washes(scene, transform, theme, &references);
             });
         }
-        let arriving = this.row_shift.as_ref().filter(|shift| !shift.leaving);
-        for &r in &rows {
-            let row = this.cell_screen_rect(0, r);
-            let mut band = Rect::new(body.x0, row.y0, body.x1, row.y1);
-            // A row of a band that is opening is drawn only inside what has
-            // opened of it, so it never covers a row still on its way.
-            let mut opacity = 1.0;
-            if let Some(shift) = arriving
-                && r >= shift.at
-                && r < shift.at.saturating_add(shift.count)
-            {
-                let top = this.cell_screen_rect(0, shift.at).y0;
-                band = Rect::new(
-                    band.x0,
-                    band.y0,
-                    band.x1,
-                    band.y1.min(top + shift.open_height()),
-                );
-                opacity = shift.open_opacity();
-            }
-            let Some(band) = intersect(band, body) else {
-                continue;
-            };
-            parts.draw(scene, format!("sheet-row-{r}"), band, |scene| {
-                clipped(scene, transform, band, |scene| {
-                    if opacity < 1.0 {
-                        scene.push_layer(
-                            Fill::NonZero,
-                            BlendMode::default(),
-                            opacity,
-                            transform,
-                            &band,
-                        );
-                    }
-                    this.draw_row_cells(
-                        &mut PaintCtx::new(scene, transform, tr, theme),
-                        &cols,
-                        r,
-                        body,
-                    );
-                    if opacity < 1.0 {
-                        scene.pop_layer();
-                    }
-                });
-            });
-        }
+        this.draw_rows(parts, scene, transform, tr, theme, (&cols, &rows), body);
         parts.draw(scene, "sheet-lines", body, |scene| {
             clipped(scene, transform, body, |scene| {
                 this.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
@@ -2527,6 +2510,67 @@ impl Grid {
         self.draw_edge_fades(parts, scene, transform, theme, (&cols, &rows));
 
         self.draw_headers_and_bars(parts, scene, transform, tr, theme, (&cols, &rows));
+    }
+
+    /// Each visible row's band of cells, its own part; a row of a band that
+    /// is opening is drawn only inside what has opened of it.
+    fn draw_rows(
+        &self,
+        parts: &mut PaintParts,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        visible: (&[u32], &[u32]),
+        body: Rect,
+    ) {
+        let (cols, rows) = visible;
+        let arriving = self.row_shift.as_ref().filter(|shift| !shift.leaving);
+        for &r in rows {
+            let row = self.cell_screen_rect(0, r);
+            let mut band = Rect::new(body.x0, row.y0, body.x1, row.y1);
+            // A row of a band that is opening is drawn only inside what has
+            // opened of it, so it never covers a row still on its way.
+            let mut opacity = 1.0;
+            if let Some(shift) = arriving
+                && r >= shift.at
+                && r < shift.at.saturating_add(shift.count)
+            {
+                let top = self.cell_screen_rect(0, shift.at).y0;
+                band = Rect::new(
+                    band.x0,
+                    band.y0,
+                    band.x1,
+                    band.y1.min(top + shift.open_height()),
+                );
+                opacity = shift.open_opacity();
+            }
+            let Some(band) = intersect(band, body) else {
+                continue;
+            };
+            parts.draw(scene, format!("sheet-row-{r}"), band, |scene| {
+                clipped(scene, transform, band, |scene| {
+                    if opacity < 1.0 {
+                        scene.push_layer(
+                            Fill::NonZero,
+                            BlendMode::default(),
+                            opacity,
+                            transform,
+                            &band,
+                        );
+                    }
+                    self.draw_row_cells(
+                        &mut PaintCtx::new(scene, transform, tr, theme),
+                        cols,
+                        r,
+                        body,
+                    );
+                    if opacity < 1.0 {
+                        scene.pop_layer();
+                    }
+                });
+            });
+        }
     }
 
     /// The fades where the body's edge cuts a column or a row, each its own

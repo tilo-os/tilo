@@ -219,7 +219,10 @@ release = ["{commit}", "{rust}"]
 tlog = true
 dev_signed = true
 gates = ["canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
-publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" } }
+# The publication pushes archives of both architectures, so where it runs changes nothing it
+# publishes. Pushes from the x86_64 micro-VMs stalled at about 1.2 GB of the builder's layers,
+# every time, while the same blobs go through from arm64.
+publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory = "24GiB" }, requires = ["arch=arm64"] }
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
@@ -262,12 +265,15 @@ cost = "minutes"
 # The native Chromium and the browser regressions that once broke on a builder. Their tests run
 # `npm ci` in scripts/moq-browser, inside the source tree. Both architectures gate publication,
 # as build-ci-builder.yml did: a builder whose Chromium breaks on either is not published.
+# Keyed by the candidate builder and the browser side of the tests, not by the Rust packages
+# whose tests it runs: those change on nearly every commit of main (0.8% of its runs came from
+# cache) while what it judges, the builder, changes rarely, and the packages' own tests run in
+# the `test` family on every commit. A builder change runs it against that commit's code.
 [[matrix.check]]
 name = "canary-ci-builder-browser-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 run = "bash tools/ci/publish/ci-builder-canary.sh browser"
 inputs = ["tools/web/chrome.mjs", "tools/web/owned_browser.py", "tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "crates/browser/tilo-browser-runtime/web/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "crates/browser/tilo-browser-peer/tests/support/**"]
-cargo_packages = ["tilo-browser-peer", "tilo-agent-participant"]
 writable_sources = true
 cost = "heavy"
 requirement = { cores = 8, memory = "12GiB" }
@@ -276,12 +282,14 @@ requirement = { cores = 8, memory = "12GiB" }
 # from patched source (os/external-assets/xwayland-satellite/): a builder whose bridge drops a
 # paste in flight during the clipboard manager's takeover must not be published. Gates
 # publication on x86_64 only: on aarch64 its compile of the shell outgrows the 12 GiB below.
+# Keyed by the builder and the bridge's sources, not by the shell, which changes on nearly every
+# commit of main while what it judges, the builder's bridge, changes rarely; the shell's own tests
+# run in its test family.
 [[matrix.check]]
 name = "canary-ci-builder-x11-bridge-{arch}"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 run = "bash tools/ci/publish/ci-builder-canary.sh x11-bridge"
 inputs = ["tools/ci/t-nextest.sh", "tools/ci/nextest_filters.py", ".config/nextest.toml", ".config/nextest-filters.toml", "tools/test-env.sh", "tools/with-test-environment.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/github-assets.tsv", "os/external-assets/xwayland-satellite/**"]
-cargo_packages = ["shell"]
 cost = "heavy"
 requirement = { cores = 8, memory = "12GiB" }
 
@@ -621,29 +629,6 @@ outputs = ["/target/apps-release/{arch}/compiled/**"]
 requires = ["{node}"]
 timeout_secs = 10800
 cost = "heavy"
-default = false
-
-# The size gate: packages the default collection as apps-build does and holds each tapp and the
-# runtime to its budget (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
-# on every release candidate (stable), on demand (`t dispatch app-sizes-x86_64`, or
-# `t test app-sizes-x86_64` for a working tree), and on main's newest head when t has room left
-# (`idle`), where a failure is on `t main` and bisected to the commit that took an app over its
-# budget, before an image build packs that app (os/scripts/pack-apps.sh holds it to the same
-# budget). Not on every push to main: each run builds the whole collection, 10 to 16 minutes on
-# 16 cores, and on every push it cost 17 job-hours a day.
-# A change that concerns an app can run that app's own size check before it lands
-# (`t test app-size/<app>-<arch>`, or `runtime-size-<arch>` for the runtime), keyed by what it is
-# built from; t_toml.py generates them.
-[[matrix.check]]
-name = "app-sizes-{arch}"
-heavy = true
-run = "bash tools/apps/t-release.sh sizes {arch}"
-requires = ["{node}"]
-# The runtime library's link and the apps' one-unit codegen run side by side.
-requirement = { cores = 16, memory = "32GiB" }
-timeout_secs = 5400
-cost = "heavy"
-on = ["stable", "dispatch", "idle"]
 default = false
 
 # The default collection with its symbol tables, for reading what makes an app large:

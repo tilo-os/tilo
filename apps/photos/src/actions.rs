@@ -391,15 +391,19 @@ pub fn make_thumbnails(
     photos: &[String],
     store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
-    // The first name the caller gave each distinct content: what the
-    // failure is reported against.
-    let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    // Each distinct content once, in the order the caller first named it
+    // (the entrypoint's order, so the offloaded run answers the same list),
+    // with that first name: what a failure is reported against.
+    let mut distinct_hashes = std::collections::BTreeSet::new();
+    let mut seen: Vec<(&str, &str)> = Vec::with_capacity(photos.len());
     for photo in photos {
         let hash = tilo_actions::content_hash(photo).unwrap_or(photo);
         if !crate::model::is_content_hash(hash) {
             return Err(format!("`{photo}` is not a photograph's content"));
         }
-        seen.entry(hash).or_insert(photo);
+        if distinct_hashes.insert(hash) {
+            seen.push((hash, photo));
+        }
     }
     let mut inputs = Vec::with_capacity(seen.len());
     let mut missing = Vec::new();

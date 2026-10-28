@@ -70,8 +70,27 @@ class ShardTest(unittest.TestCase):
     def test_the_shards_are_t_tomls_and_cover_every_area_once(self):
         checks = {c["name"]: c for c in tomllib.loads((HERE.parents[1] / "t.toml").read_text())["check"]}
         self.assertEqual(checks["vm-acceptance"]["shards"], list(run.SHARDS))
-        areas = [a for part in run.SHARDS.values() for a in part.split(",")]
+        areas = [a for part in run.SHARDS.values() for a in part.split(",") if a in run.core.AREAS]
         self.assertEqual(sorted(areas), sorted(run.core.AREAS))
+
+    def test_every_check_runs_in_exactly_one_shard(self):
+        ids = {c.id for c in run.core.REGISTRY}
+        named = [w for part in run.SHARDS.values() for w in part.split(",") if w not in run.core.AREAS]
+        self.assertLessEqual(set(named), ids)
+        self.assertEqual(len(named), len(set(named)))
+        for check in ids - run.SESSION_JUDGES - run.FRAME:
+            homes = [name for name, part in run.SHARDS.items() if check in run.select(check, part)]
+            self.assertEqual(len(homes), 1, (check, homes))
+
+    def test_a_check_named_by_id_leaves_its_areas_shard(self):
+        apps = run.select(None, run.SHARDS["apps"])
+        foreign = run.select(None, run.SHARDS["foreign-apps"])
+        self.assertIn("A01", apps)
+        self.assertNotIn("A08", apps)
+        self.assertIn("A08", foreign)
+        self.assertNotIn("A01", foreign)
+        self.assertEqual(run.select("apps", run.SHARDS["foreign-apps"]) - run.SESSION_JUDGES - run.FRAME,
+                         {"A08", "A09", "A10", "A11", "A12", "A13"})
 
     def test_a_shard_runs_its_areas_and_judges_its_own_session(self):
         window = run.select(None, run.SHARDS["window"])

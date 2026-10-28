@@ -447,41 +447,57 @@ type = "gui"
         Opened::Mounted(row.version)
     }
 
-    #[test]
-    fn launch_and_update_interleave_deterministically() {
-        for at in [
-            At::Selected,
-            At::Lease(Stage::PayloadHeld),
-            At::Lease(Stage::RuntimesHeld),
-            At::Binding,
-        ] {
-            let fx = fixture();
-            let opened = open(&fx, Some(at));
-            if at == At::Selected {
-                // Nothing held the old build yet, so the update removed it
-                // whole; the launch refuses it rather than bind a gap, and
-                // the next look finds the new build.
-                assert_eq!(opened, Opened::Changed, "{at:?}");
-                let (row, held) = find_installed_held(APP).unwrap().unwrap();
-                assert_eq!(row.version, "2.0.0");
-                drop(held);
-                assert_eq!(open(&fx, None), Opened::Mounted("2.0.0".into()));
-            } else {
-                // Once the payload is held, the launch runs the build it
-                // chose, on that build's runtime, both whole.
-                assert_eq!(opened, Opened::Mounted("1.0.0".into()), "{at:?}");
-            }
-            fx.collect();
-            assert!(
-                !fx.runtimes().join(OLD_RUNTIME).exists(),
-                "{at:?}: the old runtime goes once nothing holds it"
-            );
-            assert!(fx.runtimes().join(NEW_RUNTIME).exists());
-            let trees = std::fs::read_dir(fx.store.layout().packages())
-                .unwrap()
-                .count();
-            assert_eq!(trees, 2, "{at:?}: only v2's tree and record are left");
+    /// One launch with the update landing at `at`, on a fixture of its own.
+    /// Each point is its own test: a fixture builds two signed runtimes and
+    /// two packages, and four of them one after another made one test take
+    /// minutes on a loaded machine.
+    fn launch_and_update_interleave_at(at: At) {
+        let fx = fixture();
+        let opened = open(&fx, Some(at));
+        if at == At::Selected {
+            // Nothing held the old build yet, so the update removed it
+            // whole; the launch refuses it rather than bind a gap, and
+            // the next look finds the new build.
+            assert_eq!(opened, Opened::Changed, "{at:?}");
+            let (row, held) = find_installed_held(APP).unwrap().unwrap();
+            assert_eq!(row.version, "2.0.0");
+            drop(held);
+            assert_eq!(open(&fx, None), Opened::Mounted("2.0.0".into()));
+        } else {
+            // Once the payload is held, the launch runs the build it
+            // chose, on that build's runtime, both whole.
+            assert_eq!(opened, Opened::Mounted("1.0.0".into()), "{at:?}");
         }
+        fx.collect();
+        assert!(
+            !fx.runtimes().join(OLD_RUNTIME).exists(),
+            "{at:?}: the old runtime goes once nothing holds it"
+        );
+        assert!(fx.runtimes().join(NEW_RUNTIME).exists());
+        let trees = std::fs::read_dir(fx.store.layout().packages())
+            .unwrap()
+            .count();
+        assert_eq!(trees, 2, "{at:?}: only v2's tree and record are left");
+    }
+
+    #[test]
+    fn an_update_before_the_launch_holds_anything_is_refused_then_found() {
+        launch_and_update_interleave_at(At::Selected);
+    }
+
+    #[test]
+    fn an_update_once_the_payload_is_held_leaves_the_launch_its_build() {
+        launch_and_update_interleave_at(At::Lease(Stage::PayloadHeld));
+    }
+
+    #[test]
+    fn an_update_once_the_runtimes_are_held_leaves_the_launch_its_build() {
+        launch_and_update_interleave_at(At::Lease(Stage::RuntimesHeld));
+    }
+
+    #[test]
+    fn an_update_while_binding_leaves_the_launch_its_build() {
+        launch_and_update_interleave_at(At::Binding);
     }
 
     /// An app opened weeks ago and closed now counts as used now: the size

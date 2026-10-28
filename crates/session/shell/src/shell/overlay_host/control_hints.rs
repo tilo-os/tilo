@@ -121,6 +121,18 @@ impl ShellOverlayHost {
         self.keep_control_hints();
     }
 
+    /// Keep every hint away, the person's record untouched: for tests that
+    /// count what something other than the hints costs. The kept record is
+    /// read first, so the next reading (a minute on) is what could turn them
+    /// back on.
+    #[cfg(test)]
+    pub(crate) fn rest_control_hints(&mut self) {
+        let now = Instant::now();
+        self.reread_control_hints(now);
+        self.control_hints.set_enabled(false, now);
+        let _ = self.control_hints.take_changed();
+    }
+
     pub(super) fn control_hints_enabled(&self) -> bool {
         self.control_hints.enabled()
     }
