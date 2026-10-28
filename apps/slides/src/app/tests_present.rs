@@ -52,7 +52,7 @@ fn element_snapping_and_present_clock() {
                 (sx - (SLIDE_W / 2.0 - w / 2.0)).abs() < 1e-6,
                 "center should snap to slide center, got left={sx}"
             );
-            assert!(guides.iter().any(|g| matches!(g, Guide::Vertical(_))));
+            assert!(guides.iter().any(|g| g.vertical));
         });
     }
 

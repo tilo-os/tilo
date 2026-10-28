@@ -8,7 +8,6 @@ pub mod edit;
 pub mod outline;
 pub mod points;
 pub mod read;
-pub mod snap;
 pub mod text;
 
 /// What the tools put down, read from their settings when a gesture

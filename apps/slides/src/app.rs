@@ -29,6 +29,7 @@ use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
+use ui::snap::{Guide, snap_rect};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
@@ -177,15 +178,6 @@ enum Mode {
     /// Slide-sorter: a full-window grid of every slide thumbnail.
     Overview,
     Present,
-}
-
-/// An on-canvas alignment guide produced by the snapping logic while a
-/// drag is live. Coordinates are in slide space; the renderer maps them
-/// to the destination rect.
-#[derive(Clone, Copy)]
-enum Guide {
-    Vertical(f64),
-    Horizontal(f64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2075,15 +2067,13 @@ impl SlidesApp {
         let dest = chrome.slide_dest;
         let line = Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px));
         for g in &self.active_guides {
-            let segment = match g {
-                Guide::Vertical(sx) => {
-                    let x = dest.x0 + sx * chrome.scale;
-                    Line::new(Point::new(x, dest.y0), Point::new(x, dest.y1))
-                }
-                Guide::Horizontal(sy) => {
-                    let y = dest.y0 + sy * chrome.scale;
-                    Line::new(Point::new(dest.x0, y), Point::new(dest.x1, y))
-                }
+            let at = g.at * chrome.scale;
+            let segment = if g.vertical {
+                let x = dest.x0 + at;
+                Line::new(Point::new(x, dest.y0), Point::new(x, dest.y1))
+            } else {
+                let y = dest.y0 + at;
+                Line::new(Point::new(dest.x0, y), Point::new(dest.x1, y))
             };
             scene.stroke(&line, t, you, None, &segment);
         }
@@ -3575,9 +3565,9 @@ impl SlidesApp {
         self.cur_slide
     }
 
-    /// Snap a moving element to the slide's center/edge guides and to the
-    /// anchors (left/center/right · top/middle/bottom) of its siblings.
-    /// Returns the adjusted top-left plus the guide lines that fired.
+    /// Snap a moving element to the slide's edges, centre and margins and to
+    /// the edges and centres of its siblings. Returns the adjusted top-left
+    /// plus the guide lines it lines up with.
     fn snapped_move(
         &self,
         id: &str,
@@ -3587,60 +3577,26 @@ impl SlidesApp {
         h: f64,
         thr: f64,
     ) -> (f64, f64, Vec<Guide>) {
-        // Candidate target lines in slide space.
-        let mut vx: Vec<f64> = vec![0.0, SLIDE_W / 2.0, SLIDE_W, 96.0, SLIDE_W - 96.0];
-        let mut hy: Vec<f64> = vec![0.0, SLIDE_H / 2.0, SLIDE_H, 70.0, SLIDE_H - 60.0];
+        // The slide itself, plus its side, title and footer margins as
+        // zero-width lines, so they are targets like a sibling's edges.
+        let mut targets = vec![
+            Rect::new(0.0, 0.0, SLIDE_W, SLIDE_H),
+            Rect::new(96.0, 0.0, 96.0, SLIDE_H),
+            Rect::new(SLIDE_W - 96.0, 0.0, SLIDE_W - 96.0, SLIDE_H),
+            Rect::new(0.0, 70.0, SLIDE_W, 70.0),
+            Rect::new(0.0, SLIDE_H - 60.0, SLIDE_W, SLIDE_H - 60.0),
+        ];
         if let Some(slide) = self.slide() {
-            for e in &slide.elements {
-                if e.id == id {
-                    continue;
-                }
-                vx.push(e.x);
-                vx.push(e.x + e.w / 2.0);
-                vx.push(e.x + e.w);
-                hy.push(e.y);
-                hy.push(e.y + e.h / 2.0);
-                hy.push(e.y + e.h);
-            }
+            targets.extend(
+                slide
+                    .elements
+                    .iter()
+                    .filter(|e| e.id != id)
+                    .map(|e| Rect::new(e.x, e.y, e.x + e.w, e.y + e.h)),
+            );
         }
-        let mut guides = Vec::new();
-
-        // X axis: try left, center, right anchors; keep the closest snap.
-        let anchors_x = [(nx, 0.0), (nx + w / 2.0, w / 2.0), (nx + w, w)];
-        let mut best_x: Option<(f64, f64, f64)> = None; // (dist, new_left, guide_line)
-        for (anchor, off) in anchors_x {
-            for &target in &vx {
-                let d = (anchor - target).abs();
-                if d <= thr && best_x.is_none_or(|b| d < b.0) {
-                    best_x = Some((d, target - off, target));
-                }
-            }
-        }
-        let out_x = if let Some((_, left, line)) = best_x {
-            guides.push(Guide::Vertical(line));
-            left
-        } else {
-            nx
-        };
-
-        let anchors_y = [(ny, 0.0), (ny + h / 2.0, h / 2.0), (ny + h, h)];
-        let mut best_y: Option<(f64, f64, f64)> = None;
-        for (anchor, off) in anchors_y {
-            for &target in &hy {
-                let d = (anchor - target).abs();
-                if d <= thr && best_y.is_none_or(|b| d < b.0) {
-                    best_y = Some((d, target - off, target));
-                }
-            }
-        }
-        let out_y = if let Some((_, top, line)) = best_y {
-            guides.push(Guide::Horizontal(line));
-            top
-        } else {
-            ny
-        };
-
-        (out_x, out_y, guides)
+        let snap = snap_rect(Rect::new(nx, ny, nx + w, ny + h), &targets, thr);
+        (nx + snap.offset.x, ny + snap.offset.y, snap.guides)
     }
 
     fn drag_move(&mut self, p: Point) {
