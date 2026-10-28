@@ -120,7 +120,7 @@ fn last_author(c: Conversation) -> Option<Principal> {
 
 /// A conversation's window: its messages, the latest at the foot, above the composer.
 view thread(c: Conversation) {
-    std.transcript(c, c.messages, row: message) {
+    std.transcript(c, c.messages, row: message, author: m -> m.author, time: m -> m.at) {
         composer: {
             row {
                 input(bind: c.draft, placeholder: "Message", fill)
@@ -130,21 +130,8 @@ view thread(c: Conversation) {
     }
 }
 
-/// One message: who wrote it, beside what they wrote.
+/// What one message says: its parts, in order. The transcript shows who wrote it and when.
 view message(m: Message) {
-    row(gap: .related, align: .start) {
-        avatar(m.author)
-        stack(gap: .tight, fill) {
-            row(gap: .related) {
-                text(m.author.name(), role: .label)
-                text(m.at, role: .caption)
-            }
-            parts(m)
-        }
-    }
-}
-
-view parts(m: Message) {
     stack(gap: .related) {
         for p in m.parts {
             if p.kind == "block" {
@@ -164,60 +151,82 @@ scenario "a busy workspace" -> Conversation {
     let ada = person("Ada")
     let plans = chat.conversations.insert(Conversation(title: "Weekend plans"))
     as mia {
-        post(plans, "Is everyone still up for the walk on Saturday?", "")
+        let m1 = post(plans, "Is everyone still up for the walk on Saturday?", "")
+        m1.at = Time("2026-06-29T07:02:00Z")
+        let m2 = post(plans, "The long loop, round the reservoir and back over the hill.", "")
+        m2.at = Time("2026-06-29T07:03:00Z")
     }
     as leo {
-        post(plans, "I can bring sandwiches. The forecast says sun until three.", "")
+        let m3 = post(plans, "I can bring sandwiches. The forecast says sun until three.", "")
+        m3.at = Time("2026-06-29T07:20:00Z")
     }
-    post(plans, "Count me in.", "")
+    let m4 = post(plans, "Count me in.", "")
+    m4.at = Time("2026-06-29T07:24:00Z")
     as ada {
-        post(plans, "Let's meet at the station at ten.", "")
+        let m5 = post(plans, "Let's meet at the station at ten.", "")
+        m5.at = Time("2026-06-30T07:51:00Z")
+        let m6 = post(plans, "Platform four, by the coffee stand.", "")
+        m6.at = Time("2026-06-30T07:52:00Z")
     }
     let release = chat.conversations.insert(Conversation(title: "Release checklist"))
     as leo {
-        post(release, "Docs still need the new screenshots.", "")
+        let m7 = post(release, "Docs still need the new screenshots.", "")
+        m7.at = Time("2026-06-30T06:40:00Z")
     }
     as ada {
-        post(release, "I'll take the screenshots after lunch.", "")
+        let m8 = post(release, "I'll take the screenshots after lunch.", "")
+        m8.at = Time("2026-06-30T07:15:00Z")
     }
     let flat = chat.conversations.insert(Conversation(title: "Flat hunting"))
-    post(flat, "The one on Elm Street has a balcony.", "")
+    let m9 = post(flat, "The one on Elm Street has a balcony.", "")
+    m9.at = Time("2026-06-29T15:10:00Z")
     as mia {
-        post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
+        let m10 = post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
+        m10.at = Time("2026-06-29T16:45:00Z")
     }
     let books = chat.conversations.insert(Conversation(title: "Book club: Piranesi"))
     as ada {
-        post(books, "Halfway through. The statues are wonderful.", "")
+        let m11 = post(books, "Halfway through. The statues are wonderful.", "")
+        m11.at = Time("2026-06-28T19:30:00Z")
     }
     let design = chat.conversations.insert(Conversation(title: "Design review"))
     as leo {
-        post(design, "The sidebar collapses too early at large text.", "")
+        let m12 = post(design, "The sidebar collapses too early at large text.", "")
+        m12.at = Time("2026-06-27T10:05:00Z")
     }
-    post(design, "Agreed, I'll look at the thresholds.", "")
+    let m13 = post(design, "Agreed, I'll look at the thresholds.", "")
+    m13.at = Time("2026-06-27T10:12:00Z")
     let birthday = chat.conversations.insert(Conversation(title: "Sam's birthday"))
     as mia {
-        post(birthday, "Concert tickets or a kitchen knife?", "")
+        let m14 = post(birthday, "Concert tickets or a kitchen knife?", "")
+        m14.at = Time("2026-06-26T18:00:00Z")
     }
     let garden = chat.conversations.insert(Conversation(title: "Garden allotment"))
     as leo {
-        post(garden, "The tomatoes need water by Thursday.", "")
+        let m15 = post(garden, "The tomatoes need water by Thursday.", "")
+        m15.at = Time("2026-06-25T08:30:00Z")
     }
     let running = chat.conversations.insert(Conversation(title: "Running group"))
     as ada {
-        post(running, "Long run on Sunday, fifteen kilometres.", "")
+        let m16 = post(running, "Long run on Sunday, fifteen kilometres.", "")
+        m16.at = Time("2026-06-24T06:15:00Z")
     }
     let importer = chat.conversations.insert(Conversation(title: "Importer bugs"))
     as leo {
-        post(importer, "The importer drops tables with merged cells.", "")
+        let m17 = post(importer, "The importer drops tables with merged cells.", "")
+        m17.at = Time("2026-06-22T13:40:00Z")
     }
     let recipes = chat.conversations.insert(Conversation(title: "Recipes"))
     as mia {
-        post(recipes, "The lentil soup needs more lemon than you think.", "")
+        let m18 = post(recipes, "The lentil soup needs more lemon than you think.", "")
+        m18.at = Time("2026-06-20T17:55:00Z")
     }
     let interviews = chat.conversations.insert(Conversation(title: "Interview loop"))
-    post(interviews, "Ask about the last project they were proud of.", "")
+    let m19 = post(interviews, "Ask about the last project they were proud of.", "")
+    m19.at = Time("2026-06-18T09:00:00Z")
     as ada {
-        post(interviews, "I'll take the system design round.", "")
+        let m20 = post(interviews, "I'll take the system design round.", "")
+        m20.at = Time("2026-06-18T09:20:00Z")
     }
     chat.conversations.insert(Conversation(title: "Holiday in August"))
     plans

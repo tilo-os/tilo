@@ -15,13 +15,17 @@ use std::rc::Rc;
 use vello::kurbo::Point;
 
 use crate::component::{
-    Accepts, Component, Described, Event, Person, ResourceId, SharedRows, SlotType, Source, Value,
+    Accepts, Component, Described, Event, Moment, Person, ResourceId, SharedRows, SlotType, Source,
+    Value,
 };
 use crate::selection::KeySelection;
-use crate::widget::arrange::{Page, PageRowEdges, Slot};
+use crate::tokens::{Rhythm, TextRole};
+use crate::widget::arrange::{Align, Fit, Page, PageRowEdges, Row, Slot, Stack};
+use crate::widget::conversation::list::RUN_WINDOW_SECS;
+use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
-    ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry, MenuItemProps,
-    SwipeActionProps, Widget,
+    Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry, MenuItemProps,
+    SwipeActionProps, Text, Widget,
 };
 
 use super::{ListModel, ListModelChange, VirtualList};
@@ -47,6 +51,12 @@ pub struct ListItemProps {
     /// Who else is at the item now (a collaborator's or an agent's lens on it), shown on the
     /// row.
     pub presence: Option<Person>,
+    /// Who wrote it, in a transcript: the list shows their avatar, their name and the time
+    /// over each run of their consecutive messages, so the row holds only what they wrote.
+    pub author: Option<Person>,
+    /// When it was written, in a transcript: the time beside its author's name, and a divider
+    /// over the first message of each day.
+    pub time: Option<Moment>,
     /// The commands of the row's context menu: a right-click, the Menu key or a long press
     /// opens it, and selects the row.
     #[component(slot)]
@@ -282,6 +292,8 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         key: item.key.clone(),
         item: item.item.clone(),
         presence: item.presence.clone(),
+        author: item.author.clone(),
+        time: item.time,
         menu: item
             .menu
             .iter()
@@ -499,6 +511,80 @@ fn row_of(rows: &DescribedRows, key: &str) -> Element {
     built.unwrap_or_else(|| Box::new(ListRow::new(key.to_owned(), "")))
 }
 
+/// A message of a transcript: its item's row, under its author and the time when the item
+/// names them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one
+/// before it on the same day, shows the author's avatar and name once, over its first message;
+/// the others line up under it. The first message of a day has the day's divider over it.
+fn message_of(rows: &DescribedRows, key: &str) -> Element {
+    let said = rows.with_item(key, |item| (item.author, item.time));
+    let Some((Some(author), at)) = said else {
+        return row_of(rows, key);
+    };
+    let before = rows
+        .index_of(&key.to_owned())
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|index| rows.key_at(index))
+        .and_then(|key| rows.with_item(&key, |item| (item.author, item.time)));
+    let clock = ConversationClock::local();
+    let day = at.map(|at| clock.day(at.0));
+    let new_day = day.is_some()
+        && day
+            != before
+                .as_ref()
+                .and_then(|(_, at)| at.map(|at| clock.day(at.0)));
+    let continues = !new_day
+        && before.as_ref().is_some_and(|(who, then)| {
+            who.as_ref()
+                .is_some_and(|who| who.identity == author.identity)
+                && match (then, at) {
+                    (Some(then), Some(at)) => {
+                        (0..=RUN_WINDOW_SECS).contains(&at.0.saturating_sub(then.0))
+                    }
+                    _ => true,
+                }
+        });
+    let said = row_of(rows, key);
+    let avatar = Avatar::person(author.name.clone(), author.identity.clone());
+    let message = Row::row().fill_width().align(Align::Start);
+    let message = if continues {
+        message.push(Box::new(avatar.room()))
+    } else {
+        message.push(Box::new(avatar))
+    };
+    let said = if continues {
+        said
+    } else {
+        let name = author.name.clone();
+        let mut head = Row::row().push(Box::new(
+            Text::dynamic(move || name.clone()).with_role(TextRole::Label),
+        ));
+        if let Some(at) = at {
+            let time = clock.clock(at.0);
+            head = head.push(Box::new(
+                Text::dynamic(move || time.clone())
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        }
+        Box::new(
+            Stack::stack()
+                .gap(Rhythm::Tight)
+                .push(Box::new(head))
+                .push(said),
+        )
+    };
+    let message = message.push_fit(said, Fit::fill(1.0));
+    match day.filter(|_| new_day) {
+        Some(day) => Box::new(
+            Stack::stack()
+                .gap(Rhythm::Related)
+                .push(Box::new(DayDivider::new(clock.day_label(day))))
+                .push(Box::new(message)),
+        ),
+        None => Box::new(message),
+    }
+}
+
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
 /// item offers. Opening it selects the row.
 fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
@@ -561,7 +647,11 @@ impl Described for DescribedList {
         };
         if transcript {
             let list = VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| {
-                Box::new(Page::full().row().push_slot(Slot::new(row_of(rows, key))))
+                Box::new(
+                    Page::full()
+                        .row()
+                        .push_slot(Slot::new(message_of(rows, key))),
+                )
             })
             .flush()
             .with_edges(PageRowEdges::new())

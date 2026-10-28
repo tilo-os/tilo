@@ -114,6 +114,7 @@ fn sample(ty: &Type) -> Value {
             name: "Ada".into(),
         },
         Type::Resource => Value::Resource("r".into()),
+        Type::Time => Value::Text("2026-06-30T08:42:00Z".into()),
         Type::Icon => Value::Icon("pin".into()),
         Type::Choice { cases, .. } => Value::Choice(cases.first().cloned().unwrap_or_default()),
         Type::Option(_) => Value::None,

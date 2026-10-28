@@ -585,7 +585,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Bool, Value::Bool(_) | Value::Int(_))
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
-        | (Type::Icon, Value::Text(_)) => true,
+        | (Type::Icon | Type::Time, Value::Text(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
