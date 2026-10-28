@@ -697,6 +697,9 @@ impl Completed {
 }
 
 /// [`run_owner_lanes`] with no host commits, as tests drive an owner.
+///
+/// The lanes' state is large and this future is awaited in place rather than
+/// spawned, so it is pinned once instead of held on each test's stack.
 #[cfg(test)]
 async fn run_owner(
     rx: mpsc::Receiver<NormalJob>,
@@ -704,7 +707,7 @@ async fn run_owner(
     state: Arc<Mutex<State>>,
 ) {
     let (_, host_rx) = mpsc::channel(1);
-    run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state).await;
+    Box::pin(run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state)).await;
 }
 
 #[expect(

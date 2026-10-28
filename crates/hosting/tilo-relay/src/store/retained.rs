@@ -449,6 +449,39 @@ fn barriers(
     })
 }
 
+/// The generation a retained write builds into, and whether it is one this
+/// lineage has never named.
+fn active_generation(lineage: &Path, checkpoint: bool) -> Result<(PathBuf, bool), StoreError> {
+    Ok(match current(lineage)? {
+        Some(active) => (active, false),
+        // A checkpoint stages a generation of its own, so a new lineage takes
+        // it as its first rather than committing an empty one before it: a
+        // newcomer's first changes cost a selector write and a collection
+        // less each.
+        None if checkpoint => (lineage.join(hex::encode(rand::random::<[u8; 16]>())), true),
+        None => (commit_generation(lineage, &[], None)?, false),
+    })
+}
+
+/// The sorter a retained write's ordered pass uses.
+///
+/// Only a checkpoint's pass spills metadata to scratch. A delta's scan
+/// compares sizes and cached digests and its append names the next ordinal,
+/// so it creates no directory to remove afterwards; a shell selection creates
+/// the scratch it needs itself.
+fn sorter(
+    checkpoint: bool,
+    scratch_root: &Path,
+    scratch: &Path,
+) -> Result<super::bounded::Sorter, StoreError> {
+    if !checkpoint {
+        return Ok(super::bounded::Sorter::unspilled(scratch.join("sort")));
+    }
+    fs::create_dir_all(scratch_root)?;
+    fs::create_dir(scratch)?;
+    super::bounded::Sorter::new(scratch.join("sort"))
+}
+
 /// [`create_dir`] for `lineage` in `v2`, except that a lineage this
 /// creates leaves its entry unsynced: returns `v2` then, for the caller to
 /// sync beside its own barriers.
@@ -1693,15 +1726,7 @@ impl WorkspaceStore {
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         let unsynced_parent = create_lineage(v2, &lineage)?;
-        let (active, fresh) = match current(&lineage)? {
-            Some(active) => (active, false),
-            // A checkpoint stages a generation of its own, so a new lineage
-            // takes it as its first rather than committing an empty one
-            // before it: a newcomer's first changes cost a selector write and
-            // a collection less each.
-            None if checkpoint => (lineage.join(hex::encode(rand::random::<[u8; 16]>())), true),
-            None => (commit_generation(&lineage, &[], None)?, false),
-        };
+        let (active, fresh) = active_generation(&lineage, checkpoint)?;
         let scratch_root = self.root.join("store-work-v1");
         let scratch = scratch.unwrap_or_else(|| {
             scratch_root.join(format!(
@@ -1709,17 +1734,7 @@ impl WorkspaceStore {
                 hex::encode(rand::random::<[u8; 16]>())
             ))
         });
-        // Only a checkpoint's ordered pass spills metadata to scratch. A
-        // delta's scan compares sizes and cached digests and its append names
-        // the next ordinal, so it creates no directory to remove afterwards;
-        // a shell selection creates the scratch it needs itself.
-        let sorter = if checkpoint {
-            fs::create_dir_all(&scratch_root)?;
-            fs::create_dir(&scratch)?;
-            super::bounded::Sorter::new(scratch.join("sort"))?
-        } else {
-            super::bounded::Sorter::unspilled(scratch.join("sort"))
-        };
+        let sorter = sorter(checkpoint, &scratch_root, &scratch)?;
         let digest = *blake3::hash(&bytes).as_bytes();
         // A delta needs the generation's last ordinal and whether it already
         // holds these bytes; the tail index answers both without listing it.
