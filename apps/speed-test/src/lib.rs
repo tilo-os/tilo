@@ -7,11 +7,11 @@
     reason = "app-local arithmetic over small bounded quantities"
 )]
 
-pub mod app;
 pub mod locales;
 mod measure;
 mod model;
 pub mod resource;
+mod run;
 mod view;
 
 pub use resource::{Measurement, SpeedEffect, SpeedTest, SpeedTestShell};

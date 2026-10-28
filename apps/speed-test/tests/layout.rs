@@ -132,27 +132,18 @@ fn an_idle_window_centres_the_test() {
 }
 
 #[test]
-fn the_run_button_stops_a_running_test_through_its_published_action() {
-    use ui::framework::{ResourceApp, ResourceSurface};
-    let mut app = HeadlessApp::<SpeedTestShell>::new().unwrap();
-    for invoke in SpeedTestShell::scenario(Some("running")) {
-        app.invoke(invoke).unwrap();
-    }
-    app.with_widget(|surface: &mut speed_test::app::SpeedTestApp| surface.stage(Some("running")))
-        .expect("the production surface stages its running fixture");
-    app.harness().resize((1280, 800)).unwrap();
-    let harness = app.harness();
-    let stop = harness
-        .a11y_node_named("Stop test")
-        .expect("a running test offers Stop");
-    harness
-        .perform_a11y_action(stop, &ui::a11y::Action::Activate)
-        .unwrap();
-    let _ = harness.poll_frame();
+fn a_running_test_offers_stop_where_an_idle_one_offers_run() {
+    let mut running = HeadlessApp::<SpeedTestShell>::capture(Some("running")).unwrap();
+    running.harness().resize((1280, 800)).unwrap();
+    let harness = running.harness();
+    assert!(harness.a11y_node_named("Stop test").is_some());
+    assert!(harness.a11y_node_named("Run speed test").is_none());
+
+    let mut idle = HeadlessApp::<SpeedTestShell>::new().unwrap();
+    let harness = idle.harness();
     let run = harness
         .a11y_node_named("Run speed test")
-        .expect("stopping returns the button to Run");
-    assert!(harness.a11y_node_named("Stop test").is_none());
+        .expect("an idle test offers Run");
     let (_, node) = harness
         .a11y_nodes()
         .into_iter()

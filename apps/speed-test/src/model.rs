@@ -102,6 +102,34 @@ pub(crate) struct DialReading {
     pub unit: &'static str,
 }
 
+/// The dial for `phase`: the number in its middle, from the stage's `live`
+/// reading or the finished run's `download`, with its arc at `frac`.
+pub(crate) fn dial(phase: Phase, live: f64, download: Option<f64>, frac: f64) -> DialReading {
+    let (value, unit) = match phase {
+        // Nothing measured: an empty dial, never a dash for a number.
+        Phase::Idle | Phase::Error => (String::new(), ""),
+        Phase::Ping => (format!("{live:.0}"), "ms"),
+        Phase::Download | Phase::Upload => (format!("{live:.1}"), "Mbps"),
+        Phase::Complete => (
+            download.map_or_else(String::new, |value| format!("{value:.1}")),
+            "Mbps",
+        ),
+    };
+    DialReading { frac, value, unit }
+}
+
+/// How far the dial's arc runs for `phase` at the stage's `live` reading,
+/// or the finished run's `download`: bounded, and rising with the speed.
+pub(crate) fn dial_target(phase: Phase, live: f64, download: Option<f64>) -> f64 {
+    match phase {
+        Phase::Idle | Phase::Error => 0.0,
+        Phase::Ping => (live / 50.0).clamp(0.08, 0.92),
+        Phase::Download => (live / 750.0).clamp(0.06, 1.0),
+        Phase::Upload => (live / 180.0).clamp(0.06, 1.0),
+        Phase::Complete => download.map_or(0.0, |download| (download / 800.0).clamp(0.08, 1.0)),
+    }
+}
+
 pub(crate) struct Model {
     pub phase: Phase,
     pub readings: Readings,
@@ -111,8 +139,6 @@ pub(crate) struct Model {
     pub history: Vec<Finished>,
     current: Option<Finished>,
     pub error: Option<String>,
-    /// How far the dial's arc has eased toward its target.
-    ring: f64,
 }
 
 /// The canonical runtime's readings and recorded measurements for this frame.
@@ -121,7 +147,6 @@ pub(crate) struct Projection<'a> {
     pub result: Option<(f64, f64, f64, f64)>,
     pub live: f64,
     pub bytes: u64,
-    pub ring: f64,
     pub history: &'a [crate::resource::Measurement],
     pub current: Option<&'a crate::resource::Measurement>,
     pub error: Option<String>,
@@ -146,7 +171,6 @@ impl Model {
             result,
             live,
             bytes,
-            ring,
             history,
             current,
             error,
@@ -154,7 +178,6 @@ impl Model {
         } = projection;
         self.phase = phase;
         self.live = live;
-        self.ring = ring;
         self.error = error;
         self.current = current.map(finished);
         self.history = history
@@ -192,7 +215,6 @@ impl Model {
             history: Vec::new(),
             current: None,
             error: None,
-            ring: 0.0,
         }
     }
 
@@ -200,24 +222,9 @@ impl Model {
         self.phase.is_running()
     }
 
-    pub(crate) fn dial(&self) -> DialReading {
-        let (value, unit) = match self.phase {
-            // Nothing measured: an empty dial, never a dash for a number.
-            Phase::Idle | Phase::Error => (String::new(), ""),
-            Phase::Ping => (format!("{:.0}", self.live), "ms"),
-            Phase::Download | Phase::Upload => (format!("{:.1}", self.live), "Mbps"),
-            Phase::Complete => (
-                self.readings
-                    .download
-                    .map_or_else(String::new, |value| format!("{value:.1}")),
-                "Mbps",
-            ),
-        };
-        DialReading {
-            frac: self.ring,
-            value,
-            unit,
-        }
+    /// The reading of the stage in progress.
+    pub(crate) fn live(&self) -> f64 {
+        self.live
     }
 
     /// The stage the stepper is on; all three are done once complete.
@@ -252,13 +259,16 @@ pub(crate) fn age_label(now: i64, at: i64) -> String {
 mod tests {
     use super::*;
 
+    fn shown(model: &Model) -> DialReading {
+        dial(model.phase, model.live(), model.readings.download, 0.0)
+    }
+
     fn project(phase: Phase, history: &[crate::resource::Measurement]) -> Projection<'_> {
         Projection {
             phase,
             result: None,
             live: 0.0,
             bytes: 0,
-            ring: 0.0,
             history,
             current: None,
             error: None,
@@ -267,10 +277,24 @@ mod tests {
     }
 
     #[test]
+    fn the_speed_scale_is_monotonic_and_bounded() {
+        assert!(dial_target(Phase::Idle, 0.0, None).total_cmp(&0.0).is_eq());
+        for phase in [Phase::Download, Phase::Upload] {
+            let values: Vec<_> = [0.0, 10.0, 100.0, 500.0, 50_000.0]
+                .into_iter()
+                .map(|value| dial_target(phase, value, None))
+                .collect();
+            assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
+            assert!((values.last().unwrap() - 1.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
     fn idle_dial_is_empty_with_no_arc() {
         let mut model = Model::new();
         model.present(project(Phase::Idle, &[]));
-        let dial = model.dial();
+        let dial = shown(&model);
         assert_eq!(dial.value, "");
         assert!(dial.frac.abs() < f64::EPSILON, "no stub arc at idle");
         assert!(!model.is_running());
@@ -283,8 +307,8 @@ mod tests {
         projection.live = 13.0;
         model.present(projection);
         assert_eq!(model.readings.ping, None, "a sample is not yet the result");
-        assert_eq!(model.dial().value, "13");
-        assert_eq!(model.dial().unit, "ms");
+        assert_eq!(shown(&model).value, "13");
+        assert_eq!(shown(&model).unit, "ms");
         let mut projection = project(Phase::Download, &[]);
         projection.live = 300.0;
         projection.bytes = 10_000_000;
@@ -295,7 +319,7 @@ mod tests {
             model.readings.download, None,
             "running rate is not a final result"
         );
-        assert_eq!(model.dial().value, "300.0");
+        assert_eq!(shown(&model).value, "300.0");
     }
 
     #[test]
@@ -332,7 +356,7 @@ mod tests {
         model.present(projection);
         assert_eq!(model.phase, Phase::Error);
         assert_eq!(model.error.as_deref(), Some("offline"));
-        assert_eq!(model.dial().value, "");
+        assert_eq!(shown(&model).value, "");
     }
 
     #[test]
