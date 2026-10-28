@@ -643,18 +643,33 @@ fn bootstrap_transport_resynchronizes_bounded_early_and_repeated_hellos() {
 #[test]
 fn the_bootstrap_handshake_is_the_seed_receipt_not_an_environment_variable() {
     // `exchange` picks the bootstrap transport when the guest reports the seed
-    // handed over. The production guest must answer from the receipt the seed
-    // writes into the root-owned runtime directory: an environment variable is
-    // inherited by every child and can be set by whoever starts the unit, so a
-    // shipped binary must never read one to decide this.
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let daemon = fs::read_to_string(source.join("src/code_refresh.rs")).unwrap();
+    // handed over. That decision must come from the receipt the seed writes
+    // into its root-owned runtime directory, never from an environment
+    // variable: a variable is inherited by every child and can be set by
+    // whoever starts the unit.
+    struct Seed(PathBuf);
+    impl Guest for Seed {
+        fn base(&self) -> PathBuf {
+            self.0.clone()
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().join("code-refresh");
+    fs::create_dir_all(&base).unwrap();
+    let guest = Seed(base.clone());
     assert!(
-        daemon.contains("self.base().join(\"bootstrap.json\").is_file()"),
-        "the shipped daemon must take the handshake from the seed's receipt"
+        !guest.bootstrap_handshake(),
+        "a runtime directory without the seed's receipt is not a bootstrap"
     );
-    // And nothing in the crate may fall back to a `TILO_*` seam in its place.
-    for entry in walk(&source.join("src")) {
+    fs::write(base.join("bootstrap.json"), b"{}").unwrap();
+    assert!(
+        guest.bootstrap_handshake(),
+        "the seed's receipt must select the bootstrap transport"
+    );
+    // And nothing in the crate may fall back to a `TILO_*` seam in its place:
+    // a variable would make the bootstrap transport reachable from outside the
+    // seed that owns the receipt.
+    for entry in walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")) {
         let text = fs::read_to_string(&entry).unwrap();
         assert!(
             !text.contains("TILO_CODE_BOOTSTRAP_HANDSHAKE"),
