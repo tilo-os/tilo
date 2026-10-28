@@ -719,3 +719,40 @@ fn a_start_is_read_only_after_a_name() {
     assert_eq!(with_start("shot.mp4@-1"), None);
     assert_eq!(folded("  Harbour\n  DAYS "), "harbour days");
 }
+
+/// A past version reads with the title it held, and History draws it with
+/// the editor's own view, read-only.
+#[test]
+fn a_past_version_reads_and_shows_its_title() {
+    let mut app = editor(&Project::new("cut"));
+    let title = call(
+        &mut app,
+        "add-title",
+        json!({ "text": "Lighthouse Opening" }),
+    )
+    .unwrap();
+    call(
+        &mut app,
+        "add-clip",
+        json!({ "media": title["media"], "track": "V1", "at": 0.0, "out": 3.0 }),
+    )
+    .unwrap();
+    let past = app.versions().pop().unwrap().hash;
+    call(
+        &mut app,
+        "set-title",
+        json!({ "media": title["media"], "text": "Harbour Close" }),
+    )
+    .unwrap();
+
+    let read = call(&mut app, "read", json!({ "version": past.to_string() })).unwrap();
+    assert!(
+        read["content"].to_string().contains("Lighthouse Opening"),
+        "{read}"
+    );
+    let shown = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        shown.iter().any(|text| text.contains("Lighthouse Opening")),
+        "{shown:?}"
+    );
+}

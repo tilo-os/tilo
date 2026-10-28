@@ -1359,3 +1359,44 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     )
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A past version reads through the `read` door and draws in the calendar's
+/// own view with the event it held then.
+#[test]
+fn a_past_version_reads_and_shows_its_event() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    let day = ui::clock::today().format("%Y-%m-%d");
+    app.call(
+        "new-event",
+        serde_json::json!({ "event": {
+            "title": "Kumquat parade",
+            "start": format!("{day}T09:00"),
+            "end": format!("{day}T10:00"),
+        } }),
+    )
+    .expect("create");
+    let past = app.versions().pop().unwrap().hash;
+    let event = state_of(&app).events[0].id;
+    app.call_on(
+        &crate::actions::event_resource_id(event),
+        "delete-event",
+        serde_json::json!({}),
+    )
+    .expect("delete");
+    assert!(state_of(&app).events.is_empty());
+
+    let read = app
+        .call("read", serde_json::json!({ "version": past.to_string() }))
+        .unwrap()
+        .unwrap();
+    assert!(
+        read["content"].to_string().contains("Kumquat parade"),
+        "{read}"
+    );
+
+    let texts = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        texts.iter().any(|text| text.contains("Kumquat parade")),
+        "{texts:?}"
+    );
+}
