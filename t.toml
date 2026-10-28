@@ -4972,13 +4972,14 @@ heavy = true
 on = ["stable", "dispatch"]
 default = false
 
+# A wall-clock budget, reported on a candidate rather than gating it (not `heavy`; see the
+# perf groups).
 [[check]]
 name = "weekly-latency"
 cargo_packages = ["tilo-media"]
 inputs = []
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 cost = "heavy"
-heavy = true
 on = ["stable", "dispatch"]
 default = false
 
@@ -5471,10 +5472,15 @@ plan = "full"
 # (browser and stream measure a commit's desktop bundle: `t dispatch perf-stream --ref
 # <branch>`); the whole run with `t dispatch perf-scheduled`, and recorded with `t dispatch
 # perf-publish --publish` (inputs: accept, synthetic_series, synthetic_factor).
+#
+# None of them is `heavy`: a release candidate's verification gates on what works, and these
+# report. They still run when stable moves (`on`), and tools/ci/stable_cut.py runs them on a
+# candidate beside its heavy checks without waiting on them, since t's shared, GPU-less workers
+# measure the worker as much as the commit. They gate again once they run on dedicated or GPU
+# runners.
 
 [[check]]
 name = "perf-fs"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh fs"
@@ -5487,7 +5493,6 @@ default = false
 
 [[check]]
 name = "perf-agent"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent"
@@ -5501,7 +5506,6 @@ default = false
 
 [[check]]
 name = "perf-agent-native"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent-native"
@@ -5515,7 +5519,6 @@ default = false
 
 [[check]]
 name = "perf-footprint"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint"
@@ -5529,7 +5532,6 @@ default = false
 
 [[check]]
 name = "perf-footprint-image"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
@@ -5543,7 +5545,6 @@ default = false
 
 [[check]]
 name = "perf-latency"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh latency"
@@ -5557,7 +5558,6 @@ default = false
 
 [[check]]
 name = "perf-render"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh render"
@@ -5571,7 +5571,6 @@ default = false
 
 [[check]]
 name = "perf-wakeups"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh wakeups"
@@ -5584,7 +5583,6 @@ default = false
 
 [[check]]
 name = "perf-search"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh search"
@@ -5597,7 +5595,6 @@ default = false
 
 [[check]]
 name = "perf-hosting"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting"
@@ -5611,7 +5608,6 @@ default = false
 
 [[check]]
 name = "perf-hosting-room"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
@@ -5633,7 +5629,6 @@ default = false
 
 [[check]]
 name = "perf-browser"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh browser"
@@ -5653,7 +5648,6 @@ default = false
 
 [[check]]
 name = "perf-stream"
-heavy = true
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh stream"
@@ -5682,7 +5676,6 @@ outputs = ["/target/perf/compare/**"]
 # perf-publish writes the same comparison's records to the store.
 cache = false
 default = false
-heavy = true
 on = ["stable", "dispatch"]
 
 # The comparison again where the run holds TILO_PACKAGES_TOKEN, which may write tilo's generic
@@ -5931,6 +5924,7 @@ cache = false
 cost = "minutes"
 default = false
 
+# Reported on a candidate, never gating it (not `heavy`; see the perf groups above).
 [[check]]
 name = "vm-acceptance-perf"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
@@ -5968,7 +5962,6 @@ inputs = ["tools/perf/**", "scripts/vm-acceptance/selected_groups.py", "tools/up
 # vm-acceptance-perf-publish writes them to the store where it does.
 cache = false
 default = false
-heavy = true
 on = ["stable", "dispatch"]
 
 # vm-acceptance-perf where the run holds TILO_PACKAGES_TOKEN, which records the results.
