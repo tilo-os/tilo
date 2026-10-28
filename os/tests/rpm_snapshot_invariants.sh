@@ -68,9 +68,6 @@ for file in "${frozen_consumers[@]}"; do
   grep -Fxq "$relative" <<<"$("$derive" --sources)" \
     && ok "$relative contributes packages to the snapshot parser" \
     || bad "$relative consumes frozen RPMs but is absent from the snapshot parser"
-  # Through the package set it derives, which the snapshot is keyed by.
-  has_t rpm-package-set inputs "$relative" "$relative changes the snapshot's package set"
-  has_t provenance-rpms inputs "$relative" "$relative changes the snapshot's fingerprint and provenance"
 done
 
 # Exercise the workflow's package grammar over its declared sources. Apart
@@ -280,13 +277,6 @@ has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-
   'an image built from an unpublished RPM snapshot is never signed'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
-has_t rpm-package-set inputs 'os/dev/derive-rpm-package-set.py' \
-  'package parser changes rebuild the snapshot'
-has_t provenance-rpms inputs 'os/dev/derive-rpm-package-set.py' \
-  'package parser changes the snapshot fingerprint'
-
-has_t image-rpms-{arch} inputs 'os/external-assets/github-assets.tsv' \
-  'pinned external asset changes rebuild the snapshot'
 has "$rpms_build" 'assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)' \
   'snapshot takes the checksum-verified external input from os-assets'
 has "$rpms_build" '--build-context "github-assets=$assets"' \

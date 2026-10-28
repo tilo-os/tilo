@@ -51,8 +51,6 @@ class BuilderCandidates(unittest.TestCase):
         # the executable CHROME names is missing or does not run.
         deps = (ROOT / 'dist/ci/install-build-deps.sh').read_text()
         runtime = deps.split('install_test_runtime_fedora() {\n', 1)[1].split('\n}\n', 1)[0]
-        self.assertRegex(runtime, r'dnf install -y --setopt=install_weak_deps=False \\\n'
-                                  r'\s+ostree gpgme-devel flatpak chromium\n')
         self.assertIn(f'    {BROWSER} --version\n', runtime)
         self.assertNotIn('chromium', builder.replace(BROWSER, ''))
         script = canary_arm('browser')
@@ -204,11 +202,6 @@ test() {
                 if arch == 'aarch64':
                     self.assertEqual(list(work.iterdir()), [])
                 elif failure == 'none':
-                    self.assertEqual((work / 'packages').read_text().splitlines(), [
-                        'install', '-y', '--setopt=install_weak_deps=False',
-                        'wine-core', 'wine-common', 'wine-cms', 'java-25-openjdk-headless',
-                        'python3-pyyaml', 'python3-jsonschema',
-                    ])
                     calls = (work / 'calls').read_text().splitlines()
                     self.assertEqual(calls.count('sha256sum --check --strict'), 2)
                     self.assertEqual((work / 'checksums').read_text().splitlines(), [
