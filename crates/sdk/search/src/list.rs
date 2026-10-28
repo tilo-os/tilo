@@ -61,14 +61,7 @@ impl ListIndex {
         R: IntoIterator<Item = (&'a str, FieldWeight)>,
     {
         let one_word = query.split_whitespace().nth(1).is_none();
-        let rows: Vec<Vec<(&'a str, FieldWeight)>> = rows
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight)))
-                    .collect()
-            })
-            .collect();
+        let rows = RowFields::new(rows, one_word);
         if query.trim().is_empty() {
             return vec![Some(0); rows.len()];
         }
@@ -106,6 +99,49 @@ impl ListIndex {
     }
 }
 
+/// Borrowed fields for one query, staged in two flat buffers rather than
+/// allocating a separate vector for every row on every keystroke.
+#[derive(Hash)]
+struct RowFields<'a> {
+    fields: Vec<(&'a str, FieldWeight)>,
+    ends: Vec<usize>,
+}
+
+impl<'a> RowFields<'a> {
+    fn new<R>(rows: impl IntoIterator<Item = R>, one_word: bool) -> Self
+    where
+        R: IntoIterator<Item = (&'a str, FieldWeight)>,
+    {
+        let rows = rows.into_iter();
+        let mut fields = Vec::new();
+        let mut ends = Vec::with_capacity(rows.size_hint().0);
+        for row in rows {
+            fields.extend(
+                row.into_iter()
+                    .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight))),
+            );
+            ends.push(fields.len());
+        }
+        Self { fields, ends }
+    }
+
+    fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &[(&'a str, FieldWeight)]> {
+        let mut start = 0;
+        let mut fields = self.fields.as_slice();
+        self.ends.iter().map(move |&end| {
+            // Boundaries come only from extending this buffer in `new`.
+            let (row, remaining) = fields.split_at(end.saturating_sub(start));
+            fields = remaining;
+            start = end;
+            row
+        })
+    }
+}
+
 /// A keyword of several words is one name for the row, matched as a phrase:
 /// a query of one word never matches it. "rechner" is not asking for
 /// "rechner neu starten" (Restart), and "bildschirm" not for "bildschirm
@@ -118,6 +154,82 @@ fn is_phrase_keyword(text: &str, weight: FieldWeight) -> bool {
 mod tests {
     use super::*;
     use crate::MatchTier;
+
+    fn reference_ranks(query: &str, rows: &[Vec<(&str, FieldWeight)>]) -> Vec<Option<i32>> {
+        if query.trim().is_empty() {
+            return vec![Some(0); rows.len()];
+        }
+        let one_word = query.split_whitespace().nth(1).is_none();
+        let mut index = SearchIndex::new(Matching::LOOSE);
+        index.replace_all(rows.iter().enumerate().map(|(at, fields)| {
+            fields
+                .iter()
+                .filter(|(text, weight)| !(one_word && is_phrase_keyword(text, *weight)))
+                .fold(Document::new(at as u64), |document, (text, weight)| {
+                    document.field(*text, *weight)
+                })
+        }));
+        index.commit().expect("the reference list commits");
+        let mut ranks = vec![None; rows.len()];
+        for hit in index.search(query, crate::Page::first(rows.len())).hits {
+            *ranks
+                .get_mut(usize::try_from(hit.key).expect("the row key fits usize"))
+                .expect("the reference answers a row it indexed") = hit.rank;
+        }
+        ranks
+    }
+
+    #[test]
+    fn flat_staging_preserves_rows_fields_weights_and_phrase_changes() {
+        let list = ListIndex::default();
+        let title = FieldWeight::TITLE;
+        let keyword = FieldWeight::KEYWORD;
+        let versions = [
+            vec![vec![("Hotel", title)], vec![]],
+            vec![vec![], vec![("Hotel", title)]],
+            vec![vec![("Hotel", title), ("Rename", keyword)]],
+            vec![vec![("Hotel", title)], vec![("Rename", keyword)]],
+            vec![vec![("Hotel", FieldWeight::SUBTITLE)]],
+            vec![vec![("Restart", title), ("rechner neu starten", keyword)]],
+            vec![vec![("Écran", title)], vec![("世界", title)], vec![]],
+            Vec::new(),
+        ];
+        for rows in versions {
+            for query in [
+                "",
+                "  ",
+                "hotel",
+                "hotle",
+                "rename",
+                "rechner",
+                "rechner neu",
+                "écr",
+                "世界",
+                "zzq",
+            ] {
+                // Filtering removes an exact size hint, as lazy callers may do.
+                let actual = list.ranks(
+                    query,
+                    rows.iter().filter(|_| true).map(|row| row.iter().copied()),
+                );
+                assert_eq!(actual, reference_ranks(query, &rows), "{query:?}: {rows:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn flat_staging_preserves_the_large_list_engine_path() {
+        let list = ListIndex::default();
+        let mut rows = vec![vec![("Hotel", FieldWeight::TITLE)]; crate::direct::DIRECT_LIMIT + 1];
+        rows.push(Vec::new());
+        for query in ["", "hotel", "hotle", "zzq"] {
+            assert_eq!(
+                list.ranks(query, rows.iter().map(|row| row.iter().copied())),
+                reference_ranks(query, &rows),
+                "{query:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_keyword_phrase_needs_more_than_its_first_word() {
