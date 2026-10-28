@@ -1,7 +1,7 @@
-//! A type's search (search.md section 2.2): the filters its `search` block declares, in order,
-//! its default order and the fields it keeps out of filters; or, with no block, the defaults:
-//! every Bool, enum, Date, Time, number, reference, identifier and Set field a filter, in field
-//! order, and the first Time the default order, newest first.
+//! A type's search (search.md, "What a type declares"): the filters its `search` block declares, in
+//! order, its default order and the fields it keeps out of filters; or, with no block, the
+//! defaults: every Bool, enum, Date, Time, number, reference, identifier and Set field a filter, in
+//! field order, and the first Time the default order, newest first.
 //!
 //! A named filter (`filter "Open" = not done`) is a predicate over the resource's own fields,
 //! checked here to be one the index can keep: it reads only the resource's own fields and

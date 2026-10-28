@@ -1,4 +1,4 @@
-//! Model projection (implementation design 6.2): what an agent sees of a value.
+//! Model projection: what an agent sees of a value, as JSON.
 //!
 //! Records become `{type, id, label, fields}` with every field projected one level less
 //! deep, lists keep their first items and report their count, long text is cut and says so,

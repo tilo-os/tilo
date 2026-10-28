@@ -1,10 +1,11 @@
-//! The generated surface of the host's packages (implementation design 7.4).
+//! The surface of a tilolang app, generated from its package's metadata.
 //!
-//! The host runs many tilolang apps under one Tilo app id. Receivers decide each change against
-//! the surface file the signed op names, so the host generates one `surface.toml` at run time
-//! from the packages' metadata: a resource per declared type (`tl.<app>.<Type>`), one per
-//! package for its record-less actions (`tl.<app>`), and `tl.host`. The host registers the bytes
-//! with `app_surface::register_package` before its first signed operation.
+//! Receivers decide each change against the surface file the signed op names. A tilolang app's
+//! surface has a resource per declared type (`tl.<app>.<Type>`), one for the package's
+//! record-less actions (`tl.<app>`), and `tl.host`; the kinds of the packages it uses are
+//! declared as `reads`. `tilolang build` writes it into the app's payload ([`crate::bundle`]),
+//! and the host registers it with `app_surface::register_package` before its first signed
+//! operation.
 
 use serde::Serialize;
 use serde_json::{Value as Json, json};

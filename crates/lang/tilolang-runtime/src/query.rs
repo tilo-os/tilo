@@ -1,8 +1,8 @@
-//! Queries (search.md sections 2 and 3, agents.md section 4): what people type in search,
-//! `find("from:*@x.com is:unread received:-7d")`, and what code writes,
+//! Queries (search.md, "A query" and "What a type declares"; agents.md, "Finding"): what people
+//! type in search, `find("from:*@x.com is:unread received:-7d")`, and what code writes,
 //! `query(Message, from: "*@x.com", unread: true, received: -7d)`, are one value, a [`Query`].
-//! [`resolve`] reads it against a type's filters into the predicate and the order a store
-//! answers from its index.
+//! [`resolve`] reads it against a type's filters into the predicate and the order a store answers
+//! from its index.
 //!
 //! The tokens:
 //! * `key:value` sets the filter `key`: `status:open`, `due:today`, `size:>10`,

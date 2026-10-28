@@ -1,4 +1,4 @@
-//! [`TiloAuthority`]: who may invoke what on the platform (implementation design 7.5).
+//! [`TiloAuthority`]: who may invoke what on the platform (authority.md).
 //!
 //! The runtime asks before every invocation it makes on its own (a flow's step, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the

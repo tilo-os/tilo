@@ -1,4 +1,4 @@
-//! Tilo platform integration for tilolang apps (implementation design section 7).
+//! Tilo platform integration for tilolang apps.
 //!
 //! The tilolang compiler and runtime know nothing of Tilo. This crate is the seam to the
 //! platform:

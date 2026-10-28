@@ -1,6 +1,6 @@
 # Decisions where the design was open or the platform differed
 
-Each entry is the closest working design to `docs/designs/app-language` (implementation 7, layout).
+Each entry is the closest working design to `docs/designs/app-language`.
 
 ## State and actions
 

@@ -44,7 +44,7 @@ pub enum Tok {
     Float(f64),
     /// A number with a unit suffix: `11rem`.
     Length(f64, &'static str),
-    /// A whole number of a unit of time: `7d`, `5m` (search.md section 2.2.1).
+    /// A whole number of a unit of time: `7d`, `5m` (search.md, "Types, references and paths").
     Duration(i64, &'static str),
     Str(Vec<StrPiece>),
     Ref(RefLit),

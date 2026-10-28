@@ -68,9 +68,9 @@ pub struct TypeDecl {
     pub span: Span,
 }
 
-/// `search { filter done; sort due oldest; hide notes }` in a type (search.md section 2.2):
-/// the filters people and agents find its resources by, in order, its default order, and
-/// fields kept out of filters.
+/// `search { filter done; sort due oldest; hide notes }` in a type (search.md, "What a type
+/// declares"): the filters people and agents find its resources by, in order, its default order,
+/// and fields kept out of filters.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchBlock {
     pub entries: Vec<SearchEntry>,
@@ -144,7 +144,7 @@ pub struct DefaultViewDecl {
 }
 
 /// `scenario "a week of notes" { ... }`: statements that fill a workspace with sample data for
-/// screenshots, tests and benchmarks (native-apps.md section 5).
+/// screenshots, tests and benchmarks. It never touches a person's data.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScenarioDecl {
     pub node: NodeId,
@@ -590,7 +590,7 @@ pub struct UiArm {
     pub braced: bool,
 }
 
-/// Which layer of view state a declaration lives in (workspace-model.md section 1).
+/// Which layer of view state a declaration lives in (workspace-model.md, "The pieces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StateLayer {
     /// Shared by everyone looking at the window.

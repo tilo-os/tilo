@@ -221,7 +221,7 @@ fn the_host_surface_declares_the_commit() {
     assert_eq!(surface.verb("commit").unwrap().0, ActionKind::Undoable);
 }
 
-// USER REQUIREMENT (2026-10-20, native-apps.md section 5): scenarios are seed data for shots,
+// USER REQUIREMENT (2026-10-20): scenarios are seed data for shots,
 // tests and benchmarks; "they never touch a person's data", so their actions are never offered.
 #[test]
 fn a_scenarios_action_is_never_published_or_on_a_surface() {

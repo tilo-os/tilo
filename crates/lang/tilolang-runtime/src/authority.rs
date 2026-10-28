@@ -1,4 +1,9 @@
-//! The `Authority` trait (implementation design 4.7) and the reference `SimpleAuthority`.
+//! The `Authority` trait and the reference `SimpleAuthority`.
+//!
+//! Before it runs an action on anyone's behalf (a press, a flow's step, a block), the runtime
+//! asks the authority with the invoker, the authorship chain (every code author between the
+//! invoker and the action) and what the action is. The answer is Allow, Ask or Deny; Ask
+//! suspends the invocation as a suggestion. The rules are authority.md's.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -36,7 +41,7 @@ struct Trust {
     trusted: HashSet<ModuleHash>,
 }
 
-/// The authorship rule of the spec (4.3), for a runtime without a platform (its own tests, a
+/// The authorship rule of authority.md, for a runtime without a platform (its own tests, a
 /// benchmark): an outside action asks; otherwise the action is allowed when every author in the
 /// chain is trusted, the action's own module counting as trusted for its own actions, and asks
 /// when not.
@@ -92,7 +97,7 @@ impl Trust {
             return Decision::Ask;
         }
         // An own invocation is free for the declaring module; every other author in the
-        // chain still needs trust (the minimum along the whole chain, spec 4.3).
+        // chain still needs trust (the minimum along the whole chain).
         let covered =
             |m: &ModuleHash| self.trusted.contains(m) || (action.own && *m == action.module);
         if chain.iter().all(covered) {

@@ -147,7 +147,7 @@ pub struct Module {
 }
 
 /// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which
-/// the host renders when it shows the row (implementation design, "every row a boundary").
+/// the host renders when it shows the row.
 #[derive(Clone, Debug)]
 pub struct SynthView {
     /// Index of its function in [`Module::funcs`].

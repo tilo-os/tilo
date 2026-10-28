@@ -1,5 +1,5 @@
 //! `query(T, in: x, done: false, due: today..today + 7d, sort: .due_oldest)`, a list's
-//! `items.matching("is:done")` and `filters(T)` (search.md sections 2.1 and 3.3).
+//! `items.matching("is:done")` and `filters(T)` (search.md, "A query" and "Where search appears").
 //!
 //! A query's arguments are the type's filters, checked against what each compares. Each is
 //! lowered to the text a typed search writes for it (`done` and `false`, `due` and

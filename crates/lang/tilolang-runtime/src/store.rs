@@ -1,10 +1,10 @@
-//! The `Store` trait (implementation design 4.7): where resources live.
+//! The `Store` trait: where resources live.
 //!
 //! The runtime knows field ids and merge kinds, never the representation. A store maps the
-//! operations below onto its own documents. Two departures from the design's sketch, both so
-//! the host can keep the store while guest code runs: a transaction is an owned token
-//! ([`Txn`]) and the operations are methods of the store, and the store speaks in
-//! mutations and field values, not documents.
+//! operations below onto its own documents. So that the host can keep the store while guest
+//! code runs, a transaction is an owned token ([`Txn`]), the operations are methods of the
+//! store, and the store speaks in mutations and field values, not documents. A store also keeps
+//! flow journals, so a suspended flow survives a restart.
 
 use std::rc::Rc;
 
@@ -254,7 +254,7 @@ pub enum FieldValue {
     Entries(Vec<(String, Scalar)>),
 }
 
-/// What a change records about its cause (spec 3.2 and 4.3, point 10).
+/// What a change records about its cause: history shows it as "you, via Alex's view".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChangeNote {
     pub action: String,
@@ -619,7 +619,7 @@ pub trait Store {
     }
 
     /// The resources of the type `ty` anywhere in the store that `pred` holds of, in the order
-    /// `order`: a query that looks inside no one resource (search.md section 2.1). A store
+    /// `order`: a query that looks inside no one resource (search.md, "A query"). A store
     /// with an index answers it from the index's columns of the type; this one has none.
     ///
     /// # Errors

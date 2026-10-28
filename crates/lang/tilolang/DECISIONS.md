@@ -1,11 +1,11 @@
 # tilolang compiler: decisions
 
-Choices made where implementation.md and spec.md are silent or ambiguous, and where the compiler
-departs from them. The runtime agent should mirror the ABI additions.
+Choices made where the design (`docs/designs/app-language`) is silent or ambiguous. The runtime
+mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that the two agree.
 
 ## ABI additions and interpretations (host side)
 
-- **`space_i(field: h) -> i64`, `space_f(field: h) -> f64`** (layout.md section 4). `space.width_class`
+- **`space_i(field: h) -> i64`, `space_f(field: h) -> f64`** (layout.md, "Responding to space"). `space.width_class`
   and `space.orientation` read through `space_i` as the variant index (`width_class`: compact 0,
   medium 1, expanded 2, wide 3; `orientation`: portrait 0, landscape 1, ultrawide 2).
   `space.compact` and `space.wide` are compiled as `space_i("width_class") == 0` / `== 3`.
@@ -42,16 +42,16 @@ departs from them. The runtime agent should mirror the ABI additions.
   `ui_prop_f(n, "fill", 1.0)` and `fill(2)` carries the weight. `aspect: 16/9` is constant-folded to a
   Float. `primary`/`secondary` are primitives (slots of `split`); the compiler does not check they sit
   in a `split`. `column` stays as an older name of `stack`. `;` separates statements on one line.
-- **`embed(source, author: p, invocation: i)`** (implementation.md 7.8) is a UI primitive:
+- **`embed(source, author: p, invocation: i)`** is a UI primitive:
   `source` is `Text`, `author` a `Principal` and `invocation` an
   `Option<host.Invocation>`. `source` and `author` are required (E022; E020 for a wrong
   type). It emits `ui_node("embed", key)` with props `source`, `author` and `invocation`.
   The host fills in the node's children (see the runtime's DECISIONS).
-- **`Principal`** (spec deviation, replaces "model the principal as a Text id"): a type whose
-  values come only from the host. It can be a field (register), a `fn` or view parameter, and
-  compared with `==`; `.name()` and string interpolation give its id as `Text`. There is no
-  constructor and no conversion from `Text`. Actions and flows may not take one as a
-  parameter (E048): they are what callers invoke, and a caller could pass anyone.
+- **`Principal`** is a type whose values come only from the host. It can be a field
+  (register), a `fn` or view parameter, and compared with `==`; `.name()` and string
+  interpolation give its id as `Text`. There is no constructor and no conversion from `Text`.
+  Actions and flows may not take one as a parameter (E048): they are what callers invoke, and a
+  caller could pass anyone.
 - **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
   running invocation: for a person's press, that person; for a call through the door, the
   caller; for an approved suggestion, the principal who first invoked it.
@@ -70,7 +70,7 @@ departs from them. The runtime agent should mirror the ABI additions.
   resource: `@todo.Todo:<doc>/<field>:<item>`, exactly `ResourceRef::id_string`. Without it a
   block could not name a note or a draft, which live inside a collection. Ids still use only
   letters, digits, `_` and `-` between the separators.
-- **`list(items) { x -> ... }`** (spec example) is parsed as `column { for x in items { ... } }`.
+- **`list(items) { x -> ... }`** is parsed as `column { for x in items { ... } }`.
 
 ## Language choices
 
@@ -136,13 +136,13 @@ departs from them. The runtime agent should mirror the ABI additions.
 ## Deviations to report
 
 - E072 (a block with no value) is defined but cannot be reached from source today.
-- `layout-check` (layout.md section 6) is not part of this crate.
+- `layout-check` (layout.md, "Checking") is not part of this crate.
 
 ## Syntax revision
 
-The language as implementation.md section 2 wrote it, revised: sum types, one `if`, blocks as
-expressions, dot literals for every built-in option, `as` anchors, no `do`, view state, and the
-package-level `root` and `default view` of workspace-model.md. The README has the reference.
+Sum types, one `if`, blocks as expressions, dot literals for every built-in option, `as`
+anchors, no `do`, view state, and the package-level `root` and `default view` of
+workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it by example.
 
 - **Enums.** `enum Name { a, b(x: T, y: U), c }`. Enum and type names share one namespace;
   variants are lowercase. Ids: the enum `Name`, each variant `Name.v`, each payload field
@@ -230,7 +230,7 @@ package-level `root` and `default view` of workspace-model.md. The README has th
 
 ## Outcomes and deltas
 
-Convergence design section 1.1.
+convergence.md, "Actions".
 
 - **Parameter defaults.** An action parameter may have a default, `done: Bool = not item.done`.
   It reads only the parameters before it (E028 otherwise), in the discipline of a `fn`: no
@@ -260,7 +260,7 @@ Convergence design section 1.1.
 
 ## Search
 
-search.md sections 2.2 and 3.3.
+search.md, "What a type declares" and "Types, references and paths".
 
 - **`search` blocks.** `search` is contextual: a type body's line `search {` starts the block,
   one per type (a second is a syntax error). Lines: `filter field ["Label"]`,

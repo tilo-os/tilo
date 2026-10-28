@@ -1,8 +1,8 @@
-//! An agent's program (agents.md section 1): statements run as a flow written by the agent,
-//! over every mounted app. It reads, finds, loops and applies actions like a flow, and adds the
-//! three words a session needs: `print` says something back, `find` takes the palette's query
-//! string, `read` gives a resource as text. Its top-level `let`s are kept for the next program
-//! of the session ([`ProgramResult::lets`]).
+//! An agent's program (agents.md, "One language, one tool"): statements run as a flow written by
+//! the agent, over every mounted app. It reads, finds, loops and applies actions like a flow, and
+//! adds the three words a session needs: `print` says something back, `find` takes the palette's
+//! query string, `read` gives a resource as text. Its top-level `let`s are kept for the next
+//! program of the session ([`ProgramResult::lets`]).
 
 use super::{Checker, Ctx, Ex, FnState, conv, store_op};
 use crate::abi::Imp;

@@ -1,4 +1,4 @@
-//! The emitted modules validate and have the shape of implementation.md section 4.2.
+//! The emitted modules validate and have the shape `codegen` describes.
 
 use crate::common::{compile, compile_fixture, compile_with, fixture, todo_meta, validate};
 use tilolang::abi::Imp;
@@ -49,7 +49,7 @@ fn assert_shape(c: &Compiled) {
         assert_eq!(module, "tl");
         assert!(
             known.contains(&name.as_str()),
-            "import {name} is not in section 4.4"
+            "import {name} is not in the host import table"
         );
     }
     assert!(s.exports.contains(&"memory".to_string()));

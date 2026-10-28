@@ -1,5 +1,5 @@
 //! What an agent does on the door beyond the published actions of the packages: run a block,
-//! run a flow, read the catalogue (implementation design 7.4).
+//! run a flow, read the catalogue.
 //!
 //! They are an [`Effect`] vocabulary published on the `tl:host` resource, so the desktop agent,
 //! the runtime door, shortcuts and grants reach them as they reach every other operation. The
