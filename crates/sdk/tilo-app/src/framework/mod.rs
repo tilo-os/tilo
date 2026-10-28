@@ -311,6 +311,9 @@
 mod adopt_windows;
 mod app;
 mod attached;
+mod bar_actions;
+#[cfg(test)]
+mod bar_actions_tests;
 mod chain;
 mod chain_list;
 mod children;
@@ -373,6 +376,7 @@ pub use app::{
     run_helper,
 };
 pub use attached::{AttachedView, OpenView};
+pub use bar_actions::{BarActions, BarCommands};
 pub use chain::{Chain, Chained, PartArrival};
 pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildRecord, Children, Listed, child_resource_id};
