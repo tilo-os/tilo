@@ -41,5 +41,5 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
 4. **One schema.** Language-neutral field types in `Surface`; catalogue ↔ tilolang rendering.
 
 Native side, independent of tilolang: the local agent participant invents its standing instead
-of using the room's grants and keeps no ledger, and the "ask only for a direct person" rule has
+of using the workspace's grants and keeps no ledger, and the "ask only for a direct person" rule has
 four copies. Those are fixed in the native code, since step 2 lands on top of them.
