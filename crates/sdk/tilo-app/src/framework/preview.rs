@@ -266,10 +266,9 @@ fn unavailable_preview(_: PreviewInput) -> Result<Box<dyn HistoryPreview>, Strin
     Err("this scope is a declaration, not a preview".into())
 }
 
-/// Whether `R` renders its record as text for History: an app may say so for
-/// its own type (`ResourceApp::HISTORY_RENDERS_TEXT`), else the type's `read`
-/// adapter is the test — a type that reads its record answers the same
-/// question at every version.
+/// Whether `R` renders its record as text for History: the type declares
+/// it (`history_text`) beside the `read` adapter that answers it, the same
+/// at every version.
 #[must_use]
 pub(crate) fn text_rendering<R: Resource>() -> TextRendering {
     TextRendering::from_declaration(R::READABLE, R::HISTORY_READS_TEXT)
