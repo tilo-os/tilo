@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tilo_relay::environment_host::MemberArea;
 use tilo_relay::legacy_vm_host::TiloLegacyHost;
-use tilo_relay::{Relay, RelayConfig, TrustPolicy, WorkspaceBinding};
+use tilo_relay::{Relay, RelayConfig};
 use tilo_relay_client::{open_legacy_windows, open_remote_environment};
 use tilo_relay_protocol::config::LegacyAppsConfig;
 use tilo_relay_protocol::environment::{MemberIdentity, WindowFrame, WindowInput};
@@ -143,15 +143,6 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
     let relay = Relay::start_with_relay_mode(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            trust_policy: TrustPolicy::AllowAny,
-            workspaces: vec![WorkspaceBinding {
-                id: WORKSPACE,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-            }],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -165,10 +156,16 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
     .await
     .unwrap();
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             WORKSPACE,
             true,
-            vec![worker_device.device_pubkey(), alice_laptop.device_pubkey()],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![worker_device.device_pubkey(), alice_laptop.device_pubkey()],
+                member_user_roots: vec![
+                    worker_device.cert.user_public_key,
+                    alice_laptop.cert.user_public_key,
+                ],
+            },
             state.path().to_path_buf(),
         )
         .await

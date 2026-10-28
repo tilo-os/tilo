@@ -7,57 +7,7 @@
 /// The package namespace every first-party app is registered under.
 pub const FIRST_PARTY_PREFIX: &str = "so.tilo";
 
-/// Every first-party package.
-pub const FIRST_PARTY_PACKAGES: &[&str] = &[
-    "so.tilo.agent",
-    "so.tilo.api-tester",
-    "so.tilo.backups",
-    "so.tilo.browser",
-    "so.tilo.calculator",
-    "so.tilo.calendar",
-    "so.tilo.camera",
-    "so.tilo.chat",
-    "so.tilo.code-editor",
-    "so.tilo.contacts",
-    "so.tilo.containers",
-    "so.tilo.db-client",
-    "so.tilo.diffmerge",
-    "so.tilo.disks",
-    "so.tilo.ebook",
-    "so.tilo.feeds",
-    "so.tilo.file-explorer",
-    "so.tilo.firewall",
-    "so.tilo.git-client",
-    "so.tilo.hex-editor",
-    "so.tilo.imager",
-    "so.tilo.logs",
-    "so.tilo.mail",
-    "so.tilo.maps",
-    "so.tilo.model-providers",
-    "so.tilo.monitor",
-    "so.tilo.music",
-    "so.tilo.notes",
-    "so.tilo.osk",
-    "so.tilo.pdf-viewer",
-    "so.tilo.photos",
-    "so.tilo.remote",
-    "so.tilo.scratchpad",
-    "so.tilo.settings",
-    "so.tilo.sheets",
-    "so.tilo.slides",
-    "so.tilo.snippets",
-    "so.tilo.store",
-    "so.tilo.terminal",
-    "so.tilo.themes",
-    "so.tilo.totp",
-    "so.tilo.tube",
-    "so.tilo.typst-editor",
-    "so.tilo.video-editor",
-    "so.tilo.video-player",
-    "so.tilo.weather",
-    "so.tilo.windows",
-    "so.tilo.word-processor",
-];
+include!("first_party_catalogue.rs");
 
 /// The label a desktop built-in shows for `package` when it is not the
 /// package's name in `PascalCase`.

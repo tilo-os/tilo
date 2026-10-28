@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
@@ -43,7 +43,6 @@ use tilo_lock::MutexRecover as _;
 use crate::shell::network::ShellNetwork;
 
 const PKEXEC: &str = "/usr/bin/pkexec";
-const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 /// How long `tilo-enroll` listens for an announcing device.
 const LISTEN_SECONDS: &str = "15";
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -359,7 +358,8 @@ impl Pairing {
             PairRole::HomePeer => approval
                 .workspace_ids
                 .clone()
-                .unwrap_or_else(|| relay_workspaces(Path::new(RELAY_CONFIG))),
+                // A new home server hosts no room until a workspace adds it.
+                .unwrap_or_default(),
             PairRole::PersonalDevice => Vec::new(),
         };
         let holding = (self.holding)(paths)?;
@@ -637,14 +637,6 @@ pub(crate) fn approval_command(
     }
 }
 
-/// The workspaces the relay configuration at `path` keeps; none when it
-/// cannot be read.
-fn relay_workspaces(path: &Path) -> Vec<u64> {
-    tilo_relay_protocol::RelayConfig::load(path)
-        .map(|config| config.workspaces.iter().map(|binding| binding.id).collect())
-        .unwrap_or_default()
-}
-
 /// The device a finished discovery reports.
 fn discovered(finished: &Finished) -> Result<Candidate, String> {
     tilo_identity_host::device_admin::discovered(
@@ -808,6 +800,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::mpsc;
 
     const DEVICE: &str = "aa00000000000000000000000000000000000000000000000000000000000001";
@@ -1068,13 +1061,12 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_discovery_says_why_and_a_missing_relay_configuration_keeps_nothing() {
+    fn a_failed_discovery_says_why() {
         let refused = discovered(&Finished {
             success: false,
             stdout: Vec::new(),
             stderr: b"no matching device\n".to_vec(),
         });
         assert_eq!(refused, Err("no matching device".into()));
-        assert!(relay_workspaces(Path::new("/nonexistent/relay.toml")).is_empty());
     }
 }

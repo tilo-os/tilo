@@ -32,8 +32,8 @@ struct GovernorRoute {
     source: [u8; 32],
     target: [u8; 32],
     governor_user: [u8; 32],
-    /// The governor is a host (a relay governing the room as a service),
-    /// which runs no apps.
+    /// The governor is a host, which runs no apps: a relay governing the
+    /// room as a service, or the room host of the device it is placed on.
     governor_hosts: bool,
 }
 
@@ -336,7 +336,9 @@ impl ShellNetwork {
                 source: view.device().device_public_key,
                 target: view.governor().device_public_key,
                 governor_user: view.governor().user_public_key,
-                governor_hosts: view.governor().capabilities.can_act_as_host,
+                governor_hosts: view.governor().capabilities.can_act_as_host
+                    || super::relay_rooms::hosting_governor(view, room)
+                        .is_ok_and(|host| host.is_some()),
             })
         })
     }
@@ -346,6 +348,18 @@ impl ShellNetwork {
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
         self.governor_route(room)
             .is_ok_and(|route| route.elsewhere())
+    }
+
+    /// Whether another device governs `room` and it is a host (a home
+    /// relay), which creates the room's records on a member's request, as
+    /// `owner` holds the room.
+    pub(crate) fn host_creates_records(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
+        self.governed_elsewhere(room)
+            && owner
+                .with_current(room, |view| {
+                    Ok(view.governor().capabilities.can_act_as_host)
+                })
+                .unwrap_or(false)
     }
 
     /// Whether `room`'s governor opens the apps launched in it, creating

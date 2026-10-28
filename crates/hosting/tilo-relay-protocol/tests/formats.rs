@@ -14,13 +14,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::metrics::RoomEgress;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PeerRelayConfig, PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent,
-    ReplicationResource, ServiceCapabilities, TrustPolicy, WorkspaceBinding,
-    personal_continuity_workspace_id, room_workspace_id,
+    ReplicationResource, ServiceCapabilities, TrustPolicy, personal_continuity_workspace_id,
+    room_workspace_id,
 };
 
 fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
@@ -323,24 +322,6 @@ fn toml_encodings_are_pinned() {
         },
         device_role: DeviceRole::AlwaysOnServer,
         services: ServiceCapabilities::home_peer(),
-        workspaces: vec![
-            WorkspaceBinding {
-                id: u64::MAX,
-                pin: true,
-                replication: ReplicationIntent::FullWorkspace,
-                admitted_users: vec!["cd".repeat(32)],
-                shell_authority: None,
-                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-            },
-            WorkspaceBinding {
-                id: 42,
-                pin: false,
-                replication: selected_resources(),
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-            },
-        ],
         peer_relays: vec![PeerRelayConfig {
             iroh_node_id: "ef".repeat(32),
             label: "west".to_string(),
@@ -350,6 +331,7 @@ fn toml_encodings_are_pinned() {
         web_entry: None,
         member_limits: None,
         max_room_grants: None,
+        retired_workspaces: None,
     };
     let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"
@@ -370,23 +352,6 @@ remote_control_relay = true
 app_serving = false
 compute = false
 
-[[workspace]]
-id = "18446744073709551615"
-pin = true
-replication = "full_workspace"
-admitted_users = ["cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"]
-
-[[workspace]]
-id = "42"
-pin = false
-admitted_users = []
-
-[workspace.replication]
-resources = [
-    { kind = "media_library" },
-    { kind = "app_records", id = "so.tilo.notes" },
-]
-
 [[peer_relays]]
 iroh_node_id = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
 label = "west"
@@ -406,18 +371,4 @@ priority = 100
         assert_eq!(toml::to_string(&policy).unwrap(), encoded);
         assert_eq!(toml::from_str::<TrustPolicy>(encoded).unwrap(), policy);
     }
-
-    // A legacy workspace binding still parses.
-    let legacy: WorkspaceBinding = toml::from_str("id = 42").unwrap();
-    assert_eq!(
-        legacy,
-        WorkspaceBinding {
-            id: 42,
-            pin: true,
-            replication: ReplicationIntent::WorkspaceOnly,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
-        }
-    );
 }

@@ -1855,7 +1855,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// and what happened here is History's.
     fn collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1874,7 +1874,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// reading a bare peer id once the guest arrives.
     fn collaborator_invite_button_asks_who_before_minting() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1903,11 +1903,11 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     }
 
     /// Peer sync off means nothing can mint a token, so the button must not
-    /// offer to. The room is adopted first so peer-sync is the *only*
+    /// offer to. The room is held and governed here first so peer-sync is the *only*
     /// capability missing.
     fn collaborator_actions_are_absent_when_peer_sync_is_off() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         assert!(!h.chrome.borrow().peer_sync_enabled);
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1951,7 +1951,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// where a button used to be stays clickable.
     fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
         let mut h = build_fixture_harness();
-        adopt_rooms(&h);
+        let _room = host_active_room(&h.chrome);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
         paint(&mut h);
@@ -1979,7 +1979,19 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 fn adopt_rooms(h: &Harness) {
     let st = h.chrome.borrow();
     st.tree_mut()
-        .adopt_ownerless_workspaces_with(|room| st.local_user_for_room(room));
+        .own_workspaces_for_test(|room| st.local_user_for_room(room));
+}
+
+/// The active workspace's room held as one this device's own host governs,
+/// the chrome acting as the person governing it: an invitation is the
+/// host's to issue, so this is what the invite composer needs. The room
+/// stays held while the guard lives.
+pub(super) fn host_active_room(
+    chrome: &crate::shell::chrome_state::Chrome,
+) -> crate::shell::test_support::OwnHostedRoom {
+    let hosted = crate::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
+    chrome.borrow_mut().act_as(hosted.person.clone());
+    hosted
 }
 
 /// A click anywhere inside the popover asks the network for nothing.
@@ -2849,7 +2861,7 @@ fn capture_people_completed(h: &mut Harness, name: &str) {
 #[test]
 fn people_completed_submit_release_stays_owned_after_invite_opens() {
     let mut h = roster_follow_fixture();
-    adopt_rooms(&h);
+    let _room = host_active_room(&h.chrome);
     h.chrome.borrow_mut().peer_sync_enabled = true;
     paint(&mut h);
     let mods = Modifiers::default();

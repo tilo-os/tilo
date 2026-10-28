@@ -37,27 +37,13 @@ fn browser_request(user: [u8; 32], device: &SigningKey) -> CertificationRequest 
     .unwrap()
 }
 
-async fn start_relay(
-    user: &TestUser,
-    revocations: RevocationList,
-    workspaces: &[u64],
-) -> (Relay, tempfile::TempDir) {
+async fn start_relay(user: &TestUser, revocations: RevocationList) -> (Relay, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let host = user.enrol("home-server", DeviceCapabilities::host());
-    let mut cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_relay::RelayConfig {
         state_root: tmp.path().to_path_buf(),
         ..Default::default()
     };
-    for id in workspaces {
-        cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-            id: *id,
-            pin: true,
-            replication: tilo_relay::ReplicationIntent::FullWorkspace,
-            admitted_users: vec![hex::encode(user.user_pk)],
-            checkpoint_prefix_recovery: tilo_relay::config::CheckpointPrefixRecovery::Disabled,
-            shell_authority: None,
-        });
-    }
     let relay = Relay::start(
         cfg,
         RelayIdentity {
@@ -88,7 +74,7 @@ async fn one_pending(approver: &mut Approver) -> tilo_relay::certify::PendingCer
 async fn root_holder_certifies_a_browser_device_through_the_host() {
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new(), &[7]).await;
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
     let host = relay.node_addr();
 
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -173,7 +159,7 @@ async fn root_holder_certifies_a_browser_device_through_the_host() {
 async fn host_refuses_escalation_and_relays_a_denial() {
     let user = TestUser::fresh("Ada");
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
-    let (relay, _tmp) = start_relay(&user, RevocationList::new(), &[]).await;
+    let (relay, _tmp) = start_relay(&user, RevocationList::new()).await;
     let host = relay.node_addr();
     let browser_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let request = browser_request(user.user_pk, &browser_key);
@@ -241,7 +227,7 @@ async fn only_root_holders_approve_and_revoked_keys_are_refused() {
     sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(entry).unwrap();
-    let (relay, _tmp) = start_relay(&user, revocations, &[]).await;
+    let (relay, _tmp) = start_relay(&user, revocations).await;
     let host = relay.node_addr();
 
     let approver_endpoint = client_endpoint().await;

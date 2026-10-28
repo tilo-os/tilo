@@ -17,7 +17,7 @@ async fn peer() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, EndpointAddr
     let (commands, _task) = Actor::spawn(endpoint, lookup);
     let (events, receiver) = mpsc::channel(64);
     commands
-        .send(NetCmd::JoinWorkspace {
+        .send(NetCmd::JoinPersonalTopic {
             ws: 67,
             on_event: events,
         })

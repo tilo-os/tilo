@@ -76,8 +76,8 @@ mod workspace_checkpoints;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere,
+    AwaitingHistory, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
+    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere, RecordRead,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
@@ -1935,6 +1935,19 @@ mod policy_context;
 mod room_service;
 
 impl CapnpBrokerState {
+    /// Attach the authority a harness admits its devices under, when it
+    /// has one; a broker takes one authority, from wherever it comes.
+    fn attach_certificate_authority(
+        &self,
+        authority: Option<Arc<dyn crate::peer_actions::CertificateAuthority>>,
+    ) -> std::io::Result<()> {
+        let Some(authority) = authority else {
+            return Ok(());
+        };
+        self.certificate_authority
+            .set(authority)
+            .map_err(|_| std::io::Error::other("a broker takes one certificate authority"))
+    }
     fn registered_policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
         self.certificate_authority
             .get()
@@ -3377,6 +3390,10 @@ pub struct CapnpBrokerState {
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
+    /// Opens waiting for a room's membership actions to be published, each
+    /// told after the next refresh of the membership surfaces whether they
+    /// are ([`Self::await_membership_surface`]).
+    membership_surface_waiters: Mutex<Vec<(String, std::sync::mpsc::Sender<bool>)>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
     /// Host steps whose result stays current, while they are open.
     live_views: live_views::LiveViews,
@@ -3879,7 +3896,7 @@ impl CapnpBrokerState {
         pending: &PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
     ) -> Result<(), capnp::Error> {
-        if !(self.durable_owner_required || self.publisher.requires_owner_for(&pending.cluster_id))
+        if !(self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id))
             || !update.is_terminal()
         {
             return Ok(());
@@ -3982,7 +3999,7 @@ impl CapnpBrokerState {
         pending: &PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
     ) {
-        if self.durable_owner_required || self.publisher.requires_owner_for(&pending.cluster_id) {
+        if self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id) {
             return;
         }
         if pending.operation_kind != tilo_actions::OperationKind::Effect {
@@ -4132,6 +4149,7 @@ impl CapnpBrokerState {
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
+                membership_surface_waiters: Mutex::new(Vec::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 live_views: live_views::LiveViews::default(),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
@@ -7123,6 +7141,25 @@ impl CapnpBrokerState {
             }
             collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
+        // A room that seals its records takes every write encrypted under
+        // the record channel's keys. An unencrypted one is refused here, on
+        // the device that wrote it, and never reaches the room.
+        if envelope.encryption.is_none()
+            && self
+                .services
+                .committed_documents
+                .as_ref()
+                .is_some_and(|service| service.seals_records(&route.cluster_id))
+        {
+            tracing::warn!(
+                app = %route.app_id,
+                room = %route.cluster_id,
+                "an unencrypted write to a sealed room was refused"
+            );
+            return Err(capnp::Error::failed(
+                "this room seals every write: an unencrypted write is refused".into(),
+            ));
+        }
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
         })?;
@@ -7973,9 +8010,13 @@ impl CapnpBrokerState {
         // A room's verified agents change with its governance, which every
         // host announces; apps' history follows on the same turn.
         self.refresh_history_agents();
+        // Only the opens waiting before this refresh reads the rooms are
+        // told its outcome; a later one waits for the next.
+        let waiting = self.take_membership_surface_waiters();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
             // No membership surface, and no native context subscriber can
             // be admitted: nothing here changes with policy.
+            self.answer_membership_surface_waiters(waiting);
             return false;
         }
         // Sampled before anything is read: an expiry between this sample
@@ -7987,6 +8028,7 @@ impl CapnpBrokerState {
                 tracing::debug!(%error, "native membership surface could not be refreshed");
             })
             .is_err();
+        self.answer_membership_surface_waiters(waiting);
         let context_failed = self
             .refresh_workspace_context_services()
             .inspect_err(|error| {
@@ -8195,6 +8237,14 @@ impl Drop for ConnectionLease {
     }
 }
 
+/// The room a channel id names, for a status asked before any join.
+fn channel_room(channel_id: capnp::Result<capnp::text::Reader<'_>>) -> capnp::Result<String> {
+    let channel_id = channel_id?
+        .to_str()
+        .map_err(|error| capnp::Error::failed(format!("channelId not utf8: {error}")))?;
+    Ok(CrdtRoute::from_channel_key(channel_id).cluster_id)
+}
+
 impl collab_service::Server for CapnpCollabService {
     #[expect(
         clippy::too_many_lines,
@@ -8238,6 +8288,19 @@ impl collab_service::Server for CapnpCollabService {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
             phases.mark("verify");
+            // A room still being joined or placed on its host holds the join
+            // until apps can open documents in it, whichever client asks.
+            if let Some(memberships) = state.services.workspace_memberships.clone() {
+                let mut status = memberships.room_status(&route.cluster_id);
+                while matches!(status, runtime_collab::RoomStatus::Waiting { .. }) {
+                    status = memberships
+                        .room_status_change(&route.cluster_id, status)
+                        .await;
+                }
+                if let runtime_collab::RoomStatus::Refused(reason) = status {
+                    return Err(capnp::Error::failed(reason));
+                }
+            }
             // An attested launch joins its own route; another app's only to
             // read a record whose kinds it declared it reads.
             let route_access = match self.lease.local_media.as_ref() {
@@ -8356,6 +8419,27 @@ impl collab_service::Server for CapnpCollabService {
                     )));
                 }
             }
+            // An app the person opens, launched or restored into a tab, is
+            // let author the room as its person may let it: asked where
+            // every opening of an app joins. The join goes on meanwhile:
+            // the app asks for the room's keys again until the grant is in.
+            if matches!(participant_kind, "" | "person")
+                && verified_identity.agent_id.is_none()
+                && let Some(certificate) = verified_identity.certificate.clone()
+            {
+                let state = Arc::clone(&state);
+                let route = route.clone();
+                tokio::task::spawn_local(async move {
+                    if let Err(error) = state.admit_opening_app(&route, &certificate).await {
+                        tracing::warn!(
+                            room = %route.cluster_id,
+                            app = %route.app_id,
+                            %error,
+                            "an opening app was not let author its room"
+                        );
+                    }
+                });
+            }
             tracing::info!(
                 target: "tilo_collab_probe",
                 channel = %channel_id,
@@ -8411,6 +8495,50 @@ impl collab_service::Server for CapnpCollabService {
             phases.mark("publish-route");
             phases.report(&ensured);
             results.get().set_handle(client);
+            Ok(())
+        })
+    }
+
+    fn room_status(
+        self: Rc<Self>,
+        params: collab_service::RoomStatusParams,
+        mut results: collab_service::RoomStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        let room = match channel_room(
+            params
+                .get()
+                .and_then(collab_service::room_status_params::Reader::get_channel_id),
+        ) {
+            Ok(room) => room,
+            Err(error) => return Promise::err(error),
+        };
+        let status = self
+            .state
+            .services
+            .workspace_memberships
+            .as_ref()
+            .map_or_else(runtime_collab::RoomStatus::default, |memberships| {
+                memberships.room_status(&room)
+            });
+        status.write(results.get().init_status());
+        Promise::ok(())
+    }
+
+    fn await_room(
+        self: Rc<Self>,
+        params: collab_service::AwaitRoomParams,
+        mut results: collab_service::AwaitRoomResults,
+    ) -> Promise<(), capnp::Error> {
+        let memberships = self.state.services.workspace_memberships.clone();
+        Promise::from_future(async move {
+            let reader = params.get()?;
+            let room = channel_room(reader.get_channel_id())?;
+            let seen = runtime_collab::RoomStatus::from_reader(reader.get_seen()?)?;
+            let status = match memberships {
+                Some(memberships) => memberships.room_status_change(&room, seen).await,
+                None => runtime_collab::RoomStatus::default(),
+            };
+            status.write(results.get().init_status());
             Ok(())
         })
     }
@@ -9497,6 +9625,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 Ok(())
             });
         }
+        if let Some(waiting) = self.committed_history_wait(&request) {
+            // What decides whether the record is new is still on its way
+            // (the room's host's replay): awaited on this LocalSet, as a
+            // creation elsewhere is, then the Open is decided.
+            return Promise::from_future(async move {
+                waiting.await;
+                let prepared = match self.committed_creation_elsewhere(&request) {
+                    Some(preparing) => Some(preparing.await),
+                    None => None,
+                };
+                let reply = self
+                    .committed_document_dispatch_prepared(&request, prepared)
+                    .map_err(capnp::Error::failed)?;
+                results
+                    .get()
+                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
+                Ok(())
+            });
+        }
         if let Some(preparing) = self.committed_creation_elsewhere(&request) {
             // The device that creates the record (the room's host) answers
             // over the network: awaited on this LocalSet, so the channel's
@@ -10159,7 +10306,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             || self
                 .state
                 .publisher
-                .requires_owner_for(&surface.route.cluster_id)
+                .records_effects_for(&surface.route.cluster_id)
         {
             context.purpose = None;
             let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
@@ -13592,6 +13739,7 @@ pub fn spawn(
             publisher,
             membership,
             trusted_devices: None,
+            certificate_authority: None,
             services,
             config: None,
         },
@@ -13946,6 +14094,9 @@ pub(super) struct BrokerWiring<'a> {
     pub(super) publisher: Arc<PeerPublisher>,
     pub(super) membership: Option<WorkspaceTreeHandle>,
     pub(super) trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    /// The authority a harness admits its enrolled devices under, when
+    /// neither a peer configuration nor the host's services supply one.
+    pub(super) certificate_authority: Option<Arc<dyn super::peer_actions::CertificateAuthority>>,
     pub(super) services: HostServices,
     pub(super) config: Option<&'a super::peer_actions::NativePeerBrokerConfig>,
 }
@@ -13954,6 +14105,22 @@ impl Drop for BrokerThreadShutdown {
     fn drop(&mut self) {
         self.fanout.shutdown_capnp(&self.state);
     }
+}
+
+/// Say where the broker listens and whether what apps write there reaches
+/// the room.
+fn log_bound(socket_path: &Path, wired: bool) {
+    tracing::info!(
+        peer_sync = wired,
+        "capnp broker: bound {} for native SDK access ({})",
+        socket_path.display(),
+        if wired {
+            "edits from apps on this socket will reach the room"
+        } else {
+            "LOCAL ONLY — no peer network, so edits from apps on this \
+             socket stay on this machine"
+        },
+    );
 }
 
 #[expect(
@@ -13971,6 +14138,7 @@ pub(super) fn spawn_configured(
         publisher,
         membership,
         trusted_devices,
+        certificate_authority,
         services,
         config,
     } = wiring;
@@ -13984,6 +14152,7 @@ pub(super) fn spawn_configured(
         config,
         services,
     );
+    state.attach_certificate_authority(certificate_authority)?;
     if let Some(path) = state.services.launchable_catalogue.clone() {
         state.launchable.persist_at(&path);
     }
@@ -14000,17 +14169,7 @@ pub(super) fn spawn_configured(
     // failure surfaces only via a log line.
     let (std_listener, socket_custody) = bind_owned_socket(socket_path)?;
     std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
-    tracing::info!(
-        peer_sync = wired,
-        "capnp broker: bound {} for native SDK access ({})",
-        socket_path.display(),
-        if wired {
-            "edits from apps on this socket will reach the room"
-        } else {
-            "LOCAL ONLY — no peer network, so edits from apps on this \
-             socket stay on this machine"
-        },
-    );
+    log_bound(socket_path, wired);
 
     let attached_state = Arc::clone(&state);
     let fanout_for_thread = Arc::clone(fanout);
@@ -17230,181 +17389,7 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    struct ParticipantJoinFixture {
-        state: Arc<CapnpBrokerState>,
-        fanout: Arc<FanoutState>,
-        client: runtime_collab::CollabClient,
-        presentation: Vec<u8>,
-        route: CrdtRoute,
-        principal: String,
-    }
-
-    #[cfg(test)]
-    impl ParticipantJoinFixture {
-        fn new(agents: &[String]) -> Self {
-            let root = SigningKey::from_bytes(&[101; 32]);
-            let device = SigningKey::from_bytes(&[102; 32]);
-            let principal = principal_id_for_root(root.verifying_key().to_bytes());
-            let mut workspace = crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceId(101),
-                "Exact Agent identity",
-            );
-            workspace.set_owner(principal.clone());
-            let route = CrdtRoute::cluster(workspace.room().to_string());
-            for agent in agents {
-                workspace.admit_agent(agent, crate::test_support::KindSet::READ);
-            }
-            let mut tree = WorkspaceTree::default();
-            tree.workspaces.push(workspace);
-            let fanout = Arc::new(FanoutState::new());
-            let (state, bridge_rx) = CapnpBrokerState::new(
-                &fanout,
-                Arc::new(Mutex::new(BrokerChannels::default())),
-                PeerPublisher::disabled(),
-                Some(tree.shared()),
-                Some(Arc::new(vec![device.verifying_key().to_bytes()])),
-            );
-            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-            let peer_id = fanout.next_peer_id();
-            let lease = Rc::new(ConnectionLease {
-                local_media: None,
-                state: Arc::clone(&state),
-                directories: Rc::clone(&directories),
-                peer_id,
-            });
-            let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
-                worker: None,
-                app_worker: None,
-                state: Arc::clone(&state),
-                directories,
-                peer_id,
-                lease,
-                holds: route_holds::ConnectionHolds::default(),
-            });
-            let presentation = certified_join(&route.cluster_id, &root, &device)
-                .encode()
-                .unwrap();
-            Self {
-                state,
-                fanout,
-                client: runtime_collab::CollabClient::from_raw(raw),
-                presentation,
-                route,
-                principal,
-            }
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
-        let ascii = "a".repeat(128);
-        let multibyte = "\u{e9}".repeat(64);
-        let fixture = ParticipantJoinFixture::new(&[
-            ascii.clone(),
-            multibyte.clone(),
-            // The old display-name truncation would silently select this
-            // different, also admitted Agent rather than reject the join.
-            "a".repeat(64),
-        ]);
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _subscription = fixture.fanout.subscribe_rooms(
-            vec![fixture.route.cluster_id.clone()],
-            Box::new(move |event, _| {
-                event_tx.send(event.clone()).unwrap();
-            }),
-        );
-        let key = PresenceKey::Resource {
-            app: "so.tilo.notes".into(),
-            id: "note:draft".into(),
-            kind: "note".into(),
-        };
-        let key_bytes = postcard::to_stdvec(&key).unwrap();
-        for expected in [ascii, multibyte] {
-            let input = format!(" {} ", expected.to_uppercase());
-            let channel = fixture
-                .client
-                .join_channel_as_kind(
-                    &fixture.route.channel_key(),
-                    &fixture.presentation,
-                    &input,
-                    "agent",
-                    "",
-                )
-                .await
-                .expect("certified join preserves the complete canonical Agent ID");
-            channel
-                .presence()
-                .await
-                .unwrap()
-                .publish_arrived(&key_bytes)
-                .await
-                .unwrap();
-            let event = event_rx.try_recv().unwrap();
-            assert!(matches!(event,
-                CollabEvent::RemotePresenceUpdate { user_id, key: delivered, payload: PresencePayload::Arrived }
-                    if user_id == format!("agent:{expected}") && delivered == key));
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback() {
-        let fixture =
-            ParticipantJoinFixture::new(&["a".repeat(64), "a".repeat(128), "\u{e9}".repeat(64)]);
-        for invalid in [
-            "a".repeat(129),
-            "\u{e9}".repeat(65),
-            // Lowercase expands this input from 86 to 129 UTF-8 bytes.
-            "\u{130}".repeat(43),
-            format!("{}\nx", "a".repeat(64)),
-            String::new(),
-        ] {
-            assert!(
-                fixture
-                    .client
-                    .join_channel_as_kind(
-                        &fixture.route.channel_key(),
-                        &fixture.presentation,
-                        &invalid,
-                        "agent",
-                        "",
-                    )
-                    .await
-                    .is_err(),
-                "invalid Agent IDs must refuse instead of selecting an enrolled prefix"
-            );
-            assert!(fixture.state.channels.lock().unwrap().is_empty());
-        }
-        // The same long string is still a Person's bounded presentation
-        // handle: it never becomes that Person's certified principal.
-        let person = fixture
-            .client
-            .join_channel_as_kind(
-                &fixture.route.channel_key(),
-                &fixture.presentation,
-                &"a".repeat(129),
-                "person",
-                "",
-            )
-            .await
-            .unwrap();
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let _subscription = fixture.fanout.subscribe_rooms(
-            vec![fixture.route.cluster_id.clone()],
-            Box::new(move |event, _| {
-                event_tx.send(event.clone()).unwrap();
-            }),
-        );
-        person
-            .presence()
-            .await
-            .unwrap()
-            .publish_arrived(&postcard::to_stdvec(&PresenceKey::pointer_default()).unwrap())
-            .await
-            .unwrap();
-        assert!(matches!(event_rx.try_recv().unwrap(),
-            CollabEvent::RemotePresenceUpdate { user_id, payload: PresencePayload::Arrived, .. }
-                if user_id == fixture.principal));
-    }
+    mod participant_join;
 
     #[test]
     fn certified_join_rejects_unknown_proof_signer_and_tampered_cert() {
@@ -21263,7 +21248,7 @@ impl CapnpBrokerState {
         let requires_owner = state.durable_owner_required
             || owner_room
                 .as_ref()
-                .is_some_and(|room| state.publisher.requires_owner_for(room));
+                .is_some_and(|room| state.publisher.records_effects_for(room));
         let _owner_order = if requires_owner {
             Some(state.owner_commit_order.lock().await)
         } else {

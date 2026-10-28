@@ -15,15 +15,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use collab_types::DocumentMutation;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use sha2::{Digest as _, Sha256};
+use tilo_browser_peer::invite::ask_to_join_pre_admitted;
 use tilo_browser_peer::{
     DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle, PeerSnapshot,
 };
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
+use tilo_relay::rooms::PreAdmitRequest;
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
+use tilo_relay_protocol::rooms::{JoinReply, PreAdmission, RoomRole};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -101,8 +105,9 @@ pub async fn start_host_plain(
     start_host_admitting(root, host, state, web_listen, plain_listen, &[]).await
 }
 
-/// [`start_host_plain`], whose workspace also admits the people `guests`
-/// (user roots), as a room admits its guests.
+/// [`start_host_plain`], whose operator trust policy lets the people
+/// `guests` (user roots) connect. Connecting is not membership: a guest
+/// enters a room only through its invitation ([`door`], [`redeem`]).
 pub async fn start_host_admitting(
     root: &SigningKey,
     host: &Device,
@@ -114,7 +119,7 @@ pub async fn start_host_admitting(
     start_host_limiting(root, host, state, web_listen, plain_listen, guests, None).await
 }
 
-/// [`start_host_admitting`], holding its guests to the change and content
+/// [`start_host_admitting`], holding room guests to the change and content
 /// budgets `limits`, as a public host does.
 pub async fn start_host_limiting(
     root: &SigningKey,
@@ -145,9 +150,9 @@ pub async fn start_host_limiting(
 pub struct HostSettings<'a> {
     /// Plain HTTP too, here.
     pub plain_listen: Option<SocketAddr>,
-    /// People (user roots) its workspace admits, as a room admits guests.
+    /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
-    /// The change and content budgets guests are held to.
+    /// The change and content budgets room guests are held to.
     pub limits: Option<tilo_relay::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_relay::web::FetchProxySetup>,
@@ -178,17 +183,6 @@ pub async fn start_host_serving(
             users: guests.iter().map(hex::encode).collect(),
         };
     }
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace(),
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: std::iter::once(&user)
-            .chain(guests)
-            .map(hex::encode)
-            .collect(),
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        shell_authority: None,
-    });
     let relay = Relay::start(
         cfg,
         RelayIdentity {
@@ -494,4 +488,114 @@ pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> D
         async move { found }
     })
     .await
+}
+
+/// The room's one-time pre-admission for `person`, as the room service's
+/// door asks the room for it: the owner's grant for a token's digest,
+/// issued as an invitation only `person` redeems. Returns the invitation
+/// and the token.
+pub async fn door(
+    host: &TestHost,
+    owner: &SigningKey,
+    owner_host: &Device,
+    room: &str,
+    person: [u8; 32],
+) -> (Vec<u8>, Vec<u8>) {
+    let token = random_bytes();
+    let token_sha256: [u8; 32] = Sha256::digest(token).into();
+    let mut grant = PreAdmission {
+        room: room.to_owned(),
+        role: RoomRole::Editor,
+        token_sha256,
+        label: "Guest".into(),
+        expires_at_ns: tilo_clock::unix_now_ns()
+            .checked_add(600_000_000_000)
+            .unwrap(),
+        owner_user_public_key: owner.verifying_key().to_bytes(),
+        signature: [0; 64],
+    };
+    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
+    let issued = host
+        .relay
+        .rooms()
+        .unwrap()
+        .pre_admit(
+            &owner_host.cert,
+            PreAdmitRequest {
+                request_id: *blake3::hash(&token_sha256).as_bytes(),
+                grant,
+                recipient_user_public_key: Some(person),
+                inviter_name: Some("Tilo".into()),
+            },
+        )
+        .await
+        .unwrap();
+    (issued.signed_invitation, token.to_vec())
+}
+
+/// Redeem `door` for `cert`'s device over the host's join exchange, as a
+/// page asks to join with its invitation: the room admits it as an editor.
+pub async fn redeem(
+    host: &TestHost,
+    (invitation, token): (Vec<u8>, Vec<u8>),
+    cert: &DeviceCert,
+    key: &SigningKey,
+) {
+    let admitted = ask_to_join_pre_admitted(
+        &*host.https(),
+        &invitation,
+        cert,
+        key,
+        random_bytes(),
+        "Guest",
+        &token,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            &admitted,
+            JoinReply::Admitted {
+                role: RoomRole::Editor,
+                ..
+            }
+        ),
+        "{admitted:?}"
+    );
+}
+
+/// Let `cert`'s device in through `door`, then start its page in the room.
+pub async fn enter(
+    host: &TestHost,
+    door: (Vec<u8>, Vec<u8>),
+    cert: &DeviceCert,
+    key: &SigningKey,
+    host_cert: &DeviceCert,
+    workspace_id: u64,
+) -> PeerHandle {
+    redeem(host, door, cert, key).await;
+    let peer = start_peer(
+        Host::Https(host.https()),
+        cert.clone(),
+        host_cert.clone(),
+        key.clone(),
+    );
+    peer.join(workspace_id).unwrap();
+    in_room(&peer, workspace_id).await;
+    peer
+}
+
+pub async fn in_room(peer: &PeerHandle, workspace_id: u64) {
+    ready(&[peer]).await;
+    wait_for("the governed room to let the page in", || async {
+        (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
+    })
+    .await;
+}
+
+/// 32 bytes from the operating system's randomness.
+fn random_bytes() -> [u8; 32] {
+    let mut bytes = [0; 32];
+    getrandom::fill(&mut bytes).unwrap();
+    bytes
 }

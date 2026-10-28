@@ -827,7 +827,8 @@ pub enum SessionServices {
     /// No session in this process binds them (a test, a hosted host): a
     /// missing socket is final.
     NotHere,
-    /// The session will bind them shortly: a connection waits.
+    /// The session will bind them shortly: a connection waits for them,
+    /// however long their start takes.
     Starting,
     /// Both are bound, or their start was attempted: a connection that
     /// still fails is final.
@@ -842,46 +843,28 @@ fn session_services() -> &'static tokio::sync::watch::Sender<SessionServices> {
 }
 
 /// Say where this process's session services are; [`session_connector`]s
-/// waiting for them wake on the change.
+/// waiting for them wake on the change. A session that says `Starting` must
+/// say `Listening` once its start is over, however it went.
 pub fn set_session_services(state: SessionServices) {
     session_services().send_replace(state);
 }
 
-/// The most a hosted app's first connection waits for its session's
-/// services: inside the SDK's own 5 s bound on the whole connect.
-const SESSION_SERVICES_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
-
-/// Connect to the session socket at `path`. A socket not there yet, while
-/// `services` says the session is still starting them, is waited for: until
-/// they listen (one retry, on the change — no polling) or `wait` ends.
-async fn connect_session_socket(
-    path: &std::path::Path,
-    services: &tokio::sync::watch::Sender<SessionServices>,
-    wait: std::time::Duration,
-) -> std::io::Result<std::os::unix::net::UnixStream> {
+/// Once `services` says the session's start of its services is over: at
+/// once where no session starts them here or it already has, otherwise when
+/// it does, woken by the change. Unbounded on purpose: the session always
+/// ends `Starting`, whether its broker came up or not.
+async fn session_services_settled(services: &tokio::sync::watch::Sender<SessionServices>) {
     let mut changes = services.subscribe();
-    let error = match std::os::unix::net::UnixStream::connect(path) {
-        Ok(stream) => return Ok(stream),
-        Err(error) => error,
-    };
-    let not_bound_yet = matches!(
-        error.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    );
-    let starting = *changes.borrow_and_update() == SessionServices::Starting;
-    if !not_bound_yet || !starting {
-        return Err(error);
-    }
-    let settled = tokio::time::timeout(
-        wait,
-        changes.wait_for(|state| *state != SessionServices::Starting),
-    )
-    .await
-    .is_ok_and(|changed| changed.is_ok());
-    if !settled {
-        return Err(error);
-    }
-    std::os::unix::net::UnixStream::connect(path)
+    // The sender is a process static, so the wait ends only on the change.
+    let _ = changes
+        .wait_for(|state| *state != SessionServices::Starting)
+        .await;
+}
+
+/// Block until this process's session services are settled
+/// ([`session_services_settled`]), for a worker thread that needs them.
+pub fn wait_for_session_services() {
+    pollster::block_on(session_services_settled(session_services()));
 }
 
 /// A connection for `app` in `room` to the broker at `collab` and the
@@ -901,22 +884,18 @@ pub fn session_connector(
     // broker, as a launched app's inherited connection does.
     ui::collaboration::HostSessionConnector::with_descriptor_lane(move |_route| async move {
         let failed = |error: std::io::Error| runtime_portal::NotAvailable::ConnectionFailed(error);
-        let services = session_services();
         crate::shell::launcher::register_in_process_launch(&app, &room);
-        let mut stream = connect_session_socket(&collab, services, SESSION_SERVICES_WAIT)
-            .await
-            .map_err(failed)?;
+        let mut stream = std::os::unix::net::UnixStream::connect(&collab).map_err(failed)?;
         launcher::services::write_collab_handoff(&mut stream, &app, &room).map_err(failed)?;
         stream.set_nonblocking(true).map_err(failed)?;
         let collaboration = tokio::net::UnixStream::from_std(stream).map_err(failed)?;
-        let mut identity = connect_session_socket(&identity, services, SESSION_SERVICES_WAIT)
-            .await
-            .map_err(failed)?;
+        let mut identity = std::os::unix::net::UnixStream::connect(&identity).map_err(failed)?;
         launcher::services::write_identity_handshake(&mut identity, &app, &room).map_err(failed)?;
         identity.set_nonblocking(true).map_err(failed)?;
         let identity = tokio::net::UnixStream::from_std(identity).map_err(failed)?;
         Ok((collaboration, identity))
     })
+    .once_ready(|| session_services_settled(session_services()))
 }
 
 /// The in-process apps a host shares between the tiles it resolves.
@@ -942,56 +921,43 @@ mod tests {
     }
 
     /// A tab the session restores before it binds its services connects
-    /// once they listen, woken by the change.
+    /// once they listen, woken by the change, however long their start
+    /// takes.
     #[test]
     fn a_hosted_tab_restored_before_the_session_binds_its_services_connects_once_they_listen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("collab.sock");
         let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
         let runtime = session_socket_runtime();
-        let (connected, _listener) = runtime.block_on(async {
-            let bind = async {
-                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-                let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-                services.send_replace(SessionServices::Listening);
-                listener
-            };
-            tokio::join!(
-                connect_session_socket(&path, &services, tilo_test_env::hang_bound()),
-                bind
-            )
+        let settled = session_services_settled(&services);
+        let mut settled = std::pin::pin!(settled);
+        assert!(
+            futures_util::FutureExt::now_or_never(settled.as_mut()).is_none(),
+            "a connection waits while the session starts its services"
+        );
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        services.send_replace(SessionServices::Listening);
+        runtime.block_on(async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), settled)
+                .await
+                .expect("the change wakes the wait");
         });
-        assert!(connected.is_ok(), "{connected:?}");
+        std::os::unix::net::UnixStream::connect(&path).expect("connects once they listen");
+        drop(listener);
     }
 
-    /// Where no session binds the services here, or once it has, a missing
-    /// socket fails at once; a session that never comes costs the bound.
+    /// Where no session starts the services here, or once it has, nothing
+    /// waits: a missing socket then fails the connection at once.
     #[test]
-    fn a_missing_session_socket_fails_without_waiting_unless_the_session_is_starting() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("absent.sock");
-        let runtime = session_socket_runtime();
+    fn nothing_waits_unless_the_session_is_starting_its_services() {
         for state in [SessionServices::NotHere, SessionServices::Listening] {
             let (services, _) = tokio::sync::watch::channel(state);
-            // Failing without waiting is failing on the first poll.
-            let error = futures_util::FutureExt::now_or_never(connect_session_socket(
-                &path,
-                &services,
-                tilo_test_env::hang_bound(),
-            ))
-            .unwrap_or_else(|| panic!("{state:?}: the connect waited"))
-            .unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{state:?}");
+            assert!(
+                futures_util::FutureExt::now_or_never(session_services_settled(&services))
+                    .is_some(),
+                "{state:?}: the connect waited"
+            );
         }
-        let (services, _) = tokio::sync::watch::channel(SessionServices::Starting);
-        let error = runtime
-            .block_on(connect_session_socket(
-                &path,
-                &services,
-                std::time::Duration::from_millis(50),
-            ))
-            .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
     fn mount_terminal(apps: &mut InProcessApps) -> ui::headless::FrameHarness {
@@ -1722,6 +1688,15 @@ mod tests {
         }
     }
 
+    /// What a wait last saw, said when it never ends.
+    struct LastSeen<'a>(&'static str, &'a std::cell::RefCell<String>);
+
+    impl std::fmt::Display for LastSeen<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} ({})", self.0, self.1.borrow())
+        }
+    }
+
     /// Frames of `shown` until `done`, bounded.
     fn until(
         shown: &mut [&mut Shown],
@@ -1756,6 +1731,106 @@ mod tests {
     /// session's broker as launched apps do: an agent finds a Notes tab's
     /// note by a word of its body and invokes the notebook's actions there,
     /// and a Terminal tab is reachable the same way.
+    /// A session with no workspace host configured hosts its workspace on
+    /// this device's own room host, as the desktop does, and an app it runs
+    /// creates its record in that room.
+    #[test]
+    fn a_session_without_a_collab_host_hosts_its_workspace_and_its_apps_create_records() {
+        const TEST: &str = "shell::in_process::tests::a_session_without_a_collab_host_hosts_its_workspace_and_its_apps_create_records";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        assert!(
+            !crate::shell::network::collab_host_configured(),
+            "no workspace host is configured"
+        );
+        std::fs::create_dir_all(&profile).unwrap();
+        let session = crate::runtime_host::Session::start(&profile).unwrap();
+        let room = crate::shell::state::RoomId::parse(&session.room).unwrap();
+        assert!(
+            session.network().serves_here(room),
+            "the session's workspace is hosted on this device's own host"
+        );
+        assert!(
+            !session
+                .workspace_tree()
+                .read()
+                .pending_placements
+                .contains(&room),
+            "nothing waits to be placed"
+        );
+        let collab = session.broker.capnp_socket().to_path_buf();
+        let identity = session.identity_socket().to_path_buf();
+        let mut apps = InProcessApps::at(
+            &profile.join("apps"),
+            &profile.join("apps").join("person"),
+            &session.actor,
+        )
+        .unwrap()
+        .reaching_broker(Rc::new(move |app, room| {
+            session_connector(collab.clone(), identity.clone(), app, room)
+        }));
+        // The Notes tab opens a note, which it keeps as its record.
+        let (file, _receipt) = ui::application::OpenFile::new(
+            "Harbour plan.md",
+            "text/markdown",
+            b"Moor at the quayside before the tide turns.".to_vec(),
+        )
+        .unwrap();
+        let mut notes = Shown::mount(
+            &mut apps,
+            notes::definition(),
+            &session.room,
+            93,
+            |context| {
+                context.provide_open_file(file);
+            },
+        );
+        // The room's host holds the record: committed in the clear, or, in
+        // a room whose records are sealed channels, as the sealed writes
+        // the host keeps under the record's wire name.
+        let app: &str = &notes::definition().app_id;
+        let record = RecordId::for_tab(93).to_string();
+        let wire = session
+            .network()
+            .register_local_record(app, &session.room, &record);
+        let host = session
+            .network()
+            .room_host()
+            .expect("the session runs its host");
+        let runtime = session.network().runtime_handle().unwrap();
+        let held = std::cell::RefCell::new(String::new());
+        until(
+            &mut [&mut notes],
+            LastSeen("the Notes tab's record exists in the room", &held),
+            || {
+                let routes = runtime.block_on(host.rooms().record_routes(&session.room));
+                let found = routes.as_ref().is_ok_and(|routes| {
+                    routes.iter().any(|(held_app, held_record)| {
+                        held_app == app && (*held_record == record || *held_record == wire)
+                    })
+                });
+                let (sealed, committed) = {
+                    let handle = session.workspace_tree();
+                    let tree = handle.read();
+                    (
+                        tree.seals_records(room),
+                        tree.committed_record_rooms.contains(&room),
+                    )
+                };
+                *held.borrow_mut() = format!(
+                    "host routes {routes:?}, record {record}, wire {wire}, sealed here {sealed}, \
+                     committed here {committed}"
+                );
+                found
+            },
+        );
+        drop(host);
+        drop(notes);
+        drop(apps);
+        drop(session);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,

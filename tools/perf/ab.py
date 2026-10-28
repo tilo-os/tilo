@@ -598,6 +598,15 @@ def side_group(group: Group, repo: Path) -> Group:
         tests={"it": (("cargo", "test", "--locked", "-p", "shell", "--test", "it", "--no-run"), "it")})
 
 
+def artifact(repo: Path, path: str) -> Path:
+    """Where the build put `path`, named under `target/`: in `CARGO_TARGET_DIR`
+    when the run sets one (t builds into its own), else in the checkout."""
+    target = os.environ.get("CARGO_TARGET_DIR")
+    if target and (path == "target" or path.startswith("target/")):
+        return Path(target) / path.removeprefix("target").lstrip("/")
+    return repo / path
+
+
 def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Path) -> dict[str, Any]:
     """Check out `commit`, build every group and keep its artifacts."""
     git(repo, "checkout", "--quiet", "--detach", commit)
@@ -617,16 +626,16 @@ def build_side(groups: list[Group], side: str, commit: str, repo: Path, out: Pat
             cwd[name] = str(package)
         for name, path in group.binaries.items():
             # A directory artifact (the browser bundle) is kept whole.
-            if (repo / path).is_dir():
-                shutil.copytree(repo / path, directory / name)
+            if artifact(repo, path).is_dir():
+                shutil.copytree(artifact(repo, path), directory / name)
             else:
-                shutil.copy2(repo / path, directory / name)
+                shutil.copy2(artifact(repo, path), directory / name)
         for name, (source, command, path) in group.optional.items():
             if not (repo / source).is_file():
                 print(f"== {side} {commit[:10]} has no {source}; {name} is not built", flush=True)
                 continue
             call(list(command), log, repo)
-            shutil.copy2(repo / path, directory / name)
+            shutil.copy2(artifact(repo, path), directory / name)
         manifest[group.name] = {"cwd": cwd}
     return manifest
 
@@ -646,7 +655,7 @@ def run_once(group: Group, side: str, round_: int, sides: dict[str, dict[str, st
     directory.mkdir(parents=True, exist_ok=True)
     bins = {path.name: path for path in (out / "bin" / side / group.name).iterdir()}
     for name, path in group.stage.items():
-        shutil.copy2(bins[name], repo / path)
+        shutil.copy2(bins[name], artifact(repo, path))
     env = side_env(options, group, sides[side]["commit"])
     env["meta"] = {"ab_side": side, "ab_round": str(round_), "ab_ref": sides[side]["ref"],
                    "ab_harness": options.harness}

@@ -49,15 +49,15 @@ pub fn prepare(options: &Options) -> Result<Session, Error> {
         &path,
         &state_dir.join("peer-key"),
     )?;
-    WorkspaceTree::set_process_peer_salt(salt);
-    let mut tree = match persist::load_tree_from(&path) {
+    let mut tree = match persist::load_device_tree_from(&path, salt) {
         Ok(tree) => tree,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => WorkspaceTree::bootstrap_default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            WorkspaceTree::bootstrap_default_with_salt(salt)
+        }
         Err(e) => return Err(format!("cannot open {}: {e}", path.display()).into()),
     };
     tree.persist_path = Some(path.clone());
     inputs.restore_documents(&mut tree);
-    tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
     persist::save_tree_to(&tree, &path)?;
     let tree = tree.shared();
     let records = ui::record::RecordOwners::new(state_dir.join("records"))

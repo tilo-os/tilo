@@ -16,8 +16,6 @@
 //!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
-//! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
-//!   the config file so the next `run` picks it up.
 //! - `reseal --scratch <dir>` (feature `agents`) — copy the state to
 //!   `<dir>`, seal there what the rooms this relay stewards keep in the
 //!   clear, and check every record, leaving the state as it is.
@@ -91,19 +89,6 @@ enum Cmd {
     Room(Box<web_cli::RoomArgs>),
     /// Print current metrics + hosted workspace list.
     Status,
-    /// Add a workspace to the config file.
-    BindWorkspace {
-        /// Numeric workspace id.
-        id: u64,
-        /// Pin the workspace (default true).
-        #[arg(long, default_value_t = true)]
-        pin: bool,
-    },
-    /// Remove a workspace from the config file.
-    UnbindWorkspace {
-        /// Numeric workspace id.
-        id: u64,
-    },
     /// Seal what the rooms this relay stewards hold in the clear, and check
     /// every record of them: nothing left in the clear, no change lost.
     /// Fails when a record is not sealed whole.
@@ -183,8 +168,6 @@ fn run() -> anyhow::Result<()> {
             tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
-        Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
-        Cmd::UnbindWorkspace { id } => cmd_unbind(&cli.config, id),
         #[cfg(feature = "agents")]
         Cmd::Reseal {
             scratch,
@@ -265,30 +248,6 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_bind(path: &Path, id: u64, pin: bool) -> anyhow::Result<()> {
-    let mut cfg = load_or_default(path)?;
-    let added = cfg.add_workspace(id, pin);
-    cfg.save(path)?;
-    if added {
-        println!("bound workspace {id} (pin={pin})");
-    } else {
-        println!("workspace {id} already bound");
-    }
-    Ok(())
-}
-
-fn cmd_unbind(path: &Path, id: u64) -> anyhow::Result<()> {
-    let mut cfg = load_or_default(path)?;
-    let removed = cfg.remove_workspace(id);
-    cfg.save(path)?;
-    if removed {
-        println!("unbound workspace {id}");
-    } else {
-        println!("workspace {id} was not bound");
-    }
-    Ok(())
-}
-
 fn cmd_status(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     println!(
@@ -300,10 +259,6 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
     println!("state_root:    {}", cfg.state_root.display());
     println!("full replica:  {}", cfg.full_replica_status.display());
     println!("iroh_listen:   {}", cfg.iroh_listen);
-    println!("workspaces bound:");
-    for ws in &cfg.workspaces {
-        println!("  - {} (pin={})", ws.id, ws.pin);
-    }
     match std::fs::read(&cfg.full_replica_status)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -446,7 +401,7 @@ mod tests {
     use super::*;
     use iroh_base::EndpointAddr;
     use tilo_relay::daemon::Relay;
-    use tilo_relay::mesh::{ReplicationIntent, ServiceCapabilities};
+    use tilo_relay::mesh::ServiceCapabilities;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
         sign_device_cert,
@@ -455,7 +410,7 @@ mod tests {
     /// Exercise the same stock init + config reload used by firstboot, then
     /// start the daemon with the handoff bundle that firstboot writes. This
     /// catches regressions where the NAS appears configured but silently
-    /// starts as a relay-only peer or forgets its workspace bindings.
+    /// starts as a relay-only peer.
     #[tokio::test]
     async fn init_reload_and_home_peer_handoff_enable_full_replication() {
         let temp = tempfile::tempdir().unwrap();
@@ -545,10 +500,6 @@ mod tests {
         .await
         .unwrap();
         let profile = relay.handle().mesh_profile();
-        assert_eq!(
-            profile.replication.get(&42),
-            Some(&ReplicationIntent::FullWorkspace)
-        );
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
         relay.shutdown().await;

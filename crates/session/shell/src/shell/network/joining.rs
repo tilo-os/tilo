@@ -69,12 +69,7 @@ impl ShellNetwork {
     ///
     /// Why it was not joined, in the person's words.
     pub(crate) fn retry_join(&self, room: RoomId) -> Result<PeerSyncResponse, String> {
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let needs_join_again = self
             .hosted_sites
             .join_of(room)
@@ -91,6 +86,12 @@ impl ShellNetwork {
                 .map(|()| PeerSyncResponse::Message(room.to_string()));
         }
         if let Some((local, invitation)) = self.retained_join(room)? {
+            // A room placed on this device goes to its own host, in process,
+            // and is held before this returns.
+            if let Some(client) = self.local_route(&invitation) {
+                tracing::info!(%room, "joining a workspace on this device's host again");
+                return self.enroll_in_process(local, &invitation, client);
+            }
             let via = self.route_to(room)?;
             // Trying again arrives where the join first chose to; a join
             // from before arrivals were kept chooses now.
@@ -155,23 +156,37 @@ impl ShellNetwork {
     /// it go together, with any join into it still under way
     /// ([`crate::shell::native_workspace_owner::release_workspace_room`]).
     /// The room itself lives on with its governor and its other members.
+    /// The windows this device shared with the room stop being shared
+    /// first, at its host, while this device still holds the room to ask
+    /// as: a share never outlives its sharer's leaving.
     ///
     /// # Errors
     ///
     /// It is the last workspace, or the room's record cannot be changed.
     pub(crate) fn release_room(&self, room: RoomId) -> Result<(), String> {
+        self.end_window_shares(room);
         if let Some(enrollment) = self.enrolling_into(room)
             && let Err(error) = self.cancel_enrollment(enrollment)
         {
             tracing::debug!(%room, %error, "a join into a room let go was over already");
         }
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
+        let tree = self.tree.clone();
+        crate::shell::native_workspace_owner::release_workspace_room(&tree, room)
+    }
+
+    /// Stop sharing every window this device shares with `room`, at its
+    /// host, as `tab.unshare` does. A share the host does not take back is
+    /// said in the log; leaving goes on all the same.
+    fn end_window_shares(&self, room: RoomId) {
+        let shares = self
             .tree
-            .clone();
-        crate::shell::native_workspace_owner::release_workspace_room(&tree, room).map(drop)
+            .read()
+            .own_window_shares(room, tilo_clock::unix_now_ms());
+        for share in shares {
+            if let Err(error) = self.share_window(room, share.tab, &share.app_id, false, None) {
+                tracing::warn!(%room, tab = share.tab, %error, "a window shared with a room left is still shared");
+            }
+        }
     }
 
     /// The host of `room`, a room this device holds, stopped admitting this
@@ -179,16 +194,15 @@ impl ShellNetwork {
     /// long). The workspace says it needs joining again; nothing is asked of
     /// the host until the person does ([`Self::retry_join`]).
     pub(super) fn room_not_admitted(&self, room: RoomId) {
-        let workspace = self.replica.lock().ok().and_then(|replica| {
-            replica
-                .tree
+        let workspace = {
+            self.tree
                 .read()
                 .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room() == room)
                 .map(|workspace| workspace.id)
-        });
+        };
         if workspace.is_none() {
             return;
         }

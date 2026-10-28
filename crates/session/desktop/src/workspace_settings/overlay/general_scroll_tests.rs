@@ -88,7 +88,6 @@ macro_rules! model {
             people: &crate::collaborators::PeopleNames::default(),
             editing_name: None,
             name_selection: ui::text_selection::Selection::collapsed(0),
-            governs_active_room: false,
             owner_controls: true,
             apps: &super::super::NoAppDirectory,
             devices: $devices,

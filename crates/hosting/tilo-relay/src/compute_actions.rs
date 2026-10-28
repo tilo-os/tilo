@@ -324,11 +324,10 @@ impl ComputeActions {
         weight: Option<&InputWeight>,
     ) -> Result<WeighedPlacement, NoEligibleWorker> {
         match self.workspace(needs.workspace_id).await {
-            Some(workspace) => workspace.lock().await.compute.place_weighed(
-                needs,
-                weight,
-                tilo_clock::unix_now_ms(),
-            ),
+            Some(workspace) => crate::compute_transport::compute_state(
+                &mut *workspace.lock().await,
+            )
+            .place_weighed(needs, weight, tilo_clock::unix_now_ms()),
             None => crate::placement::place_compute_job(needs, []).map(WeighedPlacement::Worker),
         }
     }

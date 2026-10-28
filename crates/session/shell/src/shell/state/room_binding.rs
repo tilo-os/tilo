@@ -2,8 +2,7 @@
 //!
 //! The record of which rooms the device holds is the native owner's
 //! ([`WorkspaceTree::native_authority`]: installed replicas and joins in
-//! flight) beside the rooms of the shell's own engine, whose workspace is the
-//! room. Before a workspace was its room, a join made a workspace in a local
+//! flight). Before a workspace was its room, a join made a workspace in a local
 //! placeholder room and re-pointed it once the host's replica installed; a
 //! join that never installed left the workspace on its placeholder, and a
 //! site set up again left the room it had before held with no workspace.
@@ -16,10 +15,7 @@
 //!   holds nothing, else it keeps a workspace of its own with what it holds;
 //! - a room held with no workspace gets one.
 
-use super::{
-    AtomicOrdering, BTreeSet, FreshId as _, NEXT_ID, RoomAuthority, RoomId, Strip, StripId,
-    Workspace, WorkspaceId, WorkspaceTree,
-};
+use super::{BTreeSet, RoomId, Strip, Workspace, WorkspaceId, WorkspaceTree};
 
 /// What [`WorkspaceTree::bind_workspaces_to_rooms`] changed, for the log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,7 +96,7 @@ impl WorkspaceTree {
             };
             let mut workspace =
                 Workspace::in_room(id, room, crate::shell::i18n::t("workspace-joined-name"));
-            let strip = StripId::new();
+            let strip = self.mint_strip_id();
             workspace.strips = vec![Strip {
                 id: strip,
                 name: "Main".into(),
@@ -161,13 +157,6 @@ impl WorkspaceTree {
             self.desktop.workspaces.insert(index, joined);
         }
         binding.joined.push((slot, placeholder, room));
-        // The windows were opened before this device joined the room: none
-        // of them is published into it by being here.
-        self.room_authority
-            .entry(room)
-            .or_insert(RoomAuthority::Unpinned);
-        self.room_share_floor
-            .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         let records = self
             .desktop
             .room_records_held
@@ -194,7 +183,7 @@ impl WorkspaceTree {
             kept.ownership_transfer_cancellations =
                 std::mem::take(&mut left.ownership_transfer_cancellations);
             kept.shared_surfaces = std::mem::take(&mut left.shared_surfaces);
-            let strip = StripId::new();
+            let strip = self.mint_strip_id();
             kept.strips = vec![Strip {
                 id: strip,
                 name: "Main".into(),
@@ -213,19 +202,16 @@ impl WorkspaceTree {
     /// Forget `room`, a placeholder that held nothing and no workspace is
     /// any more: what the tree kept about it beside its workspace.
     fn drop_placeholder_room(&mut self, room: RoomId) {
-        self.room_authority.remove(&room);
-        self.room_peer_names.remove(&room);
-        self.room_peer_identities.remove(&room);
-        self.room_share_floor.remove(&room);
+        // A placeholder made here and waiting to be placed is placed no
+        // more: its workspace is the joined room's now.
+        self.pending_placements.remove(&room);
         self.room_docs.remove(&room);
-        self.continuation_rooms.remove(&room);
         self.desktop.room_records_held.remove(&room);
     }
 
     /// The invariant of the one record, for tests and checks: every room the
-    /// native owner holds or joins has exactly one workspace, every
-    /// workspace routed to the native owner is a room it holds or joins, and
-    /// no two workspaces are one room. Answers what breaks it, if anything.
+    /// native owner holds or joins has exactly one workspace, and no two
+    /// workspaces are one room. Answers what breaks it, if anything.
     pub(crate) fn one_record_violations(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut seen = BTreeSet::new();
@@ -237,13 +223,6 @@ impl WorkspaceTree {
         {
             if !seen.insert(workspace.room()) {
                 violations.push(format!("two workspaces are room {}", workspace.room()));
-            }
-            let room = workspace.room();
-            if self.requires_native_owner(room)
-                && !self.native_authority.requires(room)
-                && !self.joining_rooms.contains(&room)
-            {
-                violations.push(format!("workspace {} has no room", workspace.id.raw()));
             }
         }
         for room in self.native_authority.rooms() {

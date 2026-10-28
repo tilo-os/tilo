@@ -43,7 +43,7 @@ fn store() -> (GrantStoreHandle, WorkspaceId) {
     {
         let mut t = handle.write();
         let owner = shell::shell::state::local_user_id();
-        t.adopt_ownerless_workspaces(&owner);
+        t.own_workspaces_for_test(|_| owner.clone());
     }
     (GrantStoreHandle::new(handle), id)
 }

@@ -244,8 +244,8 @@ plaintext path.
   each route as a channel: its apps ask for keys, seal and open, and its
   sealed writes go to the relay as the device's own, never through the
   governor. A company node's own session is such a member: a device of the
-  node's person with its own key and certificate, which joins every room
-  the node governs (`TILO_SHELL_FOLLOW_HOST_ROOMS`).
+  node's person with its own key and certificate, which enters every room
+  of the person's workspace list the node hosts, as the list brings it.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and

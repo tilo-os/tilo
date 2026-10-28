@@ -89,18 +89,10 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
 
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
     let user = root.verifying_key().to_bytes();
-    let mut cfg = tilo_relay::RelayConfig {
+    let cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
         ..Default::default()
     };
-    cfg.workspaces.push(tilo_relay::WorkspaceBinding {
-        id: workspace(),
-        pin: true,
-        replication: tilo_relay::ReplicationIntent::FullWorkspace,
-        admitted_users: vec![hex::encode(user)],
-        checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        shell_authority: None,
-    });
     let (relay, agents) = tilo_relay::agents::start(
         cfg,
         RelayIdentity {

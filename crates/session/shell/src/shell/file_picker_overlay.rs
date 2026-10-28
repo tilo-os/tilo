@@ -690,7 +690,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("genuine.tapp"), b"public fixture bytes").unwrap();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        tree.own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
         let workspace = tree.desktop.active_workspace().unwrap().id;
         let chrome = ChromeState::new(tree);
         let queue = crate::portal::FilePickerQueue::new();
@@ -889,7 +889,7 @@ mod tests {
 
     fn semantic_fixture(root: &std::path::Path, save: bool, directory: bool) -> MountedPicker {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        tree.own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
         let workspace = tree.desktop.active_workspace().unwrap().id;
         let chrome = ChromeState::new(tree);
         let queue = crate::portal::FilePickerQueue::new();

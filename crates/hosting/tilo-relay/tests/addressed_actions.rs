@@ -462,16 +462,13 @@ async fn addressed_actions_replacement_survives_old_cleanup_and_rechecks_members
         next_action(&cb).await,
         EnvelopeV2::Delivered { .. }
     ));
-    relay
-        .relay
-        .set_workspace_membership(
-            workspace_id,
-            true,
-            vec![a.device_pubkey()],
-            relay.state_root.clone(),
-        )
-        .await
-        .unwrap();
+    crate::common::admit_members(
+        &relay.relay,
+        workspace_id,
+        &[a.device_pubkey()],
+        &relay.state_root,
+    )
+    .await;
     ca.send_action(EnvelopeV2::Directed(refresh(room, &a, &b)))
         .unwrap();
     assert!(matches!(

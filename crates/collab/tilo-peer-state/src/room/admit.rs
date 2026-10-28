@@ -86,8 +86,11 @@ pub struct RoomAdmission<'a> {
     pub room: &'a str,
     pub source: Writer<'a>,
     pub authority: AuthorityPin<'a>,
-    /// Seconds since the Unix epoch, for grant expiry.
-    pub caps_now: u64,
+    /// The instant the batch is judged at, in nanoseconds since the Unix
+    /// epoch: grant expiry, and the certificate a saved shortcut's proof
+    /// carries. Not whole seconds: a certificate issued earlier in this
+    /// second is already valid.
+    pub now_ns: u64,
 }
 
 /// A batch every check admitted. The caller binds a returned media policy to
@@ -122,6 +125,9 @@ pub enum RoomRefusal {
     Durability(String),
     /// The media policy is malformed or its transition is not permitted.
     Media(media::MediaPolicyError),
+    /// The batch adds or changes the shortcut `0` naming who saved it
+    /// without that person's device's proof ([`super::saved_shortcut`]).
+    ShortcutAuthorship(String),
 }
 
 impl std::fmt::Display for RoomRefusal {
@@ -136,6 +142,10 @@ impl std::fmt::Display for RoomRefusal {
             Self::GovernanceWriter => f.write_str("governance writer is not pinned authority"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::Media(error) => write!(f, "{error}"),
+            Self::ShortcutAuthorship(shortcut) => write!(
+                f,
+                "the shortcut `{shortcut}` names who saved it without their device's proof"
+            ),
         }
     }
 }
@@ -159,12 +169,15 @@ pub fn admit_room_changes(
 ) -> Result<AdmittedRoom, RoomRefusal> {
     let governs = input.authority.admits(&input.source);
     if !governs {
-        may_write(input.before, input.room, &input.source, input.caps_now)?;
+        may_write(input.before, input.room, &input.source, input.now_ns)?;
     }
     match super::base::lineage(input.before, changes) {
-        super::base::Lineage::Same(changes) => {
-            let candidate =
-                super::candidate(input.before, &changes).map_err(RoomRefusal::Malformed)?;
+        super::base::Lineage::Same { changes, replaced } => {
+            // Changes waiting in the document that the batch shows to be of
+            // another history go before the batch is applied.
+            let pruned = super::base::pruned(input.before, replaced);
+            let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
+                .map_err(RoomRefusal::Malformed)?;
             let media = check_candidate(&input, &candidate)?;
             Ok(AdmittedRoom {
                 candidate,
@@ -172,8 +185,8 @@ pub fn admit_room_changes(
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer if governs => {
-            let candidate = super::candidate(None, changes).map_err(RoomRefusal::Malformed)?;
+        super::base::Lineage::Newer(changes) if governs => {
+            let candidate = super::candidate(None, &changes).map_err(RoomRefusal::Malformed)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
             let media = checked(&input, &candidate)?;
@@ -183,7 +196,7 @@ pub fn admit_room_changes(
                 rebased: true,
             })
         }
-        super::base::Lineage::Newer => Err(RoomRefusal::GovernanceWriter),
+        super::base::Lineage::Newer(_) => Err(RoomRefusal::GovernanceWriter),
     }
 }
 
@@ -222,7 +235,7 @@ fn checked(
         room,
         source,
         authority,
-        ..
+        now_ns,
     } = *input;
     let governs = authority.admits(&source);
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
@@ -232,9 +245,18 @@ fn checked(
     if !governs && !super::governance_unchanged(before, candidate) {
         return Err(RoomRefusal::GovernanceWriter);
     }
-    if !governs && before.and_then(room_layout_choice) != room_layout_choice(candidate) {
-        return Err(RoomRefusal::GovernanceWriter);
+    if !governs {
+        if before.and_then(room_layout_choice) != room_layout_choice(candidate) {
+            return Err(RoomRefusal::GovernanceWriter);
+        }
+        if before.map_or_else(Vec::new, crate::room_hosts_of) != crate::room_hosts_of(candidate) {
+            // The room's hosts are its governor's to name.
+            return Err(RoomRefusal::GovernanceWriter);
+        }
     }
+    // Every writer, the governor included: it relays and merges what members
+    // write, so who sent a batch says nothing about who saved a shortcut.
+    saved_shortcuts_proven(before, candidate, room, now_ns)?;
     if !super::immutable_receipts(before, candidate) {
         return Err(RoomRefusal::ReceiptImmutable);
     }
@@ -244,6 +266,44 @@ fn checked(
         .map_err(RoomRefusal::Media)
 }
 
+/// A shortcut a batch adds or changes names, as who saved it, no one or the
+/// person whose device signed it in this room, by a proof that holds now
+/// ([`super::saved_shortcut::proven_saver`]). A shortcut the room already
+/// holds, unchanged, is not written, so one saved before proofs existed stays
+/// as it is: it runs by hand and never arms. A document received with nothing
+/// held before it is not a change to judge; what it names is judged where it
+/// counts, each time a trigger arms.
+fn saved_shortcuts_proven(
+    before: Option<&AutoCommit>,
+    candidate: &AutoCommit,
+    room: &str,
+    now_ns: u64,
+) -> Result<(), RoomRefusal> {
+    use tilo_desktop_model::projection::workspace_shortcuts_of;
+    let Some(before) = before else {
+        return Ok(());
+    };
+    let held = workspace_shortcuts_of(before);
+    let mut written = workspace_shortcuts_of(candidate)
+        .into_iter()
+        .filter(|saved| !held.contains(saved))
+        .filter_map(|saved| saved.decode().ok())
+        .filter(|shortcut| shortcut.saved_by.is_some())
+        .peekable();
+    if written.peek().is_none() {
+        return Ok(());
+    }
+    let revocations = super::saved_shortcut::room_revocations(candidate);
+    for shortcut in written {
+        if super::saved_shortcut::proven_saver(room, &shortcut, &revocations, now_ns)
+            != shortcut.saved_by
+        {
+            return Err(RoomRefusal::ShortcutAuthorship(shortcut.id));
+        }
+    }
+    Ok(())
+}
+
 /// Undoable changes on the room for a sender that is not the governance
 /// writer, decided against the policy already held — never the one the batch
 /// brings.
@@ -251,7 +311,7 @@ fn may_write(
     before: Option<&AutoCommit>,
     room: &str,
     source: &Writer<'_>,
-    caps_now: u64,
+    now_ns: u64,
 ) -> Result<(), RoomRefusal> {
     let Standing::Member { person, foreign } = source.standing else {
         return Ok(());
@@ -264,7 +324,7 @@ fn may_write(
     }
     let bound = tilo_action_policy::roles::foreign_device_bound();
     let authority = policy.person_on_device(&person, foreign, &bound);
-    let cx = Context::at_secs(caps_now);
+    let cx = Context::at_secs(now_ns / 1_000_000_000);
     if authority
         .decide(&TreePath::room(room), ActionKind::Undoable, &cx)
         .answer

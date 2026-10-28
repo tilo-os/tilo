@@ -36,7 +36,7 @@ use crate::shell::automation_folders::FolderWatch;
 use crate::shell::automation_host::{is_shortcut_target, replace_trigger_chords, trigger_chords};
 use crate::shell::automation_records::RecordFeed;
 use crate::shell::automation_triggers::{
-    Armed, Clock, DeviceDirectory, Firing, FocusState, TriggerEvent, TriggerHost, armed,
+    Armed, Clock, DeviceDirectory, Firing, FocusState, TriggerEvent, TriggerHost, armed, unix_ns,
     watched_folders,
 };
 use crate::shell::collab_broker::AppActionBroker;
@@ -198,12 +198,16 @@ impl ShellOverlayHost {
         } else {
             None
         };
+        let now_ns = unix_ns(self.shortcut_triggers.triggers.clock().now());
         let (firings, chords) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room())
-            });
+            let armed = armed(
+                &tree.desktop.workspaces,
+                |workspace| state.local_user_for_room(&workspace.room()),
+                |workspace| tree.room_revocations(workspace.room()),
+                now_ns,
+            );
             let chords = trigger_chords(&armed);
             let mut firings = self.shortcut_triggers.triggers.observe(event, &armed);
             if ticking {
@@ -413,12 +417,16 @@ impl ShellOverlayHost {
         if !any_trigger {
             return false;
         }
+        let now_ns = unix_ns(self.shortcut_triggers.triggers.clock().now());
         let firings = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let armed = armed(&tree.desktop.workspaces, |workspace| {
-                state.local_user_for_room(&workspace.room())
-            });
+            let armed = armed(
+                &tree.desktop.workspaces,
+                |workspace| state.local_user_for_room(&workspace.room()),
+                |workspace| tree.room_revocations(workspace.room()),
+                now_ns,
+            );
             let firings = self
                 .shortcut_triggers
                 .triggers

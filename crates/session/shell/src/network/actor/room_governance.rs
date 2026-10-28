@@ -67,9 +67,211 @@ struct Waiter {
 pub(super) struct Waiting {
     entries: HashMap<InvocationId, Waiter>,
     unsent: Vec<(Instant, Request)>,
+    /// Who waits for the last session of a workspace to close
+    /// ([`Self::watch_sessions`]).
+    watchers: Vec<(u64, tokio::sync::oneshot::Sender<()>)>,
+    /// Invocations for a workspace whose session is being established,
+    /// sent once it is up ([`Self::hold_for_session`]).
+    connecting: Vec<Request>,
 }
 
+/// Where a workspace stands with its hosts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Sessions {
+    /// A session is up.
+    Open,
+    /// None is up, and one is being established.
+    Connecting,
+    /// None is up, and none is being established.
+    Closed,
+}
+
+/// What became of invocations to a room's host, kept in tests only, so a
+/// test that times out waiting on one says where it stopped: output from
+/// the network's threads is not captured with the test's.
+pub(crate) mod trace {
+    #[cfg(test)]
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Note `line`, in tests.
+    #[cfg_attr(
+        not(test),
+        expect(unused_variables, reason = "only tests keep what is noted")
+    )]
+    pub(crate) fn note(line: impl FnOnce() -> String) {
+        #[cfg(test)]
+        {
+            let started = *STARTED.get_or_init(std::time::Instant::now);
+            // Formatted before the lock: `line` may take its time.
+            let line = format!("{:>8.3}s {}", started.elapsed().as_secs_f64(), line());
+            let mut said = SAID
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The latest lines say where a wait stopped.
+            if said.len() >= 400 {
+                said.remove(0);
+            }
+            said.push(line);
+        }
+    }
+
+    #[cfg(test)]
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    /// Keep every warning logged in this process from now on with what is
+    /// noted, from the network's threads and the hosts' as well, and what
+    /// the hosts say of their work.
+    #[cfg(test)]
+    pub(crate) fn capture_warnings() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            let subscriber = tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_default(tracing::Level::WARN)
+                        .with_target("tilo_room_host", tracing::Level::INFO),
+                )
+                .with(Noting);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+    }
+
+    /// Notes each event it sees, a line each. It keeps nothing per thread,
+    /// so an event logged while a thread's locals are destroyed (a store
+    /// dropped with its thread) is noted too, never a panic.
+    #[cfg(test)]
+    struct Noting;
+
+    #[cfg(test)]
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Noting {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    let _ = if field.name() == "message" {
+                        write!(self.0, " {value:?}")
+                    } else {
+                        write!(self.0, " {}={value:?}", field.name())
+                    };
+                }
+            }
+            let metadata = event.metadata();
+            let mut fields = Fields(format!("{} {}:", metadata.level(), metadata.target()));
+            event.record(&mut fields);
+            note(|| fields.0);
+        }
+    }
+
+    /// Everything noted so far, a line each.
+    #[cfg(test)]
+    pub(crate) fn said() -> String {
+        SAID.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .fold(String::new(), |mut said, line| {
+                said.push_str("\n    ");
+                said.push_str(line);
+                said
+            })
+    }
+}
+
+/// Why an invocation sent on a workspace's sessions has no answer coming.
+const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
+
 impl Waiting {
+    /// Whether anything here waits on where a workspace stands with its
+    /// hosts ([`Self::sessions_changed`]).
+    pub(super) fn waits_on_sessions(&self) -> bool {
+        !self.entries.is_empty() || !self.watchers.is_empty() || !self.connecting.is_empty()
+    }
+
+    /// Tell `ended` once `ws` has no session and none is being
+    /// established, as [`Self::sessions_changed`] finds: at once when that
+    /// is so now.
+    pub(super) fn watch_sessions(
+        &mut self,
+        ws: u64,
+        now: Sessions,
+        ended: tokio::sync::oneshot::Sender<()>,
+    ) {
+        if now == Sessions::Closed {
+            let _ = ended.send(());
+        } else {
+            self.watchers.push((ws, ended));
+        }
+    }
+
+    /// The workspaces something here waits on.
+    pub(super) fn workspaces(&self) -> std::collections::BTreeSet<u64> {
+        self.entries
+            .values()
+            .map(|waiter| waiter.ws)
+            .chain(self.watchers.iter().map(|(ws, _)| *ws))
+            .chain(self.connecting.iter().map(|request| request.ws))
+            .collect()
+    }
+
+    /// Hold `request`, addressed to the relay device of a workspace whose
+    /// session is being established, until [`Self::sessions_changed`] finds
+    /// the session up (and answers it to send) or the attempt over without
+    /// one (and fails it).
+    pub(super) fn hold_for_session(&mut self, request: Request) {
+        self.connecting.push(request);
+    }
+
+    /// Where workspaces stand with their hosts changed, as `sessions` says
+    /// for each. An answer only ever comes on a session of its workspace,
+    /// so an invocation sent on one that has none left is failed. Who
+    /// watched a workspace with no session that none is being established
+    /// for is told, and what was held for its session is failed. What was
+    /// held for a workspace whose session is up is answered, to send.
+    pub(super) fn sessions_changed(&mut self, sessions: impl Fn(u64) -> Sessions) -> Vec<Request> {
+        self.entries.retain(|_, waiter| {
+            let keep = sessions(waiter.ws) == Sessions::Open;
+            if !keep {
+                trace::note(|| format!("sent invocation failed: ws {} has no session", waiter.ws));
+                let _ = waiter.reply.send(Err(SESSIONS_CLOSED.into()));
+            }
+            keep
+        });
+        let watchers = std::mem::take(&mut self.watchers);
+        for (ws, ended) in watchers {
+            if sessions(ws) == Sessions::Closed || ended.is_closed() {
+                let _ = ended.send(());
+            } else {
+                self.watchers.push((ws, ended));
+            }
+        }
+        let mut ready = Vec::new();
+        for request in std::mem::take(&mut self.connecting) {
+            match sessions(request.ws) {
+                Sessions::Open => ready.push(request),
+                Sessions::Connecting => self.connecting.push(request),
+                Sessions::Closed => {
+                    trace::note(|| {
+                        format!(
+                            "held {:?} failed: ws {} has no session",
+                            request.invoke.invocation, request.ws
+                        )
+                    });
+                    let _ = request.reply.send(Err(SESSIONS_CLOSED.into()));
+                }
+            }
+        }
+        ready
+    }
+
     /// Hold `request`, addressed to a host whose session of its workspace
     /// is not up yet, until [`Self::ready_for`] it.
     pub(super) fn hold(&mut self, request: Request, now: Instant) {
@@ -95,8 +297,13 @@ impl Waiting {
 
     /// Drop what has waited too long: its caller stopped waiting.
     fn forget(&mut self, now: Instant) {
-        self.entries
-            .retain(|_, waiter| now.saturating_duration_since(waiter.since) < FORGET_AFTER);
+        self.entries.retain(|invocation, waiter| {
+            let keep = now.saturating_duration_since(waiter.since) < FORGET_AFTER;
+            if !keep {
+                trace::note(|| format!("forgot {invocation:?}"));
+            }
+            keep
+        });
         self.unsent
             .retain(|(since, _)| now.saturating_duration_since(*since) < FORGET_AFTER);
     }
@@ -164,6 +371,14 @@ impl Waiting {
             .entries
             .get(&receipt.invocation)
             .is_some_and(|waiter| waiter.ws == ws && waiter.host == author);
+        trace::note(|| {
+            format!(
+                "receipt for {:?} from {author} on ws {ws}: {}, {:?}",
+                receipt.invocation,
+                if ours { "ours" } else { "not ours" },
+                receipt.status
+            )
+        });
         if !ours {
             return false;
         }
@@ -221,6 +436,102 @@ mod tests {
         }))
         .encode()
         .expect("receipt frame")
+    }
+
+    /// What waits on a room's host ends when the room's last session does:
+    /// an invocation sent there is failed, and who watched is told, while
+    /// another room's still waits. A room whose session is being
+    /// established keeps its watchers, and what was held for its session
+    /// is sent once it is up, or failed once the attempt ends without one.
+    #[test]
+    fn the_last_session_of_a_room_closing_ends_what_waited_on_it() {
+        let relay = iroh::SecretKey::from_bytes(&[1; 32]).public();
+        let mut waiting = Waiting::default();
+        assert!(!waiting.waits_on_sessions());
+        let (closing, _, closing_answer) = request(7, relay);
+        let (staying, _, staying_answer) = request(8, relay);
+        waiting.send(closing, relay, Instant::now()).expect("sent");
+        waiting.send(staying, relay, Instant::now()).expect("sent");
+        let (watch, mut closed) = tokio::sync::oneshot::channel();
+        waiting.watch_sessions(7, Sessions::Open, watch);
+        let (watch, mut other_closed) = tokio::sync::oneshot::channel();
+        waiting.watch_sessions(8, Sessions::Open, watch);
+        assert!(waiting.waits_on_sessions());
+
+        let sent = waiting.sessions_changed(|ws| {
+            if ws == 7 {
+                Sessions::Closed
+            } else {
+                Sessions::Open
+            }
+        });
+        assert!(sent.is_empty());
+        assert!(
+            closing_answer
+                .try_recv()
+                .expect("the closed room's invocation is answered")
+                .is_err()
+        );
+        assert!(closed.try_recv().is_ok(), "who watched the room is told");
+        assert!(
+            staying_answer.try_recv().is_err(),
+            "the other room's still waits"
+        );
+        assert!(other_closed.try_recv().is_err());
+
+        let (watch, mut none) = tokio::sync::oneshot::channel();
+        waiting.watch_sessions(9, Sessions::Closed, watch);
+        assert!(
+            none.try_recv().is_ok(),
+            "a room with no session ends at once"
+        );
+    }
+
+    /// An invocation for a room whose session is being established waits
+    /// for it: sent once the session is up, failed when the attempt ends
+    /// without one, and a watcher of the room is told only then.
+    #[test]
+    fn an_invocation_waits_for_a_session_being_established() {
+        let relay = iroh::SecretKey::from_bytes(&[1; 32]).public();
+        let mut waiting = Waiting::default();
+        let (connects, invocation, connects_answer) = request(7, relay);
+        let (fails, _, fails_answer) = request(8, relay);
+        waiting.hold_for_session(connects);
+        waiting.hold_for_session(fails);
+        let (watch, mut ended) = tokio::sync::oneshot::channel();
+        waiting.watch_sessions(8, Sessions::Connecting, watch);
+
+        assert!(
+            waiting
+                .sessions_changed(|_| Sessions::Connecting)
+                .is_empty()
+        );
+        assert!(connects_answer.try_recv().is_err());
+        assert!(fails_answer.try_recv().is_err());
+        assert!(ended.try_recv().is_err(), "still connecting");
+
+        let sent = waiting.sessions_changed(|ws| {
+            if ws == 7 {
+                Sessions::Open
+            } else {
+                Sessions::Closed
+            }
+        });
+        assert_eq!(
+            sent.iter()
+                .map(|request| request.invoke.invocation)
+                .collect::<Vec<_>>(),
+            vec![invocation],
+            "the room whose session came up sends what waited for it"
+        );
+        assert!(connects_answer.try_recv().is_err(), "sent, not answered");
+        assert!(
+            fails_answer
+                .try_recv()
+                .expect("the attempt that ended without a session is answered")
+                .is_err()
+        );
+        assert!(ended.try_recv().is_ok());
     }
 
     #[test]

@@ -304,6 +304,7 @@ fn morning_refresh_schedule_uses_durable_existing_scheduler_without_duplicate_re
     let armed = [Armed {
         room: "synthetic-room".into(),
         shortcut: draft.clone(),
+        saver: "synthetic".into(),
         claims: &[],
     }];
     let mut schedules = ScheduleTriggers::open(Some(path.clone()));
@@ -426,6 +427,7 @@ fn morning_scheduled_refresh_updates_the_same_chosen_payload_through_production_
     let armed = [Armed {
         room: host.room.clone(),
         shortcut: saved.clone(),
+        saver: saved.saved_by.clone().expect("saved"),
         claims: &[],
     }];
     let mut schedule = ScheduleTriggers::open(None);

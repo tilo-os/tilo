@@ -145,6 +145,11 @@ impl OpenDoor {
             broker,
         }
     }
+
+    /// A value that changes whenever the windows publishing actions do.
+    pub(crate) fn surfaces_generation(&self) -> u64 {
+        self.broker.surfaces_generation()
+    }
 }
 
 /// Open `app` in the workspace of `room` at `anchor`, through its `open`
@@ -438,9 +443,93 @@ fn open_entry(
     } else {
         launchable_provider(&surface)
     };
+    invoke_opening(door, &slot.room, &person, provider, &action, argument)
+}
+
+/// Open the window of `app` in the workspace of `room` that the shell
+/// launched for window instance `instance` at `anchor`, through that
+/// window's own `open`, as a search hit at that anchor opens it: the one
+/// window, not any of the app's. `Ok(false)` while that window has not
+/// published an `open` yet; nothing is asked then.
+pub(crate) fn open_in_window(
+    door: &OpenDoor,
+    chrome: &Chrome,
+    (app, room): (&str, &str),
+    instance: u64,
+    anchor: &str,
+) -> Result<bool, ActionError> {
+    let Some(peer) = door.broker.window_peer(instance) else {
+        return Ok(false);
+    };
+    let person = {
+        let state = chrome.borrow();
+        let room = state
+            .tree()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room().to_string() == room)
+            .map(crate::shell::state::Workspace::room);
+        room.map(|room| state.local_user_for_room(&room))
+    };
+    let Some(person) = person else {
+        return Err(ActionError::Refused("that workspace is not here".into()));
+    };
+    let slot = SlotKey {
+        app: app.to_owned(),
+        room: room.to_owned(),
+        record: String::new(),
+    };
+    let entry = IndexEntry {
+        key: anchor.to_owned(),
+        resource: anchor.to_owned(),
+        action: None,
+        title: String::new(),
+        subtitle: None,
+        group: None,
+        icon: None,
+        boost: 0,
+        fields: Vec::new(),
+        secret: false,
+    };
+    let window: Vec<PublishedSurface> = door
+        .broker
+        .surfaces()
+        .into_iter()
+        .filter(|surface| surface.live && surface.peer_id == peer)
+        .collect();
+    let Some((surface, action, argument)) = opening(window, &slot, &entry) else {
+        return Ok(false);
+    };
+    invoke_opening(
+        door,
+        room,
+        &person,
+        surface.peer_id.to_string(),
+        &action,
+        argument,
+    )
+    .map(|()| true)
+}
+
+/// Invoke `action` with `argument` on `provider` in the workspace of
+/// `room`, as `person`, through the session's action door: an opening, so
+/// it is admitted now or, for a closed app, once the broker launched it.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the action session stays open while its admission is polled"
+)]
+fn invoke_opening(
+    door: &OpenDoor,
+    room: &str,
+    person: &str,
+    provider: String,
+    action: &PublishedAction,
+    argument: InvokeArgument,
+) -> Result<(), ActionError> {
     let session = door
         .sessions
-        .open(&slot.room, Some(&person))
+        .open(room, Some(person))
         .map_err(ActionError::Refused)?;
     let mut admission = session.invoke_job(InvokeRequest {
         on_behalf_of: None,

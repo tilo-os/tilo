@@ -265,8 +265,8 @@ mod tests {
             let guard = DenyAmbientStarts::new();
             let mut tree = WorkspaceTree::bootstrap_default();
             tree.desktop.workspaces[0].name = "Home".into();
-            tree.append_empty_workspace("Work");
-            tree.append_empty_workspace("Play");
+            tree.create_hosted_workspace("Work");
+            tree.create_hosted_workspace("Play");
             let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
             let mut document = automerge::AutoCommit::new();
             frame.pump_apps(&mut document, &automerge::ROOT);

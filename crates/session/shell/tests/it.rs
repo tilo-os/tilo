@@ -177,8 +177,6 @@ mod opening_configure_carries_the_tab_size;
 mod output_management_protocol;
 #[path = "overview_window_actions.rs"]
 mod overview_window_actions;
-#[path = "peer_sync_test.rs"]
-mod peer_sync_test;
 #[path = "pen_and_key_capture.rs"]
 mod pen_and_key_capture;
 #[path = "per_output_groups.rs"]

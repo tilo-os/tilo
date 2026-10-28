@@ -23,7 +23,7 @@ use tilo_desktop_model::shared_record::{self, guard};
 use tilo_desktop_model::{ownership, projection};
 use ui::app::record_routes::Admission;
 
-use super::{RoomId, StripId, WorkspaceTree, counter_of, peer_salt_of};
+use super::{RoomId, StripId, WorkspaceTree, peer_salt_of};
 
 /// What one look at a room's layout found nothing to write for: writing is a
 /// function of exactly these, so while they hold the next look writes
@@ -176,11 +176,9 @@ impl WorkspaceTree {
         if self.layout_captured.get(&room) == Some(&looked_at) {
             return false;
         }
-        let share_floor = self.room_share_floor.get(&room).copied();
-        let mine = |id: u64| {
-            peer_salt_of(id) == local_salt
-                && share_floor.is_none_or(|floor| counter_of(id) >= floor)
-        };
+        // A joined room's workspace is made for the room when it is joined,
+        // so every window of this device's in it is the room's.
+        let mine = |id: u64| peer_salt_of(id) == local_salt;
         let person = self.local_person.map(hex::encode);
         let former = self
             .room_docs
@@ -190,13 +188,10 @@ impl WorkspaceTree {
         let strips_to_retain = &self.strips_to_retain;
         let retained = |id: u64| strips_to_retain.contains(&StripId(id));
         // In a room whose layout is personal every member takes its own
-        // windows out; its governor takes out everyone's, so a room shared
-        // again starts from what each member shows then.
-        let governs = self.governs_room(room) || self.native_authority.governed_here(room);
+        // windows out; a device governs no room (its host does), so none
+        // takes out anyone else's.
         let doc = self.layout_docs.entry(room).or_default();
-        let written = if personal && governs {
-            shared_record::device::withdraw(doc, &|_| true)
-        } else if personal {
+        let written = if personal {
             shared_record::device::withdraw(doc, &mine)
         } else {
             shared_record::device::write(
@@ -255,10 +250,10 @@ impl WorkspaceTree {
             .as_ref()
             .map(|hosting| hosting.device.clone())
             .unwrap_or_default();
-        let share_floor = self.room_share_floor.get(&room).copied();
         let mine = |id: u64| peer_salt_of(id) == local_salt;
-        // Windows this device had open before it joined stay its own.
-        let private = |id: u64| mine(id) && share_floor.is_some_and(|floor| counter_of(id) < floor);
+        // A joined room's workspace is made for the room when it is joined:
+        // no window this device had open before is in it.
+        let private = |_: u64| false;
         let desktop = &mut self.desktop;
         let Some(ws) = desktop.workspaces.iter_mut().find(|ws| ws.room() == room) else {
             return false;
@@ -287,48 +282,31 @@ impl WorkspaceTree {
         for strip in held.iter().filter(|strip| !live.contains(strip)) {
             desktop.active_group.remove(strip);
         }
-        let opened = self.requires_native_owner(room) && self.open_governed_placeholders_here(room);
-        if changed || opened {
+        if changed {
             // A window that arrived is in the tree now but not on screen
             // yet: only the frame thread splices the widget tree, on chrome
             // revision bumps.
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
             self.seed_doc_from_cache();
         }
-        changed || opened
+        changed
     }
 
     /// How this device decides writes of `room`'s layout that other devices
     /// made ([`LayoutJudge`]).
     pub(crate) fn layout_judge(&self, room: RoomId) -> LayoutJudge {
         let room_doc = self.room_docs.get(&room);
-        let mut persons: HashMap<[u8; 32], String> = room_doc
-            .map(|_| self.room_peer_identities_in_doc(room))
-            .unwrap_or_default()
-            .into_values()
-            .map(|identity| {
-                (
-                    identity.device_cert.device_public_key,
-                    hex::encode(identity.device_cert.user_public_key),
-                )
-            })
-            .collect();
-        if let (Some(device), Some(person)) = (
-            self.window_hosting
-                .as_ref()
-                .and_then(|hosting| hex::decode(&hosting.device).ok())
-                .and_then(|key| <[u8; 32]>::try_from(key).ok()),
-            self.local_person,
-        ) {
-            persons.insert(device, hex::encode(person));
-        }
+        // Every room is held by the native owner and governed by its host,
+        // whose doors decide each write of its layout record
+        // (`tilo_room_host::rooms::desktop_writes`) before any device
+        // receives it: what arrives was decided already.
         LayoutJudge {
             room: room.to_string(),
-            decides: !self.requires_native_owner(room),
+            decides: false,
             policy: room_doc.map(|doc| projection::room_policy_of(doc, &room.to_string())),
             members: room_doc.and_then(projection::room_members),
-            persons,
-            authenticated: self.authenticated_persons.clone(),
+            persons: HashMap::new(),
+            authenticated: HashMap::new(),
         }
     }
 
@@ -375,9 +353,12 @@ impl WorkspaceTree {
         Ok(())
     }
 
-    /// The record `room`'s layout names for `tab`, if any.
+    /// The record `room`'s layout names for `tab`, if any, as a route: its
+    /// tab's binding, else what the window shared as it shows.
     pub(crate) fn room_tab_record(&self, room: RoomId, tab: super::TabId) -> Option<String> {
-        tilo_desktop_model::apps::record_routes(self.layout_docs.get(&room)?).remove(&tab)
+        let bound = self.layout_docs.get(&room);
+        (bound.and_then(|doc| tilo_desktop_model::apps::record_routes(doc).remove(&tab)))
+            .or_else(|| self.shared_window_record(room, tab))
     }
 }
 

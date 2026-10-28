@@ -65,48 +65,6 @@ impl AuthorityRejection {
     }
 }
 impl NativeStateWitness {
-    /// Borrow the protected ordinary-room writer for one host operation.
-    /// Enrolled rooms must instead borrow their committed native view.
-    pub(crate) fn with_current_ordinary<T>(
-        &self,
-        storage: &NativeAuthorityStorage,
-        observed: &NativeAuthorityStorage,
-        room: crate::shell::state::RoomId,
-        operation: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        let runtime = self
-            .0
-            .upgrade()
-            .ok_or("The accepted desktop writer has retired.")?;
-        if storage.requires(room)
-            || !runtime.healthy.load(Ordering::Acquire)
-            || runtime.uncertain_rooms.read().contains(&room)
-        {
-            return Err("The ordinary desktop policy is not current.".into());
-        }
-        let expected = digest(storage).map_err(|error| error.to_string())?;
-        if digest(observed).map_err(|error| error.to_string())? != expected {
-            return Err("The accepted desktop authority has changed.".into());
-        }
-        // Held across the operation, so no publication completes under it.
-        // A publication's file I/O does not hold it, so neither does the
-        // operation wait for a disk.
-        let accepted = runtime.accepted.lock();
-        if *accepted != Some(expected)
-            || runtime
-                .attached
-                .lock()
-                .as_ref()
-                .is_some_and(|(owner, _)| owner.upgrade().is_none())
-        {
-            return Err("The accepted desktop writer is unavailable or stale.".into());
-        }
-        let result = operation();
-        drop(accepted);
-        drop(runtime);
-        result
-    }
-
     #[cfg(test)]
     pub(crate) fn retained_owners(&self) -> usize {
         self.0.strong_count()
@@ -384,6 +342,15 @@ impl NativeStateRuntime {
                 .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
         }
         Ok(())
+    }
+    /// Write nothing more, once any write in progress has finished: the
+    /// state file stays as this writer last left it, as at the end of the
+    /// process that held it. For a test that starts a device again in the
+    /// same process, where the old session's work can outlive it.
+    #[cfg(test)]
+    pub(crate) fn close_for_shutdown(&self) {
+        let _writer = self.0.writer.lock();
+        self.0.healthy.store(false, Ordering::Release);
     }
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)

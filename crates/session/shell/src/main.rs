@@ -160,7 +160,7 @@ mod macos_tests {
                     prepare(&options).is_err(),
                     "a second session must not overwrite this profile"
                 );
-                session.tree.write().append_empty_workspace("Mac work");
+                session.tree.write().create_hosted_workspace("Mac work");
                 session.tree.read().queue_save();
             }
             let session = prepare(&options).unwrap();

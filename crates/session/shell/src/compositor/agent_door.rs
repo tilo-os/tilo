@@ -715,6 +715,12 @@ mod tests {
             )
             .expect("the owner admits it");
 
+        // The answer asks the room's governor for the agent's membership;
+        // the door lets the client in once the room has made it a member.
+        turn(&mut consent);
+        handle
+            .write()
+            .govern_requests_here_for_test(&"shell-fixture".to_owned());
         let initialized = reply(&mut consent);
         assert_eq!(initialized["id"], 1, "{initialized}");
         assert!(

@@ -370,17 +370,14 @@ async fn release_workspace(
     lost: Option<&'static str>,
 ) {
     let Some(code) = lost else {
-        workspace
-            .lock()
-            .await
-            .compute
+        crate::compute_transport::compute_state(&mut *workspace.lock().await)
             .detach_session(&device, disconnect);
         return;
     };
     let mut runtime = workspace.lock_owned().await;
     let disconnect = disconnect.clone();
     let released = tokio::task::spawn_blocking(move || {
-        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *runtime;
+        let (compute, store) = crate::compute_transport::compute_parts(&mut runtime);
         if requester_session {
             compute.leave_requester(&device, &disconnect);
             return Ok(0);
@@ -464,45 +461,6 @@ async fn authenticate_server(
         .await?)
 }
 
-/// Admit `peer` to `workspace`'s compute plane, enrolling a same-owner
-/// device first. Membership comes from the same reload as every routing read,
-/// so a pending or failed replacement's ceiling bounds it too; the enrolment
-/// is the serialized async admission, never filesystem work under the
-/// routing lock.
-///
-/// # Errors
-///
-/// The store's error when membership cannot be read or the enrolment cannot
-/// be persisted; `Ok(Err(reason))` when the device is refused.
-pub(crate) async fn admit_compute_peer(
-    workspace: &SharedWorkspace,
-    trust: &RelayTrust<'_>,
-    peer: &AuthenticatedPeer,
-) -> Result<Result<(), DenyReason>, crate::store::StoreError> {
-    let (decision, revision) = {
-        let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-        (
-            room_access::decide(&runtime, trust, peer, RoomOperation::Compute),
-            runtime.membership_revision,
-        )
-    };
-    match decision {
-        Decision::Admit => Ok(Ok(())),
-        Decision::Deny(reason) => Ok(Err(reason)),
-        Decision::AdmitAndEnrol => {
-            crate::workspace_io::admit_member(workspace, peer.device_public_key, revision).await?;
-            let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-            Ok(
-                match room_access::decide(&runtime, trust, peer, RoomOperation::Compute) {
-                    Decision::Admit => Ok(()),
-                    Decision::AdmitAndEnrol => Err(DenyReason::NotAMember),
-                    Decision::Deny(reason) => Err(reason),
-                },
-            )
-        }
-    }
-}
-
 async fn attach_workspace(
     protocol: &ComputeProtocol,
     peer: &AuthenticatedPeer,
@@ -523,7 +481,8 @@ async fn attach_workspace(
         return Ok(false);
     };
     let trust = protocol.trust();
-    let admission = admit_compute_peer(&workspace, &trust, peer).await?;
+    let admission =
+        crate::workspace_io::admit_for(&workspace, &trust, peer, RoomOperation::Compute).await?;
     let pending = match admission {
         Ok(()) => {
             // The backlog is a directory scan: blocking I/O, so it runs on
@@ -541,7 +500,7 @@ async fn attach_workspace(
             // Admission may have changed while the lane and the scan ran.
             match room_access::decide(&workspace, &trust, peer, RoomOperation::Compute) {
                 Decision::Admit => {
-                    workspace.compute.attach(
+                    crate::compute_transport::compute_state(&mut workspace).attach(
                         device,
                         outbound.clone(),
                         disconnect.clone(),
@@ -633,7 +592,7 @@ async fn dispatch_compute(
     };
     let mut workspace = workspace.lock().await;
     let outcome = {
-        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *workspace;
+        let (compute, store) = crate::compute_transport::compute_parts(&mut workspace);
         match &envelope {
             ComputeEnvelope::Advertise { advertisement, .. } => {
                 if !peer.cert.capabilities.can_act_as_host {
@@ -683,7 +642,7 @@ async fn dispatch_compute(
         }
     };
     if let ComputeRouteOutcome::Route(target) = outcome {
-        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *workspace;
+        let (compute, store) = crate::compute_transport::compute_parts(&mut workspace);
         compute.route(target, &envelope, store, next_queue_sequence())?;
     }
     drop(workspace);

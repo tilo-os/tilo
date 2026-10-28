@@ -38,9 +38,9 @@ impl ShellOverlayHost {
         }
         let user = state.active_local_user();
         let tree = state.tree();
-        tree.desktop.active_workspace().is_some_and(|ws| {
-            tree.governs_room(ws.room()) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
-        })
+        tree.desktop
+            .active_workspace()
+            .is_some_and(|ws| ws.may_govern_at(&user, action, tilo_clock::unix_now()))
     }
 
     #[allow(
@@ -474,16 +474,10 @@ impl ShellOverlayHost {
             let tree = state.tree();
             let acting_user = state.active_local_user_in(&tree);
             let emoji = ws_emoji::pane_model(self.ws_emoji.as_ref(), emoji_grants, &acting_user);
-            let governs_active_room = tree
-                .desktop
-                .active_workspace()
-                .is_some_and(|workspace| tree.governs_room(workspace.room()));
             let owner_controls = state.test_only_owner_override.unwrap_or_else(|| {
-                governs_active_room
-                    && tree
-                        .desktop
-                        .active_workspace()
-                        .is_some_and(|workspace| workspace.may_administer(&acting_user))
+                tree.desktop
+                    .active_workspace()
+                    .is_some_and(|workspace| workspace.may_administer(&acting_user))
             });
             let devices: Vec<tilo_desktop::workspace_settings::overlay::WorkspaceDevice> = tree
                 .desktop
@@ -542,7 +536,6 @@ impl ShellOverlayHost {
                     people: &people,
                     editing_name: state.editing_workspace_name.as_deref(),
                     name_selection: state.editing_workspace_name_selection,
-                    governs_active_room,
                     owner_controls,
                     apps: &directory,
                     devices: &devices,

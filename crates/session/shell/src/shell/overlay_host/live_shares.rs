@@ -97,6 +97,13 @@ fn tabs(
     })
 }
 
+impl NativeLiveShares {
+    /// Whether the window of `tab` carries the "Share to channel…" item.
+    pub(super) fn offers(&self, tab: TabId) -> bool {
+        self.offered.contains(&tab)
+    }
+}
+
 impl ShellOverlayHost {
     /// `app_id` connected on shell-ui `connection`: it hears that this shell
     /// draws embeds, and the sharing app the windows and any ask waiting for
@@ -203,6 +210,91 @@ impl ShellOverlayHost {
         })
     }
 
+    /// What the Tilo app's window `tab` (of `app_id`, in `room`) shows, as
+    /// the node a share of it names
+    /// ([`tilo_desktop_model::window_share::shows_node`]): the record its
+    /// app says the window shows, at the item its bar anchors. A window
+    /// whose app has said nothing yet shows the app's own record. `None`
+    /// for a window not launched as a Tilo package: an outside window,
+    /// streamed when shared.
+    pub(super) fn window_shows(
+        &self,
+        tree: &WorkspaceTree,
+        room: crate::shell::state::RoomId,
+        tab: TabId,
+        app_id: &str,
+    ) -> Option<String> {
+        if tree.package_launches.get(&tab).map(String::as_str) != Some(app_id) {
+            return None;
+        }
+        let (shows, kind) = self.window_shows_now(tab);
+        Some(
+            tilo_desktop_model::window_share::shows_node(
+                &room.to_string(),
+                app_id,
+                tab,
+                &kind,
+                &shows,
+            )
+            .to_string(),
+        )
+    }
+
+    /// What the window `tab` of a Tilo app shows now, with the kind of the
+    /// record: the record its app says the window shows, at the item its
+    /// bar anchors; the app's own record as a whole while its app has said
+    /// nothing (no kind, so no node names a record or an item of it).
+    pub(super) fn window_shows_now(
+        &self,
+        tab: TabId,
+    ) -> (tilo_desktop_model::window_share::WindowShows, String) {
+        use tilo_desktop_model::window_share::WindowShows;
+        let (record, kind) = self
+            .live_shares
+            .records
+            .get(&tab)
+            .map(|(_, record, kind)| (record.clone(), kind.clone()))
+            .unwrap_or_default();
+        let item = self
+            .window_toolbars
+            .toolbar(tab)
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .and_then(|location| location.anchor.clone())
+            .filter(|anchor| !anchor.is_empty());
+        // Without a kind no node names a record or an item of it: the
+        // window shows its app's own record, as far as the share can say.
+        let shows = if kind.is_empty() {
+            WindowShows::default()
+        } else {
+            WindowShows { record, item }
+        };
+        (shows, kind)
+    }
+
+    /// Fill in what a Tilo app's window shows on a request to share it
+    /// ([`Self::window_shows`]), whichever door asked: the window's menus,
+    /// its bar's, the palette's `tab.share`.
+    pub(super) fn say_what_a_shared_window_shows(&self, job: &mut super::peer_sync_dispatch::Job) {
+        use crate::shell::peer_sync_overlay::PeerSyncRequest;
+        let PeerSyncRequest::ShareWindow {
+            room,
+            tab,
+            app_id,
+            share: true,
+            shows: None,
+        } = &job.request
+        else {
+            return;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let shows = self.window_shows(&chrome.borrow().tree(), *room, *tab, app_id);
+        if let PeerSyncRequest::ShareWindow { shows: slot, .. } = &mut job.request {
+            *slot = shows;
+        }
+    }
+
     /// List the windows on a record and keep the share items in their
     /// menus, hand the sharing app what the menus asked, and run the views
     /// the sharing app's shown windows embed. Runs every frame, after the
@@ -236,7 +328,12 @@ impl ShellOverlayHost {
             &mut self.live_shares.offered,
         );
         self.live_shares.windows = windows;
-        let chosen = self.window_toolbars.take_host_actions();
+        let (workspace_shares, chosen): (Vec<_>, Vec<_>) = self
+            .window_toolbars
+            .take_host_actions()
+            .into_iter()
+            .partition(|(_, item)| super::window_share_controls::is_share_item(item));
+        self.share_from_bar_menus(workspace_shares);
         let asks = host::asks(chosen, &self.live_shares.windows, &shared);
         let mut changed = !asks.is_empty();
         for ask in asks {

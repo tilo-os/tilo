@@ -60,9 +60,12 @@ pub(crate) fn note(endpoint: String, device_label: String, theirs: u32) {
 /// Who `mismatch` is, by the name its rooms know its device under, else by
 /// the name on its certificate.
 fn name_of(tree: &WorkspaceTree, mismatch: &Mismatch) -> Option<String> {
-    tree.room_peer_names
-        .values()
-        .find_map(|names| names.get(&mismatch.endpoint).cloned())
+    tree.room_docs
+        .keys()
+        .find_map(|room| {
+            tree.room_peer_names_in_doc(*room)
+                .remove(&mismatch.endpoint)
+        })
         .or_else(|| {
             let label = mismatch.device_label.trim();
             (!label.is_empty()).then(|| label.to_owned())

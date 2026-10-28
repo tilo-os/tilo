@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn only_painted_certified_remote_people_publish_chat_targets() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.adopt_ownerless_workspaces(&"owner".into());
+        tree.own_workspaces_for_test(|_| "owner".into());
         let room = tree.desktop.active_workspace().unwrap().room();
         let endpoint = iroh::SecretKey::generate().public();
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);
@@ -223,8 +223,16 @@ mod tests {
             signature: [0; 64],
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &signing_key).unwrap();
-        assert!(tree.name_peer(room, &"owner".into(), &endpoint.to_string(), "Ada"));
-        assert!(tree.certify_peer_identity(room, &endpoint.to_string(), certificate));
+        // As the room's governor admitted and named the device.
+        tree.cache_admitted_peer_names_for_test(room, &[(endpoint.to_string(), "Ada")]);
+        tree.room_rosters.entry(room).or_default().insert(
+            endpoint.to_string(),
+            crate::shell::state::GovernedPeerIdentity {
+                device_cert: certificate,
+                revocations: Vec::new(),
+                delegate: None,
+            },
+        );
         tree.desktop.workspaces[0].admit(
             hex::encode(signing_key.verifying_key().to_bytes()),
             crate::shell::state::CapRole::Editor,

@@ -1080,7 +1080,8 @@ impl RecordSet {
                         }
                     })
             })
-            .transpose()?;
+            .transpose()?
+            .flatten();
         let mut doc = if let Some(read) = &initial {
             read.with_mutation(|mutation| {
                 let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
@@ -1368,13 +1369,22 @@ impl RecordSet {
                     .native_initial
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge.record(&self.package_id, &self.home, want)?;
+                let read = bridge
+                    .record(&self.package_id, &self.home, want)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, want, &self.home, &read)?;
             }
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
-        if let Some(bridge) = &self.native_initial {
-            let read = bridge.record(&self.package_id, &self.home, want)?;
+        // A record no committed read answers (the app's own channel serves
+        // it) opens below, as without a bridge.
+        if let Some(read) = self
+            .native_initial
+            .as_ref()
+            .map(|bridge| bridge.record(&self.package_id, &self.home, want))
+            .transpose()?
+            .flatten()
+        {
             let store = if want.id.is_package_primary() {
                 app_state::DocStore::shared(backend, key)?
             } else {
@@ -2511,7 +2521,9 @@ impl RecordStore {
                     .native_initial
                     .as_ref()
                     .ok_or(RecordOpenError::IdentityMismatch)?;
-                let read = bridge.record(&set.package_id, &set.home, checkout)?;
+                let read = bridge
+                    .record(&set.package_id, &set.home, checkout)?
+                    .ok_or(RecordOpenError::IdentityMismatch)?;
                 validate_creation_capture(doc, checkout, &set.home, &read)?;
                 return set.wire_route(&checkout.id);
             }
@@ -2811,7 +2823,14 @@ impl RecordStore {
         if set.portable.is_some() {
             return self.reserve_portable(&mut set, want);
         }
-        if set.native_initial.is_some() {
+        // A record the app's own channel answers (one a sealed room does not
+        // hold yet) is new, and the app makes it: reserved as without a
+        // bridge. Every other new record waits for its creation admission.
+        if set
+            .native_initial
+            .as_ref()
+            .is_some_and(|bridge| !bridge.answered_by_own_channel(want))
+        {
             return Err(RecordOpenError::Initialization(
                 "native new document requires governor creation admission before canonical reservation".into(),
             ));

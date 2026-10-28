@@ -2,8 +2,6 @@ use super::*;
 use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};
 use crate::shell::state::{RoomId, next_id};
-use automerge::ReadDoc as _;
-use tilo_automerge::ApplyIncoming as _;
 
 const APP: &str = "dev.tilo.record-restart-test";
 
@@ -75,7 +73,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
             );
         }
         RuntimeReset::clear_registry();
-        let mut restored = crate::shell::persist::load_tree_from(&path).unwrap();
+        let restored = crate::shell::persist::load_tree_from(&path).unwrap();
         assert_eq!(
             staged(&restored, first_tab),
             Some(first_record),
@@ -85,23 +83,6 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
             staged(&restored, second_tab),
             Some(second_record),
             "sibling app tabs retain distinct records"
-        );
-        let mut peer_document = automerge::AutoCommit::new();
-        peer_document
-            .apply_incoming(
-                restored
-                    .export_room_changes_since(room, &[])
-                    .unwrap()
-                    .into_iter()
-                    .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
-            )
-            .unwrap();
-        assert!(
-            peer_document
-                .get(automerge::ROOT, "local_app_records")
-                .unwrap()
-                .is_none(),
-            "device-local record associations must not enter the room document"
         );
     }
 

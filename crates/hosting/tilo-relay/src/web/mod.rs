@@ -1203,12 +1203,13 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
         .values()
         .cloned()
         .collect();
+    // The person this host runs for is its own before any room is bound.
+    let own_user = web.sessions.context().relay.identity.user_public_key;
+    if user == own_user {
+        return true;
+    }
     for workspace in workspaces {
-        let workspace = workspace.lock().await;
-        // A governed room names its members' roots apart from
-        // the roots its signed authority admitted.
-        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
-        {
+        if workspace.lock().await.admits_person(&user, &own_user) {
             return true;
         }
     }

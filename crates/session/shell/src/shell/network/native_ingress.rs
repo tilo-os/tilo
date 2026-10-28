@@ -1,5 +1,6 @@
 use super::{
-    InboundChannelGovernance, NeighbourMsg, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id,
+    InboundChannelGovernance, NeighbourMsg, NetCmd, NetEvent, RoomId, ShellNetwork, SystemTime,
+    room_topic_id,
 };
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
@@ -23,73 +24,6 @@ impl ShellNetwork {
             Ok((view.device().clone(), view.governor().clone()))
         })
     }
-    pub(crate) fn prepare_native_application(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        room: RoomId,
-        creator: &tilo_user_identity::DeviceCert,
-        route: &tilo_joined_room::ApplicationRecord,
-    ) -> Result<bool, String> {
-        let identity = self
-            .host_identity
-            .as_ref()
-            .ok_or("native custody unavailable")?;
-        let (certificate, _) = owner.with_current(room, |view| {
-            identity.current_native_material(view.workspace())
-        })?;
-        if &certificate != creator {
-            return Err("application creator differs from selected native custody".into());
-        }
-        owner.prepare_application_record(
-            room,
-            &certificate,
-            &identity.device_signing_key,
-            route,
-            SystemTime::now(),
-        )
-    }
-
-    /// In a room this device governs whose records its native owner
-    /// commits, give the room its shared desktop record when it has none
-    /// yet, so every member's layout has the record to land in. A room made
-    /// now holds it from the start ([`tilo_peer_state::workspace_seed`]).
-    pub(crate) fn prepare_workspace_layout(&self, owner: &NativeWorkspaceOwner, room: RoomId) {
-        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-        let commits = self
-            .replica
-            .lock()
-            .is_ok_and(|replica| replica.tree.read().commits_native_documents(room));
-        let Some(identity) = self.host_identity.as_ref().filter(|_| commits) else {
-            return;
-        };
-        let prepared = owner
-            .with_current(room, |view| {
-                if !view.governed_here() {
-                    return Ok(None);
-                }
-                Ok(Some(identity.current_native_material(view.workspace())?.0))
-            })
-            .and_then(|certificate| {
-                let Some(certificate) = certificate else {
-                    return Ok(false);
-                };
-                owner.prepare_application_record(
-                    room,
-                    &certificate,
-                    &identity.device_signing_key,
-                    &tilo_joined_room::ApplicationRecord::host(DESKTOP_APP, DESKTOP_RECORD)?,
-                    SystemTime::now(),
-                )
-            });
-        match prepared {
-            Ok(true) => self.schedule_native_owner_publication(room),
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(%room, %error, "the workspace's layout record was not made");
-            }
-        }
-    }
-
     pub(crate) fn initialize_native_application(
         &self,
         owner: &NativeWorkspaceOwner,
@@ -107,27 +41,23 @@ impl ShellNetwork {
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
         }
-        if self.governed_elsewhere(room) {
-            // The host governing the room created the empty record for this
-            // device; the bootstrap is this member's own change to it, which
-            // the host admits like any other.
-            let revision = owner.initialize_application_record_as_member(
-                room,
-                &certificate,
-                &identity.device_signing_key,
-                initialization,
-                SystemTime::now(),
-            )?;
-            self.schedule_native_owner_publication(room);
-            return Ok(revision);
+        if !self.governed_elsewhere(room) {
+            // A room hosted on this device keeps its records in sealed
+            // channels: nothing here commits an app's record in the clear.
+            return Err("this room's records are sealed channels its apps open themselves".into());
         }
-        owner.initialize_application_record(
+        // The host governing the room created the empty record for this
+        // device; the bootstrap is this member's own change to it, which
+        // the host admits like any other.
+        let revision = owner.initialize_application_record_as_member(
             room,
             &certificate,
             &identity.device_signing_key,
             initialization,
             SystemTime::now(),
-        )
+        )?;
+        self.schedule_native_owner_publication(room);
+        Ok(revision)
     }
 
     pub(crate) fn check_native_custody(
@@ -204,14 +134,11 @@ impl ShellNetwork {
             .unwrap_or(false)
     }
     pub(super) fn native_topic_required(&self, ws: u64) -> bool {
-        let Ok(replica) = self.replica.lock() else {
-            return true;
-        };
-        let tree = replica.tree.read();
+        let tree = self.tree.read();
         tree.desktop
             .workspaces
             .iter()
-            .any(|slot| room_topic_id(slot.room()) == ws && tree.requires_native_owner(slot.room()))
+            .any(|slot| room_topic_id(slot.room()) == ws)
     }
     /// Take what the room's governor never admits into its replica: channel
     /// governance, and in a room whose records are sealed channels, a
@@ -278,7 +205,15 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } if envelope.encryption.is_some() && self.native_room_seals_records(room) => {
-                if *peer == self.local_peer_hash || cluster_id != &room.to_string() {
+                if cluster_id != &room.to_string() {
+                    return true;
+                }
+                // This device's own write comes back live only as an echo.
+                // In the host's retained replay it is the room's history,
+                // which a device that started again holds no more of than
+                // the host gives it: later writes build on it, so its apps
+                // take it again, the broker dropping what they still hold.
+                if *peer == self.local_peer_hash && !input.retained() {
                     return true;
                 }
                 // The relay authenticated the author; the room's governance
@@ -322,6 +257,20 @@ impl ShellNetwork {
     /// now: neither this device nor the room's governor. `None` for a room
     /// this device holds no native owner for.
     pub(super) fn governed_member_devices(&self, room: RoomId) -> Option<Vec<iroh::EndpointId>> {
+        self.admitted_devices(room, false)
+    }
+
+    /// The other devices the governance of enrolled `room` admits now, its
+    /// governor's among them: every device one of its people may be on,
+    /// the host's own when the room is hosted on a person's device. `None`
+    /// for a room this device holds no native owner for.
+    pub(super) fn governed_devices(&self, room: RoomId) -> Option<Vec<iroh::EndpointId>> {
+        self.admitted_devices(room, true)
+    }
+
+    /// The other devices the governance of `room` admits now, the
+    /// governor's only when `governor_too`.
+    fn admitted_devices(&self, room: RoomId, governor_too: bool) -> Option<Vec<iroh::EndpointId>> {
         let owner = self.opened_native_owner()?;
         owner
             .with_current(room, |view| {
@@ -334,7 +283,7 @@ impl ShellNetwork {
                     .into_iter()
                     .filter(|cert| {
                         cert.device_public_key != own
-                            && cert.device_public_key != governor
+                            && (governor_too || cert.device_public_key != governor)
                             && view.peer().permissions(cert.device_public_key, now).is_ok()
                     })
                     .filter_map(|cert| iroh::EndpointId::from_bytes(&cert.device_public_key).ok())
@@ -407,10 +356,25 @@ impl ShellNetwork {
     }
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
+    ///
+    /// Read from the room's committed enrollment, which names its governor
+    /// from the moment the room is installed, never from the tree's
+    /// projection of it: a joining device is replayed the room's sealed
+    /// writes together with the room's document, and the tree learns the
+    /// room is sealed only once that document is admitted. A sealed write
+    /// taken for a committed one meanwhile waits for a checkpoint of its
+    /// record that the governor never commits.
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
-        self.replica.lock().is_ok_and(|replica| {
-            let tree = replica.tree.read();
-            tree.requires_native_owner(room) && !tree.commits_native_documents(room)
+        self.opened_native_owner().is_some_and(|owner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(view
+                        .peer()
+                        .authority()
+                        .capabilities
+                        .stewards_room_channels())
+                })
+                .unwrap_or(false)
         })
     }
     /// Whether `input` is admitted together with the inputs of its session
@@ -454,6 +418,84 @@ impl ShellNetwork {
         if let Some(inputs) = self.admit_off_loop(inputs, identity) {
             // No worker to take them: admitting late would reorder them.
             self.dispatch_native_inputs(inputs);
+        }
+    }
+
+    /// Ask `room`'s host, the room's records being sealed channels, to
+    /// replay the sealed writes it retains: an app opens a record this
+    /// device holds none of, made on another device or before this
+    /// session. The receiver is told once the broker took what the host
+    /// replayed (each write reaches it queued ahead of the replay's end),
+    /// so the open decides whether the record is new only then. Until the
+    /// host's session is up there is no replay and the open waits: deciding
+    /// earlier would have the app make a second record.
+    pub(crate) fn await_sealed_replay(&self, room: RoomId) -> tokio::sync::oneshot::Receiver<()> {
+        let (told, landed) = tokio::sync::oneshot::channel();
+        if let Ok(mut waiting) = self.sealed_replays.lock() {
+            waiting.entry(room_topic_id(room)).or_default().push(told);
+        }
+        self.request_native_replay(room);
+        landed
+    }
+
+    /// The collaboration broker's drain runs (`running`) or ended: the
+    /// network actor queues rooms' channel traffic for it while it runs
+    /// ([`Self::take_channel_traffic`]), and sends it to the frame loop
+    /// otherwise.
+    pub(crate) fn channel_drain_runs(&self, running: bool) {
+        let queue = running.then(|| std::sync::Arc::clone(&self.channel_queue));
+        // The drain's start must reach the actor; its end never waits on it.
+        let sent = match self.cmd_tx.try_send(NetCmd::ChannelQueue(queue)) {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(command)) if running => self
+                .cmd_tx
+                .blocking_send(command)
+                .map_err(|error| error.to_string()),
+            sent => sent.map_err(|error| error.to_string()),
+        };
+        if let Err(error) = sent {
+            tracing::debug!(%error, "the network actor did not hear of the broker's drain");
+        }
+    }
+
+    /// Take the sealed writes and replay ends the network actor queued for
+    /// the broker ([`native_ingress::ChannelQueue`]): each write as the frame
+    /// loop takes channel traffic, into the broker's inbound documents. One
+    /// that is not channel traffic here goes to the frame loop's admission.
+    /// Returns the topics of the rooms whose host's replay ended.
+    pub(crate) fn take_channel_traffic(&self) -> Vec<u64> {
+        let mut replayed = Vec::new();
+        for traffic in self.channel_queue.take() {
+            match traffic {
+                native_ingress::ChannelTraffic::Sealed(input) => {
+                    if !self.dispatch_channel_traffic(&input) {
+                        let _ = self.event_tx.try_send(NetEvent::NativeInput(input));
+                    }
+                }
+                native_ingress::ChannelTraffic::Replayed(ws) => replayed.push(ws),
+            }
+        }
+        replayed
+    }
+
+    /// The broker took what the hosts of the rooms on `topics` replayed:
+    /// tell the opens waiting for it ([`Self::await_sealed_replay`]).
+    pub(crate) fn sealed_replays_taken(&self, topics: &[u64]) {
+        if topics.is_empty() {
+            return;
+        }
+        let told: Vec<_> = self
+            .sealed_replays
+            .lock()
+            .map(|mut waiting| {
+                topics
+                    .iter()
+                    .filter_map(|ws| waiting.remove(ws))
+                    .flatten()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for open in told {
+            let _ = open.send(());
         }
     }
 

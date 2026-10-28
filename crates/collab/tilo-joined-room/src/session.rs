@@ -71,17 +71,43 @@ impl Connect {
             ))
         })
     }
-    /// Whether this device is the room's host itself: it governs the room
-    /// here, or the host its enrollment pins is this very device. Such a room
-    /// is never dialled. This device holds the host's copy, so there is
-    /// nothing to catch up on and nobody else to reach.
+    /// The hosts the room's governor named besides itself
+    /// ([`tilo_peer_state::room_hosts_of`]), in the order governance holds
+    /// them: where a member's session goes while the governor is out of
+    /// reach. A host the room revoked, or one naming this device, is left
+    /// out.
+    ///
+    /// # Errors
+    /// The room is not held here.
+    pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
+        self.owner.with_current(self.room, |view| {
+            let governor = view.transport_hint()?.host.device_public_key;
+            let revocations = view.peer().revocations();
+            Ok(view
+                .peer()
+                .governance()
+                .room_hosts()
+                .into_iter()
+                .filter(|hint| {
+                    let device = hint.host.device_public_key;
+                    device != governor
+                        && &device != own
+                        && !revocations
+                            .iter()
+                            .any(|entry| entry.revoked_device_public_key == device)
+                })
+                .collect())
+        })
+    }
+
+    /// Whether this device is the room's host itself: the host its
+    /// enrollment pins is this very device. Such a room is never dialled.
+    /// This device holds the host's copy, so there is nothing to catch up on
+    /// and nobody else to reach.
     #[must_use]
     pub fn hosted_here(&self, identity: &HostIdentity) -> bool {
         self.owner
             .with_current(self.room, |view| {
-                if view.governed_here() {
-                    return Ok(true);
-                }
                 let (cert, _) = identity.current_native_material(view.workspace())?;
                 Ok(view.transport_hint()?.host.device_public_key == cert.device_public_key)
             })
@@ -96,9 +122,6 @@ impl Connect {
     /// The room is not held here or custody cannot be read.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.room, |view| {
-            if view.governed_here() {
-                return Ok(None);
-            }
             let (cert, _) = identity.current_native_material(view.workspace())?;
             Ok(crate::renewal::renews(&cert, view.device()).then_some(cert))
         })
@@ -119,6 +142,9 @@ impl Connect {
 pub struct Scope {
     connect: Connect,
     hint: TransportHint,
+    /// The host the session reached: the governor `hint` names, or a host
+    /// the room's governance names while the governor is out of reach.
+    via: TransportHint,
     device: DeviceCert,
     /// The owner continuity the session last validated against.
     continuity: std::sync::atomic::AtomicU64,
@@ -129,9 +155,22 @@ pub struct Scope {
 impl Scope {
     #[must_use]
     pub fn new(connect: Connect, hint: TransportHint, device: DeviceCert, continuity: u64) -> Self {
+        Self::via(connect, hint.clone(), hint, device, continuity)
+    }
+    /// A session pinned to the room's governor `hint` that reached the host
+    /// `via` instead.
+    #[must_use]
+    pub fn via(
+        connect: Connect,
+        hint: TransportHint,
+        via: TransportHint,
+        device: DeviceCert,
+        continuity: u64,
+    ) -> Self {
         Self {
             connect,
             hint,
+            via,
             device,
             continuity: std::sync::atomic::AtomicU64::new(continuity),
             live: Mutex::new(true),
@@ -156,6 +195,16 @@ impl Scope {
                 .store(continuity, std::sync::atomic::Ordering::SeqCst);
         }
         pinned
+    }
+    /// The host this session reached.
+    #[must_use]
+    pub fn host(&self) -> &TransportHint {
+        &self.via
+    }
+    /// Whether this session reached the room's governor itself.
+    #[must_use]
+    pub fn reaches_governor(&self) -> bool {
+        self.via == self.hint
     }
     /// The owner continuity this session last validated against.
     fn continuity(&self) -> u64 {
@@ -646,6 +695,44 @@ pub async fn dial(
     })
     .await
     .map_err(|_| DialError::from("native relay connection timed out"))?
+}
+
+/// Whether `hint` names this device, `device`, as the room's host: a room
+/// placed on this device, whose host runs in this process. Such a room is
+/// joined over the host's in-process carrier ([`join_local`]), never
+/// dialled: an endpoint cannot dial itself.
+#[must_use]
+pub fn hosted_by(hint: &TransportHint, device: &[u8; 32]) -> bool {
+    &hint.host.device_public_key == device
+}
+
+/// Join the co-edit session of workspace `ws` as this device, `own_device`,
+/// over `client`, a session the host `hint` pins opened in this process
+/// (`RoomHost::connect_local`): the same pins [`dial`] checks, without a
+/// network between.
+///
+/// # Errors
+/// The hint does not authenticate for `ws`, it names another host than
+/// this device, or the session authenticated another host certificate.
+pub fn join_local(
+    client: RelayClient,
+    ws: u64,
+    hint: &TransportHint,
+    own_device: [u8; 32],
+) -> Result<RelayCoeditSession, DialError> {
+    let (payload, _) =
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
+    if payload.workspace_id != ws {
+        return Err("native relay workspace pin mismatch".into());
+    }
+    if !hosted_by(hint, &own_device) {
+        return Err("the room's host is not this device".into());
+    }
+    if client.relay_peer.cert != hint.host {
+        return Err("native relay authenticated a different host certificate".into());
+    }
+    RelayCoeditSession::join(client, ws, own_device)
+        .map_err(|error| DialError::Failed(error.to_string()))
 }
 
 /// [`dial`] the host `hint` pins over its HTTPS routes behind `http`: a

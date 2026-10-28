@@ -527,6 +527,7 @@ async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custo
             // existing harness signer is not a receiver identity or authority.
             let mut signer = LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(
                 Box::new(ed25519_dalek::SigningKey::from_bytes(&[19; 32])),
+                None,
             ));
             for kind in [48, 49, 50] {
                 let attempt = match kind {

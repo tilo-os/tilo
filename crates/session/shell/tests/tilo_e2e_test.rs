@@ -155,7 +155,7 @@ fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
     // Phase `commit_workspace_name_applies_buffer_to_active_workspace`.
     {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
+        tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
         let chrome = ChromeState::new(tree);
 
         {
@@ -192,7 +192,7 @@ fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
     // Phase `guest_cannot_commit_a_workspace_rename`.
     {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.adopt_ownerless_workspaces(&"another-room-owner".into());
+        tree.own_workspaces_for_test(|_| "another-room-owner".into());
         let chrome = ChromeState::new(tree);
         let original = chrome
             .borrow()
@@ -230,9 +230,9 @@ fn rename_and_new_desk_are_for_the_owner_and_moderators_not_members() {
     ] {
         let mut tree = WorkspaceTree::bootstrap_default();
         if role == Role::Owner {
-            tree.adopt_ownerless_workspaces_with(local_user_id_for_room);
+            tree.own_workspaces_for_test(local_user_id_for_room);
         } else {
-            tree.adopt_ownerless_workspaces(&"room-owner".into());
+            tree.own_workspaces_for_test(|_| "room-owner".into());
             let workspace = tree.desktop.active_workspace_mut().unwrap();
             let me = local_user_id_for_room(&workspace.room());
             workspace.admit(me, role);
@@ -275,7 +275,7 @@ fn a_workspace_rename_writes_only_the_name_into_the_tree_document() {
     }
 
     let mut tree = WorkspaceTree::bootstrap_default();
-    tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
+    tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
     tree.desktop
         .workspaces
         .push(shell::shell::state::Workspace::new(

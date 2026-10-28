@@ -31,6 +31,7 @@ mod pill_layout;
 mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
+pub use status_chips::{SharedBy, SharedWith};
 #[path = "tabs_title_menu.rs"]
 mod title_menu;
 use crate::tokens::{EffectiveMotion, MotionSource};
@@ -428,6 +429,8 @@ pub struct TabBar {
     /// where their chip was last painted ([`status_chips`]).
     desktop_control: status_chips::DesktopControlChip,
     dev_build: status_chips::DevBuildChip,
+    /// Tabs shared with their workspace, and who sees them.
+    shared: status_chips::SharedChip,
     /// A drag on a held tab, pulling it or springing it back.
     resist: Option<Resist>,
     /// Whether the hover-reveal maximize chip is offered at all. A host whose
@@ -624,6 +627,7 @@ impl TabBar {
             held_ids: HashMap::new(),
             desktop_control: status_chips::DesktopControlChip::default(),
             dev_build: status_chips::DevBuildChip::default(),
+            shared: status_chips::SharedChip::default(),
             resist: None,
             show_maximize: true,
             closable: true,
@@ -4335,6 +4339,7 @@ impl Widget for TabBar {
             .collect();
         tab_children.extend(self.desktop_control_access());
         tab_children.extend(self.dev_build_access());
+        tab_children.extend(self.shared_access());
         if self.new_tab {
             let new_tab = AccessNode::new(Role::Button).with_name("New tab");
             let new_tab = if self.new_tab_rect.area() > 0.0 {
@@ -5537,119 +5542,6 @@ mod tests {
             vec!["A", "B", "D", "C"],
             "the tab stands where the mark did (was {before:?})"
         );
-    }
-
-    /// A window whose app may control the desktop says so beside its pill,
-    /// and a press on the
-    /// chip — by pointer or by an assistive technology — reaches the host.
-    #[test]
-    fn a_window_that_controls_the_desktop_says_so_and_opens_on_press() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut bar = TabBar::new("terminal", vec![TabDescriptor::new(1, "Terminal")], 1);
-        lay_out_at_width(&mut bar, 900.0);
-        assert!(bar.desktop_control_chip(&mut tr, &theme).is_none());
-        assert!(bar.set_desktop_control(1, true));
-        let (rect, label) = bar
-            .desktop_control_chip(&mut tr, &theme)
-            .expect("the chip stands beside the pill");
-        assert_eq!(label, "Controls your desktop");
-        assert!(
-            rect.x0 >= bar.tab_rects[0].x1,
-            "{rect:?} after {:?}",
-            bar.tab_rects[0]
-        );
-        let mut scene = Scene::new();
-        bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert!(bar.press_desktop_control(rect.center()));
-        assert_eq!(bar.take_desktop_control_press(), Some((1, rect)));
-        assert_eq!(bar.take_desktop_control_press(), None, "once");
-        assert!(Widget::perform_semantic_action(
-            &mut bar,
-            status_chips::DESKTOP_CONTROL_TARGET,
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-            &automerge::ROOT,
-        ));
-        assert_eq!(bar.take_desktop_control_press(), Some((1, rect)));
-        // The window's search control stands right after the tabs; the
-        // chips stand after it, never under it.
-        bar.set_search_control(Some(240.0));
-        lay_out_at_width(&mut bar, 900.0);
-        let search_x1 = bar.tabs_end()
-            + super::super::window_controls::CONTROL_GAP
-            + super::super::window_controls::CONTROL_PX;
-        let (rect, _) = bar
-            .desktop_control_chip(&mut tr, &theme)
-            .expect("room for the chip");
-        assert!(
-            rect.x0 >= search_x1,
-            "{rect:?} after the search at {search_x1}"
-        );
-        assert!(bar.set_desktop_control(1, false));
-        assert!(bar.desktop_control_chip(&mut tr, &theme).is_none());
-    }
-
-    /// A window running a developer's own build says whose, after the
-    /// "Controls your desktop" chip when that shows, and only while in front.
-    #[test]
-    fn a_window_running_a_dev_build_says_who_installed_it() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut bar = TabBar::new(
-            "chat",
-            vec![
-                TabDescriptor::new(1, "Chat"),
-                TabDescriptor::new(2, "Notes"),
-            ],
-            1,
-        );
-        lay_out_at_width(&mut bar, 1200.0);
-        assert!(bar.dev_build_chip(&mut tr, &theme).is_none());
-        assert!(bar.set_dev_build(1, Some("Ada".into())));
-        assert!(!bar.set_dev_build(1, Some("Ada".into())), "unchanged");
-        let (alone, label) = bar.dev_build_chip(&mut tr, &theme).expect("the mark shows");
-        assert_eq!(label, "Dev build by Ada");
-        assert!(alone.x0 >= bar.tab_rects[1].x1, "after the pills");
-        bar.set_desktop_control(1, true);
-        let (control, _) = bar.desktop_control_chip(&mut tr, &theme).unwrap();
-        let (beside, _) = bar.dev_build_chip(&mut tr, &theme).unwrap();
-        assert!(beside.x0 >= control.x1, "{beside:?} after {control:?}");
-        let mut scene = Scene::new();
-        bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-        assert_eq!(
-            bar.dev_build_access().and_then(|node| node.name),
-            Some("Dev build by Ada".to_owned())
-        );
-        // `TILO_SHOT_OUT=<file.png>` keeps a picture of the bar to look at.
-        if let Some(out) = std::env::var_os("TILO_SHOT_OUT") {
-            bar.set_desktop_control(1, false);
-            crate::launch::render_widget_png(
-                &mut bar,
-                (900, 48),
-                Theme::dark(),
-                std::path::Path::new(&out),
-            )
-            .unwrap();
-        }
-        bar.set_active(2);
-        assert!(
-            bar.dev_build_chip(&mut tr, &theme).is_none(),
-            "only its own window"
-        );
-        assert!(bar.set_dev_build(1, None));
     }
 
     #[test]
@@ -8384,7 +8276,7 @@ mod tests {
     /// The shape a window group imposes on its tab strip. `MAX_CONTENT` (used by
     /// the older layout tests) gives the bar unbounded width, which is precisely
     /// the case that cannot show an overflow.
-    fn lay_out_at_width(b: &mut TabBar, width: f64) {
+    pub(super) fn lay_out_at_width(b: &mut TabBar, width: f64) {
         lay_out_at_width_with(b, width, &crate::theme::Theme::dark());
     }
 

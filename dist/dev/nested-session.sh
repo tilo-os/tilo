@@ -3,7 +3,9 @@
 # Tilo's own apps installed as signed packages, so the launcher lists them and
 # runs them the way it does on Tilo OS: sandboxed, with resources, actions,
 # collaboration and the action broker. The model gateway runs beside it, so the
-# workspace agent can plan once a provider is configured in Settings.
+# workspace agent can plan once a provider is configured in Settings, and so
+# does the ush supervisor (as its user unit starts it), with an env-runtime in
+# the session's system store, so Terminal opens a shell.
 #
 # Nothing is installed system-wide and nothing needs root. Everything lives in
 # one state directory: a scratch HOME and XDG tree, the app store, the runtime
@@ -187,7 +189,7 @@ if ((build)); then
     fi
 fi
 for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
-            tilo-model-gateway tilo-control examples/packaged_native_governor; do
+            tilo-model-gateway tilo-ush tilo-control; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
 done
@@ -202,6 +204,8 @@ if [[ -n $machine ]] && ! readelf -hW "$bin/shell" | grep -q "Machine:.*$machine
 fi
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
+[[ -f $build_out/env-runtime/publisher.hex ]] \
+    || die "no env-runtime in $build_out/env-runtime (run without --no-build)"
 # Each shell gets a private session bus (dist/dev/session-bus.sh). Tilo OS
 # hosts have no dbus-daemon of their own; the build carries one.
 session_bus=$repo_root/dist/dev/session-bus.sh
@@ -325,6 +329,9 @@ export XDG_CONFIG_HOME=$state/config XDG_DATA_HOME=$state/data
 export XDG_STATE_HOME=$state/state XDG_CACHE_HOME=$state/cache
 export TILO_IDENTITY_ROOT=$state/identity
 export TILO_APPS_DATA_DIR=$state/apps
+# The session's system store (below), as /usr/share/tilo-apps is a device's.
+system_store=$state/system
+export TILO_APPS_SYSTEM_DIR=$system_store
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
@@ -341,7 +348,7 @@ export TILO_SYSTEM_INTERFACES=$repo_root/os/usr/share/tilo/system-interfaces.tom
 # channels' keys among them) go to the sealed file store a headless machine
 # uses, in the state directory.
 export TILO_SECRETS_DIR=$state/secrets
-unset TILO_APPS_SYSTEM_DIR TILO_TEST_CONTROL TILO_STATE_PATH
+unset TILO_APPS_SYSTEM_PAYLOAD_DIR TILO_TEST_CONTROL TILO_STATE_PATH
 if [[ -n $community ]]; then
     # The shell reads its community site from this file instead of
     # /etc/tilo/community.toml and /usr/share/tilo/community.toml.
@@ -349,7 +356,20 @@ if [[ -n $community ]]; then
     export TILO_COMMUNITY_CONFIG=$state/community.toml
 fi
 
-# --- 6. Apps -------------------------------------------------------------------
+# --- 6. System store -----------------------------------------------------------
+# What a Tilo device's /usr/share/tilo-apps holds that the session's own store
+# does not: the env-runtime every environment starts from, and its publisher
+# as the store's trusted image publisher. Installed by the script the OS image
+# and the session package install theirs with, once per build.
+env_runtime_id=$(<"$build_out/env-runtime/env-runtime-$(uname -m).id")
+if [[ ! -d $system_store/pkgs/${env_runtime_id#tapp:} ]]; then
+    say "installing the env-runtime $env_runtime_id"
+    rm -rf "$system_store"
+    env -u TILO_APPS_SYSTEM_DIR "$repo_root/os/scripts/install-env-runtime.sh" "$build_out/env-runtime" \
+        "$system_store" "$system_store" "$bin/tilo-install"
+fi
+
+# --- 7. Apps -------------------------------------------------------------------
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 installed=$("$bin/tilo-install" list 2>/dev/null || true)
@@ -400,7 +420,7 @@ done
 
 ((prepare_only)) && { say "prepared $state"; exit 0; }
 
-# --- 7. Run ---------------------------------------------------------------------
+# --- 8. Run ---------------------------------------------------------------------
 rm -rf "$runtime"
 mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
@@ -489,41 +509,14 @@ if [[ ! -f $marker ]]; then
 fi
 
 # --- Native workspace ---------------------------------------------------------
-# Agent tasks act with a workspace's native authority: a task may open a
-# closed app only in a room this device's native owner holds, and a room is
-# native once a governor admitted the device through a signed invitation.
-# The throwaway person has no other device to govern a room, so the first
-# start runs the repository's packaged-desktop governor fixture: it signs an
-# invitation with this session's own device custody, and the shell redeems it
-# at startup into the Home workspace (TILO_SHELL_JOIN_INVITATION_FILE, the
-# ordinary boot join). The device then governs that room itself, and every
-# later start restores it from the saved desktop. Its host is this device, so
-# it is dialled nowhere and its apps wait for no first sync: they show what
-# the room holds at once. For a workspace a separate host holds, pass
-# --community with a local site (nested-pair.sh --peers 1 runs one).
+# Agent tasks act with a workspace's native authority, and an app opens in a
+# room only once the room lets it author there. The Home workspace becomes
+# native as on any device: the shell places it on this device's own room
+# host before it lets apps start, and the device's native owner is enrolled
+# in it there. The session notes when it is (the marker below), so a check
+# waits for it rather than for a guess.
 native_marker=$state/native-workspace
-[[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
-join_file=
-if [[ ! -f $native_marker ]]; then
-    say "enrolling the Home workspace into a native room"
-    invitation=$state/native-invitation.json
-    rm -f "$invitation"
-    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" \
-        > "$logs/governor.log" 2>&1 &
-    governor_pid=$!
-    children+=("$governor_pid")
-    tries=300
-    until [[ -s $invitation ]]; do
-        ((tries--)) && kill -0 "$governor_pid" 2>/dev/null \
-            || die "the governor fixture issued no invitation (see $logs/governor.log)"
-        sleep 0.1
-    done
-    # The invitation is a capability: it stays in owner-only files and is
-    # removed once redeemed.
-    join_file=$runtime/join-invitation
-    (umask 077 && jq -er .invitation "$invitation" > "$join_file")
-    rm -f "$invitation"
-fi
+rm -f "$native_marker"
 
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
@@ -532,6 +525,28 @@ setsid "$bin/tilo-model-gateway" serve --socket "$runtime/tilo/services/model-ga
 children+=("$!")
 wait_for_socket "$runtime/tilo/services/model-gateway.sock" "$!" \
     || die "model gateway did not start (see $logs/model-gateway.log)"
+
+# The ush supervisor Terminal asks for its shells, started as its user unit
+# starts it: the unit's own command line and environment, with %t the
+# session's runtime directory and the unit's binary this build's. systemd's
+# socket activation and sandboxing directives are not reproduced; the
+# supervisor binds the unit's socket itself.
+ush_unit=$repo_root/os/usr/lib/systemd/user/tilo-ush.service
+ush_unit_bin=/usr/libexec/tilo-ush
+unit_word() {
+    local word=${1//%t/$runtime}
+    [[ $word == "$ush_unit_bin" ]] && word=$bin/tilo-ush
+    [[ $word == *=$ush_unit_bin ]] && word=${word%"$ush_unit_bin"}$bin/tilo-ush
+    printf '%s\n' "$word"
+}
+ush_command=() ush_env=()
+for word in $(sed -n 's/^ExecStart=//p' "$ush_unit"); do ush_command+=("$(unit_word "$word")"); done
+for word in $(sed -n 's/^Environment=//p' "$ush_unit"); do ush_env+=("$(unit_word "$word")"); done
+[[ ${ush_command[0]:-} == "$bin/tilo-ush" ]] || die "$ush_unit does not start $ush_unit_bin"
+ush_socket=$(unit_word "$(sed -n 's/^ListenStream=//p' "${ush_unit%.service}.socket")")
+env "${ush_env[@]}" setsid "${ush_command[@]}" > "$logs/ush.log" 2>&1 &
+children+=("$!")
+wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see $logs/ush.log)"
 
 # Audio reaches apps through the host's sound server.
 for name in pipewire-0 pulse; do
@@ -570,14 +585,12 @@ fi
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control actions list
 EOF
-join_env=()
-[[ -n $join_file ]] && join_env=("TILO_SHELL_JOIN_INVITATION_FILE=$join_file")
-env "${display_env[@]}" TILO_TEST_CONTROL="$control" "${join_env[@]}" setsid "$session_bus" "$dbus_daemon" \
+env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
     "${host_client[@]}" "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
 shell_pid=$!
 children+=("$shell_pid")
 
-# Note once the boot join committed the Home workspace's native room.
+# Note once the Home workspace is in a room this device's native owner holds.
 confirm_native() {
     local dump tries=600
     while ((tries--)); do
@@ -585,19 +598,16 @@ confirm_native() {
         dump=$("$bin/tilo-control" state-dump 2>/dev/null) || dump='{}'
         if jq -e '.workspace_tree as $t | (($t.workspaces // [])[] | select(.id == $t.active) | .room | tostring)
                 as $room | ($t.native_authority.rooms // {}) | has($room)' <<<"$dump" >/dev/null; then
-            rm -f "$join_file"
             touch "$native_marker"
             echo "the Home workspace is native"
             return 0
         fi
         sleep 0.2
     done
-    echo "the Home workspace did not become native; see governor.log and shell.log"
+    echo "the Home workspace did not become native; see shell.log"
     return 1
 }
-if [[ -n $join_file ]]; then
-    TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
-fi
+TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
 # Where this session is, for tools that attach to it by its runtime directory
 # or control socket (`tilolang dev --session`): the same JSON as --ready.
 jq -n --arg control "$control" --arg runtime "$runtime" --arg state "$state" \

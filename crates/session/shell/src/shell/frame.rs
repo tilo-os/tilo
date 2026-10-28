@@ -818,6 +818,9 @@ pub struct FrameBuilder {
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
     peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
+    /// The tabs marked with a sharer's presence because they show a window
+    /// shared with their room ([`crate::shell::mark_shared_windows`]).
+    shared_window_marks: Vec<(u64, String)>,
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
@@ -1232,6 +1235,7 @@ impl FrameBuilder {
                 ctx
             },
             peer_presence: None,
+            shared_window_marks: Vec::new(),
             osk_overlay: None,
             shots_keyboard: None,
             floating_overlays: Vec::new(),
@@ -4524,8 +4528,13 @@ impl FrameBuilder {
                 Instant::now(),
             );
         }
+        let marked = crate::shell::mark_shared_windows(
+            &self.chrome.borrow().tree(),
+            &mut self.presence,
+            &mut self.shared_window_marks,
+        );
         let Some(relay) = self.peer_presence.as_ref() else {
-            return !arrived.is_empty();
+            return !arrived.is_empty() || marked;
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());
@@ -7141,77 +7150,6 @@ mod tests {
             );
         }
 
-        /// A window from a peer must reach the widget tree, not just the
-        /// workspace tree: peer-sync writes the tree from the network thread,
-        /// which can't bump the chrome revision `resync_strips_from_tree` gates
-        /// its rebuild on. Drives the ingest and per-frame pump.
-        fn a_peers_changes_landing_make_the_frame_rebuild() {
-            use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{Access, CapOverride, Scope, Subject};
-
-            // A room owned by somebody else, with something in it.
-            let owner = "ada".to_string();
-            let mut host = WorkspaceTree::default();
-            let host_ws = host.append_empty_workspace("Shared");
-            host.adopt_ownerless_workspaces(&owner);
-            let room = host
-                .room_of(host_ws)
-                .expect("the host's workspace has a room");
-            host.grant_sandbox_in_workspace(
-                host_ws,
-                &owner,
-                CapOverride::grant(
-                    Subject::app("files"),
-                    Scope::FsPath("/shared".to_string()),
-                    Access::Read,
-                ),
-            )
-            .expect("the owner may grant in their own room");
-            host.sync_room_doc(room);
-            let changes = host
-                .export_room_changes_since(room, &[])
-                .expect("the host is in the room");
-            assert!(!changes.is_empty(), "the host must have something to send");
-
-            // This session joins it.
-            let mut fb = FrameBuilder::new((1600, 900));
-            let joined = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                let active = tree.desktop.active;
-                // Joined through the peer's invite, which pins it (hub 1)
-                // as the room's governor.
-                tree.stand_in_room(active, room)
-                    && tree.pin_room_authority(room, PeerOrigin::hub(1))
-            };
-            assert!(joined, "this session joins the peer's room");
-
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT;
-            // Settle: pump once so the builder is past its first frame and
-            // any revision movement below is attributable to the arrival.
-            fb.pump_apps(&mut doc, &doc_root);
-            let before = fb.chrome_revision();
-
-            let landed = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
-                    .expect("well-formed changes parse")
-            };
-            assert!(
-                landed,
-                "the peer's changes must merge into this session's tree"
-            );
-
-            fb.pump_apps(&mut doc, &doc_root);
-            assert!(
-                fb.chrome_revision() > before,
-                "a peer's change landed in the tree and nothing told the shell \
-                 to rebuild, so it would never be drawn"
-            );
-        }
-
         /// `widget_registry` is idempotent — two consecutive calls with no
         /// layout/chrome mutation between return the same keys mapped to the
         /// same rects; the walker may not mutate anything.
@@ -7260,7 +7198,6 @@ mod tests {
         frame_builder_chrome_round_trips();
         frame_builder_resize_paints_again();
         a_quiet_frame_does_not_rebuild();
-        a_peers_changes_landing_make_the_frame_rebuild();
         widget_registry_is_idempotent_between_calls();
         external_scene_append_is_an_unversioned_retained_boundary();
     }

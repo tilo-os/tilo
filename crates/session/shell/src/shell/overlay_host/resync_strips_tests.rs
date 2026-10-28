@@ -6,7 +6,7 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
@@ -1025,22 +1025,14 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         let remote_id = |counter| (u64::from(PEER_SALT) << 48) | counter;
 
         let mut local = WorkspaceTree::bootstrap_demo();
-        local.set_salt_override(HOST_SALT);
+        local.set_peer_salt(HOST_SALT);
         let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
-        local.adopt_ownerless_workspaces(&"owner".to_string());
 
         let mut peer = WorkspaceTree::bootstrap_demo();
-        peer.set_salt_override(PEER_SALT);
+        peer.set_peer_salt(PEER_SALT);
         let peer_workspace = peer.desktop.active;
         assert!(peer.stand_in_room(peer_workspace, room));
-        // The fixed ids below model windows this peer owns in the shared
-        // room. They predate this process's global allocator, so make the
-        // fixture publish them instead of treating them as pre-join tabs.
-        peer.room_share_floor.remove(&room);
-        // Matching governance makes this a legitimate member layout
-        // update, not a rejected attempt to replace the room owner.
-        peer.adopt_ownerless_workspaces(&"owner".to_string());
         let remote_strip = StripId::from(remote_id(1));
         let remote_group = remote_id(2);
         let tab = |id, title: &str, kind| Tab {
@@ -1078,12 +1070,6 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
             ],
         }];
 
-        let seed = peer
-            .export_room_changes_since(room, &[])
-            .expect("peer room changes");
-        local
-            .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-            .expect("the room's document merges");
         // The peer's layout reaches this device over the room's layout
         // record, signed by a device it knows by its hub alone.
         let device = [1; 32];

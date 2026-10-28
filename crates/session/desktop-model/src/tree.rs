@@ -66,10 +66,12 @@ pub struct DesktopTree {
     /// the local index yet. Drained by the host.
     #[serde(skip, default)]
     pub room_records_inbound: Vec<(RoomId, String, String)>,
-    /// This tree's own peer salt, overriding the host's process-wide one —
-    /// needed when one process holds two trees (e.g. two simulated peers).
+    /// The salt of the device this tree belongs to: the high 16 bits of
+    /// every id the tree mints, and the namespace replication treats as its
+    /// own. `0` until the device's session sets it. Kept beside the state
+    /// file, not in it, so saved ids never depend on it.
     #[serde(skip, default)]
-    pub peer_salt_override: Option<u16>,
+    pub salt: u16,
 }
 
 impl Default for DesktopTree {
@@ -86,7 +88,7 @@ impl Default for DesktopTree {
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
-            peer_salt_override: None,
+            salt: 0,
         }
     }
 }

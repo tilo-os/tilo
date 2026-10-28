@@ -8,12 +8,14 @@ pub mod media;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
+pub mod saved_shortcut;
 pub use admit::{
     AdmittedRoom, AuthorityPin, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes,
     check_candidate,
 };
 pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+pub use saved_shortcut::{proven_saver, room_revocations, sign_saved_shortcut};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
 /// Every governed value a room document records, exactly as stored.
@@ -123,6 +125,13 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
         device_cert: identity.device_cert,
         revocations: identity.revocations,
     })
+}
+
+/// Whether the invitation `invite_id` was redeemed in the room whose
+/// admitted document `doc` is. An invitation is redeemed once.
+#[must_use]
+pub fn invitation_redeemed(doc: &AutoCommit, invite_id: &[u8; 32]) -> bool {
+    invitation_receipts(doc).is_ok_and(|receipts| receipts.contains_key(&hex::encode(invite_id)))
 }
 
 pub(crate) fn invitation_receipts(
@@ -275,6 +284,39 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
             == crate::durability::governed_bytes(after)
         && crate::document_import::governed_bytes(before)
             == crate::document_import::governed_bytes(Some(after))
+        && settings_of(before) == settings_of(Some(after))
+}
+
+/// The room settings only its governor writes, as stored: the room's name
+/// and its saved grant sets. Whatever a key holds counts, so a value of
+/// another shape than the governor writes is a change too.
+fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
+    use tilo_desktop_model::projection::{ROOM_NAME_KEY, ROOM_PRESETS_KEY};
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    let held = |value: &Value<'_>| match value {
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => bytes.clone(),
+            other => format!("{other:?}").into_bytes(),
+        },
+        Value::Object(kind) => format!("{kind:?}").into_bytes(),
+    };
+    let mut settings = Vec::new();
+    for key in [ROOM_NAME_KEY, ROOM_PRESETS_KEY] {
+        let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
+            continue;
+        };
+        settings.push((key.to_owned(), held(&value)));
+        if matches!(value, Value::Object(_)) {
+            for entry in doc.keys(&obj) {
+                if let Some((value, _)) = doc.get(&obj, &entry).ok().flatten() {
+                    settings.push((format!("{key}/{entry}"), held(&value)));
+                }
+            }
+        }
+    }
+    settings
 }
 /// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
 const EFFECT_RECEIPTS: &str = "effect_receipts_v1";

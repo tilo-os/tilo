@@ -7,6 +7,7 @@
 use tilo_actions::remote::{
     ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ROOM_GOVERNANCE_PROVIDER,
     ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
+    room_governance_resource,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_relay::rooms::{
@@ -418,7 +419,7 @@ async fn the_old_administration_door_only_removes_members() {
         );
     }
 
-    // Removing a member, which the actions do not run yet, still works.
+    // Removing a member still works there too.
     let generation = admin
         .remove(
             relay.node_addr(),
@@ -440,5 +441,48 @@ async fn the_old_administration_door_only_removes_members() {
             .iter()
             .any(|member| member.user_public_key == bob.user_pk && member.removed)
     );
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owner_removes_a_member_whose_next_session_is_refused() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let rooms = relay.rooms().unwrap();
+    let room = rooms.create("Design review").await.unwrap();
+    rooms.enter(&room.room, &laptop.cert).await.unwrap();
+    super::members::admit(&relay, &host, &phone, &room.room).await;
+    assert!(admitted(&relay, &phone, room.workspace_id).await);
+
+    // The owner's own request is the confirmation removing asks for.
+    let owner = subscribed(&relay, &laptop, room.workspace_id).await;
+    let removed = outcome(
+        ask(
+            &owner,
+            &host,
+            room.workspace_id,
+            invocation(
+                ROOM_GOVERNANCE_PROVIDER,
+                room_governance_resource(&room.room),
+                "remove-member",
+                serde_json::json!({ "person": hex::encode(bob.user_pk) }),
+            ),
+        )
+        .await,
+    )
+    .unwrap();
+    assert!(
+        removed["generation"]
+            .as_u64()
+            .is_some_and(|generation| generation > room.generation),
+        "{removed}"
+    );
+    assert!(!admitted(&relay, &phone, room.workspace_id).await);
+    drop(owner);
     relay.shutdown().await;
 }
