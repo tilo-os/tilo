@@ -301,6 +301,16 @@ grep -q '^cache-control: public, max-age=31536000, immutable' <<<"$headers" || f
 grep -q '^content-encoding:' <(head_of "$wasm") && fail "a client without br/zstd got an encoded body"
 grep -q '^content-type: text/javascript' <(head_of "/v/$version/entry-page.mjs") || fail "modules need a JavaScript type"
 
+# What this image ships is what the size budget measures: the start module's
+# bytes and brotli sidecar, and every other top-level module the split made,
+# weighed where the Containerfile put them (it compresses each one in place, so
+# this is the bundle as a browser downloads it, not the builder's copy).
+# tools/web/wasm-size-budget/budget.toml holds the budgets, and
+# tools/web/wasm_size_ratchet.py compares them; a module that grew past its
+# budget, or shrank and left its budget high, fails here.
+python3 tools/web/wasm_size_ratchet.py measure-shipped desktop "$root/srv/tilo-web/v/$version" \
+  || fail "the shipped bundle is over its size budget"
+
 # A versioned file the image does not have is a 404 no cache may keep: during
 # a rolling update a page from a new pod asks an old one for the new
 # version's files, and a 404 cached as immutable would stand at that edge for

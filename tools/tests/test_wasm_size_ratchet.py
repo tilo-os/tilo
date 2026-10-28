@@ -89,6 +89,125 @@ class MeasureTest(unittest.TestCase):
                 self.assertEqual(ratchet.raise_problems(bundle, name, entry, budget.headroom), [])
 
 
+class ShippedTest(unittest.TestCase):
+    def bundle(self, start: int = 1000, chunks: tuple[int, ...] = (400, 200), brotli: int = 250,
+               chunks_brotli: tuple[int, ...] | None = None) -> pathlib.Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = pathlib.Path(temporary.name)
+        (directory / ratchet.MODULE).parent.mkdir(parents=True)
+        (directory / ratchet.MODULE).write_bytes(b"\0" * start)
+        (directory / f"{ratchet.MODULE}.br").write_bytes(b"\0" * brotli)
+        sidecars = chunks_brotli if chunks_brotli is not None else tuple(size // 2 for size in chunks)
+        for index, (size, sidecar) in enumerate(zip(chunks, sidecars, strict=True)):
+            module = directory / f"pkg/tilo_browser_runtime.app{index}.wasm"
+            module.write_bytes(b"\0" * size)
+            (directory / f"pkg/tilo_browser_runtime.app{index}.wasm.br").write_bytes(b"\0" * sidecar)
+        return directory
+
+    def budget(self, **parts: int) -> ratchet.Budget:
+        entry = "\n".join(f"{part} = {size}" for part, size in parts.items())
+        return ratchet.Budget(f"headroom = 0\n[shipped.desktop]\n{entry}\n")
+
+    # Every part the shipped budget holds, with the bundle it measures: start
+    # 1000 (brotli 250), chunks 400+200 (brotli 200+100), largest 400 (200).
+    PARTS = dict(start=1000, brotli=250, chunks=600, chunks_brotli=300,
+                 largest=400, largest_brotli=200)
+
+    def test_measures_the_parts_that_ship(self) -> None:
+        status, message = ratchet.measure_shipped("desktop", self.bundle(), self.budget(**self.PARTS))
+        self.assertEqual(status, 0, message)
+        for part in ratchet.SHIPPED:
+            self.assertIn(f"desktop.{part}: ", message)
+
+    def test_a_module_under_the_compress_floor_costs_its_own_size(self) -> None:
+        # The Containerfile compresses files over 1 KiB; Caddy serves a smaller
+        # one as it is, so its brotli cost is its own bytes, not a sidecar's.
+        directory = self.bundle(chunks=(400, 200))
+        small = directory / "pkg/tilo_browser_runtime.hyphenation.wasm"
+        small.write_bytes(b"\0" * 600)
+        status, message = ratchet.measure_shipped("desktop", directory,
+                                                 self.budget(**dict(self.PARTS, chunks=1200, chunks_brotli=900,
+                                                                   largest=600, largest_brotli=600)))
+        self.assertEqual(status, 0, message)
+        # 200 + 100 of sidecars, plus the 600-byte module served as it is.
+        self.assertIn("desktop.chunks_brotli: 900 bytes", message)
+
+    def test_the_compute_module_is_not_a_chunk(self) -> None:
+        # It lives in pkg/compute/ and a first load does not fetch it either.
+        directory = self.bundle()
+        compute = directory / "pkg/compute/tilo_browser_compute_bg.wasm"
+        compute.parent.mkdir(parents=True)
+        compute.write_bytes(b"\0" * 5000)
+        status, message = ratchet.measure_shipped("desktop", directory, self.budget(**self.PARTS))
+        self.assertEqual(status, 0, message)
+
+    def test_a_part_over_its_budget_fails(self) -> None:
+        for part in ratchet.SHIPPED:
+            with self.subTest(part=part):
+                # Over by one byte, without disturbing the parts it is a sum or
+                # maximum of: grow a sidecar, or bump the start module.
+                if part == "start":
+                    directory = self.bundle(start=1001)
+                elif part == "brotli":
+                    directory = self.bundle(brotli=251)
+                elif part in ("chunks", "chunks_brotli", "largest", "largest_brotli"):
+                    grow = 1 if part in ("chunks", "chunks_brotli") else 0
+                    sidecars = (200 + grow, 100) if part == "chunks_brotli" else (200, 100)
+                    if part == "largest_brotli":
+                        sidecars = (201, 100)
+                    chunks = (401, 200) if part in ("chunks", "largest") else (400, 200)
+                    directory = self.bundle(chunks=chunks, chunks_brotli=sidecars)
+                status, message = ratchet.measure_shipped("desktop", directory, self.budget(**self.PARTS))
+                self.assertEqual(status, 1, message)
+                self.assertIn(f"desktop.{part}: ", message)
+                self.assertIn("over its budget", message)
+
+    def test_a_missing_part_names_the_line_to_add(self) -> None:
+        status, message = ratchet.measure_shipped("desktop", self.bundle(), self.budget(start=2000))
+        self.assertEqual(status, 1)
+        self.assertIn("add chunks = 65536 to [shipped.desktop]", message)
+
+    def test_a_bundle_without_a_shipped_budget_gets_the_table_to_add(self) -> None:
+        status, message = ratchet.measure_shipped("desktop", self.bundle(), ratchet.Budget(""))
+        self.assertEqual(status, 1)
+        self.assertIn("[shipped.desktop]", message)
+
+    def test_a_shrink_asks_for_the_lower_budget(self) -> None:
+        status, message = ratchet.measure_shipped(
+            "desktop", self.bundle(chunks=(400, 200)),
+            self.budget(**dict(self.PARTS, chunks=262144)))
+        self.assertEqual(status, 0)
+        self.assertIn("chunks = 65536 in [shipped.desktop]", message)
+
+    def test_no_start_module_fails(self) -> None:
+        directory = self.bundle()
+        (directory / ratchet.MODULE).unlink()
+        self.assertEqual(ratchet.measure_shipped("desktop", directory, self.budget())[0], 1)
+
+    def test_shipped_budgets_may_only_decrease(self) -> None:
+        before = self.budget(**self.PARTS)
+        self.assertEqual(ratchet.shipped_increases(before, self.budget(**dict(self.PARTS, start=900))), [])
+        higher = self.budget(**dict(self.PARTS, start=1001))
+        self.assertTrue(ratchet.shipped_increases(before, higher))
+        self.assertTrue(ratchet.shipped_increases(before, self.budget(start=1000, chunks=600)))
+        self.assertTrue(ratchet.shipped_increases(before, ratchet.Budget("")))
+
+    def test_a_new_raise_file_allows_shipped_growth(self) -> None:
+        before = self.budget(**self.PARTS)
+        grown = ratchet.Budget(before.text.replace("start = 1000", "start = 1400"),
+                               {"desktop": {"canvas.toml": record(400)}})
+        self.assertEqual(ratchet.shipped_increases(before, grown), [])
+        small = ratchet.Budget(before.text.replace("start = 1000", "start = 1400"),
+                               {"desktop": {"canvas.toml": record(100)}})
+        self.assertTrue(ratchet.shipped_increases(before, small))
+
+    def test_the_checked_in_shipped_budget_covers_every_part(self) -> None:
+        budget = ratchet.load()
+        for bundle, parts in budget.shipped.items():
+            self.assertEqual(sorted(parts), sorted(ratchet.SHIPPED), bundle)
+
+
 class BudgetRatchetTest(unittest.TestCase):
     def test_budgets_may_only_decrease(self) -> None:
         self.assertEqual(ratchet.increases(BUDGET, ratchet.Budget("[bundles.desktop]\nbytes = 900\n")), [])

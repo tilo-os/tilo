@@ -20,3 +20,30 @@ headroom = 0.01
 # copies of a function each module carried more than once.
 [bundles.desktop]
 bytes = 20774912
+
+# What the web entry at tilo.coffee serves, under [shipped]: the desktop bundle
+# `tools/ci/publish/web-desktop-bundle.sh` builds for this commit, split, and laid out
+# by the entry image (layout.py) under its content version. The budgets above
+# measure a module a one-app bundle starts with, which is not what a browser
+# downloads on a first visit: the shipped start module is larger, and the seventy
+# modules the split makes are four times its size beside it.
+#
+# Each module is weighed twice, as the Containerfile leaves it in the image:
+# `start` and `chunks` are the raw bytes, `brotli` and `chunks_brotli` their
+# Compress-stage sidecars, which is what a browser accepting br downloads (the
+# entry page's cached first load). `largest`/`largest_brotli` are the biggest
+# single chunk, which a visitor pays when that one app first opens.
+#
+# Measured on the production bundle at version f208d596546fb0848393 (build.json's
+# revision 59c1737c) from the files https://tilo.coffee serves: the module the
+# entry page loads hashes to build.json's entry and is 23078266 bytes, and the
+# seventy top-level pkg/*.wasm beside it total 80235040 raw, 22269972 brotli.
+# The split bundle is not reproducible in this worktree on macOS, so these are
+# the live artifact's numbers, not a local build's.
+[shipped.desktop]
+start = 23330816
+brotli = 5832704
+chunks = 81068032
+chunks_brotli = 22544384
+largest = 20316160
+largest_brotli = 5046272

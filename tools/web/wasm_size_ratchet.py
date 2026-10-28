@@ -17,6 +17,14 @@
 - `check-budget --base REV` fails when a budget is larger than at REV, beyond
   what the raise files new in this change add. A raise records `bytes`, the
   app-sdk `run` that measured the bundle, the `measured` bytes and a `reason`.
+
+The shipped bundle (what the web entry at tilo.coffee serves) has a second
+measurement, `measure-shipped NAME BUNDLE_DIR`: `[shipped.<name>]` budgets
+`start` (the module the page loads first) and `brotli` (its sidecar), then
+`chunks` (every other module the split made, total), `chunks_brotli` (their
+sidecars), and `largest`/`largest_brotli` (the biggest of them), and each is
+checked and ratcheted the same way. See budget.toml for which artifact is
+which.
 """
 
 from __future__ import annotations
@@ -34,6 +42,8 @@ BUDGET = REPO / DIRECTORY / "budget.toml"
 # The single-file layout this directory replaced, read at older revisions.
 LEGACY = "tools/web/wasm-size-budget.toml"
 MODULE = "pkg/tilo_browser_runtime_bg.wasm"
+# The shipped bundle's measurements, in the order they are reported.
+SHIPPED = ("start", "brotli", "chunks", "chunks_brotli", "largest", "largest_brotli")
 # A budget this much lower than the current one is worth committing.
 SLACK = 0.01
 ROUNDING = 64 * 1024
@@ -53,6 +63,14 @@ class Budget:
     @property
     def headroom(self) -> float:
         return float(tomllib.loads(self.text).get("headroom", 0))
+
+    @property
+    def shipped(self) -> dict[str, dict[str, int]]:
+        table = tomllib.loads(self.text).get("shipped", {})
+        return {
+            name: {part: int(entry[part]) for part in SHIPPED if part in entry}
+            for name, entry in table.items()
+        }
 
     def raise_records(self, bundle: str) -> dict[str, dict]:
         return {name: tomllib.loads(text) for name, text in self.raises.get(bundle, {}).items()}
@@ -130,6 +148,61 @@ def measure(name: str, bundle: pathlib.Path, budget: Budget) -> tuple[int, str]:
     return 0, f"{name}: {size} bytes, within its budget of {limit}"
 
 
+def measure_shipped(name: str, bundle: pathlib.Path, budget: Budget) -> tuple[int, str]:
+    """The shipped bundle's parts against `[shipped.<name>]`, each on its own.
+
+    A part over its budget fails; a part well under prints the lower budget to
+    commit. Each module is weighed twice, as the Containerfile leaves it: raw,
+    and with its brotli sidecar, which is what a browser accepting br downloads.
+    """
+    modules = sorted((bundle / "pkg").glob("*.wasm"))
+    if not (bundle / MODULE).is_file():
+        return 1, f"{name}: no {MODULE} in the bundle at {bundle}"
+    chunks = [module for module in modules if module.name != pathlib.Path(MODULE).name]
+
+    def sidecar(module: pathlib.Path) -> int:
+        # The Containerfile compresses files over 1 KiB only; one left under it
+        # has no sidecar and Caddy serves it as it is, so its brotli cost is
+        # its own size.
+        baked = module.parent / f"{module.name}.br"
+        return baked.stat().st_size if baked.is_file() else module.stat().st_size
+    brotli = [sidecar(module) for module in chunks]
+    measured = {
+        "start": (bundle / MODULE).stat().st_size,
+        "brotli": sidecar(bundle / MODULE),
+        "chunks": sum(module.stat().st_size for module in chunks),
+        "chunks_brotli": sum(brotli),
+        "largest": max((module.stat().st_size for module in chunks), default=0),
+        "largest_brotli": max(brotli, default=0),
+    }
+    limits = budget.shipped.get(name)
+    if limits is None:
+        entry = "\n".join(f"{part} = {budget_for(size, budget.headroom)}" for part, size in measured.items())
+        return 1, (f"{name}: no shipped budget yet, add [shipped.{name}] to "
+                   f"{DIRECTORY}/budget.toml:\n{entry}")
+    status, lines = 0, []
+    for part, size in measured.items():
+        limit = limits.get(part)
+        proposed = budget_for(size, budget.headroom)
+        if limit is None:
+            status = 1
+            lines.append(f"{name}.{part}: {size} bytes; no budget for it, add {part} = {proposed} "
+                         f"to [shipped.{name}]")
+        elif size > limit:
+            status = 1
+            lines.append(
+                f"{name}.{part}: {size} bytes is over its budget of {limit} (+{size - limit}); "
+                f"a deliberate raise adds {DIRECTORY}/raises/{name}/<change>.toml with "
+                f"bytes = {proposed - limit}, measured = {size}, run = <this run's number> "
+                f"and a reason")
+        elif proposed < limit * (1 - SLACK):
+            lines.append(f"{name}.{part}: {size} bytes, under its budget of {limit}; lower it: "
+                         f"{part} = {proposed} in [shipped.{name}], without its raise files")
+        else:
+            lines.append(f"{name}.{part}: {size} bytes, within its budget of {limit}")
+    return status, "\n".join(lines)
+
+
 def raise_problems(bundle: str, name: str, record: dict, headroom: float) -> list[str]:
     valid = (
         isinstance(record.get("bytes"), int) and record["bytes"] > 0
@@ -164,18 +237,40 @@ def increases(before: Budget, after: Budget) -> list[str]:
     return problems + [f"{name}: budget removed" for name in sorted(set(old) - set(new))]
 
 
+def shipped_increases(before: Budget, after: Budget) -> list[str]:
+    old, new = before.shipped, after.shipped
+    problems = []
+    for bundle in sorted(new):
+        added = sum(record.get("bytes", 0) for name, record in after.raise_records(bundle).items()
+                    if name not in before.raises.get(bundle, {}) and isinstance(record.get("bytes"), int))
+        for part, limit in sorted(new[bundle].items()):
+            if bundle not in old or part not in old[bundle] or limit <= old[bundle][part]:
+                continue
+            if limit - old[bundle][part] > added:
+                problems.append(f"shipped.{bundle}.{part}: budget raised from {old[bundle][part]} to "
+                                f"{limit} beyond the {added} bytes its new raise files add")
+        problems += [f"shipped.{bundle}.{part}: budget removed"
+                     for part in sorted(set(old.get(bundle, {})) - set(new[bundle]))]
+    problems += [f"shipped.{bundle}: budget removed" for bundle in sorted(set(old) - set(new))]
+    return problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     measure_parser = commands.add_parser("measure")
     measure_parser.add_argument("name")
     measure_parser.add_argument("bundle", type=pathlib.Path)
+    shipped_parser = commands.add_parser("measure-shipped")
+    shipped_parser.add_argument("name")
+    shipped_parser.add_argument("bundle", type=pathlib.Path)
     check = commands.add_parser("check-budget")
     check.add_argument("--base", required=True)
     args = parser.parse_args()
     current = load()
-    if args.command == "measure":
-        status, message = measure(args.name, args.bundle, current)
+    if args.command in ("measure", "measure-shipped"):
+        measured = measure if args.command == "measure" else measure_shipped
+        status, message = measured(args.name, args.bundle, current)
         print(message, file=sys.stderr if status else sys.stdout)
         return status
     try:
@@ -186,7 +281,7 @@ def main() -> int:
     if base is None:
         print("no budget at the base revision; nothing to compare")
         return 0
-    problems = increases(base, current)
+    problems = increases(base, current) + shipped_increases(base, current)
     for problem in problems:
         print(f"error: {problem}; budgets may only decrease", file=sys.stderr)
     return 1 if problems else 0
