@@ -80,7 +80,7 @@ fn snapshot(state: &State) -> Snapshot {
         pending: state.doc.pending_ops(),
         undo: state.undo.brackets(&state.doc).0,
         redo: state.undo.brackets(&state.doc).1,
-        baseline: state.undo.last_heads.clone(),
+        baseline: state.undo.last_heads().to_vec(),
         revision: state.history_revision(),
     }
 }
@@ -154,7 +154,7 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             Err(OwnedRestoreError::UnfinishedActionBoundary)
         ));
         assert_eq!(snapshot(&state), before);
-        let baseline = state.undo.last_heads.clone();
+        let baseline = state.undo.last_heads().to_vec();
         state
             .undo
             .record_committed_action(&mut state.doc, baseline, None, None);
@@ -184,7 +184,7 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             plan.target_heads(),
         )
         .unwrap();
-        state.undo.revision = u64::MAX;
+        state.undo.set_revision(u64::MAX);
         let before = snapshot(&state);
         assert!(matches!(
             state.restore_prepared_owned(&admission(&authority), &plan),
@@ -354,12 +354,12 @@ pub(crate) fn history_snapshot(history: &UndoLog, doc: &AutoCommit) -> HistorySn
     HistorySnapshot {
         undo,
         redo,
-        baseline: history.last_heads.clone(),
+        baseline: history.last_heads().to_vec(),
         revision: history.revision(),
     }
 }
 pub(crate) fn exhaust_history(history: &mut UndoLog) {
-    history.revision = u64::MAX;
+    history.set_revision(u64::MAX);
 }
 pub(crate) fn refuse_restored_result(refuse: bool) {
     VALIDATION_MODE.set(u8::from(refuse));

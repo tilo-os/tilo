@@ -20,11 +20,13 @@ use automerge::{AutoCommit, ChangeHash, ScalarValue};
 use tilo_actions::{ActionContext, ActionId, Did, HistoryOp};
 use tilo_resource::history::Version;
 
-use super::owned_restore;
-use crate::application::InstanceId;
+use collab_types::presence::UserId;
+
 use crate::history_source::authors;
 use crate::history_source::steps::{self, UNDONE_KEY};
-use crate::permissions::UserId;
+
+/// A window instance of an app, as the runtime numbers it.
+pub type InstanceId = u64;
 
 /// One step of the history as a window shows it: the changes it brackets,
 /// where the caret was, and who made it.
@@ -58,10 +60,10 @@ struct StepPresentation {
 /// A document's undo, as one window drives it. See the module docs.
 pub struct UndoLog {
     /// Heads as of the last commit boundary: where the next step starts.
-    pub(super) last_heads: Vec<ChangeHash>,
+    last_heads: Vec<ChangeHash>,
     /// Bumped every time the history moves. Lets a host tell "the history
     /// moved" from "same as last frame" without reading the document.
-    pub(super) revision: u64,
+    revision: u64,
     /// The step the changes made until the next boundary join.
     open: ActionId,
     /// This session's changes: where the caret was when their step closed,
@@ -86,7 +88,8 @@ type NextQuery = (UserId, InstanceId, bool);
 /// What the next undo or redo depends on: the document's committed heads
 /// and what is still pending on top of them, and this history's revision
 /// and baseline.
-pub(crate) type HistoryMoment = (Vec<ChangeHash>, usize, u64, usize);
+#[doc(hidden)]
+pub type HistoryMoment = (Vec<ChangeHash>, usize, u64, usize);
 
 /// How many answers `UndoLog::next` keeps before starting afresh.
 const NEXT_KEPT: usize = 32;
@@ -236,8 +239,22 @@ impl UndoLog {
         self.revision
     }
 
+    /// Heads as of the last commit boundary: where the next step starts.
+    #[doc(hidden)]
+    pub fn last_heads(&self) -> &[ChangeHash] {
+        &self.last_heads
+    }
+
+    /// Continue the revision count of the history this one replaces, so a
+    /// host never mistakes a new document's history for the old one's.
+    #[doc(hidden)]
+    pub fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
     /// Whether another distinct revision can be issued.
-    pub(super) fn can_bump(&self) -> bool {
+    #[doc(hidden)]
+    pub fn can_bump(&self) -> bool {
         self.revision != u64::MAX
     }
 
@@ -482,8 +499,9 @@ impl UndoLog {
 
     /// The brackets of this session's steps in effect and of its undos redo
     /// would bring back, newest first.
-    #[cfg(test)]
-    pub(crate) fn brackets(
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn brackets(
         &self,
         doc: &AutoCommit,
     ) -> (
@@ -549,7 +567,7 @@ impl UndoLog {
         self.commit_owned_pending(
             doc,
             self.last_heads.clone(),
-            owned_restore::OwnedActionAttribution {
+            OwnedActionAttribution {
                 author,
                 instance_id: None,
                 focused_node_idx,
@@ -562,7 +580,7 @@ impl UndoLog {
 
     /// The entry of a change this window commits: the given one (or none),
     /// attributed to `author` and joined to the open step.
-    pub(super) fn stamp(&self, message: Option<String>, author: Option<&UserId>) -> Option<String> {
+    fn stamp(&self, message: Option<String>, author: Option<&UserId>) -> Option<String> {
         let mut context = message.as_deref().map_or_else(
             || Some(ActionContext::default()),
             ActionContext::from_change_message,
@@ -597,8 +615,9 @@ impl UndoLog {
     }
 
     /// Observe the recorded committed frontier without closing pending work.
-    pub(crate) fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
-        owned_restore::same_frontier(&self.last_heads, &doc.base_heads())
+    #[doc(hidden)]
+    pub fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
+        same_frontier(&self.last_heads, &doc.base_heads())
     }
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
@@ -641,7 +660,8 @@ impl UndoLog {
 
     /// Close the step `before..after`: remember where the caret was and who
     /// made it, and open the next step.
-    pub(crate) fn record_committed_span(
+    #[doc(hidden)]
+    pub fn record_committed_span(
         &mut self,
         doc: &AutoCommit,
         before: Vec<ChangeHash>,
@@ -1032,7 +1052,7 @@ impl UndoLog {
     }
 
     /// Take back the step `author` would undo (see
-    /// [`State::undo_as`](super::State::undo_as)).
+    /// the toolkit's `State::undo_as`).
     pub fn undo_as(
         &mut self,
         doc: &mut AutoCommit,
@@ -1071,7 +1091,8 @@ impl UndoLog {
 
     /// Where the document and this history stand: what the next undo or
     /// redo of any window depends on, to keep an answer while it holds.
-    pub(crate) fn moment(&self, doc: &AutoCommit) -> HistoryMoment {
+    #[doc(hidden)]
+    pub fn moment(&self, doc: &AutoCommit) -> HistoryMoment {
         (
             doc.base_heads(),
             doc.pending_ops(),
@@ -1142,7 +1163,7 @@ impl UndoLog {
         self.redo_step(doc, Some(author), Some(instance), focus, metadata, registry)
     }
 
-    /// See [`State::restore_to_heads`](super::State::restore_to_heads).
+    /// See the toolkit's `State::restore_to_heads`.
     pub fn restore_to_heads(
         &mut self,
         doc: &mut AutoCommit,
@@ -1154,7 +1175,7 @@ impl UndoLog {
         self.restore_to_heads_owned(
             doc,
             target_heads,
-            owned_restore::OwnedActionAttribution {
+            OwnedActionAttribution {
                 author,
                 instance_id: None,
                 focused_node_idx,
@@ -1164,7 +1185,7 @@ impl UndoLog {
         )
     }
 
-    /// See [`State::restore_to_heads_with_context`](super::State::restore_to_heads_with_context).
+    /// See the toolkit's `State::restore_to_heads_with_context`.
     pub fn restore_to_heads_with_message(
         &mut self,
         doc: &mut AutoCommit,
@@ -1177,7 +1198,7 @@ impl UndoLog {
         self.restore_to_heads_owned(
             doc,
             target_heads,
-            owned_restore::OwnedActionAttribution {
+            OwnedActionAttribution {
                 author,
                 instance_id: None,
                 focused_node_idx,
@@ -1199,7 +1220,7 @@ impl UndoLog {
         self.restore_to_heads_owned(
             doc,
             target_heads,
-            owned_restore::OwnedActionAttribution {
+            OwnedActionAttribution {
                 author: Some(author),
                 instance_id: Some(instance),
                 focused_node_idx,
@@ -1213,7 +1234,7 @@ impl UndoLog {
         &mut self,
         doc: &mut AutoCommit,
         target_heads: &[ChangeHash],
-        attribution: owned_restore::OwnedActionAttribution,
+        attribution: OwnedActionAttribution,
     ) -> bool {
         let current = doc.get_heads();
         if current == target_heads {
@@ -1225,5 +1246,71 @@ impl UndoLog {
         super::write_revert_patches(doc, &current, target_heads);
         let receipt = self.commit_owned_pending(doc, current, attribution);
         receipt.changed
+    }
+}
+
+/// Existing native commits and new owned restores use this same attribution.
+#[doc(hidden)]
+pub struct OwnedActionAttribution {
+    pub author: Option<UserId>,
+    pub instance_id: Option<InstanceId>,
+    pub focused_node_idx: Option<usize>,
+    pub widget_metadata: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Whether two head sets name the same frontier, in any order.
+#[doc(hidden)]
+pub fn same_frontier(left: &[ChangeHash], right: &[ChangeHash]) -> bool {
+    let normalize = |heads: &[ChangeHash]| {
+        let mut heads = heads.to_vec();
+        heads.compact_sort();
+        heads.dedup();
+        heads
+    };
+    normalize(left) == normalize(right)
+}
+
+/// What committing an owned action left: the heads after it and whether it
+/// changed anything.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedActionReceipt {
+    pub after: Vec<ChangeHash>,
+    pub changed: bool,
+}
+
+impl UndoLog {
+    /// The canonical physical stamp + explicit undo span finalizer. Capacity is
+    /// reserved by the caller before any writes; no user callbacks run here.
+    #[doc(hidden)]
+    pub fn commit_owned_pending(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        attribution: OwnedActionAttribution,
+    ) -> OwnedActionReceipt {
+        let message = self.stamp(attribution.message, attribution.author.as_ref());
+        let committed = tilo_resource::history::commit_stamped_with_message(doc, message).is_some();
+        let after = doc.get_heads();
+        if committed {
+            self.record_committed_span(
+                doc,
+                before.clone(),
+                after.clone(),
+                attribution.focused_node_idx,
+                attribution.widget_metadata,
+                attribution.author,
+                attribution.instance_id,
+            );
+        } else {
+            // Native no-op commits historically refresh their baseline. Restore
+            // no-ops never enter this finalizer and preserve all bookkeeping.
+            self.last_heads.clone_from(&after);
+        }
+        OwnedActionReceipt {
+            after,
+            changed: committed,
+        }
     }
 }

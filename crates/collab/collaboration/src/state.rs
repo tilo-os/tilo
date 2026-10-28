@@ -12,7 +12,11 @@ use tilo_sort::CompactSort as _;
 
 mod built_on;
 mod sequence_replay;
+mod undo_log;
 use sequence_replay::SequenceReplay;
+#[doc(hidden)]
+pub use undo_log::{HistoryMoment, OwnedActionAttribution, OwnedActionReceipt, same_frontier};
+pub use undo_log::{InstanceId, UndoEntry, UndoLog};
 
 /// Write the delta that leads from `from_heads` to `to_heads` into `doc`'s open
 /// transaction, without committing.

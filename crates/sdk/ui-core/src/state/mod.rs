@@ -4,11 +4,11 @@ use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
 use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
-mod undo_log;
+pub(crate) use collaboration::state::HistoryMoment;
+/// A document's undo, below the toolkit.
+pub use collaboration::state::{UndoEntry, UndoLog};
 /// The primitive undo, redo and restore write through, below the toolkit.
 pub use collaboration::state::{write_patches, write_revert_patches, write_revert_patches_where};
-pub(crate) use undo_log::HistoryMoment;
-pub use undo_log::{UndoEntry, UndoLog};
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 
@@ -224,7 +224,7 @@ impl State {
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
         self.outbound = DocumentFrontier::at_document(&mut self.doc);
-        self.undo.revision = next;
+        self.undo.set_revision(next);
         true
     }
 
@@ -876,7 +876,7 @@ mod tests {
                 3
             );
             let identity = original.document_identity();
-            original.undo.revision = u64::MAX;
+            original.undo.set_revision(u64::MAX);
             assert!(!original.adopt_doc(AutoCommit::new()));
             assert_eq!(original.document_identity(), identity);
         }
@@ -1595,7 +1595,7 @@ mod tests {
             let author = alice();
             type_action(&mut state, "body", "before exhaustion", &author);
             let heads_before_undo = state.doc.get_heads();
-            state.undo.revision = u64::MAX;
+            state.undo.set_revision(u64::MAX);
 
             assert!(
                 state.undo_as(Some(&author), None, None, None).is_none(),
@@ -1627,7 +1627,7 @@ mod tests {
             history
                 .undo_in(&mut doc, &alice(), 11, None, None, None)
                 .unwrap();
-            history.revision = u64::MAX;
+            history.set_revision(u64::MAX);
             let heads = doc.get_heads();
             assert!(
                 history

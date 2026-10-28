@@ -25,7 +25,7 @@ pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 
-pub type InstanceId = u64;
+pub use collaboration::state::InstanceId;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
 pub struct ApplicationDefinition {
