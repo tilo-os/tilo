@@ -28,8 +28,8 @@ pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
 }
 
 /// What the person is asked, and what their answer is bound to.
-struct Question {
-    request: AppActionConsentRequest,
+pub(super) struct Question {
+    pub(super) request: AppActionConsentRequest,
     actor: BrokerActor,
     binding: super::WitnessBinding,
     /// The view the caller is shown waiting in, when the action runs in one.
@@ -354,6 +354,12 @@ impl CapnpBrokerState {
         }) else {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         };
+        // A foreign device is not the person's: they are asked on one of
+        // their own devices, which draws the question and answers it.
+        if Self::asks_on_own_device(caller) {
+            let binding = self.witness_binding(&person, caller.room().unwrap_or_default(), request);
+            return self.own_device_witness(caller, &binding, request);
+        }
         let Some(question) = self.witness_question(caller, &person, request) else {
             return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
                 ActionHostError::ConfirmationRequired
@@ -424,7 +430,7 @@ impl CapnpBrokerState {
 
     /// The question `request` puts to `person`: the action as the catalogue
     /// offers it to `caller`. `None` for an action not offered.
-    fn witness_question(
+    pub(super) fn witness_question(
         &self,
         caller: &Caller,
         person: &str,

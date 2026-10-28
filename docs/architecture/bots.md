@@ -383,12 +383,15 @@ with `Binding::StepOutput`-style pointers.
 
 The matching core is pure and lives in a new module, `tilo_automation::dispatch`:
 
-1. **No self-triggering.** A change whose actor is `bot:<id>` never fires
-   installation `id`. For a person's Shortcut, a change committed as one of
-   that Shortcut's runs never fires the same Shortcut.
-   `tilo_automation::check` already refuses a Shortcut that could invoke
-   itself. This rule covers the indirect case of a run whose output matches its
-   own trigger.
+1. **No self-triggering, and no loop between two programs.** A change whose
+   actor is `bot:<id>` never fires installation `id`. For a person's Shortcut,
+   a change made by any run — that Shortcut's or another one's — fires none of
+   that person's Shortcuts (`Skipped::Loop`). `tilo_automation::check` refuses
+   a Shortcut that could invoke itself, and a run refuses a step that would
+   call a Shortcut already running above it (`StepFailure::Recursion`), so two
+   Shortcuts that call each other spin once and stop. These rules cover the
+   indirect case of a run whose output matches a trigger, without having to
+   know in advance which Shortcut the change will fire.
 2. **Bounded chains.** A run started by a change that itself came from a run
    records `Cause { depth: parent + 1 }` on every change it commits (a new
    optional `ActionContext::caused_by`). The dispatcher fires nothing at depth

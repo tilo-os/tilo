@@ -68,6 +68,7 @@ impl ComputeSandbox for ThumbnailSandbox {
         &self,
         invocation: ComputeSandboxInvocation<'_>,
     ) -> Result<CapturedRunOutput, String> {
+        use std::fmt::Write as _;
         use std::os::unix::process::ExitStatusExt;
         if invocation.entrypoint != ENTRYPOINT {
             return Err(format!("no catalogue command {}", invocation.entrypoint));
@@ -81,8 +82,10 @@ impl ComputeSandbox for ThumbnailSandbox {
                 0,
                 failed
                     .iter()
-                    .map(|failure| format!("thumbnail-batch: {failure}\n"))
-                    .collect::<String>()
+                    .fold(String::new(), |mut stderr, failure| {
+                        let _ = writeln!(stderr, "thumbnail-batch: {failure}");
+                        stderr
+                    })
                     .into_bytes(),
             ),
             Err(error) => (i32::from(error.exit_code()), error.to_string().into_bytes()),

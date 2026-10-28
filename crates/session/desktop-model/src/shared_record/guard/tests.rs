@@ -222,6 +222,40 @@ fn opening_a_window_in_someone_elses_name_is_refused() {
     assert_eq!(windows(&guard), vec![1, 2, 3]);
 }
 
+/// A record route is a window's identity: once a window shows a record,
+/// not even its maker binds it to another one, and the room keeps the one
+/// it showed.
+#[test]
+fn not_even_its_maker_rebinds_a_windows_record() {
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
+    let mut bound = desktop(&[(1, 100, ADA), (2, 200, BEN)]);
+    bound.records = vec![(1, "tab:0000000000000001".into())];
+    shared_record::write(&mut doc, &bound).unwrap();
+    doc.commit();
+    let mut guard = DesktopGuard::new(doc);
+    let mut rebound = bound.clone();
+    rebound.records = vec![(1, "tab:0000000000000012".into())];
+    let rebinds = Page::of(&guard, 1).write(&rebound);
+    assert_eq!(
+        guard.decide(&rebinds, &writer(ADA, None, &moderates(MOD))),
+        Err(DesktopRefusal::Rebound {
+            writer: ADA.into(),
+            window: 1,
+        })
+    );
+    let held = shared_record::read(&guard.doc, None).unwrap();
+    assert_eq!(
+        held.records, bound.records,
+        "the refused write left nothing"
+    );
+    // Closing the window lets go of its record; that is no rebinding.
+    let closes = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
+    guard
+        .decide(&closes, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
+    assert_eq!(windows(&guard), vec![2]);
+}
+
 #[test]
 fn a_write_that_is_not_automerge_changes_nothing() {
     let mut guard = room();

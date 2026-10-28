@@ -94,7 +94,6 @@ pub(crate) enum Command {
     PickFile,
     Dropped(PathBuf),
     Release(usize),
-    CancelDownload,
     Recent(usize),
     Rescan,
     Back,
@@ -1172,11 +1171,13 @@ impl ImagerApp {
             let sink = Rc::clone(&self.commands);
             row.on_effect(move || sink.borrow_mut().push(Command::Release(index)))
         };
-        if downloading {
-            let sink = Rc::clone(&self.commands);
-            row = row.action(Icon::X, "Cancel download", move || {
-                sink.borrow_mut().push(Command::CancelDownload);
-            });
+        if downloading
+            && let Some(cancel) = self
+                .control_actions
+                .as_ref()
+                .and_then(|actions| actions.effect(&ImagerEffect::CancelDownload))
+        {
+            row = row.action_binding(Icon::X, "Cancel download", cancel);
         }
         Some(Box::new(row))
     }
@@ -3205,11 +3206,6 @@ impl ImagerApp {
                     }
                 }
             }
-            Command::CancelDownload => {
-                if let Err(error) = self.cancel_release_download() {
-                    self.fail(&error)
-                }
-            }
             Command::Recent(index) => {
                 if let Some(source) = self.recent.get(index).cloned() {
                     self.select_source(&source)
@@ -4782,11 +4778,6 @@ mod tests {
                 .map(|release| release.display_name())
                 .collect::<Vec<_>>();
             let mut view = harness(app, AutoCommit::new(), (1180, 820));
-            assert!(
-                view.a11y_nodes()
-                    .iter()
-                    .any(|(_, n)| n.label() == Some("Cancel download"))
-            );
             let release_nodes = view
                 .controls()
                 .into_iter()
@@ -4823,6 +4814,27 @@ mod tests {
                 app.release_download
                     .as_ref()
                     .is_some_and(|download| download.control.is_cancelled())
+            );
+        }
+
+        {
+            // The downloading row offers its cancel: the published effect.
+            let mut host =
+                ui::prelude::TestApp::<crate::resource::ImagerShell>::drive("source").unwrap();
+            host.with_widget::<ImagerApp, _>(|app| {
+                app.releases = crate::model::sample_releases();
+                app.release_download = Some(ReleaseDownload {
+                    index: 0,
+                    control: crate::release::DownloadControl::default(),
+                });
+            })
+            .unwrap();
+            host.settle();
+            assert!(
+                host.harness()
+                    .a11y_nodes()
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("Cancel download"))
             );
         }
 

@@ -473,6 +473,19 @@ fn run_with(
     run_id: RunId,
     mode: RunMode,
 ) -> RunReport {
+    run_chained(host, hooks, shortcut, run_id, mode, Vec::new())
+}
+
+/// [`run_with`], for a run whose host says other shortcuts are already
+/// running above it.
+fn run_chained(
+    host: &FakeHost,
+    hooks: &Hooks,
+    shortcut: &Shortcut,
+    run_id: RunId,
+    mode: RunMode,
+    chain: Vec<String>,
+) -> RunReport {
     block_on(run(
         host,
         hooks,
@@ -485,6 +498,7 @@ fn run_with(
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
+            chain,
         },
     ))
 }
@@ -875,6 +889,7 @@ fn a_run_a_task_asked_for_stamps_its_steps_with_that_tasks_group() {
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: Some(parent.clone()),
+            chain: Vec::new(),
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -1297,6 +1312,7 @@ fn bindings_address_into_an_object_input_and_a_loop_item() {
             inputs,
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
@@ -1410,6 +1426,7 @@ fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
                 inputs,
                 caused_by: None,
                 parent: None,
+                chain: Vec::new(),
             },
         ))
     };
@@ -1552,12 +1569,15 @@ fn a_shortcut_that_could_run_itself_is_refused() {
             chain: vec!["a".into(), "a".into()]
         }]
     );
-    let report = run_with(
+    // The run is told its own id is running, as every host says of a run it
+    // starts, and the step that would run it is refused.
+    let report = run_chained(
         &host,
         &Hooks::default(),
         &direct,
         RunId::new(),
         RunMode::Interactive,
+        vec!["a".into()],
     );
     assert!(
         matches!(failure(&report), Some((_, StepFailure::Recursion))),
@@ -1576,6 +1596,34 @@ fn a_shortcut_that_could_run_itself_is_refused() {
         }]
     );
     assert_eq!(check(&a, &host.catalog(), &NoShortcuts), Ok(()));
+
+    // Two shortcuts saved before one of them learned to call the other: the
+    // check that reads the saved library never sees the chain, so the run
+    // refuses the call to one already running above it.
+    let report = run_chained(
+        &host,
+        &Hooks::default(),
+        &a,
+        RunId::new(),
+        RunMode::Unattended,
+        vec!["b".into(), "a".into()],
+    );
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Recursion))),
+        "{report:?}"
+    );
+    assert!(host.started().is_empty());
+    // A shortcut that is not running above it is called as usual.
+    let report = run_chained(
+        &host,
+        &Hooks::default(),
+        &a,
+        RunId::new(),
+        RunMode::Unattended,
+        vec!["a".into()],
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert_eq!(host.started().len(), 1, "the call to b went out");
 
     let mut any = calling("a", "b");
     any.steps = vec![invoke(
@@ -1805,6 +1853,7 @@ fn an_ai_step_never_reads_a_secret() {
             inputs,
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ));
     assert!(
@@ -2223,6 +2272,7 @@ fn archive_run<'a, K: RunHooks>(
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     )
 }
@@ -2451,6 +2501,7 @@ fn a_run_reports_the_version_of_the_shortcut_it_ran() {
             inputs: serde_json::Map::new(),
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ));
     let edited = edit("Tidy the inbox");
@@ -2618,6 +2669,7 @@ fn every_step_of_a_caused_run_records_the_cause() {
             inputs: serde_json::Map::new(),
             caused_by: Some(cause.clone()),
             parent: None,
+            chain: Vec::new(),
         },
     ));
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");

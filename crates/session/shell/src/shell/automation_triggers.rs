@@ -21,7 +21,8 @@
 //! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
 //!   switches on or off.
 //! - [`RecordChangedTriggers`] fires on a committed change to a record of a
-//!   watched kind in the saver's room.
+//!   watched kind in the saver's room, unless a shortcut's run made the
+//!   change: see [`record_firings`].
 //! - [`IncomingMessageTriggers`] fires on a message someone else received in
 //!   the saver's rooms (a change its app marks as one).
 //!
@@ -1070,6 +1071,12 @@ impl RecordElection {
 
 /// What `event` fires among `armed` in its room, through the dispatcher a
 /// bot's host uses too, so both fire on a change the same way.
+///
+/// A change a shortcut's run made fires nothing here, in any room: a
+/// pair of shortcuts that watch each other's kind and write it would
+/// otherwise run each other for as long as the session lasts. The
+/// dispatcher says why ([`Skipped::Loop`]), and the change is passed on
+/// to nobody else on this device.
 fn record_firings(
     armed: &[Armed<'_>],
     event: &RecordEvent,

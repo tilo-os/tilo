@@ -42,6 +42,14 @@ class Controls(unittest.TestCase):
             self.setUp()
             self.assertFalse(u.oracle('rename-workspace', {'state': {'active_workspace': 'Research'}}, {}))
             self.assertTrue(u.oracle('rename-workspace', {'state': {'active_workspace': 'Research'}, 'persisted_workspace_names': ['Research']}, {}))
+        with self.subTest(phase='a paste needs the source text in the destination'):
+            self.setUp()
+            self.response['state']['active_tabs'][0]['title'] = 'Document-001.txt'
+            self.tree['name'] = 'Document-001.txt'
+            self.tree['value'] = 'Fixture document 1\n'
+            self.assertFalse(u.oracle('copy-paste-file', self.response, self.tree))
+            self.tree['value'] = 'Fixture document 0\n'
+            self.assertTrue(u.oracle('copy-paste-file', self.response, self.tree))
         with self.subTest(phase='hidden parent is not visible feedback'):
             self.setUp()
             self.assertFalse(u.oracle('open-file', self.response, {'state': {'hidden': True}, 'children': [self.tree]}))

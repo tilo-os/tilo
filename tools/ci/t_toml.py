@@ -872,30 +872,44 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     return text
 
 
+def _local_edges(packages: dict[str, dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Each package's workspace dependencies through normal and build edges, and through dev
+    edges. Worked out once per `packages`: resolving every dependency's path on each closure
+    was most of what planning and generating spent (a closure per check, per commit asked)."""
+    if _EDGES and _EDGES[0] is packages:
+        return _EDGES[1]
+    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
+    normal: dict[str, list[str]] = {}
+    dev: dict[str, list[str]] = {}
+    for name, package in packages.items():
+        normal[name], dev[name] = [], []
+        for dependency in package.get("dependencies", []):
+            if not dependency.get("path"):
+                continue
+            found = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
+            if found:
+                (dev if dependency.get("kind") == "dev" else normal)[name].append(found)
+    _EDGES[:] = [packages, (normal, dev)]
+    return normal, dev
+
+
+# The packages `_local_edges` last worked out, with their edges (holding the dict keeps its id).
+_EDGES: list = []
+
+
 def local_closure(packages: dict[str, dict], names: set[str], dev: bool) -> set[str]:
     """`names` and the workspace packages they reach through normal and build dependencies,
     and with `dev` through their own dev-dependencies, as t derives a check's packages."""
-    by_manifest = {str(Path(p["manifest_path"]).resolve()): name for name, p in packages.items()}
-
-    def local(package: dict, dev_edges: bool) -> list[str]:
-        found = []
-        for dependency in package.get("dependencies", []):
-            if not dependency.get("path") or (dependency.get("kind") == "dev") != dev_edges:
-                continue
-            name = by_manifest.get(str(Path(dependency["path"]).resolve() / "Cargo.toml"))
-            if name:
-                found.append(name)
-        return found
-
+    normal, dev_edges = _local_edges(packages)
     stack = list(names)
     if dev:
-        stack += [d for name in names for d in local(packages[name], True)]
+        stack += [d for name in names for d in dev_edges[name]]
     seen: set[str] = set()
     while stack:
         name = stack.pop()
         if name not in seen:
             seen.add(name)
-            stack += local(packages[name], False)
+            stack += normal[name]
     return seen
 
 

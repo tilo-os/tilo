@@ -200,7 +200,7 @@ impl Accounts {
     pub(super) fn saved_review_view(
         &self,
         mut body: Column,
-        dispatch: Rc<dyn Fn(AccountRequest)>,
+        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
     ) -> Column {
         for selected in &self.saved.snapshot {
             let Some(id) = selected.source_id() else {
@@ -208,19 +208,21 @@ impl Accounts {
             };
             let state = ui::LocalState::new(!self.saved.excluded.contains(id));
             let id = id.to_owned();
-            let choose = dispatch.clone();
-            body = body.push(Box::new(
+            body = body.push(Box::new(super::super::bound(
+                actions,
                 Checkbox::from_state(&state)
                     .with_id(&format!("installer.account.include.{id}"))
-                    .with_label(selected.label())
-                    .on_change(move |include| {
-                        choose(if include {
-                            AccountRequest::IncludeSaved(id.clone())
-                        } else {
-                            AccountRequest::ExcludeSaved(id.clone())
-                        })
-                    }),
-            ));
+                    .with_label(selected.label()),
+                super::super::InstallerPreviewEffect::ACCOUNT_STEP.map(move |include: bool| {
+                    let request = if include {
+                        AccountRequest::IncludeSaved(id.clone())
+                    } else {
+                        AccountRequest::ExcludeSaved(id.clone())
+                    };
+                    let (step, selection) = request.parts();
+                    (step.to_owned(), selection)
+                }),
+            )));
         }
         body
     }
@@ -281,7 +283,7 @@ impl Accounts {
                 )
                 .secondary(t("installer-accounts-saved-attention"))
                 .icon(Icon::Cloud)
-                .on_activate(move || choose(AccountRequest::Attention(id.clone()))),
+                .on_effect(move || choose(AccountRequest::Attention(id.clone()))),
             ));
         }
         body

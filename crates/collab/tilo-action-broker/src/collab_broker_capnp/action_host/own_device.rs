@@ -160,14 +160,17 @@ fn forwarding_descriptor() -> tilo_actions::ActionDescriptor {
 }
 
 #[cfg(test)]
+mod foreign_ask_tests;
+
+#[cfg(test)]
 mod tests {
     use super::super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
     use crate::services::{OwnDeviceActions, OwnDeviceOutcome};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
-        ActionHostError, Caller, Completer, InvokeArgument, InvokeRequest, Pending,
-        RemoteActionMessage, own_device, pending,
+        ActionHostError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
+        InvokeRequest, Pending, RemoteActionMessage, own_device, pending,
     };
 
     const SETTINGS: &str = "so.tilo.settings";
@@ -204,6 +207,14 @@ mod tests {
             let (answer, pending) = pending();
             self.answers.lock().unwrap().push(answer);
             Ok(pending)
+        }
+
+        fn ask_person(
+            &self,
+            _: &Caller,
+            _: &ConfirmationQuestion,
+        ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
+            Err(ActionHostError::UnknownAction)
         }
     }
 

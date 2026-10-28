@@ -616,6 +616,7 @@ impl BotRunner {
                     inputs,
                     caused_by: cause,
                     parent: None,
+                    chain: Vec::new(),
                 },
             ))
         })
