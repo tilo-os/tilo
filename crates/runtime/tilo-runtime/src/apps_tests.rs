@@ -545,7 +545,7 @@ fn a_connecting_process_names_the_launch_that_started_it() {
     assert!(apps.launched.record(ours, VIEWER, ROOM, None));
     assert!(apps.launched.record(child.id(), VIEWER, ROOM, None));
     let ticket = |pid| {
-        apps.authenticated_launch(pid, VIEWER, ROOM)
+        apps.authenticated_launch(pid, VIEWER, ROOM, None)
             .unwrap()
             .and_then(|launch| launch.launch_ticket)
     };
@@ -556,7 +556,7 @@ fn a_connecting_process_names_the_launch_that_started_it() {
         "two launches of one app hold their own tickets"
     );
     assert!(
-        apps.authenticated_launch(ours, "so.tilo.other", ROOM)
+        apps.authenticated_launch(ours, "so.tilo.other", ROOM, None)
             .unwrap()
             .is_none(),
         "a ticket is presented only for the launch's own app"

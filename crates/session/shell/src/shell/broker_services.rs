@@ -1254,8 +1254,14 @@ impl LauncherServices for NativeLauncher {
         pid: u32,
         app: &str,
         room: &str,
+        window_instance: Option<u64>,
     ) -> Result<Option<tilo_action_broker::services::AuthenticatedApplicationLaunch>, String> {
-        Ok(super::launcher::authenticated_window_launch(pid, app, room))
+        Ok(super::launcher::authenticated_window_launch(
+            pid,
+            app,
+            room,
+            window_instance,
+        ))
     }
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()

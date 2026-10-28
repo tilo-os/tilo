@@ -16,6 +16,7 @@ pub(crate) mod diagnostics;
 mod embed_launch;
 pub(crate) mod launch_history;
 pub(crate) use embed_launch::queue_embed_launch;
+mod launch_records;
 mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
@@ -25,6 +26,17 @@ pub mod room_hold;
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
+#[cfg(test)]
+use launch_records::register_trusted_service_launch;
+use launch_records::{TRUSTED_SERVICE_LAUNCHES, register_trusted_window_launch};
+pub use launch_records::{
+    attest_trusted_service_launch_for_pid, consume_in_process_launch,
+    consume_trusted_service_launch, consume_trusted_service_launch_for_pid,
+    consume_trusted_service_launch_identity, register_in_process_launch,
+};
+pub(crate) use launch_records::{
+    authenticated_window_launch, register_in_process_window, withdraw_in_process_launch,
+};
 
 use crate::shell::action_authority;
 use crate::shell::state::WorkspaceAuthority as _;
@@ -70,7 +82,6 @@ const STDERR_TAIL_LINES: usize = 12;
 /// exhaust compositor memory with one unterminated write.
 #[cfg(any(test, target_os = "linux"))]
 const APP_LOG_LINE_BYTES: usize = 8 * 1024;
-const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// The signed headless package the desktop is allowed to manage for Task
 /// Center work. Keeping this fixed prevents a task title or agent id from
 /// becoming an executable/package selector.
@@ -176,19 +187,6 @@ pub struct ServiceLaunchIdentity {
     pub application_creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
 }
 
-#[derive(Clone, Debug)]
-struct TrustedServiceLaunch {
-    start_time: u64,
-    identity: ServiceLaunchIdentity,
-    registered_at: Instant,
-    continuation_instance: Option<u64>,
-    /// The broker's ticket for the launch that started this process: the
-    /// startup token the compositor gave it, never read back from the app.
-    launch_ticket: Option<u64>,
-}
-
-static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedServiceLaunch>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -266,197 +264,6 @@ pub(crate) fn verified_running_packages() -> Vec<String> {
     packages
 }
 
-#[cfg(any(test, target_os = "linux"))]
-#[cfg(test)]
-fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
-    register_trusted_window_launch(pid, identity, None, None);
-}
-
-fn register_trusted_window_launch(
-    pid: u32,
-    identity: ServiceLaunchIdentity,
-    continuation_instance: Option<u64>,
-    launch_ticket: Option<u64>,
-) {
-    let Some((_, start_time)) = proc_stat(pid) else {
-        return;
-    };
-    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    launches.insert(
-        pid,
-        TrustedServiceLaunch {
-            start_time,
-            identity,
-            registered_at: Instant::now(),
-            continuation_instance,
-            launch_ticket,
-        },
-    );
-}
-
-/// Launch records of the apps the session shows inside its own process: the
-/// app and room each is about to connect for, until its collaboration
-/// connection is attested or the record expires.
-struct InProcessLaunch {
-    identity: ServiceLaunchIdentity,
-    registered_at: Instant,
-    continuation_instance: Option<u64>,
-}
-static IN_PROCESS_LAUNCHES: Mutex<Vec<InProcessLaunch>> = Mutex::new(Vec::new());
-
-/// Record that the session itself is about to connect `app_id` in room
-/// `workspace_id`, as it records a process it launched.
-pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
-    register_in_process_window(app_id, workspace_id, None);
-}
-
-pub(crate) fn register_in_process_window(
-    app_id: &str,
-    workspace_id: &str,
-    continuation_instance: Option<u64>,
-) {
-    let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    launches.push(InProcessLaunch {
-        identity: ServiceLaunchIdentity {
-            app_id: app_id.to_owned(),
-            workspace_id: workspace_id.to_owned(),
-            allowed_compat_entry_ids: Vec::new(),
-            compat_entry_generation: 0,
-            application_creation: None,
-        },
-        registered_at: Instant::now(),
-        continuation_instance,
-    });
-}
-
-/// Spend the session's launch record for a connection from its own process
-/// naming `app_id` in room `workspace_id`.
-pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
-    take_in_process_window_launch(pid, app_id, workspace_id).is_some()
-}
-
-pub(crate) fn authenticated_window_launch(
-    pid: u32,
-    app: &str,
-    room: &str,
-) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
-    let (_, start_time) = proc_stat(pid)?;
-    {
-        let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-        launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-        if let Some(launch) = launches.get(&pid)
-            && launch.start_time == start_time
-            && launch.identity.app_id == app
-            && launch.identity.workspace_id == room
-        {
-            return Some(
-                tilo_action_broker::services::AuthenticatedApplicationLaunch {
-                    creation: launch.identity.application_creation.clone(),
-                    continuation_instance: launch.continuation_instance,
-                    launch_ticket: launch.launch_ticket,
-                },
-            );
-        }
-    }
-    take_in_process_window_launch(pid, app, room)
-}
-
-fn take_in_process_window_launch(
-    pid: u32,
-    app: &str,
-    room: &str,
-) -> Option<tilo_action_broker::services::AuthenticatedApplicationLaunch> {
-    if pid != std::process::id() {
-        return None;
-    }
-    let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    let index = launches
-        .iter()
-        .position(|launch| launch.identity.app_id == app && launch.identity.workspace_id == room)?;
-    let launch = launches.remove(index);
-    drop(launches);
-    Some(
-        tilo_action_broker::services::AuthenticatedApplicationLaunch {
-            creation: launch.identity.application_creation,
-            continuation_instance: launch.continuation_instance,
-            launch_ticket: None,
-        },
-    )
-}
-
-/// Consume the compositor's one-shot authority record for a launcher child.
-/// Kernel process facts corroborate the record but never create authority.
-pub fn consume_trusted_service_launch_identity(
-    pid: u32,
-    start_time: u64,
-    app_id: &str,
-    workspace_id: &str,
-) -> Option<ServiceLaunchIdentity> {
-    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    let launch = launches.get(&pid)?;
-    if launch.start_time != start_time
-        || launch.identity.app_id != app_id
-        || launch.identity.workspace_id != workspace_id
-    {
-        return None;
-    }
-    launches.remove(&pid).map(|launch| launch.identity)
-}
-
-/// Compatibility service view of [`consume_trusted_service_launch_identity`].
-/// The compatibility server only needs its fixed entry snapshot; the
-/// collaboration broker consumes the full record to authenticate a launch.
-pub fn consume_trusted_service_launch(
-    pid: u32,
-    start_time: u64,
-    app_id: &str,
-    workspace_id: &str,
-) -> Option<Vec<String>> {
-    consume_trusted_service_launch_identity(pid, start_time, app_id, workspace_id)
-        .map(|identity| identity.allowed_compat_entry_ids)
-}
-
-/// Atomically consume a service launch record using the kernel's current PID
-/// start-time. A direct `tilo-launcher` invocation has no compositor record,
-/// and a reused PID cannot inherit a dead launch's authority.
-pub fn consume_trusted_service_launch_for_pid(
-    pid: u32,
-    app_id: &str,
-    workspace_id: &str,
-) -> Option<ServiceLaunchIdentity> {
-    let (_, start_time) = proc_stat(pid)?;
-    consume_trusted_service_launch_identity(pid, start_time, app_id, workspace_id)
-}
-
-/// Verify (without spending) the shell-owned process record for a service
-/// descriptor. Collaboration and compatibility may both be declared by one
-/// package, so consuming collaboration's descriptor must not invalidate the
-/// compatibility service's independent one-shot handoff.
-pub fn attest_trusted_service_launch_for_pid(
-    pid: u32,
-    app_id: &str,
-    workspace_id: &str,
-) -> Option<ServiceLaunchIdentity> {
-    let (_, start_time) = proc_stat(pid)?;
-    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-    launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    let identity = launches.get(&pid).and_then(|launch| {
-        (launch.start_time == start_time
-            && launch.identity.app_id == app_id
-            && launch.identity.workspace_id == workspace_id)
-            .then(|| launch.identity.clone())
-    });
-    // Keep the registry lock out of the return expression. This function is
-    // called while service descriptors are being inspected, and no caller
-    // needs the registry held while it handles the resulting identity.
-    drop(launches);
-    identity
-}
-
 /// Publish the server-owned compatibility entries that a newly launched
 /// Windows manager may address. Existing launches deliberately retain their
 /// one-shot snapshot.
@@ -489,7 +296,16 @@ fn unregister_launched_process(pid: u32) {
     if let Ok(mut map) = LAUNCHED_PROCESSES.lock() {
         map.remove(&pid);
     }
-    lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
+    // The process exited: its launch record ends. A record of a live process
+    // is a later launch's that was given the exited one's pid.
+    let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
+    if launches
+        .get(&pid)
+        .is_some_and(|launch| !launch.process.alive())
+    {
+        launches.remove(&pid);
+    }
+    drop(launches);
     LAUNCH_RETIREMENT_CHANGED.notify_all();
     note_running_changed();
 }
