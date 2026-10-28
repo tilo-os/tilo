@@ -170,7 +170,7 @@ impl Session {
     pub(super) fn record_read(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
-        resource: ui::tilo_reference::ResourceAt,
+        resource: &ui::tilo_reference::ResourceAt,
     ) -> Result<()> {
         let Some(issue) = issue_of(run) else {
             return Ok(());

@@ -1620,7 +1620,7 @@ impl Session {
         state.looked_up.push(descriptor.address.resource.clone());
         self.record_read(
             run,
-            ui::tilo_reference::ResourceAt {
+            &ui::tilo_reference::ResourceAt {
                 app: offer.app.clone(),
                 record: None,
                 reference: ui::tilo_reference::ResourceRef::whole(
