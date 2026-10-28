@@ -138,7 +138,7 @@ def run_check(ctx, chk: Check) -> Result:
     started = time.monotonic()
     ctx.current = res
     lost = getattr(ctx.vm, "restart_failed", None)
-    if lost:
+    if isinstance(lost, str) and lost:
         # The session stopped answering and the harness could not bring it back: this check
         # cannot observe anything, and waiting out its bounds would only delay the report.
         res.status, res.unobservable = "fail", True
@@ -179,7 +179,7 @@ def run_check(ctx, chk: Check) -> Result:
     if restarted:
         res.status = "fail"
         res.detail = _join(res.detail, restarted)
-    if getattr(ctx.vm, "restart_failed", None):
+    if isinstance(getattr(ctx.vm, "restart_failed", None), str):
         ctx.facts.setdefault("session_lost_after", chk.id)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
