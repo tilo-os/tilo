@@ -33,7 +33,7 @@ use ui::num::f64_of_i64;
 use serde::{Deserialize, Serialize};
 
 use crate::shell::device_fabric::PersonalFabricAction;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// Probe cadence toward a peer while something holds its clock in sync.
 pub const CLOCK_SYNC_PROBE_INTERVAL: Duration = Duration::from_millis(250);

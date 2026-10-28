@@ -8,9 +8,9 @@ use super::{NetCmd, PersonalFabricPayload, ShellNetwork};
 use crate::shell::device_certification::{self as certification, Keys};
 use crate::shell::device_fabric::PersonalFabricActionEnvelope;
 use crate::shell::device_pairing;
-use crate::shell::personal_continuity::DeviceId;
 use std::sync::{Arc, mpsc as std_mpsc};
 use tilo_identity_host::certification_ceremony::{IdentityKey, pairing_code};
+use tilo_network_actor::fabric::DeviceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, verify_device_cert};
 use tokio::sync::mpsc;
 

@@ -29,7 +29,6 @@ use super::{
     personal_continuity_topic_id, registered_home_peer_addrs, relay_topics_for_home_peers,
     room_topic_id,
 };
-use crate::network::actor::room_governance::{Addressee, Request};
 use crate::network::invite::InviteRole;
 use crate::network::invite::enrollment_driver;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
@@ -45,6 +44,7 @@ use tilo_actions::remote::{
     room_governance_resource,
 };
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
+use tilo_network_actor::room_governance::{Addressee, Request};
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
@@ -509,7 +509,7 @@ impl ShellNetwork {
                 );
                 self.cmd_tx
                     .try_send(NetCmd::OwnDeviceHost(Box::new(
-                        crate::network::actor::own_device_host::Request {
+                        tilo_network_actor::own_device_host::Request {
                             addr: addr.clone(),
                             device: *device,
                             governance: Request {

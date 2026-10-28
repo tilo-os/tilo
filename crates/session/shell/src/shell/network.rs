@@ -37,6 +37,8 @@ mod native_admission;
 mod native_admission_tests;
 mod native_enrollment;
 mod native_ingress;
+#[cfg(test)]
+mod native_ingress_actor_tests;
 mod on_demand_records;
 pub(crate) use on_demand_records::OnDemand;
 #[cfg(test)]
@@ -126,19 +128,24 @@ use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
-use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
-use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
+use tilo_network_actor::behaviour::load_or_create_keypair;
+use tilo_network_actor::{Actor, HostIdentity, NearbyTransferCheckpoint, NetCmd, NetEvent};
+use tilo_network_actor::{PersonalFabricPayload, WorkspaceControlRoute};
 
-pub use crate::network::actor::PeerDepartureCause;
 use crate::shell::collab_broker::CrdtRoute;
+pub use tilo_network_actor::PeerDepartureCause;
 
-/// Compatibility/control topic used only when a message has no room identity.
-pub const DEFAULT_WS_TOPIC: u64 = 0;
+use tilo_network_actor::{DEFAULT_WS_TOPIC, room_topic_id};
+
+/// The wake a channel queue rouses its drain with: a poke of `park`.
+fn poke(park: &Arc<crate::idle_wake::DrainPark>) -> tilo_network_actor::Wake {
+    let park = Arc::clone(park);
+    Arc::new(move || park.poke())
+}
 
 /// Maximum number of recent transport departures retained for diagnostics.
 ///
@@ -357,7 +364,7 @@ pub struct PeerDeparture {
     /// Actor-minted incarnation of this endpoint on this exact topic. `None`
     /// is reserved for relay/session events that cannot authorize the
     /// personal fabric.
-    pub membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    pub membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     pub session_handle: u64,
     pub route: CrdtRoute,
     pub cause: PeerDepartureCause,
@@ -374,30 +381,27 @@ pub struct PeerDeparture {
 pub(crate) struct AuthenticatedPersonalRoute {
     workspace_topic: u64,
     endpoint_id: iroh::EndpointId,
-    membership_epoch: crate::network::actor::MembershipEpoch,
+    membership_epoch: tilo_network_actor::MembershipEpoch,
     user_public_key: [u8; 32],
-    device: crate::shell::personal_continuity::DeviceId,
+    device: tilo_network_actor::fabric::DeviceId,
 }
 
 impl AuthenticatedPersonalRoute {
-    pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
+    pub(crate) fn device(&self) -> &tilo_network_actor::fabric::DeviceId {
         &self.device
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(device: crate::shell::personal_continuity::DeviceId) -> Self {
+    pub(crate) fn for_test(device: tilo_network_actor::fabric::DeviceId) -> Self {
         Self::for_test_epoch(device, 1)
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test_epoch(
-        device: crate::shell::personal_continuity::DeviceId,
-        epoch: u64,
-    ) -> Self {
+    pub(crate) fn for_test_epoch(device: tilo_network_actor::fabric::DeviceId, epoch: u64) -> Self {
         Self {
             workspace_topic: 1,
             endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
-            membership_epoch: crate::network::actor::MembershipEpoch::for_test(epoch),
+            membership_epoch: tilo_network_actor::MembershipEpoch::for_test(epoch),
             user_public_key: [0xE8; 32],
             device,
         }
@@ -497,20 +501,6 @@ fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
         .collect()
 }
 
-/// Stable transport/host shard for a durable room. Local workspace handles are
-/// deliberately not used: they differ between devices.
-pub fn room_topic_id(room: RoomId) -> u64 {
-    if room.is_nil() {
-        return DEFAULT_WS_TOPIC;
-    }
-    // `room.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
-    // can always re-parse, so the `Err` path is unreachable in practice.
-    // Fall back to the "no room identity" topic rather than panic on this
-    // hot path — `room_workspace_id` never returns 0 on success, so a real
-    // topic id can't collide with the fallback.
-    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
-}
-
 /// Stable private shard shared only by certified devices rooted in the same
 /// person identity. The full root key is also carried in and authenticated on
 /// every message; this 64-bit value is routing, never authority.
@@ -539,7 +529,7 @@ fn relay_topics_for_home_peers(
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
-pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
+pub const DEFAULT_KEYPAIR_PATH: &str = tilo_network_actor::behaviour::DEVICE_KEY_PATH;
 
 /// Resolve one network configuration value; an empty value counts as absent.
 fn network_env(name: &'static str) -> Option<(&'static str, std::ffi::OsString)> {
@@ -741,7 +731,7 @@ pub(crate) fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RegisteredHomePeer {
     addr: iroh::EndpointAddr,
-    expectation: crate::network::actor::HomePeerExpectation,
+    expectation: tilo_network_actor::HomePeerExpectation,
     /// The name it was paired with.
     label: String,
 }
@@ -827,7 +817,7 @@ fn home_peers_from_registrations(
             .unwrap_or_else(|| iroh::EndpointAddr::new(relay_id));
         addrs.push(RegisteredHomePeer {
             addr,
-            expectation: crate::network::actor::HomePeerExpectation {
+            expectation: tilo_network_actor::HomePeerExpectation {
                 user_public_key: local_user,
                 device_public_key,
             },
@@ -1527,7 +1517,7 @@ pub struct ShellNetwork {
     /// (its workspace identities): each has a person room of its own, routed
     /// to that root's other devices only.
     workspace_person_roots: Vec<[u8; 32]>,
-    pub(crate) personal_continuity_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub(crate) personal_continuity_device: Option<tilo_network_actor::fabric::DeviceId>,
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
@@ -1593,8 +1583,8 @@ pub struct ShellNetwork {
     pub(crate) drain_wake: std::sync::Arc<crate::idle_wake::DrainPark>,
     /// The sealed writes and replay ends rooms' host sessions carry, which
     /// the network actor queues for the broker's drain without the frame
-    /// loop ([`crate::network::actor::native_ingress::ChannelQueue`]).
-    channel_queue: Arc<crate::network::actor::native_ingress::ChannelQueue>,
+    /// loop ([`tilo_network_actor::native_ingress::ChannelQueue`]).
+    channel_queue: Arc<tilo_network_actor::native_ingress::ChannelQueue>,
     /// Opens waiting for a room's host to replay what it retains, by the
     /// room's topic: each is told once the broker took what was replayed.
     sealed_replays: Mutex<std::collections::HashMap<u64, Vec<tokio::sync::oneshot::Sender<()>>>>,
@@ -1685,7 +1675,7 @@ pub struct ShellNetwork {
 struct HeldRemoteAction {
     workspace_topic: u64,
     peer: iroh::EndpointId,
-    membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     replayed: bool,
     frame: Vec<u8>,
 }
@@ -2050,7 +2040,8 @@ impl ShellNetwork {
         // Must use the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
-        let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
+        let local_peer_hash =
+            tilo_network_actor::behaviour::peer_liveness_handle(&keypair.public());
         let lookup = MemoryLookup::new();
         // The relay transport binds with an empty map: no home relay, net
         // report or port mapping until something needs this device
@@ -2104,7 +2095,7 @@ impl ShellNetwork {
                 builder
                     .secret_key(keypair.clone())
                     .address_lookup(lookup.clone())
-                    .transport_config(crate::network::actor::transport_config())
+                    .transport_config(tilo_network_actor::transport_config())
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
@@ -2130,7 +2121,7 @@ impl ShellNetwork {
             .map(workspace_person_roots)
             .unwrap_or_default();
         let personal_continuity_device = host_identity.as_ref().and_then(|identity| {
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 identity.device_cert.device_public_key,
             ))
             .ok()
@@ -2157,14 +2148,15 @@ impl ShellNetwork {
         let discovery_endpoint = endpoint.clone();
         // This device's room host answers on the endpoint once it hosts a
         // room; until then its handlers refuse.
-        let (local_host, host_protocols) = crate::network::local_host::LocalHost::deferred();
+        let (local_host, host_protocols) = tilo_network_actor::local_host::LocalHost::deferred();
+        crate::network::install_actor_services();
         let (cmd_tx, _join) = Actor::spawn_hosting(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
             reachability.clone(),
-            Some(crate::network::actor::Hosting {
+            Some(tilo_network_actor::Hosting {
                 host: local_host.clone(),
                 protocols: host_protocols,
             }),
@@ -2292,7 +2284,7 @@ impl ShellNetwork {
         let readiness = tree.room_readiness().clone();
         let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
         let channel_queue =
-            crate::network::actor::native_ingress::ChannelQueue::new(Arc::clone(&drain_wake));
+            tilo_network_actor::native_ingress::ChannelQueue::new(poke(&drain_wake));
         let network = Self {
             cmd_tx,
             tree,
@@ -2424,7 +2416,7 @@ impl ShellNetwork {
     /// Certified local identity used to author personal-fabric state.
     pub fn local_device_fabric_identity(
         &self,
-    ) -> Option<(crate::shell::personal_continuity::DeviceId, String)> {
+    ) -> Option<(tilo_network_actor::fabric::DeviceId, String)> {
         Some((
             self.personal_continuity_device.clone()?,
             self.host_identity
@@ -2448,7 +2440,7 @@ impl ShellNetwork {
         &self,
         workspace: u64,
         target: iroh::EndpointId,
-    ) -> Result<crate::network::WorkspaceControlSession, String> {
+    ) -> Result<tilo_network_actor::workspace_control::WorkspaceControlSession, String> {
         if target == self.local_peer_id {
             return Err("cannot control this device through its remote route".into());
         }
@@ -2477,12 +2469,14 @@ impl ShellNetwork {
         } else {
             return Err("no authenticated direct workspace-control path is online".into());
         };
-        Ok(crate::network::WorkspaceControlSession::new(
-            workspace,
-            self.local_peer_hash,
-            target,
-            route,
-        ))
+        Ok(
+            tilo_network_actor::workspace_control::WorkspaceControlSession::new(
+                workspace,
+                self.local_peer_hash,
+                target,
+                route,
+            ),
+        )
     }
 
     /// Publish one input through a session's selected route. The session gate
@@ -2494,7 +2488,7 @@ impl ShellNetwork {
     /// is unavailable.
     pub fn publish_workspace_control_input(
         &self,
-        session: &crate::network::WorkspaceControlSession,
+        session: &tilo_network_actor::workspace_control::WorkspaceControlSession,
         event: &tilo_window_share::streaming::InputEvent,
     ) -> Result<(), String> {
         let msg = session.input_message(event).map_err(str::to_owned)?;
@@ -2516,7 +2510,7 @@ impl ShellNetwork {
     /// unavailable.
     pub fn publish_workspace_control_keyframe_request(
         &self,
-        session: &crate::network::WorkspaceControlSession,
+        session: &tilo_network_actor::workspace_control::WorkspaceControlSession,
         seq: u64,
     ) -> Result<(), String> {
         let msg = session.keyframe_request(seq).map_err(str::to_owned)?;
@@ -2570,7 +2564,7 @@ impl ShellNetwork {
             .read()
             .room_peer_endpoints(room)
             .into_iter()
-            .filter(|device| crate::network::behaviour::peer_liveness_handle(device) != local)
+            .filter(|device| tilo_network_actor::behaviour::peer_liveness_handle(device) != local)
             .collect()
     }
 
@@ -2693,7 +2687,7 @@ impl ShellNetwork {
                 relays
                     .iter()
                     .filter(|(relay_ws, _)| *relay_ws == workspace)
-                    .map(|(_, relay)| crate::network::behaviour::peer_liveness_handle(relay))
+                    .map(|(_, relay)| tilo_network_actor::behaviour::peer_liveness_handle(relay))
                     .collect()
             })
             .unwrap_or_default()
@@ -2707,7 +2701,7 @@ impl ShellNetwork {
         let _ = self.event_wake.set(Box::new(move || events()));
         let _ = self
             .cmd_tx
-            .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
+            .try_send(NetCmd::SetWake(tilo_network_actor::LoopWake(wake)));
     }
 
     /// What a frame-tick step that found the tree held by another thread
@@ -3346,7 +3340,7 @@ impl ShellNetwork {
         // A whole mutation fits a frame (larger ones travel as segments); one
         // that does not would be refused by every receiver.
         let size = postcard::to_allocvec(&payload).map_or(usize::MAX, |bytes| bytes.len());
-        if size > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES {
+        if size > tilo_network_actor::fabric::MAX_FABRIC_CHECKPOINT_BYTES {
             tracing::warn!(
                 size,
                 "person room document exceeds the personal fabric frame limit; dropping"
@@ -3476,7 +3470,7 @@ impl ShellNetwork {
             sender.capabilities.foreign,
         );
         self.handle_document_message(
-            crate::network::behaviour::peer_liveness_handle(&peer),
+            tilo_network_actor::behaviour::peer_liveness_handle(&peer),
             app_id,
             cluster_id,
             record_id,
@@ -4850,7 +4844,7 @@ impl ShellNetwork {
     /// The tally of every application message this device's peers and
     /// hosts delivered to it. Blocks until the actor answers, so it must
     /// not be called from inside the network's runtime.
-    pub fn wire_tally(&self) -> Option<Arc<crate::network::actor::WireTally>> {
+    pub fn wire_tally(&self) -> Option<Arc<tilo_network_actor::WireTally>> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.cmd_tx.try_send(NetCmd::WireTally(reply)).ok()?;
         answer.blocking_recv().ok()
@@ -5587,7 +5581,7 @@ impl ShellNetwork {
     /// The devices of this person the fabric currently sees online.
     pub fn online_device_ids(
         &self,
-    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
+    ) -> std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId> {
         self.with_device_fabric(|fabric| {
             fabric
                 .online_devices()
@@ -5615,7 +5609,7 @@ impl ShellNetwork {
     /// Returns an error for a malformed target or a full command queue.
     pub(crate) fn cancel_nearby_transfer_stream(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         transfer_id: [u8; 16],
     ) -> Result<(), String> {
         let target_bytes: [u8; 32] = hex::decode(target.as_str())
@@ -5636,7 +5630,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     pub(crate) fn start_nearby_transfer(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         transfer: NearbyTransferCheckpoint,
         path: &Path,
     ) -> Result<(), String> {
@@ -5692,7 +5686,7 @@ impl ShellNetwork {
     /// transport cannot take it right now.
     pub fn send_personal_fabric_action(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
         self.try_send_personal_fabric_action(target, action)
@@ -5710,7 +5704,7 @@ impl ShellNetwork {
     /// every other failure.
     pub fn try_send_personal_fabric_action(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError> {
         let (request_id, command) = self
@@ -5727,7 +5721,7 @@ impl ShellNetwork {
 
     fn personal_fabric_command(
         &self,
-        target: &crate::shell::personal_continuity::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
@@ -5803,9 +5797,7 @@ impl ShellNetwork {
     }
 
     /// The person's other devices with a current route here, each once.
-    pub(crate) fn personal_route_devices(
-        &self,
-    ) -> Vec<crate::shell::personal_continuity::DeviceId> {
+    pub(crate) fn personal_route_devices(&self) -> Vec<tilo_network_actor::fabric::DeviceId> {
         let mut devices: Vec<_> = self
             .authenticated_personal_routes
             .lock()
@@ -5817,7 +5809,7 @@ impl ShellNetwork {
     }
 
     /// This device, as the person's fabric names it.
-    pub(crate) fn personal_device_id(&self) -> Option<crate::shell::personal_continuity::DeviceId> {
+    pub(crate) fn personal_device_id(&self) -> Option<tilo_network_actor::fabric::DeviceId> {
         self.personal_continuity_device.clone()
     }
 
@@ -5830,7 +5822,7 @@ impl ShellNetwork {
 
     pub(crate) fn current_personal_route(
         &self,
-        device: &crate::shell::personal_continuity::DeviceId,
+        device: &tilo_network_actor::fabric::DeviceId,
     ) -> Option<AuthenticatedPersonalRoute> {
         self.authenticated_personal_routes
             .lock()
@@ -5862,7 +5854,7 @@ impl ShellNetwork {
         &self,
         workspace_topic: u64,
         endpoint_id: iroh::EndpointId,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
     ) -> AuthenticatedPersonalRoute {
         let route = AuthenticatedPersonalRoute {
@@ -5870,10 +5862,8 @@ impl ShellNetwork {
             endpoint_id,
             membership_epoch,
             user_public_key,
-            device: crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                endpoint_id.as_bytes(),
-            ))
-            .expect("endpoint id is a valid test device"),
+            device: tilo_network_actor::fabric::DeviceId::new(hex::encode(endpoint_id.as_bytes()))
+                .expect("endpoint id is a valid test device"),
         };
         self.authenticated_personal_routes
             .lock()
@@ -5957,7 +5947,7 @@ impl ShellNetwork {
 
     pub(crate) fn personal_device_is_enrolled(
         &self,
-        device: &crate::shell::personal_continuity::DeviceId,
+        device: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
         self.personal_continuity_user.is_some()
             && self.certified_secret_recipients().contains(device)
@@ -5966,7 +5956,7 @@ impl ShellNetwork {
     /// Retain offline facts without treating a checkpoint as live reachability.
     pub(crate) fn person_display_devices(
         &self,
-        local: &crate::shell::personal_continuity::DeviceId,
+        local: &tilo_network_actor::fabric::DeviceId,
     ) -> Vec<settings_store::person_displays::PersonDevice> {
         if self.personal_continuity_user.is_none()
             || self.personal_continuity_device.as_ref() != Some(local)
@@ -5978,13 +5968,13 @@ impl ShellNetwork {
             .person_devices(local)
             .into_iter()
             .filter(|device| {
-                crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                tilo_network_actor::fabric::DeviceId::new(device.device.clone())
                     .is_ok_and(|owner| enrolled.contains(&owner))
             })
             .map(|mut device| {
                 device.online = device.local
                     || (device.online
-                        && crate::shell::personal_continuity::DeviceId::new(device.device.clone())
+                        && tilo_network_actor::fabric::DeviceId::new(device.device.clone())
                             .is_ok_and(|owner| self.current_personal_route(&owner).is_some()));
                 device
             })
@@ -5993,9 +5983,9 @@ impl ShellNetwork {
 
     fn observe_display_outputs(
         &self,
-        owner: &crate::shell::personal_continuity::DeviceId,
-        stamp: &crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+        owner: &tilo_network_actor::fabric::DeviceId,
+        stamp: &tilo_network_actor::fabric::FabricStamp,
+        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
     ) -> Result<bool, crate::shell::device_fabric::FabricError> {
         let mut fabric = self
             .device_fabric
@@ -6056,8 +6046,8 @@ impl ShellNetwork {
     /// Rejects metadata without the local owner identity or current revision.
     pub fn publish_local_display_outputs(
         &self,
-        stamp: &crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+        stamp: &tilo_network_actor::fabric::FabricStamp,
+        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
     ) -> Result<bool, crate::shell::device_fabric::FabricError> {
         use crate::shell::device_fabric::FabricError;
         if !self
@@ -6093,8 +6083,7 @@ impl ShellNetwork {
 
     pub(crate) fn load_display_input_declines(
         &self,
-    ) -> Result<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>, String>
-    {
+    ) -> Result<std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>, String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::load(&path, user)
     }
@@ -6102,7 +6091,7 @@ impl ShellNetwork {
     #[cfg(test)]
     pub(crate) fn save_display_input_declines(
         &self,
-        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        devices: &std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
         input_declines::save(&path, user, devices)
@@ -6115,7 +6104,7 @@ impl ShellNetwork {
     /// fails.
     pub(crate) fn save_display_input_declines_in_background(
         &self,
-        devices: &std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>,
+        devices: &std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>,
         failed: impl FnOnce(String) + Send + 'static,
     ) -> Result<(), String> {
         let (path, user) = self.display_input_declines_path()?;
@@ -6135,7 +6124,7 @@ impl ShellNetwork {
 
     /// Delete everything `device` published to the personal fabric, here and
     /// in the persisted checkpoint, once it has left the person's fleet.
-    pub fn forget_device_fabric(&self, device: &crate::shell::personal_continuity::DeviceId) {
+    pub fn forget_device_fabric(&self, device: &tilo_network_actor::fabric::DeviceId) {
         let Ok(mut fabric) = self.device_fabric.lock() else {
             return;
         };
@@ -6158,7 +6147,7 @@ impl ShellNetwork {
         &self,
         update: impl FnOnce(
             &mut crate::shell::device_unlock::UnlockFabricState,
-            &crate::shell::device_fabric::FabricStamp,
+            &tilo_network_actor::fabric::FabricStamp,
         ),
     ) -> Result<(), String> {
         self.modify_local_device_fabric(|snapshot, stamp| {
@@ -6169,7 +6158,7 @@ impl ShellNetwork {
 
     /// The person's `device` has no route here any more: it shows offline
     /// until it is back.
-    fn device_departed(&self, device: &crate::shell::personal_continuity::DeviceId) {
+    fn device_departed(&self, device: &tilo_network_actor::fabric::DeviceId) {
         let Ok(mut fabric) = self.device_fabric.lock() else {
             return;
         };
@@ -6195,7 +6184,7 @@ impl ShellNetwork {
         &self,
         edit: impl FnOnce(
             &mut crate::shell::device_fabric::DeviceFabricSnapshot,
-            &crate::shell::device_fabric::FabricStamp,
+            &tilo_network_actor::fabric::FabricStamp,
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         let local = self
@@ -6211,7 +6200,7 @@ impl ShellNetwork {
                 .get(&local)
                 .cloned()
                 .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
-            let stamp = crate::shell::device_fabric::FabricStamp {
+            let stamp = tilo_network_actor::fabric::FabricStamp {
                 counter: fabric.max_counter().saturating_add(1).max(1),
                 device: local,
             };
@@ -6318,7 +6307,7 @@ impl ShellNetwork {
     /// persist the local fabric snapshot.
     pub(crate) fn seal_tethering_credential(
         &self,
-        requester: &crate::shell::personal_continuity::DeviceId,
+        requester: &tilo_network_actor::fabric::DeviceId,
         ssid: &str,
         password: &str,
     ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
@@ -6335,7 +6324,7 @@ impl ShellNetwork {
             password,
             &author,
             std::collections::BTreeSet::from([requester.clone()]),
-            crate::shell::device_fabric::FabricStamp {
+            tilo_network_actor::fabric::FabricStamp {
                 counter: self.device_fabric().max_counter().saturating_add(1).max(1),
                 device: author.clone(),
             },
@@ -6408,7 +6397,7 @@ impl ShellNetwork {
     /// or the registered home-device ids change.
     fn certified_secret_recipients(
         &self,
-    ) -> Arc<std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId>> {
+    ) -> Arc<std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>> {
         let local = self.personal_continuity_device.as_ref();
         let build = |enrolled: &[[u8; 32]]| {
             let mut recipients = local
@@ -6417,11 +6406,11 @@ impl ShellNetwork {
                 .collect::<std::collections::BTreeSet<_>>();
             if let Ok(devices) = self.registered_home_device_ids.lock() {
                 recipients.extend(devices.iter().filter_map(|device| {
-                    crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).ok()
                 }));
             }
             recipients.extend(enrolled.iter().filter_map(|device| {
-                crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).ok()
             }));
             recipients
         };
@@ -7008,10 +6997,10 @@ impl ShellNetwork {
                             direct.iter().any(|(_, endpoint)| endpoint == &peer)
                         });
                 if !has_live_route {
-                    let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                    let handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
                     // Adverts are not restated on a timer, so they do not
                     // go stale by themselves: a departure forgets them.
-                    crate::network::media_caps::forget(handle);
+                    tilo_network_actor::media_caps::forget(handle);
                     self.peer_identities
                         .remove(&crate::shell::state::PeerOrigin::peer(&peer));
                     {
@@ -7058,7 +7047,7 @@ impl ShellNetwork {
                 status,
             } => {
                 if let Ok(target) =
-                    crate::shell::personal_continuity::DeviceId::new(hex::encode(target.as_bytes()))
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(target.as_bytes()))
                 {
                     crate::shell::device_fabric_runtime::record_nearby_transfer_progress(
                         target,
@@ -7083,7 +7072,7 @@ impl ShellNetwork {
         &self,
         ws: u64,
         peer: iroh::EndpointId,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
@@ -7148,9 +7137,9 @@ impl ShellNetwork {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
             PersonalFabricPayload::NearbyTransfer(frame) => {
-                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                )) else {
+                let Ok(source) =
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
+                else {
                     return;
                 };
                 crate::shell::device_fabric_runtime::handle_nearby_transfer_frame(
@@ -7223,7 +7212,7 @@ impl ShellNetwork {
         bytes: &[u8],
     ) {
         let received_monotonic_us = fabric_monotonic_us();
-        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
+        if bytes.len() > tilo_network_actor::fabric::MAX_FABRIC_ACTION_BYTES {
             tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
             return;
         }
@@ -7241,7 +7230,7 @@ impl ShellNetwork {
             return;
         };
         let Ok(source) =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(authenticated_device))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(authenticated_device))
         else {
             return;
         };
@@ -7285,9 +7274,9 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         cause: PeerDepartureCause,
-        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
     ) {
-        let session_handle = crate::network::behaviour::peer_liveness_handle(&peer);
+        let session_handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
         let route = {
             self.tree
                 .read()
@@ -7360,7 +7349,7 @@ impl ShellNetwork {
         &self,
         ws: u64,
         peer: iroh::EndpointId,
-        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        membership_epoch: Option<tilo_network_actor::MembershipEpoch>,
         replayed: bool,
         msg: NeighbourMsg,
     ) {
@@ -7448,9 +7437,8 @@ impl ShellNetwork {
                     .find(|root| ws == personal_continuity_topic_id(root)),
                 self.peer_identities.get(&origin),
             ) && identity.is_same_user(&user)
-                && let Ok(device) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                ))
+                && let Ok(device) =
+                    tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
                 && let Ok(mut routes) = self.authenticated_personal_routes.lock()
             {
                 routes.insert(
@@ -7484,7 +7472,7 @@ impl ShellNetwork {
             // An admitted native member need not also send a legacy hello.
             // Presence still binds the publisher to the authenticated endpoint
             // and checks this exact room's current signed read authority.
-            if *publisher == crate::network::behaviour::peer_liveness_handle(&peer)
+            if *publisher == tilo_network_actor::behaviour::peer_liveness_handle(&peer)
                 && self.governed_presence_allows(ws, peer, app_id, cluster_id)
             {
                 self.dispatch_app_presence_v2(
@@ -7525,7 +7513,7 @@ impl ShellNetwork {
         }
         if self.require_peer_identity
             && let Some(claimed_peer) = Self::claimed_publisher(&msg)
-            && claimed_peer != crate::network::behaviour::peer_liveness_handle(&peer)
+            && claimed_peer != tilo_network_actor::behaviour::peer_liveness_handle(&peer)
         {
             tracing::warn!(
                 peer = %peer,
@@ -7547,7 +7535,7 @@ impl ShellNetwork {
             software_encode,
         } = &msg
         {
-            crate::network::media_caps::record(
+            tilo_network_actor::media_caps::record(
                 *advertiser,
                 hardware_decode,
                 software_decode,
@@ -8302,8 +8290,7 @@ pub(crate) fn shell_network_for_test(
         .collect();
     let readiness = tree.room_readiness().clone();
     let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
-    let channel_queue =
-        crate::network::actor::native_ingress::ChannelQueue::new(Arc::clone(&drain_wake));
+    let channel_queue = tilo_network_actor::native_ingress::ChannelQueue::new(poke(&drain_wake));
     let net = ShellNetwork {
         cmd_tx,
         tree,
@@ -8590,7 +8577,7 @@ mod tests {
         let user = [0x44_u8; 32];
         let (mut net, mut commands) = personal_continuity_network_for_test(user);
         net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
-        let id = crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).unwrap();
+        let id = tilo_network_actor::fabric::DeviceId::new(hex::encode(device)).unwrap();
         assert!(net.certified_secret_recipients().contains(&id));
         let request_id = net
             .send_personal_fabric_action(
@@ -8649,9 +8636,8 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        let kept = crate::shell::personal_continuity::DeviceId::new(hex::encode(kept_key)).unwrap();
-        let removed =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed_key)).unwrap();
+        let kept = tilo_network_actor::fabric::DeviceId::new(hex::encode(kept_key)).unwrap();
+        let removed = tilo_network_actor::fabric::DeviceId::new(hex::encode(removed_key)).unwrap();
         let reads = || net.personal_device_peers.lock().unwrap().reads();
         // One second of audio to two speakers, on the production send path.
         for _ in 0..50 {
@@ -8689,8 +8675,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        let removed =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(removed)).unwrap();
+        let removed = tilo_network_actor::fabric::DeviceId::new(hex::encode(removed)).unwrap();
         net.try_send_personal_fabric_action(&removed, remote_audio_frame())
             .expect("an enrolled device takes an audio frame");
         while commands.try_recv().is_ok() {}
@@ -8719,7 +8704,7 @@ mod tests {
         let device = iroh::SecretKey::from_bytes(&[0x23; 32]);
         authenticated_personal_peer(&net, &root, &device);
         while commands.try_recv().is_ok() {}
-        let advertiser = crate::network::behaviour::peer_liveness_handle(&device.public());
+        let advertiser = tilo_network_actor::behaviour::peer_liveness_handle(&device.public());
         for ws in [DEFAULT_WS_TOPIC, personal_continuity_topic_id(&user)] {
             net.dispatch_neighbour_msg(
                 ws,
@@ -8736,7 +8721,7 @@ mod tests {
             );
         }
         assert!(
-            crate::network::media_caps::capabilities(advertiser)
+            tilo_network_actor::media_caps::capabilities(advertiser)
                 .hardware_decode
                 .iter()
                 .any(|codec| codec.wire_label() == "h264"),
@@ -8745,7 +8730,7 @@ mod tests {
         assert!(commands.try_recv().is_err());
 
         let stranger = iroh::SecretKey::from_bytes(&[0x24; 32]);
-        let unproven = crate::network::behaviour::peer_liveness_handle(&stranger.public());
+        let unproven = tilo_network_actor::behaviour::peer_liveness_handle(&stranger.public());
         net.dispatch_neighbour_msg(
             DEFAULT_WS_TOPIC,
             stranger.public(),
@@ -8760,7 +8745,7 @@ mod tests {
             },
         );
         assert!(
-            crate::network::media_caps::capabilities(unproven)
+            tilo_network_actor::media_caps::capabilities(unproven)
                 .hardware_decode
                 .is_empty(),
             "an unauthenticated device's advert is not recorded"
@@ -9399,10 +9384,9 @@ mod tests {
         let path = dir.path().join("personal-device-fabric.postcard");
         net.device_fabric_path = Some(path.clone());
         authenticated_personal_peer(&net, &root, &peer_device);
-        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-            peer_device.public().as_bytes(),
-        ))
-        .unwrap();
+        let owner =
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer_device.public().as_bytes()))
+                .unwrap();
         let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
         incoming.upsert(fabric_snapshot(owner.clone(), 8)).unwrap();
         let payload = PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap());
@@ -9411,7 +9395,7 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -9515,15 +9499,15 @@ mod tests {
         drop(env);
     }
 
-    fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
-        crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
+    fn test_device(byte: u8) -> tilo_network_actor::fabric::DeviceId {
+        tilo_network_actor::fabric::DeviceId::new(hex::encode([byte; 32]))
             .expect("valid test device")
     }
 
     fn fabric_envelope(
         request_byte: u8,
-        source: &crate::shell::personal_continuity::DeviceId,
-        target: &crate::shell::personal_continuity::DeviceId,
+        source: &tilo_network_actor::fabric::DeviceId,
+        target: &tilo_network_actor::fabric::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> crate::shell::device_fabric::PersonalFabricActionEnvelope {
         crate::shell::device_fabric::PersonalFabricActionEnvelope {
@@ -9544,10 +9528,9 @@ mod tests {
     fn nearby_stream_cancel_targets_only_the_exact_peer_and_transfer() {
         let (net, mut commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
         let target_endpoint = iroh::SecretKey::from_bytes(&[0xC1; 32]).public();
-        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-            target_endpoint.as_bytes(),
-        ))
-        .expect("target device");
+        let target =
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(target_endpoint.as_bytes()))
+                .expect("target device");
         let transfer_id = [0xC2; 16];
         net.cancel_nearby_transfer_stream(&target, transfer_id)
             .expect("cancel command");
@@ -9558,8 +9541,8 @@ mod tests {
                 transfer_id: cancelled_id,
             }) if cancelled_target == target_endpoint && cancelled_id == transfer_id
         ));
-        let malformed = crate::shell::personal_continuity::DeviceId::new("not-a-transport-id")
-            .expect("device id");
+        let malformed =
+            tilo_network_actor::fabric::DeviceId::new("not-a-transport-id").expect("device id");
         assert!(
             net.cancel_nearby_transfer_stream(&malformed, transfer_id)
                 .is_err()
@@ -9584,7 +9567,7 @@ mod tests {
             &net,
             &root,
             &device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             topic,
         );
         let frame = tilo_actions::remote::RemoteActionFrame::new(
@@ -9610,7 +9593,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             topic,
             device.public(),
-            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            Some(tilo_network_actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::RemoteAction { frame },
         );
@@ -9670,7 +9653,7 @@ mod tests {
             let tree_b = tree_for();
             let (mut net_b, mut commands_b) = shell_network_for_test(tree_b.clone(), 0xB);
             net_b.require_peer_identity = true;
-            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
             authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
             authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
 
@@ -9820,7 +9803,7 @@ mod tests {
                 .encode()
                 .expect("frame")
             };
-            let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
             for sender in [&device_a, &stranger] {
                 net.dispatch_neighbour_msg(
                     topic,
@@ -9891,7 +9874,7 @@ mod tests {
             });
             direct.observe(&NeighbourMsg::SurfaceStreamStart {
                 surface: 4,
-                source_peer: crate::network::behaviour::peer_liveness_handle(&target),
+                source_peer: tilo_network_actor::behaviour::peer_liveness_handle(&target),
                 width: 64,
                 height: 64,
                 codec: "h264".into(),
@@ -9995,7 +9978,7 @@ mod tests {
             shell_network_for_test(WorkspaceTree::default().shared(), 0xC0_11_AB);
         net.personal_continuity_user = Some(user_public_key);
         net.personal_continuity_device = Some(
-            crate::shell::personal_continuity::DeviceId::new("local-continuity-device")
+            tilo_network_actor::fabric::DeviceId::new("local-continuity-device")
                 .expect("valid local device id"),
         );
         // Exercise the production fail-closed gate rather than the usual
@@ -10194,7 +10177,7 @@ mod tests {
             board.net(),
             &stranger_root,
             &stranger_device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             topic,
         );
         offer();
@@ -10244,7 +10227,7 @@ mod tests {
             net,
             root,
             device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
         );
     }
 
@@ -10252,7 +10235,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
     ) {
         authenticated_personal_peer_on_topic(
             net,
@@ -10280,7 +10263,7 @@ mod tests {
             net,
             root,
             device,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             personal_continuity_topic_id(&root.verifying_key().to_bytes()),
             capabilities,
         );
@@ -10290,7 +10273,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         topic: u64,
     ) {
         authenticated_peer_with(
@@ -10307,7 +10290,7 @@ mod tests {
         net: &ShellNetwork,
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: crate::network::actor::MembershipEpoch,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
         topic: u64,
         capabilities: tilo_user_identity::DeviceCapabilities,
     ) {
@@ -10456,7 +10439,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: user,
-                    publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(&peer.public()),
                     snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
                 },
             );
@@ -10512,15 +10495,15 @@ mod tests {
             let relay_key = iroh::SecretKey::from_bytes(&[0x84; 32]);
             let relay_signing_key = ed25519_dalek::SigningKey::from_bytes(&relay_key.to_bytes());
             let user_public_key = root.verifying_key().to_bytes();
-            let local_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let local_device = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 local_key.verifying_key().to_bytes(),
             ))
             .expect("local device id");
-            let remote_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let remote_device = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 remote_key.verifying_key().to_bytes(),
             ))
             .expect("remote device id");
-            let relay_service = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let relay_service = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 relay_key.public().as_bytes(),
             ))
             .expect("relay service id");
@@ -10630,13 +10613,14 @@ mod tests {
     }
 
     fn fabric_snapshot(
-        owner: crate::shell::personal_continuity::DeviceId,
+        owner: tilo_network_actor::fabric::DeviceId,
         counter: u64,
     ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
         use crate::shell::device_fabric::{
             DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-            FabricCapabilities, FabricStamp, OwnerSession,
+            FabricCapabilities, OwnerSession,
         };
+        use tilo_network_actor::fabric::FabricStamp;
         DeviceFabricSnapshot {
             schema_version: FABRIC_SCHEMA_VERSION,
             presence: DevicePresence {
@@ -10717,14 +10701,15 @@ mod tests {
     }
 
     pub(super) fn rich_display_network_snapshot(
-        owner: crate::shell::personal_continuity::DeviceId,
+        owner: tilo_network_actor::fabric::DeviceId,
     ) -> (
         crate::shell::device_fabric::DeviceFabricSnapshot,
-        crate::shell::device_fabric::DisplayOutputObservation,
+        tilo_network_actor::fabric::DisplayOutputObservation,
     ) {
-        use crate::shell::device_fabric::{
-            DisplayConnectorPlacement, DisplayOutputObservation, DisplayPlacement, DisplayRect,
-        };
+        use crate::shell::device_fabric::DisplayPlacement;
+        use tilo_network_actor::fabric::DisplayConnectorPlacement;
+        use tilo_network_actor::fabric::DisplayOutputObservation;
+        use tilo_network_actor::fabric::DisplayRect;
         let mut snapshot = fabric_snapshot(owner.clone(), 1);
         let rect = DisplayRect {
             x: 0,
@@ -10768,9 +10753,9 @@ mod tests {
     #[test]
     fn offline_display_cache_requires_root_enrolment_and_exact_revision() {
         use crate::shell::device_fabric::DeviceFabric;
-        use crate::shell::personal_continuity::DeviceId;
         use std::collections::BTreeSet;
         use std::os::unix::fs::PermissionsExt as _;
+        use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
         let owner = DeviceId::new("offline-display").unwrap();
@@ -10826,8 +10811,8 @@ mod tests {
     #[test]
     fn offline_display_cache_rejects_corruption_without_partial_projection() {
         use crate::shell::device_fabric::DeviceFabric;
-        use crate::shell::personal_continuity::DeviceId;
         use std::collections::BTreeSet;
+        use tilo_network_actor::fabric::DeviceId;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("facts.json");
         let owner = DeviceId::new("offline-display").unwrap();
@@ -10892,7 +10877,7 @@ mod tests {
         // assigned workspaces only, so nothing but the display cache could.
         authenticated_workspace_peer(&net, &root, &peer);
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
         let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
@@ -10992,7 +10977,7 @@ mod tests {
             .unwrap()
             .insert(*peer.public().as_bytes());
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let local = net.personal_continuity_device.clone().unwrap();
         let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
@@ -11020,7 +11005,7 @@ mod tests {
             ws: personal_continuity_topic_id(&user),
             peer: peer.public(),
             cause: PeerDepartureCause::GossipNeighborDown,
-            membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
         });
         assert!(!net.person_display_devices(&local)[0].online);
         assert!(
@@ -11045,10 +11030,10 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[0xE2; 32]);
         let (mut net, _commands) = personal_continuity_network_for_test(user);
         let allowed = net.continuity_policy_override;
-        let epoch = crate::network::actor::MembershipEpoch::for_test(1);
+        let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
         authenticated_personal_peer_at(&net, &root, &peer, epoch);
         let owner =
-            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
         let (mut snapshot, observation) = rich_display_network_snapshot(owner.clone());
         net.device_fabric
@@ -11069,7 +11054,7 @@ mod tests {
         net.dispatch_personal_fabric(
             topic,
             peer.public(),
-            crate::network::actor::MembershipEpoch::for_test(2),
+            tilo_network_actor::MembershipEpoch::for_test(2),
             user,
             payload.clone(),
         );
@@ -11118,7 +11103,7 @@ mod tests {
         fn device_fabric_store_recovers_from_valid_backup() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-device-fabric.postcard");
-            let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+            let owner = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
             let mut expected = crate::shell::device_fabric::DeviceFabric::default();
             expected.upsert(fabric_snapshot(owner, 7)).unwrap();
             let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
@@ -11137,7 +11122,7 @@ mod tests {
             let peer_device = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
             authenticated_personal_peer(&net, &root, &peer_device);
-            let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let owner = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .unwrap();
@@ -11147,20 +11132,19 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
             );
             assert!(net.device_fabric().snapshots().contains_key(&owner));
 
-            let forged =
-                crate::shell::personal_continuity::DeviceId::new("some-other-device").unwrap();
+            let forged = tilo_network_actor::fabric::DeviceId::new("some-other-device").unwrap();
             let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
             incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
             );
@@ -11172,7 +11156,7 @@ mod tests {
             let user = root.verifying_key().to_bytes();
             let target_key = iroh::SecretKey::generate();
             let (net, mut commands) = personal_continuity_network_for_test(user);
-            let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let target = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 target_key.public().as_bytes(),
             ))
             .unwrap();
@@ -11221,7 +11205,7 @@ mod tests {
             let peer_device = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
             authenticated_personal_peer(&net, &root, &peer_device);
-            let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let source = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .unwrap();
@@ -11241,7 +11225,7 @@ mod tests {
                 net.dispatch_personal_fabric(
                     personal_continuity_topic_id(&user),
                     peer_device.public(),
-                    crate::network::actor::MembershipEpoch::for_test(1),
+                    tilo_network_actor::MembershipEpoch::for_test(1),
                     user,
                     payload.clone(),
                 );
@@ -11257,11 +11241,11 @@ mod tests {
             let mut misaddressed = envelope;
             misaddressed.request_id = [9; 16];
             misaddressed.target =
-                crate::shell::personal_continuity::DeviceId::new("another-device").unwrap();
+                tilo_network_actor::fabric::DeviceId::new("another-device").unwrap();
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
             );
@@ -11273,13 +11257,12 @@ mod tests {
             let user = root.verifying_key().to_bytes();
             let peer = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(user);
-            let old_epoch = crate::network::actor::MembershipEpoch::for_test(41);
-            let new_epoch = crate::network::actor::MembershipEpoch::for_test(42);
+            let old_epoch = tilo_network_actor::MembershipEpoch::for_test(41);
+            let new_epoch = tilo_network_actor::MembershipEpoch::for_test(42);
             authenticated_personal_peer_at(&net, &root, &peer, old_epoch);
-            let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                peer.public().as_bytes(),
-            ))
-            .unwrap();
+            let source =
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                    .unwrap();
             let target = net.personal_continuity_device.clone().unwrap();
             let mut envelope = fabric_envelope(
                 0xD4,
@@ -11324,7 +11307,7 @@ mod tests {
             let local_user = local_root.verifying_key().to_bytes();
             let peer = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(local_user);
-            let epoch = crate::network::actor::MembershipEpoch::for_test(51);
+            let epoch = tilo_network_actor::MembershipEpoch::for_test(51);
             authenticated_personal_peer_on_topic(
                 &net,
                 &other_root,
@@ -11332,10 +11315,9 @@ mod tests {
                 epoch,
                 personal_continuity_topic_id(&local_user),
             );
-            let peer_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                peer.public().as_bytes(),
-            ))
-            .unwrap();
+            let peer_device =
+                tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                    .unwrap();
             assert!(net.current_personal_route(&peer_device).is_none());
             net.peer_identities
                 .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
@@ -11372,7 +11354,7 @@ mod tests {
                 &net,
                 &local_root,
                 &peer,
-                crate::network::actor::MembershipEpoch::for_test(52),
+                tilo_network_actor::MembershipEpoch::for_test(52),
             );
             // Prove the actor-only token is not part of the serializable envelope:
             // changing local route authority leaves the exact wire bytes unchanged.
@@ -11735,7 +11717,7 @@ mod tests {
         fn personal_continuity_counter_and_checkpoint_survive_restart_store() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("personal-continuity.postcard");
-            let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+            let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
             let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
                 device.clone(),
                 41,
@@ -11825,9 +11807,10 @@ mod tests {
     #[serial_test::serial]
     fn continued_app_state_waits_for_the_list_to_bring_its_room() {
         use crate::shell::personal_continuity::{
-            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId,
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
             LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
         };
+        use tilo_network_actor::fabric::DeviceId;
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
         let user_public_key = root.verifying_key().to_bytes();
         let source_endpoint = iroh::SecretKey::from_bytes(&[0xE6; 32]);
@@ -11872,7 +11855,7 @@ mod tests {
             false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
-                publisher: crate::network::behaviour::peer_liveness_handle(
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                     &source_endpoint.public(),
                 ),
                 snapshot: checkpoint,
@@ -11911,8 +11894,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn personal_continuity_app_report_checkpoint_restore_close_and_restart_lifecycle() {
-        use crate::shell::personal_continuity::{AppInstanceId, DeviceId, LaunchIntent};
+        use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
         use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
+        use tilo_network_actor::fabric::DeviceId;
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
         let user_public_key = root.verifying_key().to_bytes();
@@ -12082,7 +12066,7 @@ mod tests {
             false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
-                publisher: crate::network::behaviour::peer_liveness_handle(
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                     &source_endpoint.public(),
                 ),
                 snapshot: checkpoint,
@@ -12166,7 +12150,7 @@ mod tests {
             false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
-                publisher: crate::network::behaviour::peer_liveness_handle(
+                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                     &source_endpoint.public(),
                 ),
                 snapshot: closed_checkpoint,
@@ -12208,7 +12192,7 @@ mod tests {
             authenticated_personal_peer(&net, &foreign_root, &foreign_device);
             while commands.try_recv().is_ok() {}
 
-            let foreign_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let foreign_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 foreign_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -12226,7 +12210,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: local_user,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &foreign_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&snapshot).expect("encode snapshot"),
@@ -12255,7 +12239,7 @@ mod tests {
             authenticated_personal_peer(&net, &root, &peer_device);
             while commands.try_recv().is_ok() {}
 
-            let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -12277,7 +12261,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &peer_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
@@ -12316,7 +12300,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .map(|workspace| workspace.id);
-            let peer_device_id = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 peer_device.public().as_bytes(),
             ))
             .expect("endpoint id is a valid device id");
@@ -12343,7 +12327,7 @@ mod tests {
                 false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
-                    publisher: crate::network::behaviour::peer_liveness_handle(
+                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
                         &peer_device.public(),
                     ),
                     snapshot: postcard::to_allocvec(&offered).expect("encode populated checkpoint"),
@@ -12485,7 +12469,7 @@ mod tests {
                         ws: DEFAULT_WS_TOPIC,
                         peer,
                         cause: PeerDepartureCause::LivenessTimedOut,
-                        membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(
+                        membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(
                             u64::try_from(generation + 1).expect("small test generation"),
                         )),
                     })
@@ -12937,7 +12921,7 @@ mod tests {
             assert_eq!(departure.generation, 1);
             assert_eq!(
                 departure.session_handle,
-                crate::network::behaviour::peer_liveness_handle(&peer)
+                tilo_network_actor::behaviour::peer_liveness_handle(&peer)
             );
             assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
             assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
@@ -13113,7 +13097,7 @@ mod tests {
             receiver.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 from.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -13239,7 +13223,7 @@ mod tests {
             &net,
             &collaborator_root,
             &collaborator,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             personal_continuity_topic_id(&user),
         );
         while sent.try_recv().is_ok() {}
@@ -13279,7 +13263,7 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 from.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 PersonalFabricPayload::Document {
                     app_id: "so.tilo.tube".into(),
@@ -13336,14 +13320,14 @@ mod tests {
             &net,
             &stranger,
             &iroh::SecretKey::from_bytes(&[0xEF; 32]),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             personal_continuity_topic_id(&user),
         );
         authenticated_personal_peer_on_topic(
             &net,
             &root,
             &phone,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             room_topic_id(RoomId::new()),
         );
         assert_eq!(
@@ -13394,14 +13378,14 @@ mod tests {
             &phone,
             &root,
             &laptop,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             continuity,
         );
         authenticated_personal_peer_on_topic(
             &phone,
             &stranger_root,
             &stranger,
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             continuity,
         );
         let kept = |author: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
@@ -13463,7 +13447,7 @@ mod tests {
         let phone = iroh::SecretKey::from_bytes(&[0xC7; 32]);
         let large = collab_types::DocumentMutation::Snapshot(vec![
             7;
-            crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES
+            tilo_network_actor::fabric::MAX_FABRIC_CHECKPOINT_BYTES
                 + 1
         ]);
         let frames = large.encode_frames().expect("segments");
@@ -13518,7 +13502,7 @@ mod tests {
             receiver.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 laptop.public(),
-                crate::network::actor::MembershipEpoch::for_test(1),
+                tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
                 payload,
             );
@@ -13600,14 +13584,14 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&work),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             work,
             from_laptop(&own_person_room, &ada),
         );
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&ada),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             ada,
             from_laptop(&own_person_room, &ada),
         );
@@ -13618,7 +13602,7 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&work),
             work_laptop.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
+            tilo_network_actor::MembershipEpoch::for_test(1),
             work,
             from_laptop(&workspace_identity_room, &work),
         );
@@ -13660,7 +13644,7 @@ mod tests {
         phone.dispatch_neighbour_msg(
             continuity,
             tablet.public(),
-            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            Some(tilo_network_actor::MembershipEpoch::for_test(1)),
             false,
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,

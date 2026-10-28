@@ -1,5 +1,5 @@
 //! What each peer can encode and decode, from their
-//! [`NeighbourMsg::MediaCapabilities`](crate::network::NeighbourMsg) adverts.
+//! [`NeighbourMsg::MediaCapabilities`](neighbour_wire::NeighbourMsg) adverts.
 //!
 //! A peer advertises when its link to a neighbour comes up and again when
 //! what it can do changes, not on a timer, so an advert holds until the peer
@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 
 use media::realtime::CodecCapabilities;
 
-use crate::network::protocol::{NeighbourMsg, PeerId};
+use neighbour_wire::{NeighbourMsg, PeerId};
 use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]

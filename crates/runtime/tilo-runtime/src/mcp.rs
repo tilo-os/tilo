@@ -9,8 +9,11 @@ mod page;
 mod put;
 #[path = "mcp_schema.rs"]
 mod schema;
+#[path = "mcp_step.rs"]
+mod step;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use step::{STEP, SURFACE_STRUCTURED};
 use tilo_actions::remote::{
     ActionHost, Caller, CatalogueLimits, CataloguePage, CatalogueQuery, CatalogueRow,
     InvokeArgument, InvokeRequest, RemoteActionTarget,
@@ -424,6 +427,14 @@ struct OneCall {
 #[serde(deny_unknown_fields)]
 struct StatusArgs {
     invocation_id: String,
+}
+/// One `tools/call`'s parameters.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCall {
+    name: String,
+    #[serde(default = "empty_object")]
+    arguments: Value,
 }
 /// The provider a call addresses, with the app of the instance it names
 /// (none for the workspace itself).
@@ -1344,10 +1355,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         // Standard request metadata is protocol context, never action arguments
         // or authority. Progress notifications are not advertised or emitted.
-        if let Some(metadata) = params
+        let metadata = params
             .as_object_mut()
-            .and_then(|params| params.remove("_meta"))
-        {
+            .and_then(|params| params.remove("_meta"));
+        if let Some(metadata) = &metadata {
             if !metadata.is_object() {
                 return Some(error(&id, -32602, "_meta must be an object"));
             }
@@ -1374,7 +1385,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools":self.tools()})),
-            "tools/call" => self.call_tool(params).await,
+            "tools/call" => self.call_tool(params, metadata.as_ref()).await,
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
             _ => return Some(error(&id, -32601, "Method not found")),
@@ -1386,15 +1397,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
     /// `tools/call`: the tool `params` names, on the surface this session
     /// serves. An unknown tool is an invalid-params error like a malformed call.
-    async fn call_tool(&self, params: Value) -> Result<Value, String> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Call {
-            name: String,
-            #[serde(default = "empty_object")]
-            arguments: Value,
-        }
-        match parse::<Call>(params) {
+    /// `metadata` is the request's `_meta`, which names the undo step the
+    /// call joins ([`Self::step_gesture`]).
+    async fn call_tool(&self, params: Value, metadata: Option<&Value>) -> Result<Value, String> {
+        let invocation = params
+            .pointer("/arguments/invocation_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let step = self.step_gesture(metadata, invocation.as_deref())?;
+        let structured = metadata
+            .and_then(|metadata| metadata.pointer(SURFACE_STRUCTURED))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        STEP.scope(step, self.call_named(parse::<ToolCall>(params), structured))
+            .await
+    }
+    /// [`Self::call_tool`], inside the call's undo step.
+    async fn call_named(
+        &self,
+        call: Result<ToolCall, String>,
+        structured: bool,
+    ) -> Result<Value, String> {
+        match call {
             Ok(call)
                 if self.computer.is_some()
                     && matches!(call.name.as_str(), "computer" | "computer_batch") =>
@@ -1427,7 +1451,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                         definition["name"].as_str() == Some(call.name.as_str())
                     }) =>
             {
-                Ok(self.agent_call(&call.name, call.arguments).await)
+                Ok(self
+                    .agent_call(&call.name, call.arguments, structured)
+                    .await)
             }
             Ok(call)
                 if self.surface == Surface::Classic
@@ -2968,10 +2994,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .map(|_| Admission::Answered)
             .map_err(BridgeError::Host)
     }
+    /// The context this session's invocations carry: its agent run, its
+    /// actor, and the undo step of the tool call they are made in
+    /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
         self.agent_run().map(|run| tilo_actions::ActionContext {
             group: Some(run),
             invoker: Some(tilo_actions::ActionInvoker::actor(self.actor.clone())),
+            gesture: STEP.try_with(|step| *step).ok(),
             ..tilo_actions::ActionContext::default()
         })
     }

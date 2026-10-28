@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use crate::portal::CaptureBroker;
 use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
 use crate::shell::remote_capture::adapter::{
     ProductionRemoteCaptureAdapter, RemoteCaptureAdapter, RemoteCaptureAdapterError,
@@ -26,6 +25,7 @@ use crate::shell::remote_capture::device::{
 use crate::shell::remote_capture::source::{
     CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
 };
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteCaptureConsentView {

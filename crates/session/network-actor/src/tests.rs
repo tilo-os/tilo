@@ -389,7 +389,7 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
             }),
         };
         let encoded = postcard::to_allocvec(&wire).unwrap();
-        assert!(encoded.len() < crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES);
+        assert!(encoded.len() < crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES);
         let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
         let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
             transfer_id,
@@ -770,7 +770,7 @@ async fn two_actors_exchange_and_announce_identity_over_iroh() {
     {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
-        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
+        let source_peer = crate::behaviour::peer_liveness_handle(&a.id());
         let b_addr = b.addr();
         let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
         let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
@@ -1086,7 +1086,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
         let (c, lookup_c) = endpoint().await;
-        let source_peer = crate::network::behaviour::peer_liveness_handle(&a.id());
+        let source_peer = crate::behaviour::peer_liveness_handle(&a.id());
         let b_addr = b.addr();
         let c_addr = c.addr();
         let (cmd_a, task_a) = Actor::spawn(a, lookup_a);
@@ -1324,7 +1324,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                 .send(NetCmd::PublishWorkspaceControl {
                     ws: 43,
                     msg: NeighbourMsg::RemoteInput {
-                        peer: crate::network::behaviour::peer_liveness_handle(&a_id),
+                        peer: crate::behaviour::peer_liveness_handle(&a_id),
                         surface: 7,
                         event: vec![0x51, 0x4f, 0x53],
                     },

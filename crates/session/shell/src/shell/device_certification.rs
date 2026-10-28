@@ -25,7 +25,7 @@ use tilo_user_identity::DeviceCert;
 
 use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// How long the person has to approve on a device that holds the key. The
 /// new device waits 270 seconds for its pairing; the exchange after the

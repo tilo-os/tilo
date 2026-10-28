@@ -26,9 +26,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::{FabricError, FabricStamp};
-use crate::shell::personal_continuity::DeviceId;
+use crate::shell::device_fabric::FabricError;
 pub use runtime_collab::SpeakerMemberStatus;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 pub const MAX_SPEAKER_GROUPS: usize = 16;
 pub const MAX_SPEAKER_GROUP_MEMBERS: usize = 8;

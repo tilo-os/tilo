@@ -3,7 +3,6 @@ use super::{
     Arc, Authorization, NativeMessagingCredential, NativeMessagingIdentity, Owner, Route,
     SendError, SignalAuthority,
 };
-use crate::network::private_messages::{self, Text, Transport};
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, Ordering},
@@ -12,6 +11,7 @@ use tilo_messaging_protocol::{
     native_broker::{Assembly, NativeBroker},
     supervisor::AccountSupervisor,
 };
+use tilo_network_actor::private_messages::{self, Text, Transport};
 
 pub(super) struct Startup {
     pub identity: NativeMessagingIdentity,

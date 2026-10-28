@@ -1409,8 +1409,8 @@ impl NativeShortcutLibrary {
         actor: String,
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
-        use crate::network::actor::room_governance::trace;
         use tilo_action_broker::automation::ShortcutChange;
+        use tilo_network_actor::room_governance::trace;
         trace::note(|| format!("shortcut commit in {room} by {actor}"));
         let unavailable = tree.read().documents_unavailable(room);
         if let Some(reason) = unavailable {
@@ -1497,7 +1497,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
                 request.change,
             )
             .await;
-            crate::network::actor::room_governance::trace::note(|| {
+            tilo_network_actor::room_governance::trace::note(|| {
                 format!(
                     "shortcut store {:?} in {room}: {committed:?}",
                     request.invocation
@@ -2492,13 +2492,13 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
             .map_err(|_| capnp::Error::failed("invalid target device identity".into()))?;
         let session = self
             .0
-            .open_workspace_control(super::network::room_topic_id(room), target)
+            .open_workspace_control(tilo_network_actor::room_topic_id(room), target)
             .map_err(capnp::Error::failed)?;
         let initial_route = match session.route() {
-            crate::network::WorkspaceControlRoute::Direct { .. } => {
+            tilo_network_actor::WorkspaceControlRoute::Direct { .. } => {
                 runtime_collab::WorkspaceControlRoute::Direct
             }
-            crate::network::WorkspaceControlRoute::Relayed { via } => {
+            tilo_network_actor::WorkspaceControlRoute::Relayed { via } => {
                 runtime_collab::WorkspaceControlRoute::Relayed {
                     via: *via.as_bytes(),
                 }
@@ -2520,7 +2520,7 @@ impl WorkspaceControlServices for NativeWorkspaceControl {
 struct CapnpWorkspaceControlHandle {
     revalidate: Arc<dyn Fn() -> Result<(), capnp::Error> + Send + Sync>,
     network: Arc<crate::shell::network::ShellNetwork>,
-    session: Rc<AsyncMutex<crate::network::WorkspaceControlSession>>,
+    session: Rc<AsyncMutex<tilo_network_actor::workspace_control::WorkspaceControlSession>>,
     inbound: Rc<
         AsyncMutex<
             tokio::sync::mpsc::UnboundedReceiver<
@@ -2532,10 +2532,10 @@ struct CapnpWorkspaceControlHandle {
 }
 
 fn workspace_control_event(
-    update: crate::network::WorkspaceControlUpdate,
+    update: tilo_network_actor::workspace_control::WorkspaceControlUpdate,
 ) -> runtime_collab::WorkspaceControlEvent {
     match update {
-        crate::network::WorkspaceControlUpdate::ConsentGranted {
+        tilo_network_actor::workspace_control::WorkspaceControlUpdate::ConsentGranted {
             surface,
             width,
             height,
@@ -2544,7 +2544,7 @@ fn workspace_control_event(
             width,
             height,
         },
-        crate::network::WorkspaceControlUpdate::Frame {
+        tilo_network_actor::workspace_control::WorkspaceControlUpdate::Frame {
             surface,
             encoded_h264,
             timestamp,
@@ -2555,20 +2555,22 @@ fn workspace_control_event(
             timestamp,
             seq,
         },
-        crate::network::WorkspaceControlUpdate::Closed(reason) => {
+        tilo_network_actor::workspace_control::WorkspaceControlUpdate::Closed(reason) => {
             runtime_collab::WorkspaceControlEvent::Closed(reason)
         }
     }
 }
 
 fn closed_workspace_control_event(
-    session: &crate::network::WorkspaceControlSession,
+    session: &tilo_network_actor::workspace_control::WorkspaceControlSession,
 ) -> Option<runtime_collab::WorkspaceControlEvent> {
-    let crate::network::WorkspaceControlStatus::Closed(reason) = session.status() else {
+    let tilo_network_actor::workspace_control::WorkspaceControlStatus::Closed(reason) =
+        session.status()
+    else {
         return None;
     };
     Some(workspace_control_event(
-        crate::network::WorkspaceControlUpdate::Closed(reason.clone()),
+        tilo_network_actor::workspace_control::WorkspaceControlUpdate::Closed(reason.clone()),
     ))
 }
 
@@ -2705,7 +2707,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                     },
                     runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
                         let surface = match session.status() {
-                            crate::network::WorkspaceControlStatus::Active { surface, .. } => {
+                            tilo_network_actor::workspace_control::WorkspaceControlStatus::Active { surface, .. } => {
                                 *surface
                             }
                             _ => {
@@ -3010,11 +3012,11 @@ mod tests {
     #[test]
     fn closed_workspace_control_session_is_terminal_for_rpc_readers() {
         let target = iroh::SecretKey::generate().public();
-        let mut session = crate::network::WorkspaceControlSession::new(
+        let mut session = tilo_network_actor::workspace_control::WorkspaceControlSession::new(
             7,
             11,
             target,
-            crate::network::WorkspaceControlRoute::Direct { target },
+            tilo_network_actor::WorkspaceControlRoute::Direct { target },
         );
         assert!(closed_workspace_control_event(&session).is_none());
         session.disconnect();

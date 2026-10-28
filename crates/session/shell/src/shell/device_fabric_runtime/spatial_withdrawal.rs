@@ -4,9 +4,9 @@ use super::{InputLease, PersonalFabricAction, SpatialInputState, spatial_input_s
 use crate::shell::{
     device_fabric::MAX_DEVICES,
     network::{AuthenticatedPersonalRoute, ShellNetwork},
-    personal_continuity::DeviceId,
 };
 use std::collections::BTreeMap;
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Default)]
 pub(super) struct SpatialWithdrawals {

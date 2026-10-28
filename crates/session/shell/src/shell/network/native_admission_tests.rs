@@ -6,7 +6,6 @@
 //! [`ShellNetwork::frame_tick`] must not sync at all, and must still hand
 //! the admitted write on before any event that arrived after it.
 use super::*;
-use crate::network::actor::{HostIdentity, native_ingress};
 use ed25519_dalek::SigningKey;
 use std::{
     cell::Cell,
@@ -16,6 +15,7 @@ use std::{
 };
 use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
+use tilo_network_actor::{HostIdentity, native_ingress};
 
 /// One frame at 60 Hz: what a tick of the frame loop may cost its thread.
 const FRAME: Duration = Duration::from_millis(16);

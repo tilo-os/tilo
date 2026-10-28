@@ -1,8 +1,8 @@
 use super::*;
-use crate::network::HostIdentity;
 use crate::shell::native_workspace_owner::{self, NativeWorkspaceOwner};
 use std::os::unix::fs::PermissionsExt as _;
 use tilo_actions::remote::feedback::FeedbackAdmission;
+use tilo_network_actor::HostIdentity;
 use ui::record::RecordId;
 
 fn fixture_network(
@@ -10,7 +10,7 @@ fn fixture_network(
     key: &ed25519_dalek::SigningKey,
 ) -> (
     Arc<ShellNetwork>,
-    tokio::sync::mpsc::Receiver<crate::network::NetCmd>,
+    tokio::sync::mpsc::Receiver<tilo_network_actor::NetCmd>,
 ) {
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let certificate = owner

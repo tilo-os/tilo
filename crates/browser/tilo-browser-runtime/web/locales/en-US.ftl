@@ -74,6 +74,14 @@ arrival-stalled = This is taking longer than it should. Keep waiting, or try aga
 # { $workspace } is the workspace's name; a message ending in -unnamed is
 # said where the page does not know it.
 arrival-retry = Try again
+# The bar's line about the connection itself, kept for as long as it is true
+# and cleared once it is not: a desktop stays mounted through a transport
+# that dropped, an admission that ended, a store that stopped saving and a
+# renderer that stopped drawing, so the mount is no answer to it.
+arrival-failed-offline = You’re offline. Changes are kept on this device and sent once the connection is back.
+arrival-failed-admission = The workspace can’t take this browser’s changes right now. Changes are kept on this device.
+arrival-failed-saving = Your changes aren’t saved on this device yet. Keep this tab open and try again.
+arrival-failed-renderer = The desktop stopped drawing. Try again to start it, or reload the page.
 arrival-failed-stopped-drawing = The desktop stopped working. Try again to start it.
 arrival-failed-unreachable = Can’t reach { $workspace } right now. Check your connection, then try again.
 arrival-failed-unreachable-unnamed = Can’t reach the workspace right now. Check your connection, then try again.

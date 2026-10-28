@@ -3,13 +3,13 @@
 //! `app update` an app behind takes as it starts, and once it is in admits
 //! the write, decided against the surface the updated app ships.
 use super::*;
-use crate::network::actor::{HostIdentity, native_ingress};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
+use tilo_network_actor::{HostIdentity, native_ingress};
 
 /// The Chat surface this device has installed.
 const INSTALLED: &str = "[[resources]]\nkind = \"chat\"\nlabel = \"Chat\"\nversion = 1\n";
