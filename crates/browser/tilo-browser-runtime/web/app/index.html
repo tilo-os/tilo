@@ -11,6 +11,9 @@
        module has loaded and run; see index.html. -->
   <link rel="preload" href="../pkg/tilo_browser_runtime_bg.wasm" as="fetch" crossorigin>
   <link rel="modulepreload" href="../media-moq-library.mjs">
+  <!-- The entry page's own module, asked for beside the runtime rather than
+       after it: see the same line in the desktop entry page. -->
+  <link rel="modulepreload" href="../entry-page.mjs">
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
