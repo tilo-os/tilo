@@ -1,4 +1,10 @@
-//! View trees and their keyed diff (implementation design 4.5, views).
+//! View trees and their keyed diff.
+//!
+//! A view runs with its reads recorded and builds a tree of keyed nodes. When a field it read
+//! changes, the parts of the view that read it run again ([`crate::view_instance`]) and the new
+//! tree is diffed against the old one by key into patches (insert, remove, move, set a
+//! property) that the renderer applies. A node's key is its view and call site, or its anchor;
+//! inside a `for` it adds the item's identity (a resource id, or the index for plain values).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

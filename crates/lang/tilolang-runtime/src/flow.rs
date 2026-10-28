@@ -1,8 +1,10 @@
-//! Flow journals and suggestions (implementation design 4.5).
+//! Flow journals and suggestions.
 //!
 //! A flow run is a journal: the ordered results of every `invoke` and `model_call`. A
 //! suspended run is just a journal on disk; resuming re-runs the flow from the start with the
-//! journal answering every call that already happened.
+//! journal answering every call that already happened. That is sound because a flow is
+//! deterministic: no clock, no randomness, and every read goes through the host and is
+//! journaled too.
 
 use serde::{Deserialize, Serialize};
 

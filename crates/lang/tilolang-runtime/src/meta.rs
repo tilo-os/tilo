@@ -11,7 +11,7 @@ pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
 /// Packages are described by the compiler's metadata.
 pub type Meta = PackageMeta;
 
-/// How a field merges concurrent edits (implementation design 3.2 and 4.8).
+/// How a field merges concurrent edits, and so how a store keeps it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FieldKind {
     Register,

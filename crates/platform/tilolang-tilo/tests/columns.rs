@@ -1,4 +1,4 @@
-//! The index's filter columns (search.md section 4): equality, ranges, membership and patterns
+//! The index's filter columns (search.md, "Who indexes"): equality, ranges, membership and patterns
 //! answered from runs of a column, in a collection and across the workspace, kept change by
 //! change as a build from the record keeps them, with facet counts read from the same columns.
 

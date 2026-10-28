@@ -1,5 +1,5 @@
-//! search.md section 2.2 and 3.3: a type's `search` block, its defaults, identifiers, and
-//! `query(T, ...)` checked against the type's filters.
+//! search.md, "What a type declares" and "Types, references and paths": a type's `search` block,
+//! its defaults, identifiers, and `query(T, ...)` checked against the type's filters.
 
 use crate::common::{codes, compile_body, compile_with};
 use tilolang::meta::{FilterKind, SortOrder, TypeMeta};

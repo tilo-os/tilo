@@ -1,6 +1,21 @@
-//! The checker: types (3.1), merge rules (3.2), effect discipline (3.3), own and foreign
-//! (3.4), lambdas (3.6) and error reporting (3.7). It lowers well-typed code to the IR in the
-//! same walk, so a program that passes is already in the form the backend consumes.
+//! The checker: types, merge rules, what each kind of declaration may do, and lambdas. It
+//! lowers well-typed code to the IR in the same walk, so a program that passes is already in the
+//! form the backend consumes.
+//!
+//! What each kind of declaration may do:
+//!
+//! * a `fn` computes and calls `fn`s; it changes nothing and calls no action;
+//! * a `view` reads resources, calls `fn`s and views and builds UI. Writing `act(args)` in a view
+//!   makes an `Action` value; it doesn't run the action;
+//! * an `action` reads and changes resources of its own package's types, and may call its own
+//!   package's actions, which run in the same change. It can't call another package's action
+//!   (one change can't span apps), a flow, or wait;
+//! * a `flow` invokes any action, its own or another package's, and reads resources, but
+//!   changes fields only through actions.
+//!
+//! Lambdas appear only as arguments of the built-in list methods and are inlined as loops, so
+//! there are no closures at run time. Every error found is reported, not only the first
+//! ([`crate::diag`]).
 
 mod boundary;
 mod call;

@@ -274,7 +274,7 @@ fn anchors_are_written_with_as() {
 }
 
 // USER REQUIREMENT (2026-10-20): package-level `root T` and `default view v for T`
-// (workspace-model.md sections 2 and 7) "in the compiler and metadata".
+// (workspace-model.md, "Apps") "in the compiler and metadata".
 #[test]
 fn roots_and_default_views_are_in_the_metadata() {
     let c = crate::common::compile_body(

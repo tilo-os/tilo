@@ -27,7 +27,7 @@ pub struct TypeInfo {
     pub id: String,
     pub doc: String,
     pub fields: Vec<FieldInfo>,
-    /// Its filters, default order and hidden fields (search.md section 2.2).
+    /// Its filters, default order and hidden fields (search.md, "What a type declares").
     pub search: crate::meta::SearchMeta,
 }
 
@@ -927,7 +927,9 @@ impl Resolver<'_> {
         Some(m.name.clone())
     }
 
-    /// The merge kind of a field (implementation.md section 3.2).
+    /// The merge kind of a field. `Int` and `Float` are registers unless declared
+    /// `merge counter`; `Text` merges as text unless declared `merge register` (an atom, like a
+    /// tag); sets, maps and collections merge per element; every other value is a register.
     fn merge(&mut self, ty: &Ty, spec: Option<&MergeSpec>, field: &str) -> MergeKind {
         let (default, allowed): (MergeKind, &[MergeKind]) = match ty {
             Ty::Int | Ty::Float => (
@@ -1688,8 +1690,8 @@ impl Resolver<'_> {
         }
     }
 
-    /// `root T`, `default view v for T` and `row view v for T` (workspace-model.md sections 2
-    /// and 7, native-apps.md section 3.2), and the app's icon.
+    /// `root T`, `default view v for T` and `row view v for T` (workspace-model.md,
+    /// "Apps"), and the app's icon.
     fn package_decls(&mut self, module: &ast::Module) {
         if let Some(icon) = &module.app.icon
             && prims::icon(icon).is_none()

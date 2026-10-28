@@ -1,9 +1,20 @@
 //! tilolang: the compiler for the Tilo app language.
 //!
 //! Source text goes in; a wasm module, its metadata and the updated ids lock come out. The
-//! design is `docs/designs/app-language`: the grammar is implementation.md section 2, the
-//! checks are section 3, the module shape and host imports are section 4, the metadata is
-//! section 5, and agent blocks are section 6.1.
+//! compiler knows nothing of Tilo: the runtime (`tilolang-runtime`) runs what it emits, and the
+//! platform crate (`tilolang-tilo`) connects that to Tilo. The design is
+//! `docs/designs/app-language`; the grammar is `grammar.md` next to this crate's README.
+//!
+//! The steps, in order:
+//!
+//! * [`lexer`] and [`parser`]: text to the syntax tree ([`ast`]); [`print`](mod@print) writes it
+//!   back in its one canonical form.
+//! * [`ids`]: the ids lock, which gives every declaration a stable id.
+//! * `resolve` and `checker`: names, types, merge rules and what each kind of declaration may
+//!   do, lowered to the IR ([`ir`]) in the same walk.
+//! * `effects`: each action's effect class and what every declaration can reach.
+//! * `codegen`: the IR to a wasm module that imports the host functions of [`abi`].
+//! * [`meta`]: the metadata the module carries, which the runtime, the platform and agents read.
 
 #![allow(
     clippy::arithmetic_side_effects,

@@ -198,7 +198,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   resource of that type (`tilolang_tilo::host::Package::main`), replacing the old `view main`
   convention.
 
-## Performance by default (native-apps.md §4)
+## Performance by default
 
 What a host relies on. A tilolang app that misses a budget is a bug in the runtime.
 
@@ -354,7 +354,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   gets `press` (its first button). `peer_edit` retitles an
   item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
   the saved room and opens it, as an app process does (the bench's own process keeps what
-  seeding allocated). `--budgets` holds the records to section 4.1 of the design on the
+  seeding allocated). `--budgets` holds the records to the budgets on the
   machine it runs on (open p95 300 ms; keystroke, press and peer p95 2 ms; scroll p50 1 ms; no
   idle wakeups, at 10k items; memory 60 MiB at 1k) and fails when one is over: a recorded local
   check, since times depend on the machine. `tests/budgets.rs` gates on the work each scenario

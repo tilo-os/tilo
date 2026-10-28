@@ -1,4 +1,10 @@
-//! Effect classes (spec 3.2) and capability sets (spec 4.4), computed from the IR facts.
+//! Effect classes and what each declaration can reach, computed from the IR facts.
+//!
+//! An action is *Read* if it changes nothing, *Outside* if it reaches outside Tilo (itself or
+//! through an action it calls), and *Undoable* otherwise. A flow's class is the highest of
+//! the actions it can invoke. For every action, flow and view the metadata lists the actions it
+//! can reach, its own and other packages', each with its class. Granting, keeping and updating
+//! code are decided against that list (authority.md).
 
 use crate::ir::{ActionRef, FuncKind, Module};
 use crate::meta::Reach;

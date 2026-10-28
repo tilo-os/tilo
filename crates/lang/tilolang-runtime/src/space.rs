@@ -1,4 +1,4 @@
-//! `space`: the constraint a view's container offers it (layout design, section 4).
+//! `space`: the constraint a view's container offers it (layout.md, "Responding to space").
 //!
 //! Widths and heights are in `rem`, so a larger text size moves a window to a narrower class.
 //! A view reads `space` through `space_i` and `space_f`; the read recorder remembers which

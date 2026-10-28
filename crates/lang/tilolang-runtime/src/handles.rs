@@ -1,10 +1,12 @@
-//! The handle table (implementation design 4.1 and 4.3).
+//! The handle table.
 //!
 //! Guest code names structured values by `i32` handles. Each invocation of guest code runs in
 //! a [`Frame`] with its own table; a handle encodes the serial of its frame, so a number from
 //! another invocation (or another module's invocation) is refused instead of aliasing a
 //! value. Frames die with the call; only values the host moves into the retained table
-//! (action references kept by a view tree) outlive it.
+//! (action references kept by a view tree) outlive it. A resource or action reference records
+//! the module whose code made it, and keeps that author when it is passed to other code: that
+//! is the authorship chain the authority decides on.
 
 use std::collections::HashMap;
 

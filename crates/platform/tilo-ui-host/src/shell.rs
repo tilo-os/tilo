@@ -2,7 +2,7 @@
 //!
 //! Each view of the window builds its own shell (`ui.NavShell`, `std` builds one for every
 //! frame). The window shows them as the columns of one: the root's sidebar and overview, and the
-//! content, header and kind of the window after it (workspace-model.md, native-apps.md §3.4).
+//! content, header and kind of the window after it (workspace-model.md).
 //! Composing them is the platform's, as is what holds for any shell of a window, whoever built
 //! it:
 //!
