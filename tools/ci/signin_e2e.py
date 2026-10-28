@@ -331,6 +331,7 @@ class Run:
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
         self.old_image: str | None = args.pre_pam_tilo_image
+        self.old_archive: str | None = args.pre_pam_tilo_archive
 
     # -- reporting ------------------------------------------------------------------------------
 
@@ -1617,14 +1618,21 @@ cryptsetup close e2e-target
         """Item 9: switch to an image from before pam_tilo and back, so it stays the rollback
         deployment; migrate on the new image; roll back and sign in with the old password; roll
         forward and find the hash still kept while the old image can boot."""
-        if not self.old_image:
-            raise Failed("the rollback variant needs --pre-pam-tilo-image")
-        evidence: dict = {"old_image": self.old_image}
+        if not self.old_image and not self.old_archive:
+            raise Failed("the rollback variant needs --pre-pam-tilo-image or --pre-pam-tilo-archive")
+        evidence: dict = {"old_image": self.old_image or self.old_archive}
         label = "rollback-switch"
         self.boot(label)
         self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
         self.connect()
-        code, text = self.guest(bootc(f"switch {quote(self.old_image)}", 20), 1800)
+        switch = f"switch {quote(self.old_image)}" if self.old_image else ""
+        if self.old_archive:
+            archive = "/var/tmp/pre-pam-tilo.ociarchive"
+            code, text = self.guest(f"curl -fsS -o {archive} {quote(self.old_archive)}", 1800)
+            if code:
+                raise Failed(f"could not fetch the old image's archive: {text.strip()[-200:]}")
+            switch = f"switch --transport oci-archive {archive}"
+        code, text = self.guest(bootc(switch, 20), 1800)
         evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
         if code:
             raise Failed(f"bootc switch to the old image failed: {text.strip()[-200:]}")
@@ -1822,6 +1830,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pre-pam-tilo-image",
                         help="for the rollback variant: an image reference from before pam_tilo "
                              "that the guest can pull")
+    parser.add_argument("--pre-pam-tilo-archive", metavar="URL",
+                        help="for the rollback variant, instead of --pre-pam-tilo-image: an OCI "
+                             "archive of such an image the guest fetches over HTTP. The image's "
+                             "policy takes registry.tilo.so/tilo/tilo signed for release only, and "
+                             "a local archive from anywhere")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     args.storage.mkdir(parents=True, exist_ok=True)
