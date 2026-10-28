@@ -1530,6 +1530,12 @@ impl LaunchSession {
         );
     }
 
+    /// Outside Linux no gate holds launches while the session starts (the
+    /// session's services are not started by this shell there), so a launch
+    /// never waits.
+    #[cfg(not(any(test, target_os = "linux")))]
+    fn wait_while_launches_held(&self) {}
+
     #[cfg(not(test))]
     fn for_new_thread() -> Self {
         PROCESS_SESSION.clone()
