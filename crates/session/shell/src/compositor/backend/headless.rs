@@ -920,7 +920,7 @@ impl SimulatedVblankPresenter {
         });
         let client = candidate
             .and_then(|candidate| crate::shell::gpu_frames::client_frame(&candidate.image))
-            .filter(|client| client.dmabuf().is_some() && client.opaque());
+            .filter(|client| client_buffer(client) && client.opaque());
         let Some((candidate, _client)) = candidate.zip(client) else {
             self.scanned_out = None;
             return None;
@@ -1263,3 +1263,15 @@ mod tests {
 #[cfg(test)]
 #[path = "headless/retained_tests.rs"]
 mod retained_tests;
+
+/// Whether `client`'s frame came from a client buffer the display could scan
+/// out. Client buffers are Linux dma-bufs; elsewhere no frame is one.
+#[cfg(target_os = "linux")]
+fn client_buffer(client: &crate::shell::gpu_frames::GpuFrame) -> bool {
+    client.dmabuf().is_some()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn client_buffer(_client: &crate::shell::gpu_frames::GpuFrame) -> bool {
+    false
+}

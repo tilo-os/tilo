@@ -1013,9 +1013,19 @@ impl LauncherServices for NativeLauncher {
         )
     }
     fn person_initiated(&self, app_id: &str) -> bool {
-        self.0.as_ref().is_some_and(|tree| {
-            crate::compositor::activation::person_initiated(&tree.read(), app_id)
-        })
+        // A person's input reaches an app through the Linux compositor's
+        // windows; elsewhere no window of the app took it.
+        #[cfg(target_os = "linux")]
+        {
+            self.0.as_ref().is_some_and(|tree| {
+                crate::compositor::activation::person_initiated(&tree.read(), app_id)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = app_id;
+            false
+        }
     }
     fn launch(
         &self,
