@@ -27,6 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::permissions::UserId;
 use crate::presence::{ParticipantKind, PresenceCtx, PresenceUser};
+use crate::search::FieldWeight;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
@@ -136,35 +137,27 @@ pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     })
 }
 
-/// The candidates worth offering for `query`, best first: a prefix of the
-/// whole name, then of a later word ("lov" finds "Ada Lovelace"), then a
-/// substring of the name, then of the id. Within a rank the given order
-/// holds, so the list does not reshuffle while a name is typed. An empty
-/// query offers everyone.
+/// The candidates worth offering for `query`, best first, ranked as every
+/// list search ranks ([`crate::search::ranked_rows`]): a prefix of the
+/// whole name, then of a later word ("lov" finds "Ada Lovelace"), then the
+/// participant id. Within a rank the given order holds, so the list does
+/// not reshuffle while a name is typed. An empty query offers everyone.
 #[must_use]
 pub fn rank<'a>(candidates: &'a [MentionCandidate], query: &str) -> Vec<&'a MentionCandidate> {
-    let q = query.trim().to_lowercase();
-    let mut ranked: Vec<(u8, usize, &MentionCandidate)> = Vec::new();
-    for (index, candidate) in candidates.iter().enumerate() {
-        let name = candidate.name.to_lowercase();
-        let rank = if q.is_empty() || name.starts_with(&q) {
-            0
-        } else if name.split_whitespace().any(|word| word.starts_with(&q)) {
-            1
-        } else if name.contains(&q) {
-            2
-        } else if candidate.id.to_lowercase().contains(&q) {
-            3
-        } else {
-            continue;
-        };
-        ranked.push((rank, index, candidate));
-    }
-    ranked.compact_sort_by_key(|(rank, index, _)| (*rank, *index));
-    ranked
-        .into_iter()
-        .map(|(_, _, candidate)| candidate)
-        .collect()
+    let index = crate::search::ListIndex::default();
+    crate::search::ranked_rows(
+        &index,
+        query.trim(),
+        candidates.iter().map(|candidate| {
+            [
+                (candidate.name.as_str(), FieldWeight::TITLE),
+                (candidate.id.as_str(), FieldWeight::IDENTITY),
+            ]
+        }),
+    )
+    .into_iter()
+    .filter_map(|at| candidates.get(at))
+    .collect()
 }
 
 /// The roster `presence` names merged with what an owner adds: one entry

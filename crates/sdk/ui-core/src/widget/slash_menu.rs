@@ -41,7 +41,6 @@ pub type SlashMenu = FilterMenu<SlashCommand>;
 static SPEC: MenuSpec = MenuSpec {
     // Room for an icon, "Numbered list" and its Markdown hint.
     width: 248.0,
-    row_height: 30.0,
     // Eight rows fit under a caret in the lower half of most windows; the
     // rest scroll with the highlight.
     max_rows: 8,

@@ -12,6 +12,7 @@ use winit::event::WindowEvent;
 
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+use crate::widget::floating_surface::PopoverSide;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a
 /// deliberate hover without firing on a pointer merely passing through.
@@ -128,52 +129,48 @@ pub fn chip_rect_on(
 }
 
 /// Centred on the anchor vertically, just after it; flipped before it
-/// when that would spill past the right edge, clamped when neither fits.
+/// when that side has no room and the other has more.
 fn chip_rect_beside(m: &ChipMetrics, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let (w, h) = fit_size(m, size, viewport);
-    let ChipMetrics { gap, margin, .. } = *m;
-    let min_y = viewport.y0 + margin;
-    let max_y = (viewport.y1 - margin - h).max(min_y);
-    let y0 = (anchor.center().y - h / 2.0).clamp(min_y, max_y);
-    let after = anchor.x1 + gap;
-    let x0 = if after + w <= viewport.x1 - margin {
-        after
-    } else {
-        let before = anchor.x0 - gap - w;
-        if before >= viewport.x0 + margin {
-            before
-        } else {
-            (viewport.x1 - margin - w).max(viewport.x0 + margin)
-        }
-    };
-    Rect::new(x0, y0, x0 + w, y0 + h)
+    place_chip(m, anchor, size, viewport, PopoverSide::Right)
 }
 
-/// Preferred placement is centred just below the anchor; flips above if
-/// that would spill past the bottom edge, and clamps to the bottom edge if
-/// neither side has room. Clamped horizontally too, so a control at the
-/// far edge gets a chip that hugs it instead of painting off-screen.
+/// Preferred placement is centred just below the anchor; flips above when
+/// it would spill past the bottom edge and there is more room above.
+/// Clamped horizontally too, so a control at the far edge gets a chip that
+/// hugs it instead of painting off-screen.
 pub fn chip_rect(theme: &Theme, anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
-    let m = ChipMetrics::of(theme);
-    let (w, h) = fit_size(&m, size, viewport);
-    let ChipMetrics { gap, margin, .. } = m;
-    // Horizontal: centre under the anchor, then clamp within the viewport.
-    let min_x = viewport.x0 + margin;
-    let max_x = (viewport.x1 - margin - w).max(min_x);
-    let x0 = (anchor.center().x - w / 2.0).clamp(min_x, max_x);
-    // Vertical: below the anchor; flip above when it would overflow the
-    // bottom, and fall back to a bottom clamp when neither side fits.
-    let below = anchor.y1 + gap;
-    let y0 = if below + h <= viewport.y1 - margin {
-        below
-    } else {
-        let above = anchor.y0 - gap - h;
-        if above >= viewport.y0 + margin {
-            above
-        } else {
-            (viewport.y1 - margin - h).max(viewport.y0 + margin)
-        }
-    };
+    place_chip(
+        &ChipMetrics::of(theme),
+        anchor,
+        size,
+        viewport,
+        PopoverSide::Below,
+    )
+}
+
+/// A chip placed like every floating Panel
+/// ([`place_aligned`](super::floating_surface::place_aligned)), centred on
+/// its anchor and the margin inside the viewport. Where neither side holds
+/// it, it covers its control rather than leave the window.
+fn place_chip(
+    m: &ChipMetrics,
+    anchor: Rect,
+    size: (f64, f64),
+    viewport: Rect,
+    side: PopoverSide,
+) -> Rect {
+    let (w, h) = fit_size(m, size, viewport);
+    let room = viewport.inset(-m.margin);
+    let (rect, _) = super::floating_surface::place_aligned(
+        anchor,
+        (w, h),
+        side,
+        super::floating_surface::PanelAlign::Centre,
+        m.gap,
+        room,
+    );
+    let x0 = rect.x0.min(room.x1 - w).max(room.x0);
+    let y0 = rect.y0.min(room.y1 - h).max(room.y0);
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 

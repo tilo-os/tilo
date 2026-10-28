@@ -273,6 +273,8 @@ pub enum PanelAlign {
     /// The panel's trailing edge on the anchor's trailing edge (a menu under
     /// a button at the end of a header row).
     Trailing,
+    /// The panel centred on the anchor (a tooltip under its control).
+    Centre,
 }
 
 /// Which side of its anchor a floating Panel opens on.
@@ -395,9 +397,12 @@ pub fn place_aligned(
         side.opposite()
     };
     // Cross axis: leading-aligned with the anchor, or trailing-aligned when
-    // the leading alignment runs past the viewport and that has more room.
+    // the leading alignment runs past the viewport and that has more room;
+    // a centred panel stays centred and only shifts below.
     let cross = |a0: f64, a1: f64, len: f64, v0: f64, v1: f64| {
-        if a0 + len <= v1 || (a1 - len < v0 && v1 - a0 >= a1 - v0) {
+        if align == PanelAlign::Centre {
+            (a0 + a1 - len) / 2.0
+        } else if a0 + len <= v1 || (a1 - len < v0 && v1 - a0 >= a1 - v0) {
             a0
         } else {
             a1 - len

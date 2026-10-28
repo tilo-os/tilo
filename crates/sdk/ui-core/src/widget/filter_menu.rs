@@ -1,13 +1,15 @@
-//! `FilterMenu` — a compact popover anchored at the caret: a list of rows
-//! narrowed by a case-insensitive query, labels that start with it first.
-//! The [`SlashMenu`](crate::widget::SlashMenu) (block kinds and commands)
-//! and the [`LinkPopover`](crate::widget::LinkPopover) (page links) are this
+//! `FilterMenu` — a compact picker anchored at the caret: a
+//! [`SuggestionList`] of rows narrowed by a query, ranked the way every list
+//! search ranks ([`crate::search::ranked_rows`]). The
+//! [`SlashMenu`](crate::widget::SlashMenu) (block kinds and commands) and
+//! the [`LinkPopover`](crate::widget::LinkPopover) (page links) are this
 //! menu over their own row values.
 //!
-//! The query is either the menu's own filter field, or, for an *inline*
-//! menu ([`FilterMenu::set_inline`]), text the parent keeps in its document
-//! after the trigger and hands over with [`FilterMenu::set_filter`]: what a
-//! person types stays where they typed it, whatever the menu makes of it.
+//! The query is either the menu's own filter field, painted in the list's
+//! header band, or, for an *inline* menu ([`FilterMenu::set_inline`]), text
+//! the parent keeps in its document after the trigger and hands over with
+//! [`FilterMenu::set_filter`]: what a person types stays where they typed
+//! it, whatever the menu makes of it.
 //!
 //! - **Arrow Up / Down** — move the highlighted row, wrapping at either end.
 //! - **Enter / Tab** — commit the highlighted row; its value is queued for
@@ -24,17 +26,17 @@
 //! last" convention as [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
 use std::collections::HashMap;
-use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::{Icon, draw_icon};
+use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
+use crate::search::{FieldWeight, ListIndex};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -42,18 +44,16 @@ use crate::tokens::TextRole;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
 
-const PADDING_Y: f64 = 6.0;
-/// Horizontal padding either side of each row label.
-const PADDING_X: f64 = 10.0;
 const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;
 
 /// What distinguishes one filter menu from another.
 pub(super) struct MenuSpec {
+    /// The narrowest the popover is.
     pub width: f64,
-    pub row_height: f64,
-    /// Rows painted at once; the window scrolls with the cursor.
+    /// Rows painted at once; the rest scroll with the highlight.
     pub max_rows: usize,
     pub placeholder: &'static str,
     /// Fluent key of the menu's accessible name.
@@ -85,55 +85,38 @@ impl<T> MenuEntry<T> {
         }
     }
 
-    /// How well the row answers `needle` (lowercase), best first: the label
-    /// starts with it, a word of the label or a keyword starts with it, or
-    /// either merely contains it. `None` when it does not match.
-    fn rank(&self, needle: &str) -> Option<u8> {
-        if needle.is_empty() {
-            return Some(0);
+    /// The row as the list paints it; its value is its index in the menu.
+    fn suggestion(&self, index: usize) -> Suggestion {
+        let row = Suggestion::labelled(index.to_string(), self.label.clone());
+        let row = match self.icon {
+            Some(icon) => row.with_icon(icon),
+            None => row,
+        };
+        match self.hint {
+            Some(hint) => row.with_detail(hint),
+            None => row,
         }
-        let label = self.label.to_lowercase();
-        if label.starts_with(needle) {
-            return Some(0);
-        }
-        let keywords = || self.keywords.iter().map(|k| k.to_lowercase());
-        if label
-            .split_whitespace()
-            .any(|word| word.starts_with(needle))
-            || keywords().any(|k| k.starts_with(needle))
-        {
-            return Some(1);
-        }
-        (label.contains(needle) || keywords().any(|k| k.contains(needle))).then_some(2)
     }
-}
-
-/// Where the popover sits.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Placement {
-    /// Its top-left corner at a point.
-    At(Point),
-    /// Under the caret's rect, or over it where there is no room below,
-    /// kept inside `bounds` when the parent gave any.
-    Caret { caret: Rect, bounds: Option<Rect> },
 }
 
 pub struct FilterMenu<T> {
     spec: &'static MenuSpec,
     entries: Vec<MenuEntry<T>>,
-    /// Indices into `entries` that survive the current filter.
+    /// Labels and keywords of `entries`, indexed while they stay the same.
+    index: ListIndex,
+    /// Indices into `entries` that survive the current filter, in the
+    /// list's order.
     visible: Vec<usize>,
-    /// Cursor into `visible`. Always clamped.
-    cursor: usize,
+    /// The rows: their placement at the caret, painting, scrolling and
+    /// highlight.
+    list: SuggestionList,
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
     visible_flag: bool,
     /// The query is the parent's text, not the menu's own field.
     inline: bool,
-    /// Where the popover sits, in logical coords.
-    placement: Placement,
-    /// The text scale its rows and field grow with.
+    /// The text scale its field and width grow with.
     scale: f64,
     /// One-shot: the committed row's value, drained by the parent. Hiding
     /// the menu leaves it, as the parent may hide it before draining.
@@ -143,9 +126,9 @@ pub struct FilterMenu<T> {
     appear: crate::motion::Appearing,
     /// The pose it was last drawn in: rows are hit where they are drawn.
     drawn: crate::motion::Pose,
-    /// The filter, rows and highlight it showed when it was hidden, so a
-    /// leaving menu fades as it was.
-    leaving: Option<(String, Vec<usize>, usize)>,
+    /// The filter it showed when it was hidden, so a leaving menu fades as
+    /// it was; its rows stay in the list until it opens again.
+    leaving: Option<String>,
 }
 
 impl<T: Clone> FilterMenu<T> {
@@ -153,14 +136,16 @@ impl<T: Clone> FilterMenu<T> {
         let mut menu = Self {
             spec,
             entries,
+            index: ListIndex::default(),
             visible: Vec::new(),
-            cursor: 0,
+            list: SuggestionList::new()
+                .with_max_visible(spec.max_rows)
+                .with_min_width(spec.width),
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
             visible_flag: false,
             inline: false,
-            placement: Placement::At(Point::ZERO),
             scale: 1.0,
             pending: None,
             appear: crate::motion::Appearing::closed(),
@@ -180,16 +165,17 @@ impl<T: Clone> FilterMenu<T> {
     /// next open lands fresh.
     pub fn set_visible(&mut self, visible: bool) {
         if !visible && self.shows() {
-            self.leaving = Some((self.filter.clone(), self.visible.clone(), self.cursor));
+            self.leaving = Some(self.filter.clone());
         }
         self.visible_flag = visible;
         self.appear.show(visible);
-        if !visible {
+        if visible {
+            self.leaving = None;
+            self.rebuild_visible();
+        } else {
             self.filter.clear();
             self.filter_selection = Selection::collapsed(0);
             self.filter_composition.clear();
-            self.cursor = 0;
-            self.rebuild_visible();
         }
     }
 
@@ -199,15 +185,18 @@ impl<T: Clone> FilterMenu<T> {
 
     /// Put the popover's top-left corner at `anchor`.
     pub fn set_anchor(&mut self, anchor: Point) {
-        self.placement = Placement::At(anchor);
+        self.list.set_anchor(Rect::from_points(anchor, anchor));
     }
 
-    /// Attach the popover to the caret's rect (the caller leaves the gap it
-    /// wants around the caret in it): below it, or above it when
-    /// `bounds` (the visible area) has no room below but has some above,
-    /// and moved left as far as it must to stay inside `bounds`.
+    /// Attach the popover to the caret's rect: below it, or above it when
+    /// `bounds` (the visible area) has more room there, and moved along it
+    /// as far as it must to stay inside `bounds`
+    /// ([`place_anchored`](crate::widget::floating_surface::place_anchored)).
     pub fn set_caret(&mut self, caret: Rect, bounds: Option<Rect>) {
-        self.placement = Placement::Caret { caret, bounds };
+        self.list.set_anchor(caret);
+        if let Some(bounds) = bounds {
+            self.list.set_viewport(bounds);
+        }
     }
 
     /// Whether the query is text the parent keeps in its document (and
@@ -216,19 +205,23 @@ impl<T: Clone> FilterMenu<T> {
     /// parent.
     pub fn set_inline(&mut self, inline: bool) {
         self.inline = inline;
+        self.sync_list_chrome();
     }
 
     pub fn is_inline(&self) -> bool {
         self.inline
     }
 
-    /// Grow rows, field and width with the reader's text scale.
+    /// Grow the field and width with the reader's text scale; the rows
+    /// grow with the theme's type.
     pub fn set_scale(&mut self, scale: f64) {
         self.scale = if scale.is_finite() && scale > 0.0 {
             scale
         } else {
             1.0
         };
+        self.list.set_min_width(self.width());
+        self.sync_list_chrome();
     }
 
     /// Replace the filter and rebuild the visible rows; the same filter
@@ -240,7 +233,6 @@ impl<T: Clone> FilterMenu<T> {
         self.filter = filter.to_string();
         self.filter_selection = Selection::collapsed(self.filter.len());
         self.filter_composition.clear();
-        self.cursor = 0;
         self.rebuild_visible();
     }
 
@@ -255,7 +247,7 @@ impl<T: Clone> FilterMenu<T> {
 
     /// The highlighted row's value, if any row matches the filter.
     pub fn highlighted(&self) -> Option<&T> {
-        self.entry(self.cursor).map(|entry| &entry.value)
+        self.entry(self.list.highlight()?).map(|entry| &entry.value)
     }
 
     /// Number of rows matching the current filter.
@@ -267,10 +259,6 @@ impl<T: Clone> FilterMenu<T> {
         self.spec.width * self.scale
     }
 
-    fn row_height(&self) -> f64 {
-        self.spec.row_height * self.scale
-    }
-
     /// The filter field and the gap under it; an inline menu has none.
     fn field_height(&self) -> f64 {
         if self.inline {
@@ -280,9 +268,18 @@ impl<T: Clone> FilterMenu<T> {
         }
     }
 
+    /// The header band and the "No matches" line follow whether the menu
+    /// has its own field: an inline menu with nothing to offer shows
+    /// nothing at all.
+    fn sync_list_chrome(&mut self) {
+        self.list.set_header(self.field_height());
+        let empty = (!self.inline && self.visible.is_empty())
+            .then(|| crate::i18n!("filter-menu-no-matches"));
+        self.list.set_status(empty);
+    }
+
     pub fn height(&self) -> f64 {
-        let rows = self.visible.len().clamp(1, self.spec.max_rows);
-        PADDING_Y * 2.0 + self.field_height() + self.row_height() * count_f64(rows)
+        self.list.rect().map_or(0.0, |rect| rect.height())
     }
 
     /// Whether the popover paints at all: an inline menu with nothing to
@@ -293,27 +290,7 @@ impl<T: Clone> FilterMenu<T> {
 
     /// Rect the popover paints into at its placement.
     pub fn rect(&self) -> Rect {
-        let (width, height) = (self.width(), self.height());
-        let origin = match self.placement {
-            Placement::At(anchor) => anchor,
-            Placement::Caret { caret, bounds } => {
-                let below = caret.y1;
-                let above = caret.y0 - height;
-                let Some(bounds) = bounds else {
-                    return Rect::new(caret.x0, below, caret.x0 + width, below + height);
-                };
-                let room_below = bounds.y1 - below;
-                let room_above = caret.y0 - bounds.y0;
-                let y = if room_below >= height || room_below >= room_above {
-                    below
-                } else {
-                    above
-                };
-                let x = caret.x0.min(bounds.x1 - width).max(bounds.x0);
-                Point::new(x, y)
-            }
-        };
-        Rect::new(origin.x, origin.y, origin.x + width, origin.y + height)
+        self.list.rect().unwrap_or(Rect::ZERO)
     }
 
     fn entry(&self, visible_index: usize) -> Option<&MenuEntry<T>> {
@@ -322,63 +299,28 @@ impl<T: Clone> FilterMenu<T> {
             .and_then(|&i| self.entries.get(i))
     }
 
-    fn rows_top(&self) -> f64 {
-        self.rect().y0 + PADDING_Y + self.field_height()
-    }
-
-    fn window_start(&self) -> usize {
-        self.cursor
-            .saturating_add(1)
-            .saturating_sub(self.spec.max_rows)
-    }
-
-    fn slot_rect(&self, slot: usize) -> Rect {
-        let y0 = self.rows_top() + count_f64(slot) * self.row_height();
-        let rect = self.rect();
-        Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + self.row_height())
-    }
-
     /// Painted rectangle for a visible row inside the scrolled window. Hosts
     /// use this for pointer automation rather than duplicating the geometry.
     pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
-        let start = self.window_start();
-        let end = self
-            .visible
-            .len()
-            .min(start.saturating_add(self.spec.max_rows));
-        (start..end)
-            .contains(&visible_index)
-            .then(|| self.slot_rect(visible_index.saturating_sub(start)))
+        self.list.row_rect(visible_index)
     }
 
     /// The visible row under a logical point, sharing the scrolled window
     /// and bounds checks with keyboard selection.
     fn row_at(&self, point: Point) -> Option<usize> {
         // Rows are hit where they are drawn while the menu arrives.
-        let point = self.drawn.to_local(point);
-        if !self.shows() || !self.rect().contains(point) {
+        if !self.shows() {
             return None;
         }
-        let relative = point.y - self.rows_top();
-        if relative < 0.0 {
-            return None;
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "relative is non-negative screen geometry and the visible row count is bounded"
-        )]
-        let slot = (relative / self.row_height()).floor() as usize;
-        let index = self.window_start().saturating_add(slot);
-        (index < self.visible.len()).then_some(index)
+        self.list.row_at(self.drawn.to_local(point))
     }
 
     /// Highlight the row under the pointer. Hovering the padding leaves the
     /// last row lit. Returns whether the highlight moved.
     pub fn hover_at(&mut self, point: Point) -> bool {
         match self.row_at(point) {
-            Some(index) if index != self.cursor => {
-                self.cursor = index;
+            Some(index) if Some(index) != self.list.highlight() => {
+                self.list.set_highlight(Some(index));
                 true
             }
             _ => false,
@@ -391,27 +333,35 @@ impl<T: Clone> FilterMenu<T> {
     pub fn click_at(&mut self, point: Point) -> Option<T> {
         let index = self.row_at(point)?;
         let value = self.entry(index)?.value.clone();
-        self.cursor = index;
+        self.list.set_highlight(Some(index));
         self.pending = Some(value.clone());
         self.set_visible(false);
         Some(value)
     }
 
+    /// Rank the rows against the filter and start at the top one.
     fn rebuild_visible(&mut self) {
-        let needle = self.filter.trim().to_lowercase();
-        let mut ranked: Vec<(u8, usize)> = self
-            .entries
+        self.visible = crate::search::ranked_rows(
+            &self.index,
+            self.filter.trim(),
+            self.entries.iter().map(|entry| {
+                std::iter::once((entry.label.as_str(), FieldWeight::TITLE)).chain(
+                    entry
+                        .keywords
+                        .iter()
+                        .map(|keyword| (*keyword, FieldWeight::KEYWORD)),
+                )
+            }),
+        );
+        let rows = self
+            .visible
             .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| entry.rank(&needle).map(|rank| (rank, i)))
+            .filter_map(|&i| self.entries.get(i).map(|entry| entry.suggestion(i)))
             .collect();
-        // Stable: within a rank, the menu's own order.
-        ranked.compact_sort_by_key(|&(rank, _)| rank);
-        self.visible.clear();
-        self.visible.extend(ranked.into_iter().map(|(_, i)| i));
-        if self.cursor >= self.visible.len() {
-            self.cursor = self.visible.len().saturating_sub(1);
-        }
+        self.list.set_suggestions(rows);
+        self.list
+            .set_highlight((!self.visible.is_empty()).then_some(0));
+        self.sync_list_chrome();
     }
 
     /// Feed `event` to the filter field; an edit restarts at the top row.
@@ -424,7 +374,6 @@ impl<T: Clone> FilterMenu<T> {
             false,
         );
         if change == QueryEventChange::Edited {
-            self.cursor = 0;
             self.rebuild_visible();
         }
         change
@@ -455,22 +404,17 @@ impl<T: Clone> FilterMenu<T> {
         else {
             return false;
         };
-        let last = self.visible.len().saturating_sub(1);
         match logical_key {
-            Key::Named(NamedKey::ArrowDown) => {
-                self.cursor = if self.cursor >= last {
-                    0
-                } else {
-                    self.cursor.saturating_add(1)
-                };
-                true
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.cursor = self.cursor.checked_sub(1).unwrap_or(last);
+            Key::Named(key @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
+                self.list.move_highlight(*key == NamedKey::ArrowDown);
                 true
             }
             Key::Named(NamedKey::Enter | NamedKey::Tab) => {
-                let value = self.entry(self.cursor).map(|entry| entry.value.clone());
+                let value = self
+                    .list
+                    .highlight()
+                    .and_then(|at| self.entry(at))
+                    .map(|entry| entry.value.clone());
                 let committed = value.is_some();
                 self.pending = value;
                 self.set_visible(false);
@@ -518,31 +462,17 @@ impl<T: Clone> FilterMenu<T> {
             self.leaving = None;
             return;
         }
-        // A leaving menu shows what it showed when it was hidden.
-        let restore = self.leaving.clone().map(|(filter, visible, cursor)| {
-            (
-                std::mem::replace(&mut self.filter, filter),
-                std::mem::replace(&mut self.visible, visible),
-                std::mem::replace(&mut self.cursor, cursor),
-            )
-        });
-        let rect = self.rect();
-        let anchor = match self.placement {
-            Placement::At(at) => at,
-            Placement::Caret { caret, .. } => caret.center(),
+        let Some(rect) = self.list.rect() else {
+            return;
         };
+        let anchor = self.list.anchor().center();
         let pose = self.appear.pose(rect, anchor);
         self.drawn = pose;
         let bounds = crate::widget::floating_surface::painted_bounds(rect, theme);
         if let Some(transform) = pose.begin(scene, transform, bounds) {
-            self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
-            self.draw_rows(scene, transform, text_renderer, theme, rect);
+            self.list.paint(scene, transform, text_renderer, theme);
+            self.draw_filter(scene, transform, text_renderer, theme);
             pose.end(scene);
-        }
-        if let Some((filter, visible, cursor)) = restore {
-            self.filter = filter;
-            self.visible = visible;
-            self.cursor = cursor;
         }
     }
 
@@ -552,45 +482,26 @@ impl<T: Clone> FilterMenu<T> {
         self.appear.is_moving()
     }
 
-    /// The card background/border and the filter query box.
-    fn draw_chrome_and_filter(
+    /// The filter field in the list's header band; a leaving menu shows the
+    /// filter it had.
+    fn draw_filter(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
     ) {
-        let tokens = &theme.tokens;
-        // Panel role (HIG §9.1): panel ground + the derived panel edge as
-        // a crisp 1 px inset stroke; the declared `border_standard` vanished
-        // against `raised` on the dark preset.
-        let radius = 6.0;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::chrome::panel_ground(theme),
-            None,
-            &RoundedRect::from_rect(rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(rect, radius),
-        );
-        if self.inline {
+        let Some(header) = self.list.header_rect() else {
             return;
-        }
-
+        };
+        let tokens = &theme.tokens;
         let filter_rect = Rect::new(
-            rect.x0 + 6.0,
-            rect.y0 + PADDING_Y,
-            rect.x1 - 6.0,
-            rect.y0 + PADDING_Y + FILTER_HEIGHT * self.scale,
+            header.x0,
+            header.y0,
+            header.x1,
+            header.y0 + FILTER_HEIGHT * self.scale,
         );
-        let filter_radius = 4.0;
+        let filter_radius = f64::from(tokens.radii.control);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -599,8 +510,7 @@ impl<T: Clone> FilterMenu<T> {
             &RoundedRect::from_rect(filter_rect, filter_radius),
         );
         // A field reads as a field on every preset: its rest edge derives
-        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
-        // on the light preset `base` and the panel ground are a shade apart.
+        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -608,145 +518,26 @@ impl<T: Clone> FilterMenu<T> {
             None,
             &crate::surface::edge_outline(filter_rect, filter_radius),
         );
+        let leaving = self.leaving.clone();
+        let text = leaving.as_deref().unwrap_or(&self.filter);
+        let selection = if leaving.is_some() {
+            Selection::collapsed(text.len())
+        } else {
+            self.filter_selection
+        };
         self.filter_composition.draw(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
-                text: &self.filter,
-                selection: &self.filter_selection,
+                text,
+                selection: &selection,
                 placeholder: &crate::i18n!(self.spec.placeholder),
-                show_caret: true,
+                show_caret: leaving.is_none(),
             },
-            Rect::new(
-                filter_rect.x0 + 6.0,
-                filter_rect.y0,
-                filter_rect.x1 - 6.0,
-                filter_rect.y1,
-            ),
+            filter_rect.inset((-6.0, 0.0)),
             &theme.text(TextRole::Caption),
             QueryInk::of(&tokens.colors),
         );
     }
-
-    /// The "No matches" empty state or the scrolled row window: each row's
-    /// icon, label and hint.
-    fn draw_rows(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        let mut font_style = tokens.typography.style(TextRole::Caption);
-        font_style.size *= self.scale as f32;
-        let row_height = self.row_height();
-        if self.visible.is_empty() {
-            let empty = crate::i18n!("filter-menu-no-matches");
-            let (_, hint_h) = text_renderer.measure_style(&empty, None, &font_style);
-            let y = self.rows_top() + (row_height - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &empty,
-                tokens.colors.text_dim,
-                transform.pre_translate(Vec2::new(rect.x0 + PADDING_X, y)),
-                None,
-                &font_style,
-            );
-            return;
-        }
-        let icon_size = f64::from(tokens.metrics.icon_sm) * self.scale;
-        let icon_gap = f64::from(tokens.spacing.s2) * self.scale;
-        let has_icons = self.entries.iter().any(|entry| entry.icon.is_some());
-        let window_start = self.window_start();
-        for slot in 0..self.spec.max_rows {
-            let visible_index = window_start.saturating_add(slot);
-            let Some(entry) = self.entry(visible_index) else {
-                break;
-            };
-            let row_rect = self.slot_rect(slot);
-            // The armed row is the panel's strong lift, as in every menu;
-            // its ink is measured on it.
-            let armed = visible_index == self.cursor;
-            let ink = if armed {
-                crate::widget::floating_surface::paint_armed_row(
-                    scene,
-                    transform,
-                    row_rect,
-                    row_rect.x0 - rect.x0,
-                    theme,
-                )
-            } else {
-                tokens.colors.text_primary
-            };
-            let mut label_x = row_rect.x0 + PADDING_X;
-            if has_icons {
-                if let Some(icon) = entry.icon {
-                    draw_icon(
-                        scene,
-                        transform,
-                        Rect::from_origin_size(
-                            (label_x, row_rect.y0 + (row_height - icon_size) / 2.0),
-                            (icon_size, icon_size),
-                        ),
-                        icon,
-                        ink,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                label_x += icon_size + icon_gap;
-            }
-            // The hint (the Markdown that makes the same block) in
-            // secondary ink against the trailing edge.
-            let trailing_x1 = row_rect.x1 - PADDING_X;
-            let mut label_x1 = trailing_x1;
-            if let Some(hint) = entry.hint {
-                let (w, h) = text_renderer.measure_style(hint, None, &font_style);
-                let dim = if armed { ink } else { tokens.colors.text_dim };
-                let x = trailing_x1 - f64::from(w);
-                text_renderer.draw_style(
-                    scene,
-                    hint,
-                    dim,
-                    transform.pre_translate(Vec2::new(
-                        x,
-                        row_rect.y0 + (row_height - f64::from(h)) / 2.0,
-                    )),
-                    None,
-                    &font_style,
-                );
-                label_x1 = x - icon_gap;
-            }
-            let label = text_renderer.elide_to_width_style(
-                &entry.label,
-                (label_x1 - label_x).max(1.0) as f32,
-                &font_style,
-            );
-            // Centre on the measured line, not the font size — the two differ
-            // by the face's ascent/descent and the label drifted low.
-            let (_, label_h) = text_renderer.measure_style(&label, None, &font_style);
-            let text_y = row_rect.y0 + (row_height - f64::from(label_h)) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &label,
-                ink,
-                transform.pre_translate(Vec2::new(label_x, text_y)),
-                None,
-                &font_style,
-            );
-        }
-    }
-}
-
-/// Widens a small on-screen row count/index to `f64`. Always far below
-/// f64's exact-integer range.
-fn count_f64(v: usize) -> f64 {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "v is a painted row count/index, far below f64's exact-integer range"
-    )]
-    let out = v as f64;
-    out
 }
 
 // The popover lives in overlay space, so the layout and main draw passes
@@ -817,7 +608,9 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
                     AccessNode::new(Role::MenuItem)
                         .with_action_target(format!("row:{entry_index}"))
                         .with_name(entry.label.clone())
-                        .with_state(AccessState::new().selected(position == self.cursor))
+                        .with_state(
+                            AccessState::new().selected(Some(position) == self.list.highlight()),
+                        )
                         .with_position(position.saturating_add(1), count)
                 })
             })
