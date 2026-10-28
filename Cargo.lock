@@ -20951,6 +20951,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-kms"
+version = "0.1.0"
+dependencies = [
+ "drm",
+ "drm-ffi",
+ "input",
+ "rustix 1.1.4",
+ "settings-store",
+ "tilo-cpu-raster",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "workspace-hack",
+ "xkbcommon",
+]
+
+[[package]]
 name = "tilo-ui-macros"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,32 @@
+[package]
+name = "tilo-ui-kms"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+description = "A toolkit host for a screen with no compositor: a ui App rasterized on the CPU into KMS dumb buffers, driven by libinput, from descriptors its caller opened."
+
+[lib]
+name = "ui_kms"
+path = "src/lib.rs"
+
+[dependencies]
+ui = { package = "tilo-ui", path = "../ui-core" }
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
+vello.workspace = true
+winit.workspace = true
+# KMS through the kernel's ioctls: modes, dumb buffers, page flips.
+drm = "0.14.1"
+drm-ffi = "0.9.0"
+# libinput reads the devices whose descriptors the host was given.
+input = { version = "0.9.1", default-features = false, features = ["libinput_1_19"] }
+# Keymaps compiled from the layout the host is given, as the compositor's.
+xkbcommon = { version = "0.8", default-features = false }
+rustix = { workspace = true, features = ["event", "mm", "time", "fs"] }
+# The panel's scale, as the desktop and the greeter derive it.
+settings-store = { path = "../../system/settings-store" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
