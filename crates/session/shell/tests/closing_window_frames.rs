@@ -20,21 +20,16 @@
     reason = "frame counters and a 64x64 buffer size, all far from overflow"
 )]
 
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-
 use shell::compositor::state::State;
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface,
-    wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_subcompositor, wl_subsurface, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
 };
 
-use crate::support::wayland::{self, Globals as _, foreign_id};
+use crate::support::wayland::{self, Toplevel, create_toplevel, foreign_id};
 
 pub(crate) const APP_ID: &str = "org.example.Closing";
 const SIZE: i32 = 64;
@@ -52,7 +47,7 @@ pub(crate) struct Client {
     busy: bool,
 }
 
-crate::support::wayland::test_client!(Client: registry, configured);
+crate::support::wayland::test_client!(Client: registry, configured, surface, shm, buffer);
 
 impl Dispatch<wl_callback::WlCallback, u32> for Client {
     fn event(
@@ -101,75 +96,55 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 delegate_noop!(Client: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(Client: ignore xdg_popup::XdgPopup);
 
-pub(crate) struct Harness {
-    display: Display<State>,
-    pub(crate) state: State,
-    conn: Connection,
-    pub(crate) queue: EventQueue<Client>,
-    client: Client,
-    _event_loop: EventLoop<'static, State>,
+/// The support harness, with a pump that leaves events unread while the
+/// client is busy.
+pub(crate) struct Harness(wayland::Harness<Client>);
+
+impl std::ops::Deref for Harness {
+    type Target = wayland::Harness<Client>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Harness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl Harness {
     pub(crate) fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let mut state = State::new(event_loop.handle(), display.handle());
-        state.set_output_layout(&[shell::compositor::backend::Output::new(
-            shell::compositor::backend::OutputId(0),
-            (1920, 1080),
-            1.0,
-        )]);
-        let conn = wayland::connect(&display);
-        let queue = conn.new_event_queue::<Client>();
-        let _registry = conn.display().get_registry(&queue.handle(), ());
-        let mut harness = Self {
-            display,
-            state,
-            conn,
-            queue,
-            client: Client::default(),
-            _event_loop: event_loop,
-        };
-        harness.pump();
-        harness
-    }
-
-    fn bind<I: wayland_client::Proxy + 'static>(&self, interface: &str, version: u32) -> I
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, version) = self
-            .client
-            .global(interface, version)
-            .unwrap_or_else(|| panic!("{interface} is advertised"));
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version, &self.queue.handle(), ())
+        Self(wayland::Harness::with_state(|handle, display| {
+            let mut state = State::new(handle, display);
+            state.set_output_layout(&[shell::compositor::backend::Output::new(
+                shell::compositor::backend::OutputId(0),
+                (1920, 1080),
+                1.0,
+            )]);
+            state
+        }))
     }
 
     /// Exchange messages both ways until neither side has anything queued.
     /// Never runs a paint pass: whatever the client sees here, it saw without
     /// the compositor drawing a frame.
     pub(crate) fn pump(&mut self) {
+        let h = &mut self.0;
         for _ in 0..8 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
+            let _ = h.queue.flush();
+            let _ = h.display.dispatch_clients(&mut h.state);
+            let _ = h.display.flush_clients();
+            if let Some(guard) = h.conn.prepare_read() {
                 let _ = guard.read();
             }
-            if !self.client.busy {
-                let _ = self.queue.dispatch_pending(&mut self.client);
+            if !h.client.busy {
+                let _ = h.queue.dispatch_pending(&mut h.client);
             }
         }
     }
@@ -201,28 +176,7 @@ fn draw(
 }
 
 fn shm_buffer(h: &Harness) -> wl_buffer::WlBuffer {
-    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1);
-    let stride = SIZE * 4;
-    let len = usize::try_from(stride * SIZE).expect("buffer size");
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-closing-window".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(len as u64).expect("size the shm pool");
-    let qh = h.queue.handle();
-    let pool = shm.create_pool(
-        file.as_fd(),
-        i32::try_from(len).expect("pool size"),
-        &qh,
-        (),
-    );
-    pool.create_buffer(0, SIZE, SIZE, stride, wl_shm::Format::Argb8888, &qh, ())
+    h.shm_buffer(SIZE, SIZE, &wayland::solid(SIZE, SIZE, [0; 4]))
 }
 
 #[test]
@@ -231,10 +185,11 @@ fn a_closed_window_gets_the_frame_callbacks_its_last_frames_wait_on() {
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(APP_ID.into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, APP_ID);
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
@@ -292,10 +247,11 @@ fn a_frame_asked_for_without_a_buffer_does_not_need_a_paint() {
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(APP_ID.into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, APP_ID);
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
@@ -348,10 +304,11 @@ pub(crate) fn shown_window(
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(APP_ID.into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, APP_ID);
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
@@ -543,10 +500,11 @@ fn launched_window(
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(APP_ID.into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm, &qh, APP_ID);
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);
@@ -619,10 +577,11 @@ fn a_deferred_client_close_keeps_its_tab_until_surface_destruction() {
     let qh = h.queue.handle();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(APP_ID.into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm, &qh, APP_ID);
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, APP_ID);

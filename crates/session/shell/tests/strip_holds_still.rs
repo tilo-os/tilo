@@ -21,24 +21,21 @@
 )]
 
 use std::ops::{Deref, DerefMut};
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ROOT};
 use vello::kurbo::{Point, Rect};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, StripId, WindowWidth};
 use ui::widget::Widget as _;
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 /// Each window's share of the strip: three overflow the 1280 px display, so
 /// there is always something off screen to pan to.
@@ -60,7 +57,7 @@ struct Client {
     tokens: Vec<String>,
 }
 
-wayland::test_client!(Client);
+wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     fn event(
@@ -77,14 +74,7 @@ impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore wl_pointer::WlPointer);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_activation_v1::XdgActivationV1);
 
 /// One app window: its surface, role objects and compositor-side id.
@@ -96,10 +86,7 @@ struct Window {
 }
 
 struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-    doc: AutoCommit,
-    focus: Option<taffy::NodeId>,
+    f: wayland::Framed<Client>,
     compositor: wl_compositor::WlCompositor,
     wm: xdg_wm_base::XdgWmBase,
     activation: xdg_activation_v1::XdgActivationV1,
@@ -110,15 +97,15 @@ struct Harness {
 }
 
 impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
+    type Target = wayland::Framed<Client>;
     fn deref(&self) -> &Self::Target {
-        &self.wl
+        &self.f
     }
 }
 
 impl DerefMut for Harness {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
+        &mut self.f
     }
 }
 
@@ -126,33 +113,18 @@ impl Harness {
     /// Four mapped app windows side by side in one strip, wider together
     /// than the display, with a pointer bound.
     fn with_windows() -> Self {
-        let wl = wayland::Harness::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        let qh = wl.queue.handle();
-        let seat = wl.bind::<wl_seat::WlSeat>("wl_seat", 9);
+        let f = wayland::Framed::<Client>::new();
+        let qh = f.queue.handle();
+        let seat = f.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _pointer = seat.get_pointer(&qh, ());
-        let compositor = wl.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
-        let wm = wl.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-        let activation = wl.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
-        let shm = wl.bind::<wl_shm::WlShm>("wl_shm", 1);
+        let compositor = f.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = f.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+        let activation = f.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
+        let shm = f.bind::<wl_shm::WlShm>("wl_shm", 1);
         let len = MAX_BUFFER.saturating_mul(MAX_BUFFER).saturating_mul(4);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-strip-holds-still".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(u64::try_from(len).unwrap()).unwrap();
-        let pool = shm.create_pool(file.as_fd(), len, &qh, ());
+        let (pool, file) = wayland::shm_pool(&shm, &qh, &vec![0; usize::try_from(len).unwrap()]);
         let mut h = Self {
-            wl,
-            fb,
-            doc: AutoCommit::new(),
-            focus: None,
+            f,
             compositor,
             wm,
             activation,
@@ -163,10 +135,9 @@ impl Harness {
         };
         for n in 0..4 {
             let app_id = format!("org.example.Still{n}");
-            let surface = h.compositor.create_surface(&qh, ());
-            let xdg = h.wm.get_xdg_surface(&surface, &qh, ());
-            let toplevel = xdg.get_toplevel(&qh, ());
-            toplevel.set_app_id(app_id.clone());
+            let Toplevel {
+                surface, toplevel, ..
+            } = create_toplevel(&h.compositor, &h.wm, &qh, &app_id);
             toplevel.set_title(format!("Window {n}"));
             surface.commit();
             h.pump();
@@ -233,14 +204,6 @@ impl Harness {
         surface.damage(0, 0, side, side);
         surface.commit();
         self.pump();
-    }
-
-    /// One frame the way the native loop runs it: clients, apps, layout,
-    /// paint.
-    fn frame(&mut self) {
-        self.wl.pump();
-        self.fb.pump_apps(&mut self.doc, &ROOT);
-        let _ = self.fb.paint_settled();
     }
 
     /// Frames until the strip has stopped moving: no change of pan or of
@@ -340,21 +303,7 @@ impl Harness {
     /// it leaves.
     fn input(&mut self, event: &WindowEvent) {
         let modifiers = Modifiers::default();
-        let to_client = shell::compositor::client_input::route_input(
-            &mut self.wl.state,
-            &mut self.fb,
-            event,
-            &modifiers,
-        );
-        if !to_client {
-            self.fb.dispatch_event(
-                event,
-                &modifiers,
-                &mut ui::widget::Edits::lend(&mut self.doc),
-                &ROOT,
-                &mut self.focus,
-            );
-        }
+        self.route(event, modifiers);
         self.frame();
     }
 

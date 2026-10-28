@@ -6,10 +6,12 @@
 //! closed window names nothing, and only a toplevel can be exported.
 
 use shell::compositor::window_handles::WindowHandle;
-use wayland_client::protocol::{wl_compositor, wl_surface};
+use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Dispatch, Proxy as _, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::foreign::zv2::client::{zxdg_exported_v2, zxdg_exporter_v2};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
+
+use crate::support::wayland::{Toplevel, create_toplevel};
 
 #[derive(Default)]
 struct Client {
@@ -18,7 +20,7 @@ struct Client {
     handles: Vec<(u32, String)>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel);
 
 impl Dispatch<zxdg_exported_v2::ZxdgExportedV2, ()> for Client {
     fn event(
@@ -35,9 +37,6 @@ impl Dispatch<zxdg_exported_v2::ZxdgExportedV2, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zxdg_exporter_v2::ZxdgExporterV2);
 
 type Harness = crate::support::wayland::Harness<Client>;
@@ -64,10 +63,11 @@ fn two_windows_of_one_app_get_handles_that_name_each_window() {
     let qh = h.queue.handle();
     let mut windows = Vec::new();
     for _ in 0..2 {
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.Editor".into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel,
+        } = create_toplevel(&compositor, &wm_base, &qh, "org.example.Editor");
         surface.commit();
         h.pump();
         windows.push((surface, xdg, toplevel));

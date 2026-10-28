@@ -20,12 +20,12 @@ use shell::shell::input_policy::InputCapture;
 use tilo_window_share::streaming::{InputEvent, StreamingShare};
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, PhysicalKey};
 
-use crate::support::wayland::foreign_id;
+use crate::support::wayland::{Toplevel, create_toplevel, foreign_id};
 
 const SHIFT: u32 = 42;
 const ROWS: [(&str, &str, u32); 4] = [
@@ -76,7 +76,7 @@ struct Client {
     focus: Option<wl_surface::WlSurface>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -107,11 +107,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
         }
     }
 }
-
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 
 type Harness = crate::support::wayland::Harness<Client>;
 
@@ -164,10 +159,7 @@ fn a_remote_participant_types_exactly_its_text_and_repeats_only_as_its_sender_do
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Writer".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.Writer");
     h.pump();
 
     let window = foreign_id(&h.state, "org.example.Writer");
@@ -255,10 +247,11 @@ fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
     let qh = h.queue.handle();
     let mut windows = Vec::new();
     for app in ["org.example.Browser", "org.example.Writer"] {
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id(app.into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel,
+        } = create_toplevel(&compositor, &wm, &qh, app);
         windows.push((surface, xdg, toplevel));
     }
     h.pump();
@@ -534,10 +527,6 @@ impl Dispatch<wayland_protocols::wp::presentation_time::client::wp_presentation_
     }
 }
 
-delegate_noop!(Client: ignore wayland_client::protocol::wl_shm::WlShm);
-delegate_noop!(Client: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wayland_client::protocol::wl_buffer::WlBuffer);
-
 /// Paints `id` into the process's one foreign frame store, which hands what
 /// was painted to whichever test composes a frame next: tests that draw and
 /// compose hold `serial(foreign_presentation_frame)`.
@@ -608,8 +597,6 @@ fn presentation_fixture() -> (
     wayland_client::protocol::wl_buffer::WlBuffer,
     u64,
 ) {
-    use std::io::Write;
-    use std::os::fd::AsFd;
     use wayland_protocols::wp::presentation_time::client::wp_presentation::WpPresentation;
     let mut h = Harness::new();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
@@ -617,16 +604,16 @@ fn presentation_fixture() -> (
     let shm = h.bind::<wayland_client::protocol::wl_shm::WlShm>("wl_shm", 1);
     let presentation = h.bind::<WpPresentation>("wp_presentation", 1);
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let top = xdg.get_toplevel(&qh, ());
-    top.set_app_id("org.example.Presentation".into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Presentation");
     surface.commit();
     h.pump();
     let id = foreign_id(&h.state, "org.example.Presentation");
-    let mut pixels = tempfile::tempfile().unwrap();
-    pixels.write_all(&[0, 0, 255, 255, 0, 255, 0, 255]).unwrap();
-    let pool = shm.create_pool(pixels.as_fd(), 8, &qh, ());
+    let (pool, _pixels) =
+        crate::support::wayland::shm_pool(&shm, &qh, &[0, 0, 255, 255, 0, 255, 0, 255]);
     let old = pool.create_buffer(
         0,
         1,
@@ -778,10 +765,11 @@ fn seat_focus_metadata_tracks_actual_wayland_focus_and_clearing() {
     let mut h = Harness::new();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-    let surface = compositor.create_surface(&h.queue.handle(), ());
-    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
-    let toplevel = xdg.get_toplevel(&h.queue.handle(), ());
-    toplevel.set_app_id("org.example.Focus".into());
+    let Toplevel {
+        surface: _,
+        xdg: _,
+        toplevel,
+    } = create_toplevel(&compositor, &wm, &h.queue.handle(), "org.example.Focus");
     toplevel.set_title("private window content must stay private".into());
     h.pump();
     let window = foreign_id(&h.state, "org.example.Focus");
@@ -825,18 +813,12 @@ fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     let mut h = Harness::new();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-    let surface = compositor.create_surface(&h.queue.handle(), ());
-    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
-    let toplevel = xdg.get_toplevel(&h.queue.handle(), ());
-    toplevel.set_app_id("org.example.Writer".into());
+    create_toplevel(&compositor, &wm, &h.queue.handle(), "org.example.Writer");
     h.pump();
     let window = foreign_id(&h.state, "org.example.Writer");
     // Leave a window to the right: removing an anonymous OSK group must
     // not choose that neighbour instead of the person's previous window.
-    let neighbour = compositor.create_surface(&h.queue.handle(), ());
-    let neighbour_xdg = wm.get_xdg_surface(&neighbour, &h.queue.handle(), ());
-    let neighbour_toplevel = neighbour_xdg.get_toplevel(&h.queue.handle(), ());
-    neighbour_toplevel.set_app_id("org.example.Reader".into());
+    create_toplevel(&compositor, &wm, &h.queue.handle(), "org.example.Reader");
     h.pump();
     assert!(shell::shell::tab_binding::activate_surface(
         &mut h.state.workspace_tree.write(),
@@ -900,10 +882,12 @@ fn a_trusted_osk_toplevel_never_adopts_a_tab_before_its_app_id_arrives() {
     // Merely copying the app-id on a public connection grants no OSK role.
     let public_compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let public_wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-    let spoof = public_compositor.create_surface(&h.queue.handle(), ());
-    let spoof_xdg = public_wm.get_xdg_surface(&spoof, &h.queue.handle(), ());
-    let spoof_toplevel = spoof_xdg.get_toplevel(&h.queue.handle(), ());
-    spoof_toplevel.set_app_id("so.tilo.osk".into());
+    create_toplevel(
+        &public_compositor,
+        &public_wm,
+        &h.queue.handle(),
+        "so.tilo.osk",
+    );
     h.pump();
     let public_window = foreign_id(&h.state, "so.tilo.osk");
     assert_ne!(h.state.osk_surface, Some(public_window));
@@ -952,10 +936,11 @@ fn native_window_provenance_requires_current_authenticated_surface_record_and_li
     h.pump();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-    let surface = compositor.create_surface(&h.queue.handle(), ());
-    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
-    let top = xdg.get_toplevel(&h.queue.handle(), ());
-    top.set_app_id("so.tilo.calculator".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel: top,
+    } = create_toplevel(&compositor, &wm, &h.queue.handle(), "so.tilo.calculator");
     top.set_title("private title excluded from owner provenance".into());
     h.pump();
     let id = foreign_id(&h.state, "so.tilo.calculator");
@@ -1059,10 +1044,11 @@ fn native_window_provenance_rejects_numeric_surface_id_reuse_across_resource_lif
     h.pump();
     let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-    let surface = compositor.create_surface(&h.queue.handle(), ());
-    let xdg = wm.get_xdg_surface(&surface, &h.queue.handle(), ());
-    let top = xdg.get_toplevel(&h.queue.handle(), ());
-    top.set_app_id("so.tilo.calculator".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel: top,
+    } = create_toplevel(&compositor, &wm, &h.queue.handle(), "so.tilo.calculator");
     h.pump();
     let id = foreign_id(&h.state, "so.tilo.calculator");
     let original = record_window_for_provenance(&h, id, 77);

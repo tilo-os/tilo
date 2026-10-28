@@ -14,22 +14,16 @@
     reason = "test harness failures are assertions"
 )]
 
-use std::ops::{Deref, DerefMut};
-
-use automerge::{AutoCommit, ROOT};
 use vello::kurbo::{Point, Rect};
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
+use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use shell::shell::frame::FrameBuilder;
 use shell::shell::input_policy::chrome_captures_input;
 use ui::widget::{CaptureIntent, CapturePreview, ScreenshotCommand, ScreenshotSendTarget};
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -45,7 +39,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-wayland::test_client!(Client);
+wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     fn event(
@@ -67,33 +61,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
-
-struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-    doc: AutoCommit,
-    focus: Option<taffy::NodeId>,
-}
-
-impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
-    fn deref(&self) -> &Self::Target {
-        &self.wl
-    }
-}
-
-impl DerefMut for Harness {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
-    }
-}
+type Harness = wayland::Framed<Client>;
 
 impl Harness {
     /// One mapped window spanning the whole strip, with a pointer bound.
@@ -102,23 +70,17 @@ impl Harness {
         reason = "the frame builder is held while the harness window is mapped"
     )]
     fn with_wide_window() -> (Self, u64) {
-        let wl = wayland::Harness::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        let mut h = Self {
-            wl,
-            fb,
-            doc: AutoCommit::new(),
-            focus: None,
-        };
+        let mut h = Self::new();
         let qh = h.queue.handle();
         let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _pointer = seat.get_pointer(&qh, ());
         let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
         let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.Under".into());
+        let Toplevel {
+            surface,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.Under");
         h.pump();
         let _ = h.fb.paint_settled();
         h.pump();
@@ -143,26 +105,8 @@ impl Harness {
     }
 
     fn map(&mut self, surface: &wl_surface::WlSurface, surface_id: u64) {
-        use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
         let (width, height) = (64_i32, 64_i32);
-        let stride = width.checked_mul(4).unwrap();
-        let len = usize::try_from(stride.checked_mul(height).unwrap()).unwrap();
-        let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-popover-routing".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(len as u64).unwrap();
-        let qh = self.queue.handle();
-        let pool = shm.create_pool(file.as_fd(), i32::try_from(len).unwrap(), &qh, ());
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        let buffer = self.shm_buffer(width, height, &wayland::solid(width, height, [0; 4]));
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width, height);
         surface.commit();
@@ -186,22 +130,7 @@ impl Harness {
 
     /// The production order: the seat first, the shell with what it leaves.
     fn input(&mut self, event: &WindowEvent) {
-        let modifiers = Modifiers::default();
-        let to_client = shell::compositor::client_input::route_input(
-            &mut self.wl.state,
-            &mut self.fb,
-            event,
-            &modifiers,
-        );
-        if !to_client {
-            self.fb.dispatch_event(
-                event,
-                &modifiers,
-                &mut ui::widget::Edits::lend(&mut self.doc),
-                &ROOT,
-                &mut self.focus,
-            );
-        }
+        self.route(event, Modifiers::default());
         self.wl.pump();
         let _ = self.fb.paint_settled();
     }

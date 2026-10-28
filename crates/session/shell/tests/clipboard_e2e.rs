@@ -45,7 +45,7 @@ use wayland_client::protocol::{
     wl_pointer::{self, WlPointer},
     wl_registry::{self, WlRegistry},
     wl_seat::{self, WlSeat},
-    wl_shm::{Format, WlShm},
+    wl_shm::WlShm,
     wl_shm_pool::WlShmPool,
     wl_subcompositor::WlSubcompositor,
     wl_subsurface::WlSubsurface,
@@ -1557,42 +1557,14 @@ impl TestClient {
     }
 
     fn attach_buffer_to(&mut self, surface: &WlSurface, width: i32, height: i32) {
-        use std::os::unix::io::AsFd;
         let shm = self
             .state
             .shm
             .clone()
             .expect("compositor advertises wl_shm");
-        let stride = width.saturating_mul(4);
-        let len = usize::try_from(stride.saturating_mul(height)).unwrap_or(0);
-
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-clipboard-e2e".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor and nothing
-        // else owns it.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        let file = std::fs::File::from(fd);
-        file.set_len(len as u64).expect("size the shm pool");
         // Opaque mid-grey, so a rendered frame is visibly the client's own.
-        let pixels = vec![0x80u8; len];
-        {
-            use std::os::unix::fs::FileExt;
-            file.write_at(&pixels, 0).expect("fill the shm pool");
-        }
-
-        let pool = shm.create_pool(
-            file.as_fd(),
-            i32::try_from(len).unwrap_or(i32::MAX),
-            &self.qh,
-            (),
-        );
-        let buffer = pool.create_buffer(0, width, height, stride, Format::Argb8888, &self.qh, ());
+        let pixels = crate::support::wayland::solid(width, height, [0x80; 4]);
+        let buffer = crate::support::wayland::shm_buffer(&shm, &self.qh, width, height, &pixels);
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width, height);
         surface.commit();

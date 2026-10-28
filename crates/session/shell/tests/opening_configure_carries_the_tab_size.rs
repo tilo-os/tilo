@@ -17,12 +17,14 @@
 use std::sync::{Arc, Mutex};
 
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_surface};
+use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+
+use crate::support::wayland::{Toplevel, create_toplevel};
 
 /// Every `xdg_toplevel.configure` size the client was sent, in order.
 type Configures = Arc<Mutex<Vec<(i32, i32)>>>;
@@ -33,7 +35,7 @@ struct Client {
     configures: Configures,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface);
 
 impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     fn event(
@@ -56,8 +58,6 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 delegate_noop!(Client: ignore zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1);
 
@@ -96,10 +96,11 @@ fn open_a_window(h: &mut Harness) -> Configures {
     h.pump();
 
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.tilo.test.opening-size".into());
+    let Toplevel {
+        surface,
+        xdg: xdg_surface,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.tilo.test.opening-size");
     h.pump();
 
     // Toolkits negotiate decorations in the same round trip that creates the

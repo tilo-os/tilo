@@ -1,15 +1,11 @@
 //! Wire-level presence and rejection tests for `xdg_activation_v1`.
 
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
-};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_surface, wl_touch};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
-use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_wm_base};
 
-use crate::support::wayland::foreign_id;
+use crate::support::wayland::{self, Toplevel, create_toplevel, foreign_id};
 
 #[derive(Default)]
 struct Client {
@@ -22,7 +18,7 @@ struct Client {
     popup_done: usize,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     fn event(
@@ -81,15 +77,8 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
 }
 
 delegate_noop!(Client: ignore xdg_activation_v1::XdgActivationV1);
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore wl_touch::WlTouch);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 
 type Harness = crate::support::wayland::Harness<Client>;
 
@@ -125,14 +114,16 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
-        let source = compositor.create_surface(&qh, ());
-        let source_xdg = wm.get_xdg_surface(&source, &qh, ());
-        let source_top = source_xdg.get_toplevel(&qh, ());
-        source_top.set_app_id("org.example.Source".into());
-        let target = compositor.create_surface(&qh, ());
-        let target_xdg = wm.get_xdg_surface(&target, &qh, ());
-        let target_top = target_xdg.get_toplevel(&qh, ());
-        target_top.set_app_id("org.example.Target".into());
+        let Toplevel {
+            surface: source,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.Source");
+        let Toplevel {
+            surface: target,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.Target");
         h.pump();
 
         let source_id = foreign_id(&h.state, "org.example.Source");
@@ -210,10 +201,11 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
         );
 
         let qh = h.queue.handle();
-        let target = compositor.create_surface(&qh, ());
-        let target_xdg = wm.get_xdg_surface(&target, &qh, ());
-        let target_top = target_xdg.get_toplevel(&qh, ());
-        target_top.set_app_id(identity.into());
+        let Toplevel {
+            surface: target,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, identity);
         h.pump();
         let target_id = foreign_id(&h.state, identity);
         assert_eq!(
@@ -272,23 +264,8 @@ fn xdg_activation_needs_an_attributed_token_and_activates_once() {
 /// window, no longer one still opening.
 fn show_a_frame(h: &mut Harness, shm: &wl_shm::WlShm, surface: &wl_surface::WlSurface) {
     const SIDE: i32 = 16;
-    const STRIDE: i32 = 64;
-    const LEN: i32 = 1024;
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-xdg-activation".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(u64::try_from(LEN).expect("a small length"))
-        .expect("size the pool");
     let qh = h.queue.handle();
-    let pool = shm.create_pool(file.as_fd(), LEN, &qh, ());
-    let buffer = pool.create_buffer(0, SIDE, SIDE, STRIDE, wl_shm::Format::Argb8888, &qh, ());
+    let buffer = wayland::shm_buffer(shm, &qh, SIDE, SIDE, &wayland::solid(SIDE, SIDE, [0; 4]));
     surface.attach(Some(&buffer), 0, 0);
     surface.damage(0, 0, SIDE, SIDE);
     surface.commit();
@@ -311,15 +288,17 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
-    let source = compositor.create_surface(&qh, ());
-    let source_xdg = wm.get_xdg_surface(&source, &qh, ());
-    let source_top = source_xdg.get_toplevel(&qh, ());
-    source_top.set_app_id("org.example.Mail".into());
+    let Toplevel {
+        surface: source,
+        xdg: _,
+        toplevel: source_top,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Mail");
     source.commit();
-    let target = compositor.create_surface(&qh, ());
-    let target_xdg = wm.get_xdg_surface(&target, &qh, ());
-    let target_top = target_xdg.get_toplevel(&qh, ());
-    target_top.set_app_id("org.example.Browser".into());
+    let Toplevel {
+        surface: target,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Browser");
     target.commit();
     h.pump();
     show_a_frame(&mut h, &shm, &source);
@@ -432,10 +411,7 @@ fn a_press_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not(
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let chat = compositor.create_surface(&qh, ());
-    let chat_xdg = wm.get_xdg_surface(&chat, &qh, ());
-    let chat_top = chat_xdg.get_toplevel(&qh, ());
-    chat_top.set_app_id("org.example.Chat".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.Chat");
     h.pump();
     let chat_id = foreign_id(&h.state, "org.example.Chat");
     assert!(shell::shell::tab_binding::activate_surface(
@@ -483,10 +459,7 @@ fn a_tap_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not() 
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _touch = seat.get_touch(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let chat = compositor.create_surface(&qh, ());
-    let chat_xdg = wm.get_xdg_surface(&chat, &qh, ());
-    let chat_top = chat_xdg.get_toplevel(&qh, ());
-    chat_top.set_app_id("org.example.Chat".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.Chat");
     // Notes is another app: its own connection, so its own client.
     let notes_conn = crate::support::wayland::connect(&h.display);
     let mut notes_queue = notes_conn.new_event_queue::<Client>();
@@ -524,10 +497,7 @@ fn a_tap_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not() 
     let notes_seat: wl_seat::WlSeat =
         notes_registry.bind(seat_name, seat_version.min(9), &notes_qh, ());
     let _notes_touch = notes_seat.get_touch(&notes_qh, ());
-    let notes = notes_compositor.create_surface(&notes_qh, ());
-    let notes_xdg = notes_wm.get_xdg_surface(&notes, &notes_qh, ());
-    let notes_top = notes_xdg.get_toplevel(&notes_qh, ());
-    notes_top.set_app_id("org.example.Notes".into());
+    create_toplevel(&notes_compositor, &notes_wm, &notes_qh, "org.example.Notes");
     pump_both(&mut h, &mut notes_client);
     let chat_id = foreign_id(&h.state, "org.example.Chat");
     let notes_id = foreign_id(&h.state, "org.example.Notes");
@@ -589,10 +559,11 @@ fn real_xdg_popups_and_titles_are_handled_without_becoming_tabs() {
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
-        let parent = compositor.create_surface(&qh, ());
-        let parent_xdg = wm.get_xdg_surface(&parent, &qh, ());
-        let parent_top = parent_xdg.get_toplevel(&qh, ());
-        parent_top.set_app_id("org.example.MenuOwner".into());
+        let Toplevel {
+            surface: _,
+            xdg: parent_xdg,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.MenuOwner");
         h.pump();
         let parent_id = foreign_id(&h.state, "org.example.MenuOwner");
         h.state.set_client_keyboard_focus(Some(parent_id));
@@ -705,10 +676,11 @@ fn real_xdg_popups_and_titles_are_handled_without_becoming_tabs() {
         let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
         let qh = h.queue.handle();
         for title in ["draft-a.md", "draft-b.md"] {
-            let surface = compositor.create_surface(&qh, ());
-            let xdg = wm.get_xdg_surface(&surface, &qh, ());
-            let toplevel = xdg.get_toplevel(&qh, ());
-            toplevel.set_app_id("org.example.Writer".into());
+            let Toplevel {
+                surface: _,
+                xdg: _,
+                toplevel,
+            } = create_toplevel(&compositor, &wm, &qh, "org.example.Writer");
             toplevel.set_title(title.into());
         }
         h.pump();

@@ -19,7 +19,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 /// The globals offered, and every decoration mode configured, in order.
 #[derive(Default)]
@@ -28,7 +28,7 @@ struct Client {
     modes: Arc<Mutex<Vec<zxdg_toplevel_decoration_v1::Mode>>>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel);
 
 impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Client {
     fn event(
@@ -47,9 +47,6 @@ impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Cli
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zxdg_decoration_manager_v1::ZxdgDecorationManagerV1);
 
 /// Compositor and client on a socket pair, pumped by hand so the test

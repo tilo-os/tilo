@@ -14,12 +14,12 @@
 use std::time::{Duration, Instant};
 
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
-use crate::support::wayland::foreign_id;
+use crate::support::wayland::{Toplevel, create_toplevel, foreign_id};
 
 #[derive(Debug, PartialEq, Eq)]
 enum KeyboardWire {
@@ -38,7 +38,7 @@ struct Client {
     presses: Vec<(u32, u32)>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, seat);
 
 fn surface_id(surface: &wl_surface::WlSurface) -> u32 {
     surface.id().protocol_id()
@@ -103,11 +103,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
-
 type Harness = crate::support::wayland::Harness<Client>;
 
 #[test]
@@ -119,14 +114,16 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
-    let first = compositor.create_surface(&qh, ());
-    let first_xdg = wm.get_xdg_surface(&first, &qh, ());
-    let first_top = first_xdg.get_toplevel(&qh, ());
-    first_top.set_app_id("org.example.First".into());
-    let second = compositor.create_surface(&qh, ());
-    let second_xdg = wm.get_xdg_surface(&second, &qh, ());
-    let second_top = second_xdg.get_toplevel(&qh, ());
-    second_top.set_app_id("org.example.Second".into());
+    let Toplevel {
+        surface: first,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.First");
+    let Toplevel {
+        surface: second,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Second");
     h.pump();
 
     let first_id = foreign_id(&h.state, "org.example.First");
@@ -176,10 +173,7 @@ fn app_tab_chords_reach_a_foreign_client_and_their_super_spelling_never_does() {
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.TabbedBrowser".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.TabbedBrowser");
     h.pump();
     let foreign_surface_id = foreign_id(&h.state, "org.example.TabbedBrowser");
     h.state.set_client_keyboard_focus(Some(foreign_surface_id));
@@ -305,10 +299,7 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.ShortcutOwnership".into());
+        create_toplevel(&compositor, &wm, &qh, "org.example.ShortcutOwnership");
         h.pump();
         let foreign_surface_id = foreign_id(&h.state, "org.example.ShortcutOwnership");
         h.state.set_client_keyboard_focus(Some(foreign_surface_id));
@@ -511,10 +502,11 @@ fn compositor_shortcuts_and_lock_capture_own_the_keyboard_before_clients() {
         let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
         let qh = h.queue.handle();
 
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.LockBoundary".into());
+        let Toplevel {
+            surface,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.LockBoundary");
         h.pump();
         let foreign_surface_id = foreign_id(&h.state, "org.example.LockBoundary");
         h.state.set_client_keyboard_focus(Some(foreign_surface_id));
@@ -640,10 +632,7 @@ fn granted_global_shortcut_fires_over_a_focused_client_and_deactivates_on_releas
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Focused".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.Focused");
     h.pump();
     let focused = foreign_id(&h.state, "org.example.Focused");
     h.state.set_client_keyboard_focus(Some(focused));
@@ -745,14 +734,8 @@ fn focus_handoff_soak_has_one_release_per_backspace_press() {
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
-    let first = compositor.create_surface(&qh, ());
-    let first_xdg = wm.get_xdg_surface(&first, &qh, ());
-    let first_top = first_xdg.get_toplevel(&qh, ());
-    first_top.set_app_id("org.example.SoakFirst".into());
-    let second = compositor.create_surface(&qh, ());
-    let second_xdg = wm.get_xdg_surface(&second, &qh, ());
-    let second_top = second_xdg.get_toplevel(&qh, ());
-    second_top.set_app_id("org.example.SoakSecond".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.SoakFirst");
+    create_toplevel(&compositor, &wm, &qh, "org.example.SoakSecond");
     h.pump();
 
     let first_id = foreign_id(&h.state, "org.example.SoakFirst");
@@ -817,10 +800,11 @@ fn typing_window(app_id: &str) -> (Harness, wl_surface::WlSurface, u64) {
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(app_id.into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, app_id);
     h.pump();
     let id = foreign_id(&h.state, app_id);
     (h, surface, id)
