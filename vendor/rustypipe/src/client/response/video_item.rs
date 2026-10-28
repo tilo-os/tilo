@@ -63,7 +63,14 @@ pub(crate) enum YouTubeListItem {
     /// as of 11.10.2022
     ///
     /// GridRenderer: contains videos on channel page
-    #[serde(alias = "expandedShelfContentsRenderer", alias = "gridRenderer")]
+    ///
+    /// PlaylistVideoListRenderer: contains the videos of a playlist page
+    /// (older layout; the current one lists them in the item section itself)
+    #[serde(
+        alias = "expandedShelfContentsRenderer",
+        alias = "gridRenderer",
+        alias = "playlistVideoListRenderer"
+    )]
     ItemSectionRenderer {
         #[cfg(feature = "userdata")]
         header: Option<ItemSectionHeader>,

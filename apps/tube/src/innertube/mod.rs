@@ -3,10 +3,9 @@
 //! The API `YouTube`'s web and mobile apps call: `POST
 //! https://www.youtube.com/youtubei/v1/{search,next,player,browse}` with a
 //! JSON body naming the calling client. `NewPipe` and yt-dlp read the same
-//! endpoints. It answers in well under a second and needs no third-party
-//! server, so it is Tube's first source wherever the worker runs without the
-//! extractors (a page) and the last one behind them on the desktop; public
-//! Invidious instances are the fallback (see [`crate::api`]). In a page the
+//! endpoints. It is Tube's source where rustypipe cannot run (a browser
+//! page: rustypipe needs a C JavaScript engine and tokio's process support,
+//! neither of which builds for wasm32). In a page the
 //! requests go through the host's fetch proxy: youtube.com sends no CORS
 //! headers.
 //!
@@ -40,8 +39,8 @@ use crate::model::{Channel, Video};
 pub use parse::{Found, Stream};
 
 const API: &str = "https://www.youtube.com/youtubei/v1";
-/// A request that takes longer than this gives way to the fallback: search
-/// should answer within about two seconds.
+/// A request that takes longer than this has failed: search should answer
+/// within about two seconds.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 /// Search filter: videos only.
 const VIDEOS_ONLY: &str = "EgIQAQ%3D%3D";

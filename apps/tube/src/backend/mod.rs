@@ -5,15 +5,11 @@
 //! * **offline** (the default build): the bundled [`crate::sample`] catalogue.
 //!   The `--shots` renderer and every test run here — no network, fully
 //!   hermetic, deterministic screenshots.
-//! * **live** (`--features live`): real `YouTube` data via the pure-Rust
-//!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client. This pulls
-//!   in `tokio` + a network stack, so it is *off* by default and never
-//!   compiled into the hermetic shots path.
+//! * **live** (`--features live`, in the default build): real `YouTube`
+//!   data via the pure-Rust [`rustypipe`](https://docs.rs/rustypipe)
+//!   `InnerTube` client. The shots path and tests never spawn it.
 //!
-//! Both worlds implement the same [`YtBackend`] trait, so the rest of the app
-//! (the fetch worker in [`crate::api`]) is written once against the trait and
-//! the build feature picks the implementation: rustypipe is real but gated,
-//! and the offline sample is the default.
+//! Both worlds implement the same [`YtBackend`] trait.
 //!
 //! ## What lives where
 //!
@@ -29,17 +25,9 @@
 //! (per-video "up next"). See [`crate::recommend`].
 
 pub mod offline;
-/// Fully-rangeable stream resolution through public Invidious `local=true`
-/// proxies — the reliable, seekable playback URL for the media engine.
-pub mod proxy;
 
 #[cfg(feature = "live")]
 pub mod live;
-
-/// yt-dlp subprocess extractor — the maintained YouTube data source. Gated
-/// behind `live` alongside the rustypipe fallback.
-#[cfg(feature = "live")]
-pub mod ytdlp;
 
 use crate::model::{Channel, Comment, Playlist, Video};
 
@@ -104,8 +92,8 @@ pub type BackendOutcome = Result<BackendResult, BackendError>;
 /// playback backend as the system video player and editor preview.
 #[derive(Clone, Debug)]
 pub struct PlaybackSource {
-    /// Directly-playable media URL (progressive muxed when available, else the
-    /// best video-only stream). Signature/nsig already applied by the extractor.
+    /// Directly-playable media URL of a progressive stream (picture and sound
+    /// in one file).
     pub url: String,
     /// True when the chosen URL carries audio as well as video (a progressive
     /// muxed format), so the caller knows sound will play.
@@ -173,9 +161,8 @@ pub trait YtBackend: Send + Sync {
 
     /// Top comments for a video. The default returns none — only a backend that
     /// can reach `YouTube`'s `next`/comments continuation (the live rustypipe one)
-    /// produces real comments; the offline sample carries its own, and the
-    /// yt-dlp path leaves comments to rustypipe (yt-dlp's own comment extraction
-    /// is slow and unreliable). The UI degrades to "no comments" when empty.
+    /// produces real comments; the offline sample carries its own. The UI
+    /// degrades to "no comments" when empty.
     ///
     /// # Errors
     ///
@@ -199,9 +186,8 @@ pub trait YtBackend: Send + Sync {
     }
 
     /// Resolve a whole directly-playable media URL for `id`, for the `GStreamer`
-    /// decode path (VP9 / AV1 / H.264 + audio). The default errors — only a
-    /// backend that can reach a real extractor (yt-dlp) produces one. The UI
-    /// degrades to the poster when this fails.
+    /// decode path. The default errors — only the live backend produces one.
+    /// The UI degrades to the poster when this fails.
     ///
     /// `max_height` is the height the person chose (`Some(480)` for 480p,
     /// `None` for the best available): a backend that can choose a format

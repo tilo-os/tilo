@@ -18972,6 +18972,7 @@ name = "tilo-innertube"
 version = "0.1.0"
 dependencies = [
  "rustypipe",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -22430,7 +22431,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "bounded-command",
  "flate2",
  "fnv",
  "getrandom 0.4.3",
@@ -22447,7 +22447,6 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-innertube",
- "tilo-invidious",
  "tilo-media",
  "tilo-net",
  "tilo-secrets",

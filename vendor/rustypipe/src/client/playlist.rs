@@ -52,20 +52,6 @@ impl MapResponse<Playlist> for response::Playlist {
             .tab_renderer
             .content
             .section_list_renderer
-            .contents
-            .into_iter()
-            .next()
-            .ok_or(ExtractionError::InvalidData(Cow::Borrowed(
-                "sectionListRenderer empty",
-            )))?
-            .item_section_renderer
-            .contents
-            .into_iter()
-            .next()
-            .ok_or(ExtractionError::InvalidData(Cow::Borrowed(
-                "itemSectionRenderer empty",
-            )))?
-            .playlist_video_list_renderer
             .contents;
 
         let mut mapper = response::YouTubeListMapper::<VideoItem>::new(ctx.lang);

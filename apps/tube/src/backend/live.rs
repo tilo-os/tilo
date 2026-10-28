@@ -8,20 +8,18 @@
 //! timers and whatever rustypipe spawns. That keeps the async dependency
 //! fully contained here — no other module learns about tokio.
 //!
-//! ## API surface used (rustypipe 0.11.x — verified)
-//! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
-//! * `query.search::<YouTubeItem, _>(q).await` → `SearchResult { items, .. }`
-//! * `query.video_details(id).await` → `VideoDetails` (has `.recommended`,
-//!   so per-video **related** is a field, not its own endpoint)
-//! * `query.channel_videos(id).await` → channel + uploads
-//! * `query.trending().await` → `Vec<VideoItem>`
-//! * `query.player(id).await` → `VideoPlayer` (stream URLs) — gated behind a
-//!   `PoToken`
+//! ## API surface used (rustypipe 0.11.x, through [`tilo_innertube`])
+//! * `search` → videos, playlists and creator rows of a query
+//! * `video_details` → a watch page: metadata, recommendations ("up next") and
+//!   the first page of comments
+//! * `player` → the stream to play ([`tilo_innertube::whole_file_stream`]),
+//!   the duration and the caption tracks
+//! * `channel_videos`, `playlist`, `trending`, `search_filter` (the popular
+//!   feed)
 //!
 //! The client is built with `no_botguard`: metadata needs no `PoToken`, and
-//! playback resolves through an Invidious proxy ([`crate::backend::proxy`]),
-//! so no external `BotGuard` binary is ever needed. rustypipe embeds
-//! `rquickjs`; no ffmpeg / yt-dlp.
+//! the player client [`tilo_innertube::PLAYER_CLIENT`] needs none either.
+//! rustypipe embeds `rquickjs`; no ffmpeg, no yt-dlp.
 
 #![cfg(feature = "live")]
 
@@ -33,13 +31,10 @@ use rustypipe::model::{
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 use tilo_innertube as innertube;
 
-use crate::backend::{BackendError, BackendOutcome, BackendResult, YtBackend};
+use crate::backend::{BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend};
 use crate::model::{Channel, Comment, Playlist, Video};
 
-/// A rustypipe search split into Tube's three result kinds. Used to enrich the
-/// primary (yt-dlp) search — which returns videos only, without creator avatars
-/// — with playlists, creator rows, and the channel avatars carried on every
-/// rustypipe item.
+/// A rustypipe search split into Tube's three result kinds.
 pub struct SearchItems {
     pub videos: Vec<Video>,
     pub playlists: Vec<Playlist>,
@@ -54,8 +49,59 @@ fn is_verified(v: Verification) -> bool {
 
 /// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
-    rp: RustyPipe,
+    rp: &'static RustyPipe,
     rt: &'static ui::rt::AppRuntime,
+}
+
+/// The one rustypipe client of the process, shared by the fetch worker and
+/// the search suggestions. It must be first built inside the app runtime, so
+/// that what rustypipe wires up at construction (the reqwest pool, cache
+/// tasks) has a reactor.
+fn shared_client() -> Result<&'static RustyPipe, BackendError> {
+    static CLIENT: std::sync::OnceLock<Result<RustyPipe, String>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            // rustypipe's reqwest client takes the process-default TLS provider.
+            tilo_net::install_crypto_provider();
+            // `no_reporter()`: rustypipe's default reporter writes a
+            // `rustypipe_reports/*.json` file into the process cwd on every
+            // parser warning. A shipped app must not litter the working
+            // directory, so disable it (warnings still degrade gracefully —
+            // core fields are extracted regardless).
+            RustyPipe::builder()
+                .no_reporter()
+                .no_botguard()
+                .build()
+                .map_err(|e| format!("rustypipe build: {e}"))
+        })
+        .as_ref()
+        .map_err(|e| BackendError(e.clone()))
+}
+
+/// The videos `YouTube` finds for `query`, asked on the app runtime (the
+/// platform search's suggestions); empty when it does not answer.
+#[allow(
+    clippy::future_not_send,
+    reason = "tilo-innertube's queries are boxed without Send so their code stays \
+              in the engine library; the caller polls this on one pinned thread"
+)]
+pub async fn suggested_videos(query: &str) -> Vec<Video> {
+    let Ok(rp) = shared_client() else {
+        return Vec::new();
+    };
+    let q = rp.query();
+    innertube::search(&q, query)
+        .await
+        .map(|res| videos_from_items(res.items.items))
+        .unwrap_or_default()
+}
+
+/// A watch page: the video, what `YouTube` recommends next, and its top
+/// comments (empty when they could not be read).
+pub struct Watch {
+    pub video: Video,
+    pub related: Vec<Video>,
+    pub comments: Result<Vec<Comment>, BackendError>,
 }
 
 impl RustyPipeBackend {
@@ -66,21 +112,9 @@ impl RustyPipeBackend {
         // runtime those tasks live on the runtime thread and progress
         // independently of this worker, which only polls its own query.
         let rt = ui::rt::try_app().map_err(|e| BackendError(format!("tokio runtime: {e}")))?;
-        // rustypipe's reqwest client takes the process-default TLS provider.
-        tilo_net::install_crypto_provider();
-        // Build the client *inside* the runtime so anything rustypipe wires up
-        // at construction (the reqwest pool, cache tasks) has a reactor.
         let rp = rt
-            .block_on(async {
-                // `no_reporter()`: rustypipe's default reporter writes a
-                // `rustypipe_reports/*.json` file into the process cwd on every
-                // parser warning. A shipped app must not litter the working
-                // directory, so disable it (warnings still degrade gracefully —
-                // core fields are extracted regardless).
-                RustyPipe::builder().no_reporter().no_botguard().build()
-            })
-            .map_err(|e| BackendError(format!("tokio runtime: {e}")))?
-            .map_err(|e| BackendError(format!("rustypipe build: {e}")))?;
+            .block_on(async { shared_client() })
+            .map_err(|e| BackendError(format!("tokio runtime: {e}")))??;
         Ok(Self { rp, rt })
     }
 
@@ -99,8 +133,7 @@ impl RustyPipeBackend {
     }
 
     /// Run one search and split the results into videos, playlists and creator
-    /// rows — the enrichment source for the primary backend, which returns only
-    /// videos (and no avatars). Real `InnerTube` data in a single call.
+    /// rows, all from one `InnerTube` call.
     pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
         let q = self.rp.query();
         let res = self
@@ -152,6 +185,124 @@ impl RustyPipeBackend {
         };
         Ok((playlist, videos))
     }
+
+    /// A watch page from one `video_details` call, with the duration from
+    /// the player answer (the details carry none).
+    pub fn watch(&self, id: &str) -> Result<Watch, BackendError> {
+        let q = self.rp.query();
+        let d = self
+            .block(innertube::video_details(&q, id))
+            .map_err(|e| BackendError(format!("video {id}: {e}")))?;
+        let duration = self
+            .block(innertube::player(&q, id))
+            .map_or(0, |player| player.details.duration);
+        let comments = self
+            .block(innertube::next_comments(&d.top_comments, &q))
+            .map(|page| {
+                page.map(|p| p.items)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(60)
+                    .map(map_comment)
+                    .collect()
+            })
+            .map_err(|e| BackendError(format!("comments {id}: {e}")));
+        let channel_id = d.channel.id.clone();
+        let video = Video {
+            id: d.id.clone(),
+            title: d.name,
+            dearrow_title: None,
+            channel_id: channel_id.clone(),
+            channel_avatar_url: best_thumb(&d.channel.avatar),
+            channel_name: d.channel.name,
+            channel_seed: channel_id,
+            views: d.view_count,
+            published: d.publish_date_txt.unwrap_or_default(),
+            duration,
+            // `description` is rustypipe's `RichText`; flatten to plain text.
+            description: d.description.to_plaintext(),
+            likes: u64::from(d.like_count.unwrap_or(0)),
+            thumbnail_url: crate::backend::yt_thumb_url(&d.id),
+            seed: d.id,
+            category: "Video".into(),
+            dearrow_thumb: false,
+            sponsor: Vec::new(),
+            comments: Vec::new(),
+            live: d.is_live,
+        };
+        let related = d
+            .recommended
+            .items
+            .into_iter()
+            .map(map_video_item)
+            .collect();
+        Ok(Watch {
+            video,
+            related,
+            comments,
+        })
+    }
+
+    /// The stream to play for `id`, no taller than `max_height` when there is
+    /// one that small. The error is `YouTube`'s own words when it refused to
+    /// play the video (such as a bot check), else `None`.
+    pub fn play(
+        &self,
+        id: &str,
+        max_height: Option<u32>,
+    ) -> Result<PlaybackSource, Option<String>> {
+        let q = self.rp.query();
+        let player = self
+            .rt
+            .block_on(innertube::player(&q, id))
+            .map_err(|_| None)?;
+        let player = player.map_err(|error| match error {
+            rustypipe::error::Error::Extraction(
+                rustypipe::error::ExtractionError::Unavailable { msg, .. },
+            ) if !msg.is_empty() => Some(msg),
+            _ => None,
+        })?;
+        let stream = innertube::whole_file_stream(&player.video_streams, max_height).ok_or(None)?;
+        Ok(PlaybackSource {
+            url: stream.url.clone(),
+            has_audio: true,
+            quality: stream.quality.clone(),
+        })
+    }
+
+    /// The caption tracks `id` offers. Their timed text is asked for as
+    /// `WebVTT`, which [`crate::captions::parse_vtt`] reads.
+    pub fn caption_tracks(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::captions::CaptionTrack>, BackendError> {
+        let q = self.rp.query();
+        let player = self
+            .block(innertube::player(&q, id))
+            .map_err(|e| BackendError(format!("captions {id}: {e}")))?;
+        Ok(player
+            .subtitles
+            .into_iter()
+            .map(|subtitle| crate::captions::CaptionTrack {
+                label: subtitle.lang_name,
+                automatic: subtitle.auto_generated,
+                url: as_vtt(&subtitle.url),
+                language: subtitle.lang,
+            })
+            .collect())
+    }
+}
+
+/// A timed-text URL asking for `WebVTT`: rustypipe names its own format
+/// (`fmt=srv3`), and of a repeated parameter `YouTube` reads the first.
+fn as_vtt(url: &str) -> String {
+    let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    let mut params: Vec<&str> = query
+        .split('&')
+        .filter(|param| !param.is_empty() && !param.starts_with("fmt="))
+        .collect();
+    params.push("fmt=vtt");
+    format!("{base}?{}", params.join("&"))
 }
 
 /// Map a rustypipe [`VideoItem`] onto Tube's [`Video`]. Fields rustypipe doesn't
@@ -303,36 +454,7 @@ impl YtBackend for RustyPipeBackend {
     }
 
     fn video(&self, id: &str) -> BackendOutcome {
-        let q = self.rp.query();
-        let d = self
-            .block(innertube::video_details(&q, id))
-            .map_err(|e| BackendError(format!("video: {e}")))?;
-        let channel_id = d.channel.id.clone();
-        let v = Video {
-            id: d.id.clone(),
-            title: d.name,
-            dearrow_title: None,
-            channel_id: channel_id.clone(),
-            channel_avatar_url: best_thumb(&d.channel.avatar),
-            channel_name: d.channel.name,
-            channel_seed: channel_id,
-            views: d.view_count,
-            published: d.publish_date_txt.unwrap_or_default(),
-            // Duration comes from the player/streams response; left 0 here and
-            // refined when streams are resolved (behind a PoToken).
-            duration: 0,
-            // `description` is rustypipe's `RichText`; flatten to plain text.
-            description: d.description.to_plaintext(),
-            likes: u64::from(d.like_count.unwrap_or(0)),
-            thumbnail_url: crate::backend::yt_thumb_url(&d.id),
-            seed: d.id,
-            category: "Video".into(),
-            dearrow_thumb: false,
-            sponsor: Vec::new(),
-            comments: Vec::new(),
-            live: d.is_live,
-        };
-        Ok(BackendResult::Video(Box::new(v)))
+        Ok(BackendResult::Video(Box::new(self.watch(id)?.video)))
     }
 
     fn channel(&self, id: &str) -> BackendOutcome {
@@ -361,19 +483,7 @@ impl YtBackend for RustyPipeBackend {
     }
 
     fn related(&self, id: &str) -> BackendOutcome {
-        // Related ("up next") is a field on the video detail response, not a
-        // dedicated endpoint — fetch details and lift `.recommended`.
-        let q = self.rp.query();
-        let d = self
-            .block(innertube::video_details(&q, id))
-            .map_err(|e| BackendError(format!("related: {e}")))?;
-        let vids = d
-            .recommended
-            .items
-            .into_iter()
-            .map(map_video_item)
-            .collect();
-        Ok(BackendResult::Videos(vids))
+        Ok(BackendResult::Videos(self.watch(id)?.related))
     }
 
     fn trending(&self) -> BackendOutcome {
@@ -387,18 +497,21 @@ impl YtBackend for RustyPipeBackend {
     }
 
     fn comments(&self, id: &str) -> Result<Vec<Comment>, BackendError> {
-        // `video_details` carries an (initially empty) top-comments paginator
-        // holding the continuation token; fetching its first page pulls the real
-        // "most liked first" comments via the `next`/comments endpoint.
-        let q = self.rp.query();
-        let d = self
-            .block(innertube::video_details(&q, id))
-            .map_err(|e| BackendError(format!("comments details {id}: {e}")))?;
-        let page = self
-            .block(innertube::next_comments(&d.top_comments, &q))
-            .map_err(|e| BackendError(format!("comments page {id}: {e}")))?;
-        let items = page.map(|p| p.items).unwrap_or_default();
-        Ok(items.into_iter().take(60).map(map_comment).collect())
+        self.watch(id)?.comments
+    }
+
+    fn playlist(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
+        self.playlist_page(id)
+    }
+
+    fn resolve_playback_source(
+        &self,
+        id: &str,
+        max_height: Option<u32>,
+    ) -> Result<PlaybackSource, BackendError> {
+        self.play(id, max_height).map_err(|said| {
+            BackendError(said.unwrap_or_else(|| format!("no playable stream for {id}")))
+        })
     }
 
     fn popular_search(&self, query: &str) -> BackendOutcome {
@@ -421,6 +534,18 @@ impl YtBackend for RustyPipeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_urls_ask_for_webvtt_once() {
+        assert_eq!(
+            as_vtt("https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=srv3"),
+            "https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=vtt"
+        );
+        assert_eq!(
+            as_vtt("https://www.youtube.com/api/timedtext?v=x"),
+            "https://www.youtube.com/api/timedtext?v=x&fmt=vtt"
+        );
+    }
 
     #[test]
     fn absolute_url_promotes_protocol_relative_avatars() {
