@@ -20,7 +20,7 @@ fn an_invited_person_joins_the_workspace_on_its_makers_device_and_both_edit_it()
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
     let (ada, grace, eve) = (Person::new(31), Person::new(32), Person::new(33));
-    let p = Device::start(
+    let mut p = Device::start(
         &ada,
         "Ada's laptop",
         &dir.path().join("ada"),
@@ -28,7 +28,7 @@ fn an_invited_person_joins_the_workspace_on_its_makers_device_and_both_edit_it()
         DeviceCapabilities::primary(),
         &wakes,
     );
-    let q = Device::start(
+    let mut q = Device::start(
         &grace,
         "Grace's laptop",
         &dir.path().join("grace"),
@@ -44,6 +44,10 @@ fn an_invited_person_joins_the_workspace_on_its_makers_device_and_both_edit_it()
         DeviceCapabilities::primary(),
         &wakes,
     );
+    // Each keeps its workspaces' layouts through its session's broker, as a
+    // desktop session does.
+    p.carry_layouts();
+    q.carry_layouts();
     assert!(
         q.hosted_rooms().is_empty(),
         "a device that hosts no room runs no host"
