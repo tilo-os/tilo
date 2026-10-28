@@ -41,6 +41,19 @@ impl CapnpBrokerState {
         binding: &WitnessBinding,
         request: &InvokeRequest,
     ) -> Pending<Result<Confirmation, ActionHostError>> {
+        self.own_device_witness_within(caller, binding, request, ANSWER_WAIT)
+    }
+
+    /// [`Self::own_device_witness`], giving the person `within` to answer.
+    /// The wait is a parameter so the refusal of an answer that never comes
+    /// is observable without a minute's wait.
+    pub(crate) fn own_device_witness_within(
+        self: &Arc<Self>,
+        caller: &Caller,
+        binding: &WitnessBinding,
+        request: &InvokeRequest,
+        within: Duration,
+    ) -> Pending<Result<Confirmation, ActionHostError>> {
         let Some(service) = self.services.own_device.as_ref() else {
             // Nobody to ask is nobody's confirmation.
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
@@ -58,7 +71,7 @@ impl CapnpBrokerState {
         let spawned = std::thread::Builder::new()
             .name("foreign-confirmation".into())
             .spawn(move || {
-                let witness = match asked.wait_timeout(ANSWER_WAIT) {
+                let witness = match asked.wait_timeout(within) {
                     Ok(Some(Ok(Confirmation::Witnessed(_)))) => state
                         .witness_confirmation(&binding)
                         .map(Confirmation::Witnessed)

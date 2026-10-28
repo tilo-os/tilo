@@ -235,6 +235,36 @@ fn without_an_own_device_nobody_is_asked() {
 }
 
 #[test]
+fn an_unanswered_question_refuses_the_invocation() {
+    let own_devices = Arc::new(OwnDevices::default());
+    let fixture = asked_there(&own_devices);
+    let request = request();
+    let binding = fixture
+        .state
+        .witness_binding("person", &fixture.room, &request);
+    // Nobody answers on the person's own device: what comes back to the
+    // foreign device is a refusal, never a confirmation.
+    let answered = fixture
+        .state
+        .own_device_witness_within(
+            &fixture.caller,
+            &binding,
+            &request,
+            Duration::from_millis(50),
+        )
+        .wait_timeout(Duration::from_secs(30));
+    assert!(
+        matches!(
+            answered,
+            Ok(Some(Err(ActionHostError::ConfirmationRequired)))
+        ),
+        "a question nobody answers confirms nothing"
+    );
+    assert_eq!(own_devices.asked_about().len(), 1, "one question was asked");
+    drop(fixture);
+}
+
+#[test]
 fn an_unreachable_own_device_confirms_nothing() {
     let fixture = Fixture::new_certified_foreign(HostServices {
         own_device: Some(
