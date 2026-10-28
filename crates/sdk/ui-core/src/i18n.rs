@@ -195,6 +195,14 @@ impl CatalogText {
         }
     }
 
+    /// Whether this is one of the toolkit's own widget label catalogues.
+    fn is_widget_label(&self) -> bool {
+        matches!(self, Self::Embedded(text) if WIDGET_CATALOG
+            .catalogs
+            .iter()
+            .any(|(_, source)| std::ptr::eq(*text, *source)))
+    }
+
     /// The parsed resource: `None` for text that does not parse (a
     /// translator's typo degrades to "not loaded") or a pack no longer
     /// installed.
@@ -554,8 +562,8 @@ impl Resolution<'_, '_> {
     }
 }
 
-/// The toolkit's own widget labels, in every language it ships, joined to a
-/// host's manager on first use.
+/// The toolkit's own widget labels, in every language it ships, part of
+/// every manager from its start ([`I18nManager::replace`]).
 static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[
@@ -592,7 +600,10 @@ impl I18nManager {
     }
 
     /// Install a manager with `catalogs`, selecting `active`, in place of
-    /// the thread's current one.
+    /// the thread's current one. It holds the toolkit's widget labels from
+    /// the start: joined later, on a widget's first label, they would move
+    /// [`Self::revision`] under a window already composed in this language
+    /// and recompose all of it.
     fn replace(
         source_locale: LanguageIdentifier,
         active: LanguageIdentifier,
@@ -615,6 +626,7 @@ impl I18nManager {
             manager.parse_shown();
             *slot.borrow_mut() = Some(manager);
         });
+        WIDGET_CATALOG.ensure();
     }
 
     /// Whether a catalogue was added for `locale`, parsed or not.
@@ -659,10 +671,31 @@ impl I18nManager {
 
     /// Add `text` to `locale`'s catalogues, parsing it if the locale is
     /// shown. Text already added is not added again.
+    ///
+    /// The toolkit's widget labels stay last, so a message the host defines
+    /// under the same id wins over the toolkit's whenever it was added: a
+    /// catalogue added ahead of parsed widget labels parses the locale anew.
     fn add_catalog(&mut self, locale: LanguageIdentifier, text: CatalogText) {
         match self.catalogs.iter_mut().find(|(held, _)| *held == locale) {
             Some((_, texts)) if texts.iter().any(|held| held.is(&text)) => return,
-            Some((_, texts)) => texts.push(text),
+            Some((_, texts)) => {
+                let at = if text.is_widget_label() {
+                    texts.len()
+                } else {
+                    texts
+                        .iter()
+                        .position(CatalogText::is_widget_label)
+                        .unwrap_or(texts.len())
+                };
+                texts.insert(at, text);
+                if self
+                    .bundles
+                    .get(&locale)
+                    .is_some_and(|loaded| at < loaded.read)
+                {
+                    self.bundles.remove(&locale);
+                }
+            }
             None => self.catalogs.push((locale, vec![text])),
         }
         self.parse_shown();
