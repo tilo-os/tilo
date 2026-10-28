@@ -2095,6 +2095,15 @@ impl TextRenderer {
         renderer
     }
 
+    /// Whether [`Self::take_browser_font_demands`] has anything to hand
+    /// over, so a host can skip the call on the frames that have none.
+    #[must_use]
+    pub fn browser_font_demands_pending(&self) -> bool {
+        self.browser_font_demands
+            .as_ref()
+            .is_some_and(|demands| !demands.is_empty())
+    }
+
     /// Drain optional asset names demanded by missing glyphs in authoritative
     /// shaping. The host may retry a failed name after later shaping reports it.
     pub fn take_browser_font_demands(&mut self) -> Vec<String> {
@@ -4115,7 +4124,14 @@ mod tests {
                     .any(|glyph| glyph.glyph_id == 0),
                 "{text} must expose missing canonical glyphs before demand"
             );
+            // The host asks this before the take, so it must say where the
+            // demand is and where it is not: nothing before shaping asked.
+            assert!(renderer.browser_font_demands_pending());
             assert_eq!(renderer.take_browser_font_demands(), [expected]);
+            assert!(
+                !renderer.browser_font_demands_pending(),
+                "the take drained what the predicate named"
+            );
             let old_generation = renderer.generation;
             assert!(
                 renderer

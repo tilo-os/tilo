@@ -5,6 +5,18 @@ use wasm_bindgen::prelude::*;
 
 use super::{error, proxy, with_mount, with_mount_quietly};
 
+/// Whether the last shaping pass asked for any optional font, which a frame
+/// with none asked for need not call [`font_demands`] for. A read: the tree
+/// is the same.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn font_demands_pending(id: u64) -> Result<bool, JsValue> {
+    with_mount_quietly(id, |m| Ok(m.frame.browser_font_demands_pending()))
+}
+
 /// Optional canonical fonts the last shaping pass needed, as a JSON array.
 ///
 /// # Errors
