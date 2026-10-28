@@ -29,7 +29,7 @@ impl ShellDriver {
     fn shared_app_in_lounge(&mut self) -> Option<(RoomId, u64)> {
         let sharer_device = iroh::SecretKey::from_bytes(&[5; 32]).public();
         let sharer_hex = hex::encode(sharer_device.as_bytes());
-        let session = shell::network::behaviour::peer_liveness_handle(&sharer_device);
+        let session = tilo_network_actor::behaviour::peer_liveness_handle(&sharer_device);
         // Ana's window, minted under the salt her device's key derives.
         let sharer_salt = tilo_desktop_model::ids::device_salt_of_key(sharer_device.as_bytes());
         let tab = (u64::from(sharer_salt) << 48) | 4;

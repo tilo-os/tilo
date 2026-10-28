@@ -617,8 +617,8 @@ pub(crate) fn tr(key: &str) -> String {
 pub(crate) mod tests {
     use super::*;
     use crate::shell::overlay_host::{FabricDeviceView, FabricMediaView, LocalMediaOutputView};
-    use crate::shell::personal_continuity::DeviceId;
     use std::cell::RefCell;
+    use tilo_network_actor::fabric::DeviceId;
 
     pub(crate) fn player(bus: &str, identity: &str, status: PlaybackStatus) -> PlayerSnapshot {
         PlayerSnapshot {

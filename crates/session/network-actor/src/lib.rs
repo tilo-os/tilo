@@ -2,32 +2,61 @@
 //!
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
+//! The actor is the desktop's transport, below the compositor: what arrives
+//! on it that is the desktop's business goes to the services the session
+//! installs ([`services`]), so a compositor change does not rebuild it and
+//! its tests run on their own.
 
-pub(crate) mod governor_lane;
-pub(crate) mod native_ingress;
+pub mod behaviour;
+pub mod fabric;
+pub mod governor_lane;
+pub mod local_host;
+pub mod media_caps;
+pub mod native_ingress;
 mod opened_records;
-pub(crate) mod own_device_host;
+pub mod own_device_host;
+pub mod private_messages;
+pub mod room_sync;
+pub mod services;
+pub mod workspace_control;
+
+/// Wakes the compositor loop; on the native backend, a calloop ping.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+/// Compatibility/control topic used only when a message has no room identity.
+pub const DEFAULT_WS_TOPIC: u64 = 0;
+
+/// Stable transport/host shard for a durable room. Local workspace handles are
+/// deliberately not used: they differ between devices.
+pub fn room_topic_id(room: tilo_desktop_model::RoomId) -> u64 {
+    if room.is_nil() {
+        return DEFAULT_WS_TOPIC;
+    }
+    // `room.to_string()` is `Uuid::to_string()`, which `room_workspace_id`
+    // can always re-parse, so the `Err` path is unreachable in practice.
+    // Fall back to the "no room identity" topic rather than panic on this
+    // hot path — `room_workspace_id` never returns 0 on success, so a real
+    // topic id can't collide with the fallback.
+    tilo_relay_protocol::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+}
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
-/// the two devices has to update (`crate::shell::collaborator_versions`).
+/// the two devices has to update ([`services::Services::peer_version`]).
 fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
-        crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
+        services::peer_version(host.to_string(), String::new(), theirs);
     }
     error.to_string()
 }
 
-#[cfg(test)]
-mod nearby_transfer_tests;
-pub(crate) mod room_governance;
+pub mod room_governance;
 mod room_lane;
 #[cfg(test)]
 mod room_lane_tests;
 mod room_members;
 mod sealed_outbox;
 use room_members::Admission;
-pub(crate) use room_members::RosterDevice;
+pub use room_members::RosterDevice;
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,9 +77,9 @@ use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
-use crate::network::reachability::{Need, Reachability};
+use neighbour_wire::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
+use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
@@ -62,7 +91,7 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
 /// ([`ActorState::needs_upkeep`]): a converged desktop never wakes for it.
 /// A change of this device's identity material or codecs is announced when
 /// it happens, not found by a tick.
-pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Peer liveness, kept by the transport rather than by messages. A gossip
 /// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
 /// after 5 s without traffic, and a connection that hears nothing for this
@@ -256,13 +285,13 @@ pub enum PersonalFabricPayload {
     /// Optional owner-authored screen observation, apart from the schema-6
     /// checkpoint.
     DisplayConnectors {
-        stamp: crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayConnectorPlacement>,
+        stamp: crate::fabric::FabricStamp,
+        outputs: Vec<crate::fabric::DisplayConnectorPlacement>,
     },
     /// Rich output observations follow the same certified, opt-in route.
     DisplayOutputs {
-        stamp: crate::shell::device_fabric::FabricStamp,
-        outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
+        stamp: crate::fabric::FabricStamp,
+        outputs: Vec<crate::fabric::DisplayOutputObservation>,
     },
     /// Word to the device that asked ([`Self::RecordContentWant`]) that this
     /// one keeps none of that content.
@@ -321,7 +350,7 @@ impl std::fmt::Debug for HttpsRoute {
 
 /// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
 #[derive(Clone)]
-pub struct LoopWake(pub crate::session_runtime::Wake);
+pub struct LoopWake(pub Wake);
 impl std::fmt::Debug for LoopWake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("LoopWake")
@@ -387,7 +416,7 @@ pub enum NetCmd {
     /// Wake the compositor loop when legacy-window traffic arrives: an idle
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
-    PrivateMessages(tokio::sync::oneshot::Sender<super::private_messages::Transport>),
+    PrivateMessages(tokio::sync::oneshot::Sender<crate::private_messages::Transport>),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
     /// A message for `ws`'s workspace hosts only, held until a host session
@@ -397,8 +426,8 @@ pub enum NetCmd {
         ws: u64,
         msg: NeighbourMsg,
     },
-    NativeMedia(super::native_media::Command),
-    NativeEnrollment(super::invite::enrollment_driver::Command),
+    NativeMedia(services::ServiceCommand),
+    NativeEnrollment(services::ServiceCommand),
     /// Invoke what a relay answers itself (a room's governance, a member's
     /// own business in it, or the host's own operations) on a relay session,
     /// and answer the relay's receipt.
@@ -453,7 +482,7 @@ pub enum NetCmd {
     PublishSurfaceTo {
         ws: WorkspaceId,
         msg: NeighbourMsg,
-        viewers: Vec<crate::network::protocol::PeerId>,
+        viewers: Vec<neighbour_wire::PeerId>,
     },
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
@@ -523,7 +552,7 @@ pub enum NetCmd {
         id: EndpointId,
     },
     AttachActionBroker {
-        queue: crate::shell::peer_actions::PeerActionQueue,
+        queue: tilo_action_broker::peer_actions::PeerActionQueue,
         host: uuid::Uuid,
         rooms: Vec<uuid::Uuid>,
     },
@@ -669,8 +698,8 @@ impl NetEvent {
 pub struct MembershipEpoch(u64);
 
 impl MembershipEpoch {
-    #[cfg(test)]
-    pub(crate) const fn for_test(value: u64) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn for_test(value: u64) -> Self {
         Self(value)
     }
 }
@@ -941,15 +970,13 @@ struct DeviceUnlockProtocol;
 
 impl ProtocolHandler for DeviceUnlockProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
-            connection,
-        ));
+        services::device_unlock(connection);
         Ok(())
     }
 }
 
 /// Another of the person's devices routing through this one; the exit
-/// decides whether it may (`crate::shell::device_vpn`).
+/// decides whether it may ([`services::Services::device_vpn`]).
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct DeviceVpnProtocol;
@@ -957,7 +984,7 @@ struct DeviceVpnProtocol;
 #[cfg(target_os = "linux")]
 impl ProtocolHandler for DeviceVpnProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        tokio::spawn(crate::shell::device_vpn::serve_connection(connection));
+        services::device_vpn(connection);
         Ok(())
     }
 }
@@ -1128,7 +1155,7 @@ fn read_personal_fabric(
                 return;
             };
             let bytes = match recv
-                .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                .read_to_end(crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
                 .await
             {
                 Ok(bytes) => bytes,
@@ -1165,7 +1192,7 @@ fn read_personal_fabric(
 }
 
 /// Why `command` means a remote party is involved, so this device must be
-/// reachable for a while (`crate::network::reachability`): it dials a peer
+/// reachable for a while (`tilo_endpoint_reachability`): it dials a peer
 /// or host, enrols a device, administers a relay room, joins a call or
 /// sends to a named one of the person's devices. `None` for everything a
 /// lone desktop does by itself: joining and publishing to a topic nobody
@@ -1304,10 +1331,10 @@ impl Actor {
 
 /// This device's room host, for the actor: the handle the native owner
 /// joins the rooms hosted here through, and the handlers serving the host
-/// on the router ([`super::local_host`]).
+/// on the router ([`crate::local_host`]).
 pub struct Hosting {
-    pub host: super::local_host::LocalHost,
-    pub protocols: super::local_host::Protocols,
+    pub host: crate::local_host::LocalHost,
+    pub protocols: crate::local_host::Protocols,
 }
 
 /// The channel governance a device published to one room: each message's
@@ -1321,16 +1348,16 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
-    private_messages: super::private_messages::Transport,
-    native_media: super::native_media::Registry,
-    native_enrollment: super::invite::enrollment_driver::Registry,
+    private_messages: crate::private_messages::Transport,
+    native_media: Box<dyn services::Calls>,
+    native_enrollment: Box<dyn services::Enrollments>,
     native_routes: native_ingress::Routes,
     /// Where the channel traffic of rooms' host sessions goes while the
     /// collaboration broker's drain runs: straight to it.
     channel_queue: Option<Arc<native_ingress::ChannelQueue>>,
     /// This device's room host, through which the native owner joins the
     /// rooms hosted here.
-    local_host: Option<super::local_host::LocalHost>,
+    local_host: Option<crate::local_host::LocalHost>,
     /// Governance invocations waiting for their room's relay to answer.
     room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
@@ -1354,7 +1381,7 @@ struct ActorState {
     /// ([`NetCmd::OpenRecord`]), by room.
     opened_records: HashMap<WorkspaceId, BTreeSet<[u8; 32]>>,
     action_broker: Option<(
-        crate::shell::peer_actions::PeerActionQueue,
+        tilo_action_broker::peer_actions::PeerActionQueue,
         uuid::Uuid,
         HashMap<WorkspaceId, uuid::Uuid>,
     )>,
@@ -1362,7 +1389,7 @@ struct ActorState {
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
     /// Approver sessions that put this person's agents' questions on the
     /// sheet, one per connected host.
-    agent_questions: super::agent_questions::Answering,
+    agent_questions: Box<dyn services::Approvers>,
     peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
     /// Inbound ALPN connections are bound once to the membership active on
@@ -1386,7 +1413,7 @@ struct ActorState {
     /// channels, until a host of the room keeps them (see
     /// [`sealed_outbox`]).
     sealed_outbox: HashMap<WorkspaceId, sealed_outbox::SealedOutbox>,
-    wake: Option<crate::session_runtime::Wake>,
+    wake: Option<Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
@@ -2557,7 +2584,7 @@ impl ActorState {
         payload: PersonalFabricPayload,
         exact_target: Option<EndpointId>,
     ) {
-        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES)
+        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::fabric::MAX_FABRIC_ACTION_BYTES)
         {
             tracing::warn!(ws, "personal fabric action exceeds wire limit");
             return;
@@ -2570,7 +2597,7 @@ impl ActorState {
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
             return;
         };
-        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        if bytes.len() > crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
             tracing::warn!(
                 ws,
                 bytes = bytes.len(),
@@ -2832,7 +2859,7 @@ impl ActorState {
         let targets = self
             .surface_members(ws)
             .into_iter()
-            .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
+            .filter(|peer| viewers.contains(&crate::behaviour::peer_liveness_handle(peer)))
             .collect::<Vec<_>>();
         match msg {
             NeighbourMsg::SurfaceFrame { .. } | NeighbourMsg::SurfaceStreamStart { .. } => {
@@ -2971,7 +2998,7 @@ impl ActorState {
                 .get(&(ws, peer))
                 .is_some_and(|runtime| runtime.native_scope.is_some())
         {
-            crate::shell::room_sync::synced(ws);
+            crate::room_sync::synced(ws);
         }
         // The room's host replayed what it retains: the sealed writes it
         // replayed are queued for the broker ahead of this.
@@ -3792,11 +3819,7 @@ impl ActorState {
                 if decoded.is_err()
                     && let Some(theirs) = neighbour_wire::identity_hello_version(&message.content)
                 {
-                    crate::shell::collaborator_versions::note(
-                        peer.to_string(),
-                        String::new(),
-                        theirs,
-                    );
+                    services::peer_version(peer.to_string(), String::new(), theirs);
                 }
                 let fingerprint = message_fingerprint(&message.content);
                 if matches!(decoded, Ok(NeighbourMsg::IdentityHello { .. }))
@@ -4547,9 +4570,9 @@ impl ActorState {
 
     /// This machine's codec advert, encoded.
     fn media_caps_advert(&self) -> Option<Vec<u8>> {
-        let advert = crate::network::media_caps::local_advert(
-            crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
-        );
+        let advert = crate::media_caps::local_advert(crate::behaviour::peer_liveness_handle(
+            &self.endpoint.id(),
+        ));
         postcard::to_allocvec(&advert).ok()
     }
 
@@ -4736,7 +4759,7 @@ async fn send_nearby_transfer_frame(
         payload: PersonalFabricPayload::NearbyTransfer(frame),
     };
     let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
-    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+    if bytes.len() > crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
         return Err(());
     }
     let send = async {
@@ -4946,10 +4969,10 @@ async fn run(
         .connections(gossip_connections)
         .spawn(endpoint.clone());
     read_personal_fabric_on_gossip_connections(shared_connections, internal_tx.clone());
-    let private_messages = super::private_messages::Registry::new(endpoint.id());
+    let private_messages = crate::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
-        .accept(super::private_messages::ALPN, private_messages.clone())
+        .accept(crate::private_messages::ALPN, private_messages.clone())
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
@@ -4976,7 +4999,7 @@ async fn run(
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let lanes = room_lane::Lanes::new(gossip.clone(), endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
-        private_messages: super::private_messages::Transport::new(
+        private_messages: crate::private_messages::Transport::new(
             endpoint.clone(),
             private_messages,
             reachability.clone(),
@@ -4985,8 +5008,8 @@ async fn run(
         endpoint,
         lookup,
         host_identity,
-        native_media: super::native_media::Registry::default(),
-        native_enrollment: super::invite::enrollment_driver::Registry::default(),
+        native_media: services::calls(),
+        native_enrollment: services::enrollments(),
         native_routes: native_ingress::Routes::default(),
         channel_queue: None,
         local_host,
@@ -5005,7 +5028,7 @@ async fn run(
         action_broker: None,
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
-        agent_questions: super::agent_questions::Answering::default(),
+        agent_questions: services::approvers(),
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),
@@ -5035,7 +5058,7 @@ async fn run(
         .host_identity
         .as_ref()
         .and_then(|identity| watch_identity_material(identity, state.internal_tx.clone()));
-    let mut media_caps = crate::network::media_caps::changes();
+    let mut media_caps = crate::media_caps::changes();
     let mut upkeep = None;
     let mut host_checkpoint = None;
     let mut reported_party = None;
@@ -5045,7 +5068,7 @@ async fn run(
         // changed.
         state.settle_session_waits();
         // The relays stay up while a remote party lasts, and rest a while
-        // after the last one is gone (`crate::network::reachability`).
+        // after the last one is gone (`tilo_endpoint_reachability`).
         let party = state.remote_party();
         if party != reported_party {
             reported_party = party;
@@ -5155,7 +5178,7 @@ fn next_upkeep(armed: Option<Instant>, needed: bool, interval: Duration) -> Opti
 }
 
 /// Keep `listen_addrs` at the endpoint's current address, which invites
-/// carry and [`crate::shell::network::ShellNetwork::dial_addr`] reads: a
+/// carry and `ShellNetwork::dial_addr` (the shell's) reads: a
 /// new direct address, or the home relay once [`Reachability::wake`] adds
 /// the relays. iroh says when the address changes, so this waits rather
 /// than re-reading it on a timer.
@@ -5215,8 +5238,8 @@ const GOSSIP_MESSAGE_RETENTION: Duration = Duration::from_secs(20);
 /// How long after its last message a topic stops sweeping: the message id
 /// outlives the message itself (iroh-gossip's 90 s, to refuse a late
 /// duplicate), and the sweep that finds both gone is the last.
-#[cfg(test)]
-pub(crate) fn gossip_caches_drain_within() -> Duration {
+#[cfg(any(test, feature = "test-support"))]
+pub fn gossip_caches_drain_within() -> Duration {
     let config = broadcast_config();
     config
         .message_id_retention
@@ -5227,7 +5250,7 @@ pub(crate) fn gossip_caches_drain_within() -> Duration {
 /// How long gossip keeps message ids and messages in a test process that
 /// asked for it with [`shorten_gossip_retention_for_this_process`]; unset,
 /// gossip keeps iroh-gossip's and [`GOSSIP_MESSAGE_RETENTION`].
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_GOSSIP_RETENTION: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
 
 /// Keep gossip's message ids and messages only `retention` in every
@@ -5236,8 +5259,8 @@ static TEST_GOSSIP_RETENTION: std::sync::OnceLock<Duration> = std::sync::OnceLoc
 /// sweep keeps its production interval, so what the desktop does while
 /// linked and after the caches empty is the same, only the 90 s a message
 /// id outlives its message is not waited out.
-#[cfg(test)]
-pub(crate) fn shorten_gossip_retention_for_this_process(retention: Duration) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn shorten_gossip_retention_for_this_process(retention: Duration) {
     let set = TEST_GOSSIP_RETENTION.get_or_init(|| retention);
     assert_eq!(
         *set, retention,
@@ -5253,7 +5276,7 @@ fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
         message_cache_retention: GOSSIP_MESSAGE_RETENTION,
         ..iroh_gossip::proto::PlumtreeConfig::default()
     };
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(&retention) = TEST_GOSSIP_RETENTION.get() {
         return iroh_gossip::proto::PlumtreeConfig {
             message_id_retention: retention,
@@ -5697,7 +5720,9 @@ impl HostRouteScheduler<'_> {
 async fn register_content_peer(
     registration: tilo_relay_protocol::transport::ContentPeerRegistration,
 ) -> bool {
-    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
+    if cfg!(any(test, feature = "test-support"))
+        && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
+    {
         return true;
     }
     let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
@@ -5764,9 +5789,11 @@ async fn register_content_peer(
 /// authenticated by a removed enrolled relay. The daemon owns both its live
 /// Hydrator and the durable catalog, so the shell cannot leave one stale.
 async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     noted_content_peer_removals().lock_recover().push(relay);
-    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
+    if cfg!(any(test, feature = "test-support"))
+        && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
+    {
         return true;
     }
     let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
@@ -5813,7 +5840,7 @@ async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
     static REMOVALS: std::sync::OnceLock<Mutex<Vec<EndpointId>>> = std::sync::OnceLock::new();
     REMOVALS.get_or_init(|| Mutex::new(Vec::new()))

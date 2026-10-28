@@ -47,9 +47,9 @@ use crate::shell::device_fabric_runtime::{
 };
 use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
 use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
 use tilo_lock::MutexRecover as _;
+use tilo_network_actor::fabric::DeviceId;
 
 const PENDING_TTL: Duration = Duration::from_secs(30);
 /// How long a source waits for the target's consent decision. Longer than

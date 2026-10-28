@@ -6,7 +6,7 @@
 //! reach it failed (the apps work on what this device has meanwhile).
 //!
 //! The network actor records what happens to each room's host session
-//! (keyed by the room's topic, [`crate::shell::network::room_topic_id`]);
+//! (keyed by the room's topic, [`crate::room_topic_id`]);
 //! the compositor reads it when it tells each app window its appearance. A
 //! room the actor never dials, one with no host or one this device hosts
 //! itself, has no entry: its apps' empty states are their own.
@@ -25,7 +25,7 @@ static WAITING_SINCE: LazyLock<Mutex<HashMap<u64, std::time::Instant>>> =
 
 /// The actor is dialling the host of the room on topic `ws`. A room that
 /// synced once stays synced: what it held then is here.
-pub(crate) fn connecting(ws: u64) {
+pub fn connecting(ws: u64) {
     let mut rooms = ROOMS.lock_recover();
     let state = rooms.entry(ws).or_insert(RoomSyncState::Connecting);
     if !matches!(state, RoomSyncState::Synced) {
@@ -39,7 +39,7 @@ pub(crate) fn connecting(ws: u64) {
 }
 
 /// A sync with the host of the room on topic `ws` completed.
-pub(crate) fn synced(ws: u64) {
+pub fn synced(ws: u64) {
     let before = ROOMS.lock_recover().insert(ws, RoomSyncState::Synced);
     let waited = WAITING_SINCE.lock_recover().remove(&ws);
     if let Some(since) = waited {
@@ -56,7 +56,7 @@ pub(crate) fn synced(ws: u64) {
 /// A try to reach the host of the room on topic `ws` failed. A room that
 /// synced before keeps what it holds; one whose host speaks another peer
 /// protocol keeps saying which side has to update.
-pub(crate) fn unreachable(ws: u64) {
+pub fn unreachable(ws: u64) {
     let mut rooms = ROOMS.lock_recover();
     if let Some(state) = rooms.get_mut(&ws)
         && matches!(state, RoomSyncState::Connecting)
@@ -69,7 +69,7 @@ pub(crate) fn unreachable(ws: u64) {
 /// The host of the room on topic `ws` speaks peer protocol `theirs`, not
 /// this device's: nothing syncs until the one behind updates. A room that
 /// synced before keeps what it holds, and says so.
-pub(crate) fn other_version(ws: u64, theirs: u32) {
+pub fn other_version(ws: u64, theirs: u32) {
     let state = if theirs > neighbour_wire::PEER_PROTOCOL_VERSION {
         RoomSyncState::DeviceNeedsUpdate
     } else {
@@ -84,20 +84,20 @@ pub(crate) fn other_version(ws: u64, theirs: u32) {
 }
 
 /// The room on topic `ws` is no longer held: forget it.
-pub(crate) fn forget(ws: u64) {
+pub fn forget(ws: u64) {
     ROOMS.lock_recover().remove(&ws);
     WAITING_SINCE.lock_recover().remove(&ws);
 }
 
 /// Where the room on topic `ws` stands; `None` for one with no host.
-pub(crate) fn state(ws: u64) -> Option<RoomSyncState> {
+pub fn state(ws: u64) -> Option<RoomSyncState> {
     ROOMS.lock_recover().get(&ws).copied()
 }
 
 /// What an app window in the workspace `name`, on room topic `ws`, is told,
 /// with whether the app may write the room now (`writable`). A room with no
 /// host still tells an app that answer, as a room synced as far as it goes.
-pub(crate) fn told(ws: u64, name: &str, writable: Option<bool>) -> Option<ui::room_sync::RoomSync> {
+pub fn told(ws: u64, name: &str, writable: Option<bool>) -> Option<ui::room_sync::RoomSync> {
     let state = match (state(ws), writable) {
         (Some(state), _) => state,
         (None, Some(_)) => RoomSyncState::Synced,

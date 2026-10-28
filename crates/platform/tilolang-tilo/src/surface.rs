@@ -8,8 +8,9 @@
 
 use serde::Serialize;
 use serde_json::{Value as Json, json};
-use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
+use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
+use tilolang_runtime::meta::Ty;
 
 use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
@@ -23,33 +24,6 @@ pub use crate::publish::COMMIT;
 /// The storage version of every generated resource.
 pub const VERSION: u32 = 1;
 
-/// Split `text` at commas outside brackets and parentheses.
-fn split_top_level(text: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0_u32;
-    let mut start = 0;
-    for (index, ch) in text.char_indices() {
-        match ch {
-            '<' | '(' => depth = depth.saturating_add(1),
-            '>' | ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(text.get(start..index).unwrap_or_default().trim());
-                start = index.saturating_add(1);
-            }
-            _ => {}
-        }
-    }
-    parts.push(text.get(start..).unwrap_or_default().trim());
-    parts
-}
-
-fn wrapped<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
-    ty.strip_prefix(wrapper)?
-        .strip_prefix('<')?
-        .strip_suffix('>')
-        .map(str::trim)
-}
-
 /// The resource kind and type name of `ty` when it names a record type of another app than
 /// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
 #[must_use]
@@ -62,53 +36,158 @@ pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
     }
 }
 
-/// The JSON Schema of a value of the tilolang type `ty`, as the door takes it.
+/// The resource kind of the record type `key`: `tl.<app>.<Type>`.
+fn record_kind(key: &tilolang_runtime::meta::TypeKey) -> String {
+    format!("tl.{}.{}", key.app, key.name)
+}
+
+/// The cases of `meta`'s own enum `key` with how each reads, when every case is a plain one (no
+/// payload): what a parameter of it chooses from. `None` for an enum of another package, whose
+/// cases this one does not know, or one whose cases carry values.
+fn plain_cases(
+    meta: &Meta,
+    key: &tilolang_runtime::meta::TypeKey,
+) -> Option<Vec<(String, String)>> {
+    if key.app != meta.app {
+        return None;
+    }
+    let declared = meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == key.name)?;
+    declared
+        .variants
+        .iter()
+        .map(|variant| {
+            variant.fields.is_empty().then(|| {
+                let label = if variant.label.is_empty() {
+                    variant.name.clone()
+                } else {
+                    variant.label.clone()
+                };
+                (variant.name.clone(), label)
+            })
+        })
+        .collect()
+}
+
+/// The JSON Schema of a value of the tilolang type `ty`, as the door takes it: a record as the
+/// catalogue's reference to a resource of its kind ([`tilo_actions::picked_resource_schema`]),
+/// a plain enum as the names of its cases, a principal as the workspace subject it is.
 #[must_use]
 pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
-    let ty = ty.trim();
-    if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
-        let items: Vec<Json> = split_top_level(inner)
-            .into_iter()
-            .map(|part| schema_of_type(meta, part))
-            .collect();
-        let count = items.len();
-        return json!({"type": "array", "prefixItems": items, "minItems": count, "maxItems": count});
+    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
+        Ok(parsed) => schema_of(meta, &parsed),
+        Err(_) => json!({}),
     }
-    if let Some(inner) = wrapped(ty, "Option") {
-        return json!({"anyOf": [schema_of_type(meta, inner), {"type": "null"}]});
-    }
-    if let Some(inner) = wrapped(ty, "List") {
-        return json!({"type": "array", "items": schema_of_type(meta, inner)});
-    }
-    if let Some(inner) = wrapped(ty, "Set") {
-        return json!({"type": "array", "uniqueItems": true, "items": schema_of_type(meta, inner)});
-    }
-    if let Some(inner) = wrapped(ty, "Collection") {
-        return json!({"type": "array", "items": schema_of_type(meta, inner)});
-    }
-    if let Some(inner) = wrapped(ty, "Map") {
-        return json!({"type": "object", "additionalProperties": schema_of_type(meta, inner)});
-    }
+}
+
+fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     match ty {
-        "Int" => json!({"type": "integer"}),
-        "Float" => json!({"type": "number"}),
-        "Bool" => json!({"type": "boolean"}),
-        "Text" => json!({"type": "string"}),
-        "Date" => json!({"type": "string", "format": "date"}),
-        "Time" => json!({"type": "string", "format": "date-time"}),
-        other => match (meta.type_named(other), other_apps_record(meta, other)) {
-            (Some(declared), _) => json!({
-                "type": "string",
-                "description": format!("the id of a {} resource", declared.name),
-                "resource_kind": meta.kind_of(&declared.name),
-            }),
-            (None, Some((kind, name))) => json!({
-                "type": "string",
-                "description": format!("the id of a {name} resource"),
-                "resource_kind": kind,
-            }),
-            (None, None) => json!({}),
+        Ty::Int => json!({"type": "integer"}),
+        Ty::Float => json!({"type": "number"}),
+        Ty::Bool => json!({"type": "boolean"}),
+        Ty::Text => json!({"type": "string"}),
+        Ty::Date => json!({"type": "string", "format": "date"}),
+        Ty::Time => json!({"type": "string", "format": "date-time"}),
+        // An account of some service, as its URI (`mailto:jane@x.com`).
+        Ty::Identifier => json!({"type": "string", "format": "uri"}),
+        Ty::Principal => subject_schema(),
+        Ty::Record(key) => tilo_actions::picked_resource_schema(&record_kind(key)),
+        Ty::Enum(key) => match plain_cases(meta, key) {
+            Some(cases) => {
+                let names: Vec<&str> = cases.iter().map(|(name, _)| name.as_str()).collect();
+                let labels: serde_json::Map<String, Json> = cases
+                    .iter()
+                    .map(|(name, label)| (name.clone(), Json::String(label.clone())))
+                    .collect();
+                json!({
+                    "type": "string",
+                    "enum": names,
+                    tilo_actions::params::CHOICE_LABELS_ANNOTATION: labels,
+                })
+            }
+            None => json!({"type": "object"}),
         },
+        Ty::Tuple(items) => {
+            let items: Vec<Json> = items.iter().map(|item| schema_of(meta, item)).collect();
+            let count = items.len();
+            json!({"type": "array", "prefixItems": items, "minItems": count, "maxItems": count})
+        }
+        Ty::Option(inner) => json!({"anyOf": [schema_of(meta, inner), {"type": "null"}]}),
+        Ty::List(inner) | Ty::Collection(inner) => {
+            json!({"type": "array", "items": schema_of(meta, inner)})
+        }
+        Ty::Set(inner) => {
+            json!({"type": "array", "uniqueItems": true, "items": schema_of(meta, inner)})
+        }
+        Ty::Map(inner) => json!({"type": "object", "additionalProperties": schema_of(meta, inner)}),
+        _ => json!({}),
+    }
+}
+
+/// The schema of a workspace subject as `tilo_action_policy::Subject` writes it: a person by
+/// their key, an agent by its id.
+fn subject_schema() -> Json {
+    let one = |tag: &str| {
+        json!({
+            "type": "object",
+            "properties": {tag: {"type": "string", "minLength": 1}},
+            "required": [tag],
+            "additionalProperties": false,
+        })
+    };
+    json!({"type": "object", "oneOf": [one("person"), one("agent")]})
+}
+
+/// The parameter `param` of an action of `meta`, as the catalogue declares it: what the door
+/// binds, a palette offers and the generated surface describes, one declaration for all three.
+#[must_use]
+pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
+    let parsed = tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok();
+    // What the parameter takes when it is given: an `Option` is its value, left out.
+    let present = match &parsed {
+        Some(Ty::Option(inner)) => Some(inner.as_ref()),
+        other => other.as_ref(),
+    };
+    let ty = match present {
+        Some(Ty::Int) => ParamType::Integer,
+        Some(Ty::Float) => ParamType::Number,
+        Some(Ty::Bool) => ParamType::Boolean,
+        Some(Ty::Time) => ParamType::DateTime,
+        Some(Ty::Text | Ty::Date | Ty::Identifier) => ParamType::Text,
+        Some(Ty::Enum(key)) if plain_cases(meta, key).is_some() => ParamType::Text,
+        Some(Ty::List(_) | Ty::Set(_) | Ty::Collection(_) | Ty::Tuple(_)) => ParamType::Array,
+        _ => ParamType::Object,
+    };
+    // A default is the action's: what an invocation that leaves the argument out gets, computed
+    // when it is invoked, on what the invoker sees, and recorded as the argument.
+    let description = match &param.default {
+        Some(default) => format!(
+            "{}: {}; when left out, `{}` as it is when invoked",
+            param.name, param.ty, default.text
+        ),
+        None => format!("{}: {}", param.name, param.ty),
+    };
+    let optional = param.default.is_some() || matches!(parsed, Some(Ty::Option(_)));
+    let built = if optional {
+        ActionParam::optional_owned(param.name.clone(), ty, description)
+    } else {
+        ActionParam::required_owned(param.name.clone(), ty, description)
+    };
+    match present {
+        Some(Ty::Record(key)) => built.picking(Pick::Resource {
+            kind: record_kind(key),
+        }),
+        Some(Ty::Enum(key)) => match plain_cases(meta, key) {
+            Some(cases) => built
+                .with_schema(schema_of(meta, &Ty::Enum(key.clone())))
+                .with_labelled_choices(cases),
+            None => built.with_schema(schema_of(meta, &Ty::Enum(key.clone()))),
+        },
+        Some(Ty::Principal) => built.with_schema(subject_schema()).picking(Pick::Subject),
+        Some(present) => built.with_schema(schema_of(meta, present)),
+        None => built.with_schema(json!({})),
     }
 }
 
@@ -121,8 +200,10 @@ pub fn arguments<'a>(meta: &Meta, params: &'a [ParamMeta]) -> &'a [ParamMeta] {
     }
 }
 
-fn is_optional(ty: &str) -> bool {
-    ty.trim().starts_with("Option<")
+/// Whether `action` is declared `destructive`: it takes away what a person may want back.
+#[must_use]
+pub fn is_destructive(action: &ActionMeta) -> bool {
+    action.role.as_deref() == Some("destructive")
 }
 
 fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
@@ -135,14 +216,17 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
         },
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
-        destructive: false,
+        destructive: is_destructive(action),
         incoming_message: false,
         params: arguments(meta, &action.params)
             .iter()
-            .map(|param| ParamSurface {
-                name: param.name.clone(),
-                required: !is_optional(&param.ty) && param.default.is_none(),
-                schema: schema_of_type(meta, &param.ty),
+            .map(|param| {
+                let published = published_param(meta, param);
+                ParamSurface {
+                    name: param.name.clone(),
+                    required: published.required,
+                    schema: published.schema.as_deref().cloned().unwrap_or(Json::Null),
+                }
             })
             .collect(),
         writes: vec![RECORD_UNIT.to_owned()],

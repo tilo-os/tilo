@@ -386,10 +386,10 @@ fn departed(seed: u8) -> iroh::EndpointId {
 fn depart(network: &crate::shell::network::ShellNetwork, seed: u8) {
     network
         .event_tx
-        .try_send(crate::network::actor::NetEvent::PeerLeft {
-            ws: crate::shell::network::DEFAULT_WS_TOPIC,
+        .try_send(tilo_network_actor::NetEvent::PeerLeft {
+            ws: tilo_network_actor::DEFAULT_WS_TOPIC,
             peer: departed(seed),
-            cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+            cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
             membership_epoch: None,
         })
         .expect("the event queue has room");

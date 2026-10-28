@@ -63,7 +63,11 @@ fn request(sources: &Sources, effect: MessagesEffect) -> Result<Request, String>
                 serde_json::from_str(&choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
             let route = crate::history::current_route(
                 sources,
-                &Selection { person, choice },
+                &Selection {
+                    person,
+                    choice,
+                    ..Selection::default()
+                },
                 &choice_value,
             )?;
             (

@@ -24,8 +24,12 @@ use std::time::{Duration, Instant};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use shell::network::{Actor, NeighbourMsg, NetCmd, NetEvent, WorkspaceControlRoute};
+use shell::network::NeighbourMsg;
 use shell::shell::peer_view::{PeerView, PushOutcome};
+use tilo_network_actor::Actor;
+use tilo_network_actor::NetCmd;
+use tilo_network_actor::NetEvent;
+use tilo_network_actor::WorkspaceControlRoute;
 use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
 use tilo_window_share::diagnostics::PeerSurfaceMetrics;
 use tilo_window_share::flatpak_share::{self, SharedFlatpakSession};
@@ -196,8 +200,8 @@ async fn stream_a_window(who: Viewer) {
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
     let (bystander_cmd, mut bystander_events, bystander_addr) = spawn_device().await;
     let (host_id, viewer_id, bystander_id) = (host_addr.id, viewer_addr.id, bystander_addr.id);
-    let host_peer = shell::network::behaviour::peer_liveness_handle(&host_addr.id);
-    let viewer_peer = shell::network::behaviour::peer_liveness_handle(&viewer_addr.id);
+    let host_peer = tilo_network_actor::behaviour::peer_liveness_handle(&host_addr.id);
+    let viewer_peer = tilo_network_actor::behaviour::peer_liveness_handle(&viewer_addr.id);
     host_cmd
         .send(NetCmd::Connect {
             addr: viewer_addr.clone(),
@@ -586,7 +590,7 @@ async fn stream_a_window(who: Viewer) {
     // The bystander shares the workspace and the host's mesh, yet saw no
     // part of the stream; a frame addressed to it does reach it, so it was
     // listening.
-    let bystander_peer = shell::network::behaviour::peer_liveness_handle(&bystander_id);
+    let bystander_peer = tilo_network_actor::behaviour::peer_liveness_handle(&bystander_id);
     host_cmd
         .send(NetCmd::PublishSurfaceTo {
             ws: WS,
@@ -721,8 +725,8 @@ fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
 async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
     let (host_cmd, _host_events, host_addr) = spawn_device().await;
     let (viewer_cmd, mut viewer_events, viewer_addr) = spawn_device().await;
-    let host_peer = shell::network::behaviour::peer_liveness_handle(&host_addr.id);
-    let viewer_peer = shell::network::behaviour::peer_liveness_handle(&viewer_addr.id);
+    let host_peer = tilo_network_actor::behaviour::peer_liveness_handle(&host_addr.id);
+    let viewer_peer = tilo_network_actor::behaviour::peer_liveness_handle(&viewer_addr.id);
     let (host_id, viewer_id) = (host_addr.id, viewer_addr.id);
     host_cmd
         .send(NetCmd::Connect { addr: viewer_addr })

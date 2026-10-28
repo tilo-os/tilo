@@ -215,6 +215,65 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     assert_eq!(left, 1, "only the person's note is left");
 }
 
+/// The undo steps of the task's that are in effect in `app`'s record, newest first, each the
+/// number of changes it takes back.
+fn task_steps(app: &mut HostedApp) -> Vec<usize> {
+    let scope = Scope::Run("task:7".to_owned());
+    app.read(|doc| {
+        ui::history_source::steps::steps_in_effect(doc, &|version| scope.owns(version), 16)
+            .iter()
+            .map(Vec::len)
+            .collect()
+    })
+}
+
+#[test]
+fn the_invocations_of_one_task_step_undo_as_one_step_and_separate_calls_as_their_own() {
+    let (mut app, root) = notes_open();
+    let notebook = format!("tl:{NOTES}:{root}");
+    let new_note = action_id(&mut app, &notebook, "New note");
+    let (agent, ambient) = task();
+    // One program: both invocations carry the step the door gave its task step.
+    let step = ambient
+        .clone()
+        .in_gesture(Some(ui::tilo_actions::ActionId::new()));
+    for _ in 0..2 {
+        app.invoke(
+            Some(agent.clone()),
+            Some(&step),
+            &notebook,
+            &new_note,
+            &Map::new(),
+            false,
+        )
+        .unwrap();
+        settle(&mut app);
+    }
+    assert_eq!(notes_in(&mut app), 2);
+    let steps = task_steps(&mut app);
+    assert_eq!(steps.len(), 1, "one program is one undo step: {steps:?}");
+    assert!(steps[0] >= 2, "it holds both invocations: {steps:?}");
+    // Two separate calls: each its own step.
+    for _ in 0..2 {
+        let call = ambient
+            .clone()
+            .in_gesture(Some(ui::tilo_actions::ActionId::new()));
+        app.invoke(
+            Some(agent.clone()),
+            Some(&call),
+            &notebook,
+            &new_note,
+            &Map::new(),
+            false,
+        )
+        .unwrap();
+        settle(&mut app);
+    }
+    assert_eq!(notes_in(&mut app), 4);
+    let steps = task_steps(&mut app);
+    assert_eq!(steps.len(), 3, "each call is a step of its own: {steps:?}");
+}
+
 #[test]
 fn the_installed_package_is_the_app_and_opens_on_its_root_committed_through_the_door() {
     let definition = crate::support::installed("notes");

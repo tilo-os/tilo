@@ -238,6 +238,8 @@ members = [
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
     "crates/dev/ui-examples",
+    "crates/dev/click-test-client",
+    "crates/dev/ux-bench",
 
     # Doc
     "crates/doc/bounded-zip",
@@ -415,6 +417,7 @@ members = [
     "crates/session/install-profile-model",
     "crates/session/installer",
     "crates/session/liveness",
+    "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/output-passes",
     "crates/session/polkit-agent",

@@ -178,6 +178,9 @@ pub enum MessagesEffect {
     /// Open a person by stable Contacts identity.
     #[effect(view, idempotent)]
     OpenPerson { person: String },
+    /// Open a conversation this record holds, by its id or who it is with.
+    #[effect(view, idempotent)]
+    OpenConversation { conversation: String },
     /// Select an exact service/account/recipient choice, as published by the
     /// current Contacts and account records. Labels are never route keys.
     #[effect(view, idempotent)]

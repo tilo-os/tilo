@@ -102,6 +102,15 @@ if tests tilo-agent-participant; then
     export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
 fi
 
+# The shell's sandbox and desktop tests drive a Wayland client from its own
+# package, so a shell edit does not rebuild it; cargo only hands a test its own
+# package's binaries. With workspace-unify it resolves as in the test build, so
+# its units are the ones that build already made.
+if (( nextest )) && tests shell; then
+    cargo build --locked -p click-test-client -p workspace-unify --bin click_test_client
+    export TILO_CLICK_TEST_CLIENT="${CARGO_TARGET_DIR:-$root/target}/debug/click_test_client"
+fi
+
 # The app-cli and app-host trust tests execute the installer, which no package
 # depends on.
 if tests app-cli app-host; then

@@ -1,10 +1,14 @@
 //! Two real Iroh endpoints resume an immutable Nearby spool after fresh consent.
 
-use super::*;
-use crate::shell::nearby_transfer::{
-    CHECKPOINT_BYTES, IncomingManifest, NearbyTransferStore, SecureNearbyDestination,
-};
+use super::{CHECKPOINT_BYTES, IncomingManifest, NearbyTransferStore, SecureNearbyDestination};
+use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
+use iroh::{Endpoint, EndpointAddr, EndpointId};
+use tilo_network_actor::{
+    Actor, NearbyTransferCheckpoint, NetCmd, NetEvent, PERSONAL_TRANSFER_CHUNK_BYTES,
+    PersonalFabricPayload, PersonalNearbyTransferFrame,
+};
+use tokio::sync::mpsc;
 
 async fn peer() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, EndpointAddr) {
     let lookup = MemoryLookup::new();

@@ -56,8 +56,8 @@ pub struct InProcessApps {
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
     messaging_transport:
-        Option<tokio::sync::oneshot::Receiver<crate::network::private_messages::Transport>>,
-    native_messaging_transport: Option<crate::network::private_messages::Transport>,
+        Option<tokio::sync::oneshot::Receiver<tilo_network_actor::private_messages::Transport>>,
+    native_messaging_transport: Option<tilo_network_actor::private_messages::Transport>,
     messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
     #[cfg(target_os = "linux")]
     messaging_lifetime: std::sync::Arc<()>,
@@ -218,7 +218,7 @@ impl InProcessApps {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         if network
             .cmd_tx
-            .try_send(crate::network::NetCmd::PrivateMessages(reply))
+            .try_send(tilo_network_actor::NetCmd::PrivateMessages(reply))
             .is_ok()
         {
             self.messaging_transport = Some(receiver);

@@ -237,7 +237,7 @@ mod tests {
             hex::encode(signing_key.verifying_key().to_bytes()),
             crate::shell::state::CapRole::Editor,
         );
-        let handle = crate::network::behaviour::peer_liveness_handle(&endpoint);
+        let handle = tilo_network_actor::behaviour::peer_liveness_handle(&endpoint);
         let user = ui::permissions::UserId(format!("peer@{handle}"));
         let target = format!(
             "participant:{}:chat",

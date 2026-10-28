@@ -13,8 +13,8 @@ use tilo_user_identity::DeviceCapabilities;
 
 use super::home_relay::HomeRelay;
 use super::{Device, Person, Wakes, hosted_workspace, scratch, until, until_caught_up};
-use crate::network::actor::{HEARTBEAT_INTERVAL, NetCmd};
 use crate::shell::state::{GovernanceRequest, RoomId};
+use tilo_network_actor::{HEARTBEAT_INTERVAL, NetCmd};
 
 /// The hosts besides its governor that `room`'s governance names, as
 /// `device` holds it.

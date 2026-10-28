@@ -104,7 +104,7 @@ touches. With neither addition used, nothing changes. Covered by
 `gossip_shares_its_connection_with_the_application` in `src/net.rs`, and in
 Tilo by `a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric`
 and `a_restarted_device_hears_its_siblings_fabric_at_once`
-(`crates/session/shell/src/network/actor.rs`).
+(`crates/session/network-actor/src/lib.rs`).
 
 ## Built as an rlib only (`Cargo.toml`)
 

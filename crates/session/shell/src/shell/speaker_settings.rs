@@ -28,7 +28,6 @@ use runtime_collab::{
 };
 
 use crate::shell::device_fabric::DeviceFabric;
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_calibration::{
     CalibrationPhase, CalibrationRun, MemberProgress, MicrophoneConsent, MicrophoneProgress,
     RunMicrophone,
@@ -40,6 +39,7 @@ use crate::shell::speaker_group::{
 use crate::shell::speaker_group_runtime::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
 };
+use tilo_network_actor::fabric::DeviceId;
 
 /// Shortest interval between two identify sounds on one device.
 pub const IDENTIFY_INTERVAL: Duration = Duration::from_millis(800);

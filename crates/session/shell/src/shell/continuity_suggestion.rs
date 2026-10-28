@@ -19,9 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::shell::personal_continuity::{
-    AppInstanceId, ContinuityStamp, DeviceFocus, DeviceId, PersonalContinuity,
+    AppInstanceId, ContinuityStamp, DeviceFocus, PersonalContinuity,
 };
 use crate::shell::state::{GroupId, RoomId, StripId, TabId, WorkspaceId, WorkspaceTree};
+use tilo_network_actor::fabric::DeviceId;
 
 /// How long after another device moved to a tab this desktop offers it.
 pub const SUGGESTION_WINDOW: Duration = Duration::from_secs(5 * 60);

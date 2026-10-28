@@ -740,7 +740,7 @@ fn direction(message: &Message) -> &'static str {
     if message.outgoing { "out" } else { "in" }
 }
 
-fn snippet(body: &str) -> String {
+pub(crate) fn snippet(body: &str) -> String {
     let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= SNIPPET_CHARS {
         flat

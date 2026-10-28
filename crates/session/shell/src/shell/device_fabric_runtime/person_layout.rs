@@ -2,11 +2,11 @@
 //! Hardware facts and arrangement are observations, never input authority.
 
 use super::super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use super::super::device_fabric::{DeviceFabric, FabricStamp};
+use super::super::device_fabric::DeviceFabric;
 use super::super::network::ShellNetwork;
-use super::super::personal_continuity::DeviceId;
 use settings_store::person_displays::{Arrangement, Layout};
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_network_actor::fabric::{DeviceId, FabricStamp};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PersonLayoutView {

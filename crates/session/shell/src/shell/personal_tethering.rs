@@ -10,11 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(test)]
-use crate::shell::device_fabric::FabricStamp;
 use crate::shell::device_fabric::WifiCredential;
 use crate::shell::device_fabric_secrets::wifi_envelope_recipients;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
+#[cfg(test)]
+use tilo_network_actor::fabric::FabricStamp;
 
 pub const TETHERING_PROTOCOL_VERSION: u16 = 1;
 pub const REQUEST_TTL_MS: u64 = 30_000;

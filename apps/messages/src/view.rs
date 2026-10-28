@@ -4,14 +4,15 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, Jobs, PersonRecord, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Jobs, Live, PersonRecord, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
-    Button, Column, Container, Element, EmptyState, ListRow, ModelView, NavPane, NavShell, Row,
-    Scrollable, Text, TextInput, conversation::draft as draft_line,
+    Button, Column, Container, ConversationLine, ConversationList, DeliveryState, Element,
+    EmptyState, ListRow, ModelView, NavPane, NavShell, Row, Scrollable, Text, TextInput,
+    conversation::draft as draft_line,
 };
 
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -26,6 +27,8 @@ struct CapturePeople {
 pub(crate) struct Sources {
     directory: Option<PersonRecord<ContactDirectory>>,
     accounts: Option<PersonRecord<PersonAccounts>>,
+    /// The Messages record itself, whose conversations are listed first.
+    record: Option<Live<Messages>>,
     fixture: Rc<CapturePeople>,
 }
 
@@ -41,10 +44,16 @@ impl Sources {
             .as_ref()
             .map_or_else(|| Rc::new(self.fixture.accounts.clone()), PersonRecord::get)
     }
-    fn revision(&self) -> (u64, u64) {
+    pub(crate) fn record(&self) -> Rc<Messages> {
+        self.record
+            .as_ref()
+            .map_or_else(|| Rc::new(Messages::default()), Live::get)
+    }
+    fn revision(&self) -> (u64, u64, u64) {
         (
             self.directory.as_ref().map_or(0, PersonRecord::revision),
             self.accounts.as_ref().map_or(0, PersonRecord::revision),
+            self.record.as_ref().map_or(0, Live::revision),
         )
     }
 }
@@ -53,6 +62,9 @@ impl Sources {
 pub(crate) struct Selection {
     pub(crate) person: String,
     pub(crate) choice: String,
+    /// The conversation open from the record's own ([`Messages`]), by its
+    /// key: read-only, beside the people rather than one of their routes.
+    pub(crate) conversation: String,
 }
 
 /// Values are exact identities; localized labels never round-trip as keys.
@@ -207,7 +219,7 @@ fn answer(
             if state.get().person != person {
                 state.set(Selection {
                     person,
-                    choice: String::new(),
+                    ..Selection::default()
                 });
             }
         }
@@ -267,7 +279,9 @@ fn answer(
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
         // Answered from the record before the broker's effects are reached.
-        MessagesEffect::SearchMessages { .. } | MessagesEffect::ExportContent { .. } => {
+        MessagesEffect::SearchMessages { .. }
+        | MessagesEffect::ExportContent { .. }
+        | MessagesEffect::OpenConversation { .. } => {
             return Err("the record answers this before the broker".to_owned());
         }
     }
@@ -323,6 +337,7 @@ fn confirm_account(
         state.set(Selection {
             person,
             choice: choice.value(),
+            ..Selection::default()
         });
     }
     Ok(())
@@ -340,6 +355,7 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
         } else {
             None
         },
+        record: Some(cx.live().clone()),
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
     }
 }
@@ -517,8 +533,10 @@ fn navigation(
     drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
-    let nobody = nobody_listed(sources);
-    let people = overview(sources, actions, &selected.person, drafts);
+    // Nobody to message only when the record holds no conversation either:
+    // a Messages with content never presents itself as empty.
+    let nobody = nobody_listed(sources) && sources.record().conversations.is_empty();
+    let people = overview(sources, actions, selected, drafts);
     let shell = NavShell::new()
         .content_kind(ui::widget::ContentKind::Reading)
         .with_window_toolbar();
@@ -532,7 +550,11 @@ fn navigation(
         None => people,
     };
     let pane = LocalState::new(
-        if selected.person.is_empty() && !setup.visible() && !groups.visible() {
+        if selected.person.is_empty()
+            && selected.conversation.is_empty()
+            && !setup.visible()
+            && !groups.visible()
+        {
             NavPane::Overview
         } else {
             NavPane::Content
@@ -588,8 +610,8 @@ fn discard_invalid_route(
     sending.clear();
     history.clear();
     selection.set(Selection {
-        person: selected.person,
         choice: String::new(),
+        ..selected
     });
     true
 }
@@ -608,7 +630,11 @@ fn register_capture_selection(
                 .into_iter()
                 .find(|choice| choice.service == "signal")
                 .map_or_else(String::new, |choice| choice.value());
-            captured_selection.set(Selection { person, choice });
+            captured_selection.set(Selection {
+                person,
+                choice,
+                ..Selection::default()
+            });
         }
     });
 }
@@ -658,7 +684,7 @@ fn register_effects(
         }
         if crate::groups::GroupsView::handles(&effect) { effect_setup.close(); return effect_groups.effect(&effect_sources, effect, cx); }
         if crate::setup::SetupView::handles(&effect) { effect_groups.close(); return effect_setup.effect(&effect_sources, effect, cx); }
-        if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }
+        if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::OpenConversation { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }
 
         if matches!(effect, MessagesEffect::ListAccountStates) {
             let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "tilo" | "whatsapp" | "signal" | "sms")).map(|(id, account)| {
@@ -677,7 +703,12 @@ fn register_effects(
             return effect_history.read_older(&effect_sources, &state, &choice, cx);
         }
         let before = state.get();
-        let result = answer(&effect_sources, &state, effect)?;
+        let result = match effect {
+            MessagesEffect::OpenConversation { conversation } => {
+                open_conversation(&cx.live().get(), &state, &conversation)?
+            }
+            effect => answer(&effect_sources, &state, effect)?,
+        };
         let selected = state.get();
         let changed = selected != before;
         if changed {
@@ -700,52 +731,145 @@ fn register_effects(
     });
 }
 
+/// Open the record's conversation `named` (its id, its item address or who
+/// it is with) in place of any person.
+fn open_conversation(
+    record: &Messages,
+    state: &LocalState<Selection>,
+    named: &str,
+) -> ui::framework::EffectAnswer {
+    let (key, _) = record
+        .conversation(named)
+        .ok_or_else(|| CATALOG.t("messages-conversation-missing"))?;
+    let conversation = key.as_str().to_owned();
+    if state.get().conversation != conversation {
+        state.set(Selection {
+            conversation,
+            ..Selection::default()
+        });
+    }
+    Ok(Effected::done())
+}
+
+/// One conversation the record holds, as the overview lists it.
+#[derive(Clone)]
+struct Held {
+    key: String,
+    with: String,
+    last: String,
+}
+
+/// The record's conversations, the one with the latest message first.
+fn held(record: &Messages) -> Vec<Held> {
+    let mut held: Vec<(i64, Held)> = record
+        .conversations
+        .iter()
+        .map(|(key, conversation)| {
+            let last = conversation.messages.values().next_back();
+            (
+                last.map_or(i64::MIN, |message| message.at_ms),
+                Held {
+                    key: key.as_str().to_owned(),
+                    with: conversation.with.clone(),
+                    last: last.map_or_else(String::new, |message| {
+                        crate::conversations::snippet(&message.body)
+                    }),
+                },
+            )
+        })
+        .collect();
+    held.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    held.into_iter().map(|(_, held)| held).collect()
+}
+
+/// A row of the overview: a conversation the record holds, or a person.
+#[derive(Clone)]
+enum Entry {
+    Held(Held),
+    Person(Id, String),
+}
+
+impl Entry {
+    fn id(&self) -> Id {
+        match self {
+            // Apart from the people's ids, which are Contacts identities.
+            Self::Held(held) => Id::from_raw(format!("conversation:{}", held.key)),
+            Self::Person(id, _) => id.clone(),
+        }
+    }
+}
+
 fn overview(
     sources: &Sources,
     actions: &Actions<Messages>,
-    selected: &str,
+    selected: &Selection,
     drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
 ) -> Element {
     // The words left in a conversation are shown where the conversation is
     // listed, beside the person they were written for: a draft you cannot find
     // is a draft you have lost.
     let kept = drafts.map(PersonRecord::get);
-    let people: Vec<_> = sources
-        .contacts()
-        .people
-        .iter()
-        .filter(|(_, person)| !person.removed)
-        .map(|(id, person)| (id.clone(), person.label.clone()))
+    // What the record holds leads: it is what this Messages is about, and
+    // it is all a past version or a shared copy has to show.
+    let entries: Vec<_> = held(&sources.record())
+        .into_iter()
+        .map(Entry::Held)
+        .chain(
+            sources
+                .contacts()
+                .people
+                .iter()
+                .filter(|(_, person)| !person.removed)
+                .map(|(id, person)| Entry::Person(id.clone(), person.label.clone())),
+        )
         .collect();
     // The pane is a column under the group entries: the empty state fills
     // what is left of it, as the list would, instead of collapsing to nothing.
     let fill =
         |element: Element| -> Element { Box::new(Container::new().filling().with_child(element)) };
-    if people.is_empty() {
+    if entries.is_empty() {
         return fill(empty("messages-empty-heading", "messages-empty-hint"));
     }
-    let Ok(model) = VecListModel::new(people, |(id, _)| id.clone()) else {
+    let Ok(model) = VecListModel::new(entries, Entry::id) else {
         return fill(empty("messages-contact-missing", "messages-empty-hint"));
     };
     let controls = actions.clone();
-    let selected = selected.to_owned();
+    let selected = selected.clone();
     let row_sources = sources.clone();
     let list = VirtualList::new(model, 64.0, move |model, index, id| {
-        let label = model
-            .item(index)
-            .map_or_else(String::new, |(_, label)| label.clone());
-        let open = MessagesEffect::OpenPerson {
-            person: id.as_str().into(),
+        let Some(entry) = model.item(index) else {
+            return Box::new(Column::new()) as Element;
         };
-        let mut row = ListRow::new(format!("messages.person:{id}"), &label)
-            .avatar(&label, id.as_str())
-            .selected(id.as_str() == selected);
-        let draft = kept
-            .as_ref()
-            .and_then(|kept| draft_for(&row_sources, kept, id.as_str()));
-        if let Some(draft) = draft.as_deref() {
-            row = row.secondary(draft).two_line_secondary();
-        }
+        let (row, open) = match entry {
+            Entry::Held(held) => {
+                let mut row =
+                    ListRow::new(format!("messages.conversation:{}", held.key), &held.with)
+                        .avatar(&held.with, &held.key)
+                        .selected(held.key == selected.conversation);
+                if !held.last.is_empty() {
+                    row = row.secondary(&held.last).two_line_secondary();
+                }
+                let open = MessagesEffect::OpenConversation {
+                    conversation: held.key.clone(),
+                };
+                (row, open)
+            }
+            Entry::Person(_, label) => {
+                let mut row = ListRow::new(format!("messages.person:{id}"), label)
+                    .avatar(label, id.as_str())
+                    .selected(id.as_str() == selected.person);
+                let draft = kept
+                    .as_ref()
+                    .and_then(|kept| draft_for(&row_sources, kept, id.as_str()));
+                if let Some(draft) = draft.as_deref() {
+                    row = row.secondary(draft).two_line_secondary();
+                }
+                let open = MessagesEffect::OpenPerson {
+                    person: id.as_str().into(),
+                };
+                (row, open)
+            }
+        };
         Box::new(match controls.effect(&open) {
             Some(binding) => row.on_action(binding),
             None => row.with_enabled(false),
@@ -757,6 +881,53 @@ fn overview(
     Box::new(Container::new().filling().with_child(Box::new(list)))
 }
 
+/// The record's conversation `key`, read-only: who said what, and which of
+/// the words written here still wait for a person to send them. Nothing is
+/// sent from here ([`crate::conversations`]).
+fn held_detail(record: &Messages, key: &str) -> Element {
+    let Some(conversation) = record.conversations.get(&Id::from_raw(key)) else {
+        return empty("messages-conversation-missing", "messages-held-hint");
+    };
+    let lines: Vec<ConversationLine> = conversation
+        .messages
+        .iter()
+        .map(|(id, message)| {
+            let id = id.as_str().to_owned();
+            let body = message.body.clone();
+            if message.outgoing {
+                let line = ConversationLine::outgoing(id, message.at_ms, body);
+                if message.queued {
+                    line.with_delivery(DeliveryState::Queued)
+                } else {
+                    line
+                }
+            } else {
+                ConversationLine::incoming(id, message.at_ms, &message.from, body)
+            }
+        })
+        .collect();
+    let name = CATALOG.t_args(
+        "messages-conversation-with",
+        &[("person", ArgValue::Text(conversation.with.clone()))],
+    );
+    let list = Scrollable::new_vertical()
+        .fill_parent_height()
+        .with_semantic_key(format!("messages.held:{key}"))
+        .with_child(Box::new(
+            ConversationList::new(lines).with_accessible_name(name),
+        ));
+    Box::new(
+        Column::new()
+            .push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_fill_remaining_height()
+                    .push(Box::new(list)),
+            ))
+            .push(Box::new(Text::new("messages-held-hint"))),
+    )
+}
+
 fn detail(
     sources: &Sources,
     actions: &Actions<Messages>,
@@ -766,11 +937,18 @@ fn detail(
     sending: &crate::sending::Sending,
     jobs: &Jobs<Messages>,
 ) -> Element {
+    let record = sources.record();
+    if !selected.conversation.is_empty() {
+        return held_detail(&record, &selected.conversation);
+    }
     if selected.person.is_empty() {
         // With nobody to choose, the list beside says how to start, and
         // "Choose a person" would point at nothing.
         if nobody_listed(sources) {
-            return Box::new(Column::new());
+            if record.conversations.is_empty() {
+                return Box::new(Column::new());
+            }
+            return empty("messages-choose-conversation", "messages-held-hint");
         }
         return empty("messages-choose-heading", "messages-choose-hint");
     }
@@ -1123,6 +1301,7 @@ mod route_tests {
         let mut sources = Sources {
             directory: Some(directory.clone()),
             accounts: None,
+            record: None,
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
                 accounts,
@@ -1130,7 +1309,7 @@ mod route_tests {
         };
         let selection = LocalState::new(Selection {
             person: PERSON.into(),
-            choice: String::new(),
+            ..Selection::default()
         });
         let old = Choice {
             service: "signal".into(),
@@ -1209,6 +1388,7 @@ mod route_tests {
         let sources = Sources {
             directory: Some(directory),
             accounts: None,
+            record: None,
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
                 accounts,
@@ -1216,7 +1396,7 @@ mod route_tests {
         };
         let selection = LocalState::new(Selection {
             person: PERSON.into(),
-            choice: String::new(),
+            ..Selection::default()
         });
         let choice = Choice {
             service: "signal".into(),

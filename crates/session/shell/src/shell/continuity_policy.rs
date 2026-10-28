@@ -598,7 +598,7 @@ mod tests {
 
         // Waking one of the person's devices needs no optional switch.
         let wake = PersonalFabricAction::WakeDevice {
-            target: crate::shell::personal_continuity::DeviceId::new("desk").unwrap(),
+            target: tilo_network_actor::fabric::DeviceId::new("desk").unwrap(),
         };
         assert_eq!(ContinuityPolicySnapshot::capability_for_action(&wake), None);
         assert!(policy(false, false).permits_action(&wake));

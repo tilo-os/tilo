@@ -220,3 +220,144 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
         "grace's window reads the root ada's made"
     );
 }
+
+/// The counter's value at `root`, as the instance's runtime reads it.
+fn value_at(instance: &Instance, root: &tilolang_tilo::runtime::ResourceRef) -> i64 {
+    match instance
+        .host()
+        .unwrap()
+        .runtime()
+        .read(root, "value")
+        .unwrap()
+    {
+        tilolang_tilo::runtime::Value::Int(value) => value,
+        other => panic!("the counter's value is {other:?}"),
+    }
+}
+
+/// The room as its host holds it: ada's window made the counter's root. The root, and the room's
+/// history.
+fn made_by_ada(
+    route: &RouteSpec,
+    platform: &Rc<Counter>,
+) -> (tilolang_tilo::runtime::ResourceRef, Vec<u8>) {
+    let (ada_inbox, nobody): (Inbox, Inbox) = (Rc::default(), Rc::default());
+    let mut ada = window(
+        "ada",
+        route,
+        &ada_inbox,
+        &nobody,
+        platform,
+        automerge::AutoCommit::new(),
+    );
+    for _ in 0..100 {
+        ada.instance.sync(Some(ada.room.doc()));
+        ada.instance.update();
+        if !ada.room.commit(&mut ada.instance).unwrap().is_empty() {
+            break;
+        }
+    }
+    let root = ada.instance.host().unwrap().root_of(APP).unwrap();
+    (root, ada.room.doc().clone().save())
+}
+
+/// A room another host governs: the record is the broker's committed read, the window's edit is a
+/// step of its own that the person's Undo takes back (and Redo brings back), each sent on the
+/// room's route, and the record's on-disk copy keeps up with it.
+#[test]
+fn a_tilolang_edit_in_a_room_another_host_governs_is_undone() {
+    let room_id = uuid::Uuid::new_v4();
+    let route = RouteSpec::app(APP, room_id);
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+
+    let (root, committed) = made_by_ada(&route, &platform);
+
+    // Grace's window opens on a connection whose route the broker reads committed.
+    let (manager, _) =
+        CollaborationManager::native_initial_fixture_for_test(APP, room_id, committed);
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut record = RoomRecord::open(manager, &documents, "grace").unwrap();
+    let (app_end, _patches) = pair();
+    let mut instance = Instance::new(
+        Config {
+            app: APP.to_owned(),
+            me: "grace".to_owned(),
+            mode: Mode::Live,
+            device: None,
+            index_dir: None,
+            record_loader: None,
+            sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
+        },
+        Rc::clone(&platform) as Rc<dyn Platform>,
+        Rc::new(Alone),
+        Box::new(app_end),
+    );
+    instance.sync(Some(record.doc()));
+    instance.update();
+    assert_eq!(
+        instance.host().unwrap().root_of(APP).unwrap(),
+        root,
+        "grace's window reads the root the room's committed read holds"
+    );
+    assert_eq!(value_at(&instance, &root), 0);
+    assert_eq!(record.can_undo(), (false, false), "nothing of hers yet");
+
+    // Grace adds one: the runtime plans it, the room path commits and sends it.
+    let host = instance.host().unwrap();
+    let increment = host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "increment")
+        .unwrap()
+        .id
+        .clone();
+    let first = host.next_ticket();
+    host.runtime()
+        .invoke_action(
+            &tilolang_tilo::runtime::Principal::new("grace"),
+            (
+                increment.as_str(),
+                vec![tilolang_tilo::runtime::Value::resource(&root)],
+            ),
+        )
+        .unwrap();
+    let queued = tilolang_tilo::instance::queue_commits(&host, &instance.outgoing(), first, None);
+    assert!(!queued.is_empty(), "the edit is queued for the room");
+    let sent = record.commit(&mut instance).unwrap();
+    assert_eq!(sent, queued);
+    instance.update();
+    assert_eq!(value_at(&instance, &root), 1);
+    assert_eq!(record.can_undo(), (true, false), "her edit is a step");
+
+    // Undo takes it back as a change of its own, and redo brings it back.
+    assert!(record.undo(&mut instance).unwrap());
+    instance.update();
+    assert_eq!(value_at(&instance, &root), 0, "undo took the edit back");
+    assert_eq!(record.can_undo(), (false, true));
+    assert!(record.redo(&mut instance).unwrap());
+    instance.update();
+    assert_eq!(value_at(&instance, &root), 1, "redo brought it back");
+
+    // The on-disk copy holds the record with the edit, the undo and the redo.
+    record.flush();
+    assert_eq!(
+        record.save_status(),
+        collaboration::record::RecordSaveStatus::Saved
+    );
+    let heads = record.doc().clone().get_heads();
+    let mut store =
+        collaboration::record::save::room_document(&documents, APP, &room_id.to_string()).unwrap();
+    drop(record);
+    let mut stored = store
+        .load_complete()
+        .unwrap()
+        .expect("the copy was written");
+    assert_eq!(stored.get_heads(), heads);
+}

@@ -2,7 +2,8 @@ use super::{
     InboundChannelGovernance, NeighbourMsg, NetCmd, NetEvent, RoomId, ShellNetwork, SystemTime,
     room_topic_id,
 };
-use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
+use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
+use tilo_network_actor::native_ingress;
 impl ShellNetwork {
     /// Existing enrolled governor and current selected native reporter custody.
     /// No identity selection, enrollment or grant is performed here.
@@ -95,7 +96,7 @@ impl ShellNetwork {
         // A room joined through a site is reached over its host's HTTPS
         // routes; every other over the iroh endpoint its hint names.
         let https = match self.hosted_sites.origin(room) {
-            Some(origin) => Some(crate::network::actor::HttpsRoute(
+            Some(origin) => Some(tilo_network_actor::HttpsRoute(
                 super::hosted_sites::HostHttp::new(&origin)?,
             )),
             None => None,

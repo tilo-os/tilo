@@ -11,7 +11,9 @@
 //! * per item field a filter compares (a register of a flag, a number or a text, or a
 //!   counter), a list per value of the items holding it, in the collection's order: a filter
 //!   or a count is answered from the lists of the values it holds of;
-//! * the postings of every text: per word, the resources it is in ([`text`]).
+//!
+//! Beside them, what search finds resources by: their texts, in a search index of Tilo's search
+//! layer derived from the index's fields and following its commits ([`search`]).
 //!
 //! The record stays the source of truth. The index is derived from it ([`derive`]) and kept
 //! up to date change by change, field by field; one that reflects heads the record does not
@@ -42,8 +44,8 @@ pub mod derive;
 pub mod lists;
 pub mod merged;
 pub mod overlay;
+pub mod search;
 pub mod select;
-pub mod text;
 pub mod view;
 
 use std::path::{Path, PathBuf};
@@ -59,9 +61,10 @@ use tilolang_runtime::store::FieldValue;
 
 use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
+use self::search::Search;
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = 3;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -75,8 +78,8 @@ const DOCS: TableDefinition<&str, &[u8]> = TableDefinition::new("docs");
 const FIELDS: TableDefinition<(&str, &str), &[u8]> = TableDefinition::new("fields");
 const DIRS: TableDefinition<&str, &[u8]> = TableDefinition::new("dirs");
 const PAGES: TableDefinition<(&str, u32), &[u8]> = TableDefinition::new("pages");
-/// `(word, resource)`: how much the word weighs there.
-const POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::new("postings");
+/// The word postings of format 2, which search no longer reads: emptying the index drops them.
+const FORMAT_2_POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::new("postings");
 /// `(list, value)`: how many entries of a column's list hold the value, for a column whose
 /// values are few (a toggle, an enum): where a value's run starts and ends, and the counts
 /// of a filter's chips, without reading the list's pages.
@@ -229,6 +232,7 @@ pub struct Index {
     schema: String,
     db: Arc<Database>,
     stats: Arc<IndexStats>,
+    search: Arc<Search>,
     path: Option<PathBuf>,
 }
 
@@ -290,7 +294,6 @@ fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
     txn.open_table(FIELDS)?;
     txn.open_table(DIRS)?;
     txn.open_table(PAGES)?;
-    txn.open_table(POSTINGS)?;
     txn.open_table(COUNTS)?;
     Ok(())
 }
@@ -345,13 +348,7 @@ impl Index {
                     .create(path)?
             }
         };
-        let index = Self {
-            app: app.to_owned(),
-            schema: schema.to_owned(),
-            db: Arc::new(db),
-            stats: Arc::default(),
-            path: Some(path.to_owned()),
-        };
+        let index = Self::with(app, schema, db, Some(path.to_owned()));
         if let Ok(Some(heads)) = index.valid(schema) {
             Ok(Opened::Ready(index, heads))
         } else {
@@ -366,15 +363,22 @@ impl Index {
     /// Memory cannot be had for it.
     pub fn in_memory(app: &str, schema: &str) -> Result<Self, IndexError> {
         let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
-        let index = Self {
-            app: app.to_owned(),
-            schema: schema.to_owned(),
-            db: Arc::new(db),
-            stats: Arc::default(),
-            path: None,
-        };
+        let index = Self::with(app, schema, db, None);
         index.clear(schema)?;
         Ok(index)
+    }
+
+    fn with(app: &str, schema: &str, db: Database, path: Option<PathBuf>) -> Self {
+        let db = Arc::new(db);
+        let stats: Arc<IndexStats> = Arc::default();
+        Self {
+            app: app.to_owned(),
+            schema: schema.to_owned(),
+            search: Arc::new(Search::new(Arc::clone(&db), Arc::clone(&stats))),
+            db,
+            stats,
+            path,
+        }
     }
 
     #[must_use]
@@ -426,7 +430,7 @@ impl Index {
         txn.delete_table(FIELDS)?;
         txn.delete_table(DIRS)?;
         txn.delete_table(PAGES)?;
-        txn.delete_table(POSTINGS)?;
+        txn.delete_table(FORMAT_2_POSTINGS)?;
         txn.delete_table(COUNTS)?;
         create_tables(&txn)?;
         {
@@ -435,6 +439,7 @@ impl Index {
             meta.insert(META_SCHEMA, codec::put_text(schema).as_slice())?;
         }
         txn.commit()?;
+        self.search.clear();
         Ok(())
     }
 
@@ -458,8 +463,8 @@ impl Index {
             fields: txn.open_table(FIELDS)?,
             dirs: txn.open_table(DIRS)?,
             pages: txn.open_table(PAGES)?,
-            postings: txn.open_table(POSTINGS)?,
             counts: txn.open_table(COUNTS)?,
+            search: Arc::clone(&self.search),
             stats: Arc::clone(&self.stats),
         }))
     }
@@ -476,13 +481,14 @@ impl Index {
     ) -> Result<T, IndexError> {
         let mut txn = self.db.begin_write()?;
         txn.set_durability(Durability::None)?;
-        let out = {
+        let (out, texts) = {
             let mut writer = Writer::new(&txn)?;
             let out = f(&mut writer)?;
             writer.flush()?;
-            out
+            (out, std::mem::take(&mut writer.texts))
         };
         txn.commit()?;
+        self.search.changed(&texts);
         Ok(out)
     }
 
@@ -515,8 +521,8 @@ pub struct Snapshot {
     fields: FieldsTable,
     dirs: ReadOnlyTable<&'static str, &'static [u8]>,
     pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
-    postings: ReadOnlyTable<(&'static str, &'static str), u8>,
     counts: ReadOnlyTable<(&'static str, &'static str), u64>,
+    search: Arc<Search>,
     stats: Arc<IndexStats>,
 }
 
@@ -690,25 +696,11 @@ impl Snapshot {
         self.checked(read)
     }
 
-    /// The postings of the words starting with `prefix` (of the word itself, with `exact`):
-    /// each resource holding one, and how much it weighs there.
-    ///
-    /// # Errors
-    /// The index cannot be read or is corrupt.
-    pub fn postings(&self, prefix: &str, exact: bool) -> Result<Vec<(String, u8)>, IndexError> {
-        let read = (|| {
-            let mut out = Vec::new();
-            for entry in self.postings.range((prefix, "")..)? {
-                let (key, weight) = entry?;
-                let (word, resource) = key.value();
-                if (exact && word != prefix) || !word.starts_with(prefix) {
-                    break;
-                }
-                out.push((resource.to_owned(), weight.value()));
-            }
-            Ok(out)
-        })();
-        self.checked(read)
+    /// What search finds the resources of the index by: the index's search index, taken in
+    /// from the index's last commit when first read.
+    #[must_use]
+    pub fn search(&self) -> &Search {
+        &self.search
     }
 }
 
@@ -719,7 +711,8 @@ pub struct Contents {
     pub docs: std::collections::BTreeMap<String, String>,
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
-    pub postings: std::collections::BTreeMap<(String, String), u8>,
+    /// What search finds each resource by: its texts and their weights.
+    pub texts: std::collections::BTreeMap<String, Vec<(String, u8)>>,
     pub counts: std::collections::BTreeMap<(String, String), u64>,
 }
 
@@ -760,12 +753,7 @@ impl Snapshot {
                 out.lists.insert(name, entries);
             }
         }
-        for entry in self.postings.iter()? {
-            let (key, weight) = entry?;
-            let (word, resource) = key.value();
-            out.postings
-                .insert((word.to_owned(), resource.to_owned()), weight.value());
-        }
+        out.texts = self.search.contents()?;
         for entry in self.counts.iter()? {
             let (key, count) = entry?;
             let (list, value) = key.value();
@@ -795,7 +783,6 @@ pub struct Tables<'t> {
     fields: Table<'t, (&'static str, &'static str), &'static [u8]>,
     dirs: Table<'t, &'static str, &'static [u8]>,
     pages: Table<'t, (&'static str, u32), &'static [u8]>,
-    postings: Table<'t, (&'static str, &'static str), u8>,
     counts: Table<'t, (&'static str, &'static str), u64>,
 }
 
@@ -813,6 +800,8 @@ impl ListSource for Tables<'_> {
 pub struct Writer<'t> {
     tables: Tables<'t>,
     lists: ListEdits,
+    /// The resources whose texts the commit changed: what search reads back once it is in.
+    texts: std::collections::BTreeSet<String>,
 }
 
 impl<'t> Writer<'t> {
@@ -824,10 +813,10 @@ impl<'t> Writer<'t> {
                 fields: txn.open_table(FIELDS)?,
                 dirs: txn.open_table(DIRS)?,
                 pages: txn.open_table(PAGES)?,
-                postings: txn.open_table(POSTINGS)?,
                 counts: txn.open_table(COUNTS)?,
             },
             lists: ListEdits::default(),
+            texts: std::collections::BTreeSet::new(),
         })
     }
 
@@ -1066,17 +1055,9 @@ impl<'t> Writer<'t> {
         Ok(names.into_iter().collect())
     }
 
-    /// # Errors
-    /// The index cannot be written.
-    pub fn post(&mut self, word: &str, resource: &str, weight: u8) -> Result<(), IndexError> {
-        self.tables.postings.insert((word, resource), weight)?;
-        Ok(())
-    }
-
-    /// # Errors
-    /// The index cannot be written.
-    pub fn unpost(&mut self, word: &str, resource: &str) -> Result<(), IndexError> {
-        self.tables.postings.remove((word, resource))?;
-        Ok(())
+    /// A text of `resource` changed, or `resource` is gone: search reads it back once the
+    /// commit is in.
+    pub fn text_changed(&mut self, resource: &str) {
+        self.texts.insert(resource.to_owned());
     }
 }

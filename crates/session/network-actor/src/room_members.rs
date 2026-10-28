@@ -22,7 +22,7 @@ struct Ingress {
 
 /// A device on a room's roster, and when its certificate expires (Unix
 /// nanoseconds; `None` when it never does).
-pub(crate) type RosterDevice = (EndpointId, Option<u64>);
+pub type RosterDevice = (EndpointId, Option<u64>);
 
 /// One device's membership of a room.
 #[derive(Clone, Copy)]

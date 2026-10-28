@@ -4285,7 +4285,7 @@ impl ControlState for FrameBuilderControlState<'_> {
 }
 
 /// Each workspace's room for `state_dump`: where it stands with its host
-/// ([`crate::shell::room_sync`], `null` for a room with no host), the apps
+/// ([`tilo_network_actor::room_sync`], `null` for a room with no host), the apps
 /// its grants make authors, and how many grants it holds, as this device
 /// last received them.
 fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Value {
@@ -4297,8 +4297,8 @@ fn room_sync_json(tree: &crate::shell::state::WorkspaceTree) -> serde_json::Valu
             serde_json::json!({
                 "workspace": workspace.name,
                 "room": workspace.room().to_string(),
-                "state": crate::shell::room_sync::state(
-                    crate::shell::network::room_topic_id(workspace.room()),
+                "state": tilo_network_actor::room_sync::state(
+                    tilo_network_actor::room_topic_id(workspace.room()),
                 ),
                 "app_authors": workspace.launch_grants(now).authors,
                 "grants": workspace.policy.grants.len(),
@@ -7179,7 +7179,7 @@ fn portal_capture_event(
 
 #[derive(Clone, Debug)]
 struct SpatialControlSession {
-    target: crate::shell::personal_continuity::DeviceId,
+    target: tilo_network_actor::fabric::DeviceId,
     lease_nonce: [u8; 16],
     output: Option<String>,
     return_edge: crate::shell::device_fabric::DisplayEdge,
@@ -7297,7 +7297,7 @@ fn queue_personal_fabric_input(
 #[cfg(test)]
 pub(crate) fn teardown_spatial_control_for_test(
     network: &crate::shell::network::ShellNetwork,
-    target: crate::shell::personal_continuity::DeviceId,
+    target: tilo_network_actor::fabric::DeviceId,
     nonce: [u8; 16],
     held: (
         std::collections::BTreeSet<u32>,
@@ -7483,7 +7483,7 @@ fn move_to_observed_display(
     point: (f64, f64),
 ) -> crate::compositor::spatial_pointer::SpatialMotion {
     use crate::compositor::spatial_pointer::SpatialMotion;
-    let Ok(target) = crate::shell::personal_continuity::DeviceId::new(destination.0) else {
+    let Ok(target) = tilo_network_actor::fabric::DeviceId::new(destination.0) else {
         return SpatialMotion::Local;
     };
     let Some(lease) = crate::shell::device_fabric_runtime::spatial_pointer_lease(network, &target)
@@ -13212,7 +13212,7 @@ pub fn run() {
             // one it moves in.
             let (width, height) = logical_geometry(backend.outputs());
             let display =
-                (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+                (width > 0 && height > 0).then_some(tilo_network_actor::fabric::DisplayRect {
                     x: 0,
                     y: 0,
                     width,
@@ -13289,7 +13289,7 @@ pub fn run() {
                     use crate::shell::device_fabric_runtime::NearbyDropEvent;
                     use crate::shell::i18n::{t, t_args};
                     let fabric = net.device_fabric();
-                    let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                    let peer_label = |peer: &tilo_network_actor::fabric::DeviceId| {
                         fabric.snapshots().get(peer).map_or_else(
                             || t("nearby-drop-your-device"),
                             |snapshot| snapshot.presence.label.clone(),
@@ -13402,7 +13402,7 @@ pub fn run() {
                         .collect(),
                 );
                 state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
-                    (*surface, crate::shell::network::room_topic_id(*room))
+                    (*surface, tilo_network_actor::room_topic_id(*room))
                 }));
             }
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
@@ -17242,8 +17242,7 @@ mod tests {
         let personal = std::collections::BTreeMap::from([(
             12,
             vec![WindowViewer {
-                device: crate::shell::personal_continuity::DeviceId::new(hex::encode([1; 32]))
-                    .unwrap(),
+                device: tilo_network_actor::fabric::DeviceId::new(hex::encode([1; 32])).unwrap(),
                 peer: 501,
                 width: 800,
                 height: 600,
@@ -17433,8 +17432,7 @@ mod tests {
         let room = background.room();
         tree.desktop.workspaces.push(background);
         let viewer = |device: u8, peer: u64, width: u32, height: u32| WindowViewer {
-            device: crate::shell::personal_continuity::DeviceId::new(hex::encode([device; 32]))
-                .unwrap(),
+            device: tilo_network_actor::fabric::DeviceId::new(hex::encode([device; 32])).unwrap(),
             peer,
             width,
             height,

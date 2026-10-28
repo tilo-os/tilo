@@ -236,10 +236,30 @@ the rows that carry it. It asks every running app at once, and an app that
 does not answer is named as not searched rather than failing the search; a
 search that no app answered fails and says so. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
-parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
+parameters when it is wanted. Results are text, with no structured copy beside them unless a program asks for one (below). Measured (the
 `mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
 JSON against 4,546 for the classic one, and a four-block Notes page reads as 71
 bytes of markdown against 370 for the structured `read` answer of the same page.
+
+A program (an agent's tilolang program, run for its task) reads and acts
+through the same tools, with two things a model does not need, both asked
+for in the call's `_meta`:
+
+- **One undo step per task step.** `{"so.tilo.mcp": {"step": "<name>"}}`
+  joins every call of this session naming the same step into one undo
+  step: all the invocations one program makes are taken back together, as
+  the task's. Without it each call is a step of its own (a `calls` batch
+  included). The gesture the changes record is derived from the session's
+  execution, its run and the name; a client never chooses it, and the app
+  rebinds it under the caller's group again, so a step can only ever group
+  the caller's own changes.
+- **A structured read.** `{"so.tilo.mcp": {"structured": true}}` on
+  `tilo_read` answers the same read typed, as `structuredContent` (the text
+  beside it is the same JSON): `path`, `kind`, `fields` (the app's answer,
+  typed as the app typed it), `children` (what the resource holds: `list`,
+  `name`, `item` and the `path` that reads or acts on it) and `cursor`, the
+  app's own next page, passed back as `cursor`. The markdown read is a
+  rendering of this answer, made by the same reader at the same cost.
 
 A client that parses directory rows (peer ids, `tilo_query`'s grouped pages)
 is served the **classic** tools, below, anywhere but the door.

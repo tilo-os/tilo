@@ -15,7 +15,7 @@ use os_actions::{
 
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 const READ_BUDGET_PER_PUMP: usize = 64;

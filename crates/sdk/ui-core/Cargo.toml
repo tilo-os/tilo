@@ -61,7 +61,7 @@ broker-transport = ["local-daemons", "collaboration/broker-transport", "runtime-
 # catalogue) come with it.
 test-support = ["tilo-host/test-support", "collaboration/test-support", "dep:tilo-test-env"]
 # The UX benchmark runner (`ui::ux_bench`): scenarios, checks and the HTML
-# report the shell's `ux-bench` binary drives. Off by default, so the shared
+# report the `ux-bench` tool drives. Off by default, so the shared
 # runtime apps load does not ship it.
 ux-bench = []
 # Hyphenation patterns (hypher) are not linked into text layout: the program

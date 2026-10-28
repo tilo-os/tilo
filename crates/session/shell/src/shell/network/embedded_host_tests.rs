@@ -113,7 +113,7 @@ fn a_failed_placement_waits_for_something_it_depends_on_to_change() {
     );
     // A device that places its workspaces, whose host cannot open: it
     // keeps no workspaces on disk to host them beside.
-    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    network.embedded_host = State::new(tilo_network_actor::local_host::LocalHost::deferred().0);
     let passes = || network.embedded_host.passes.load(Ordering::Acquire);
     network.place_pending_workspaces();
     assert_eq!(passes(), 1);
@@ -393,7 +393,7 @@ fn a_room_waiting_with_no_workspace_is_placed_no_more_and_asks_for_no_pass() {
         &iroh::SecretKey::from_bytes(&[0x64; 32]),
         tree,
     );
-    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    network.embedded_host = State::new(tilo_network_actor::local_host::LocalHost::deferred().0);
     let passes = || network.embedded_host.passes.load(Ordering::Acquire);
     assert!(network.placements_pending());
     network.place_pending_workspaces();
@@ -450,7 +450,7 @@ fn a_room_waiting_with_its_workspace_still_waits_after_a_pass() {
         &iroh::SecretKey::from_bytes(&[0x66; 32]),
         tree,
     );
-    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    network.embedded_host = State::new(tilo_network_actor::local_host::LocalHost::deferred().0);
     network.place_pending_workspaces();
     assert_eq!(
         network.tree.read().pending_placements,

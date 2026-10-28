@@ -436,3 +436,47 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
     })
     .unwrap_or_else(|error| panic!("{error}"));
 }
+
+/// A past version reads through the `read` door with the mailbox as it stood
+/// then, and draws in the app's own view.
+#[test]
+fn a_past_version_reads_and_shows_its_mail() {
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver(
+        &mut app,
+        json!({
+            "from": "Sam Lee <sam@example.test>",
+            "to": "me@example.test",
+            "subject": "Marker kumquat parade",
+            "body": "Bring the kumquats.",
+            "date": "2026-10-12T09:30:00Z",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let past = app.versions().pop().unwrap().hash;
+    app.call("archive", json!({ "messages": [&id] })).unwrap();
+    app.settle();
+
+    let read = app
+        .call("read", json!({ "version": past.to_string() }))
+        .unwrap()
+        .unwrap();
+    let content = &read["content"];
+    assert_eq!(
+        content["messages"][0]["subject"], "Marker kumquat parade",
+        "{read}"
+    );
+    assert_eq!(content["messages"][0]["folder"], "inbox", "{read}");
+
+    // The past view is the app's own mailbox, read-only, holding the
+    // message as it was, though a past version reads no accounts.
+    let shown = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("Marker kumquat parade")),
+        "{shown:?}"
+    );
+}

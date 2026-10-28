@@ -14,40 +14,26 @@ fn scope(schema: Option<&'static HistoryRestoreSchema>) -> HistoryScopeDefinitio
 
 #[test]
 fn a_type_is_classified_by_the_declarations_it_made_not_by_its_app() {
-    let text = TextRendering::from_declaration(true, true);
-    let structured = TextRendering::from_declaration(true, false);
-    let none = TextRendering::from_declaration(false, false);
-    assert_eq!(text, TextRendering::Text);
-    assert_eq!(structured, TextRendering::Structured);
-    assert_eq!(none, TextRendering::None);
-
-    // A type with a restore schema restores content and, when it renders
-    // text, diffs as text.
+    // A type with a restore schema restores content.
     let content = HistoricalSupport::of(
         &scope(Some(&crate::state::owned_restore_tests::SCHEMA)),
-        text,
+        true,
     );
-    assert_eq!(content, HistoricalSupport::Content { text });
+    assert_eq!(content, HistoricalSupport::Content);
     assert!(content.restorable());
     assert!(content.declares_schema());
-    assert!(content.diffs_as_text());
 
-    // A type with no schema but a read adapter is metadata only: its
-    // versions restore exact bytes, and nothing is diffed as text unless it
-    // declared a text rendering.
-    let binary = HistoricalSupport::of(&scope(None), structured);
-    assert_eq!(binary, HistoricalSupport::MetadataOnly { text: structured });
-    assert!(binary.restorable(), "exact bytes can be brought back");
-    assert!(!binary.declares_schema());
-    assert!(!binary.diffs_as_text(), "a binary file has no text diff");
-    let rich = HistoricalSupport::of(&scope(None), text);
-    assert!(rich.diffs_as_text(), "a declared text rendering is diffed");
+    // A type with no schema but a read adapter reads its versions through
+    // that adapter and restores them byte for byte.
+    let read = HistoricalSupport::of(&scope(None), true);
+    assert_eq!(read, HistoricalSupport::MetadataOnly);
+    assert!(read.restorable(), "exact bytes can be brought back");
+    assert!(!read.declares_schema());
 
     // A type that declares neither is unsupported, never promised.
-    let unreadable = HistoricalSupport::of(&scope(None), none);
-    assert_eq!(unreadable, HistoricalSupport::Unsupported { text: none });
+    let unreadable = HistoricalSupport::of(&scope(None), false);
+    assert_eq!(unreadable, HistoricalSupport::Unsupported);
     assert!(!unreadable.restorable());
-    assert!(!unreadable.diffs_as_text());
 }
 
 #[test]
@@ -85,44 +71,13 @@ fn the_three_gaps_are_distinct_and_say_their_own_reason() {
 }
 
 #[test]
-fn a_binary_version_names_the_exact_bytes_it_holds() {
-    let data = b"not text at all\x00\x01".to_vec();
-    let hash = *blake3::hash(&data).as_bytes();
-    let version = BinaryVersion {
-        hash: &hash,
-        len: u64::try_from(data.len()).unwrap(),
-    };
-    let address = version.address();
-    // The address is the hash and the exact length of those bytes.
-    assert_eq!(
-        address,
-        format!(
-            "blake3:{}:{}",
-            blake3::Hash::from_bytes(hash).to_hex(),
-            data.len()
-        )
-    );
-    // The address is the bytes themselves: fetching it returns the exact
-    // content the version holds, which is what a restore takes back.
-    let hex = address
-        .strip_prefix("blake3:")
-        .and_then(|rest| rest.split_once(':'))
-        .expect("a content address names its hash and length");
-    assert_eq!(
-        blake3::Hash::from_hex(hex.0).unwrap(),
-        blake3::Hash::from_bytes(hash)
-    );
-    assert_eq!(hex.1, data.len().to_string());
-}
-
-#[test]
 fn a_registered_schema_is_checked_before_a_record_exists() {
     assert!(TypeHistory::check_schema(&crate::state::owned_restore_tests::SCHEMA).is_ok());
     let history = TypeHistory::of(
         "test.board",
         1,
         &scope(Some(&crate::state::owned_restore_tests::SCHEMA)),
-        TextRendering::Text,
+        true,
     );
     assert_eq!(history.kind, "test.board");
     assert_eq!(history.version, 1);

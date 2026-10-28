@@ -294,3 +294,45 @@ fn a_viewer_inspects_editor_without_gaining_note_mutation_rights() {
         before
     );
 }
+
+/// A past version reads through the `read` door and draws in the app's own
+/// view with the note as it stood then.
+#[test]
+fn a_past_version_reads_and_shows_its_note() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    let created = app
+        .call(
+            "create-page",
+            json!({ "title": "Kumquat plans", "markdown": "Marker kumquat parade" }),
+        )
+        .unwrap()
+        .unwrap();
+    let note = created["resource"].as_str().expect("the note").to_owned();
+    app.settle();
+    let past = app.versions().pop().unwrap().hash;
+    app.call_on(&note, "rename", json!({ "title": "Later title" }))
+        .unwrap();
+    app.settle();
+
+    let then = read(
+        &mut app,
+        json!({ "version": past.to_string(), "item": note }),
+    );
+    let content = &then["content"];
+    assert_eq!(content["title"], "Kumquat plans", "{then}");
+    assert!(
+        content["markdown"]
+            .as_str()
+            .is_some_and(|markdown| markdown.contains("Marker kumquat parade")),
+        "{then}"
+    );
+
+    let texts = app.past_version(&[past]).unwrap().texts();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Marker kumquat parade")),
+        "{texts:?}"
+    );
+}

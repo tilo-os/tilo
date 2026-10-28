@@ -82,7 +82,7 @@ class Fixture:
             env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"
             env["TILO_RELAY_CORRELATED_DIAGNOSTICS"] = "1"
             env["RUST_LOG"] += (",tilo_relay::peer=info,tilo_relay::rooms=debug,tilo_relay::native_publication=debug"
-                                ",shell::network::actor=debug"
+                                ",tilo_network_actor=debug"
                                 ",shell::shell::network::native_ingress=debug")
         if self.pipewire is not None:
             env["GST_PLUGIN_PATH"] = str(self.pipewire / "usr/lib64/gstreamer-1.0")
