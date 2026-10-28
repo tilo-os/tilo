@@ -65,7 +65,7 @@ fn photo_from(
         return None;
     }
     let (key, photo) = source.public_photo()?;
-    let canonical: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    let canonical = hex::encode(key);
     (identity == canonical).then_some(photo)
 }
 
