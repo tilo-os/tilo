@@ -748,6 +748,11 @@ fi
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi
+# A seed disk to start from (disk-image.sh --seed-raw): a build host that writes disk after
+# disk keeps the composefs objects the images share instead of installing every one again.
+if [ -n "${TILO_DISK_SEED_RAW:-}" ]; then
+  disk_args+=(--seed-raw "$TILO_DISK_SEED_RAW")
+fi
 # Release gate only: the /etc half of os/dev/validation-access.sh, written into
 # this disk copy; `vm.sh boot` attaches the signed extension it trusts
 # (TILO_VM_VALIDATION_SYSEXT).

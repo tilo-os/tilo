@@ -210,14 +210,17 @@ cmd_disk() {
   base=$(base_disk)
   image=$(host_image)
   note "installing $digest onto a disk in a VM booted from main's dev disk ($(basename "$base"))"
-  builder_job disk <<<"set -e; rm -rf $disks.part $scratch/work/$key
-    mkdir -p $disks.part $scratch/work/$key
-    podman run --rm --name bvm-disk-$key --label $label=disk --label $label.tree=$key \
+  # The worker's work disk is the builder's, not the worktree's: it keeps the layers of the
+  # last image installed, which the next worktree's image mostly shares. One disk step uses
+  # it at a time; another waits for the lock.
+  builder_job disk <<<"set -e; rm -rf $disks.part
+    mkdir -p $disks.part $scratch/worker
+    flock $scratch/worker/lock podman run --rm --name bvm-disk-$key --label $label=disk --label $label.tree=$key \
       --device /dev/kvm -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
-      -v $base:/base:ro -v $disks.part:/out -v $scratch/work/$key:/work \
+      -v $base:/base:ro -v $disks.part:/out -v $scratch/worker:/work \
       -v $(image_dir "${digest#sha256:}"):/layout:ro -v $bin:/usr/local/bin/tilo-vm:ro \
       -v $src:/src:ro $image bash /src/tools/ci/builder-vm-guest.sh disk
-    rm -rf $disks $scratch/work/$key; mv $disks.part $disks"
+    rm -rf $disks; mv $disks.part $disks"
   note "dev disk of $digest in $(( $(stamp) - t0 )) s"
 }
 
