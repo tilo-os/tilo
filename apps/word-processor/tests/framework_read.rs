@@ -199,9 +199,27 @@ fn an_edit_answers_with_the_blocks_it_changed() {
     );
 }
 
-/// `text` with the id of each block and cell taken out, so a test can state
-/// the layout it expects without the generated ids.
+/// `text` with every block id taken out, so a test can state the layout it
+/// expects without the generated ids: the `^id` an edit answers with, and
+/// the `{#id}` a document answers with.
 fn without_ids(text: &str) -> String {
+    let marked = without_marked_ids(text);
+    let mut out = String::new();
+    let mut rest = marked.as_str();
+    while let Some((before, tag)) = rest.split_once("{#") {
+        out.push_str(before);
+        let (_, after) = tag.split_once('}').expect("a closed tag");
+        rest = after;
+    }
+    out.push_str(rest);
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` with the `^id` of each block and cell taken out.
+fn without_marked_ids(text: &str) -> String {
     text.lines()
         .map(|line| {
             let mut out = String::new();
@@ -283,6 +301,45 @@ fn table_of(markdown: &str, first: &str) -> String {
         .to_owned()
 }
 
+/// The body's blocks as they are stored, in page order: what a read of the
+/// document is a projection of, read here without the projection's help.
+fn stored(app: &TestApp<WordProcessorApp>) -> Vec<(String, String)> {
+    blocks(app)
+        .into_iter()
+        .map(|(kind, text, _)| (kind, text))
+        .collect()
+}
+
+/// The page `blocks` are, as a read writes it: a Markdown table for each
+/// table's run of cells.
+fn page_of(blocks: &[(String, String)]) -> String {
+    let mut out = String::new();
+    let mut index = 0;
+    while let Some((kind, text)) = blocks.get(index) {
+        index += 1;
+        if kind != "cell" {
+            out.push_str(text);
+            out.push('\n');
+            continue;
+        }
+        let mut run: Vec<&str> = vec![text];
+        while let Some((next_kind, next)) = blocks.get(index) {
+            if next_kind != "cell" {
+                break;
+            }
+            run.push(next);
+            index += 1;
+        }
+        let row: Vec<&str> = run;
+        out.push('|');
+        for cell in &row {
+            out.push_str(&format!(" {cell} |"));
+        }
+        out.push('\n');
+    }
+    without_marked_ids(&out)
+}
+
 /// The page the document's read answers, as its Markdown.
 fn read_page(app: &mut TestApp<WordProcessorApp>) -> String {
     app.settle();
@@ -309,6 +366,12 @@ fn a_heading_list_and_table_read_back_with_the_handles_that_edit_them() {
 
     let markdown = read_page(&mut app);
     assert_eq!(without_ids(&markdown), layout, "{markdown}");
+    // The page says what the document holds, block for block.
+    assert_eq!(
+        without_marked_ids(&markdown),
+        page_of(&stored(&app)),
+        "{markdown}"
+    );
 
     // A cell is selected and filled by the id the read tags it with.
     let ravi = rows_of(&markdown, &table_of(&markdown, "Person"))[2].clone();
