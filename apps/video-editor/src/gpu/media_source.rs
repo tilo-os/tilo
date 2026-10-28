@@ -59,6 +59,9 @@ pub enum Fetch {
 struct LastGood {
     pts_ms: u64,
     texture: SourceTexture,
+    /// The decoded picture the texture was painted from, kept in system
+    /// memory so a colour can be read out of exactly what the canvas shows.
+    frame: Arc<Frame>,
 }
 
 /// A [`FrameSource`] backed by the shared media engine.
@@ -295,14 +298,20 @@ impl MediaFrameSource {
     /// Whether the last composite this source served actually resolved a
     /// decoded picture, rather than leaving every layer to its representative
     /// fill.
-    ///
-    /// This exists because "the preview has a real frame" must be answered by
-    /// the renderer that *draws the canvas*. It used to be answered by the
-    /// legacy `PreviewDecoder`, which the compositor replaced — so the
-    /// screenshot path waited on a decoder that no longer fed the picture and
-    /// captured the representative fill while believing it had the footage.
     pub fn served_real_picture(&self) -> bool {
         self.served_real
+    }
+
+    /// Whether a decoded picture of `media` is on the canvas, so a colour can
+    /// be sampled from it.
+    pub fn has_picture(&self, media: MediaId) -> bool {
+        self.last.contains_key(&media)
+    }
+
+    /// The colour of the picture last painted for `media` at normalised
+    /// coordinates `(u, v)`, or `None` when no decoded picture was painted.
+    pub fn pixel(&self, media: MediaId, u: f64, v: f64) -> Option<[f64; 3]> {
+        sample(&self.last.get(&media)?.frame, u, v)
     }
 
     /// How many of the project's media this source can decode.
@@ -339,7 +348,7 @@ impl MediaFrameSource {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         media: MediaId,
-        frame: &Frame,
+        frame: &Arc<Frame>,
     ) -> Option<SourceTexture> {
         let slot = self.slot;
         let painted = match &frame.payload {
@@ -389,10 +398,26 @@ impl MediaFrameSource {
             LastGood {
                 pts_ms: frame.pts_ms,
                 texture: painted.clone(),
+                frame: Arc::clone(frame),
             },
         );
         Some(painted)
     }
+}
+
+/// The colour of `frame` at normalised coordinates `(across, down)`.
+fn sample(frame: &Frame, across: f64, down: f64) -> Option<[f64; 3]> {
+    if frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let rgba = frame.to_rgba()?;
+    let column = ((across.clamp(0.0, 1.0) * f64::from(frame.width)) as u32).min(frame.width - 1);
+    let row = ((down.clamp(0.0, 1.0) * f64::from(frame.height)) as u32).min(frame.height - 1);
+    let at = ((row * frame.width + column) * 4) as usize;
+    let &[red, green, blue] = rgba.get(at..at + 3)? else {
+        return None;
+    };
+    Some([red, green, blue].map(|channel| f64::from(channel) / 255.0))
 }
 
 impl MediaFrameSource {
@@ -574,7 +599,7 @@ impl FrameSource for MediaFrameSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediaFrameSource, source_ms};
+    use super::{MediaFrameSource, sample, source_ms};
     use crate::model::{MediaItem, MediaKind, Project};
 
     #[test]
@@ -624,5 +649,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_sample_reads_the_pixel_under_the_coordinates() {
+        // Left half red, right half blue, two rows.
+        let mut rgba = Vec::new();
+        for _ in 0..2 {
+            rgba.extend_from_slice(&[255, 0, 0, 255, 255, 0, 0, 255]);
+            rgba.extend_from_slice(&[0, 0, 255, 255, 0, 0, 255, 255]);
+        }
+        let frame = media::Frame {
+            width: 4,
+            height: 2,
+            pts_ms: 0,
+            payload: media::FramePayload::Rgba(std::sync::Arc::new(rgba)),
+        };
+        assert_eq!(sample(&frame, 0.1, 0.5), Some([1.0, 0.0, 0.0]));
+        assert_eq!(sample(&frame, 1.0, 1.0), Some([0.0, 0.0, 1.0]));
     }
 }

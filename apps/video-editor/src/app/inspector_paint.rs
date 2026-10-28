@@ -1152,7 +1152,7 @@ impl VideoEditorApp {
             // Sampling needs a picture to sample: with no decoded frame the
             // button says so rather than quietly handing back a colour the
             // footage never had.
-            let have = self.preview_pixel(0.5, 0.5).is_some();
+            let have = self.has_preview_pixel();
             draw_button_enabled(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,

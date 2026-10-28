@@ -49,7 +49,6 @@ use crate::model::{
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 #[cfg(any(feature = "decode", test))]
-use crate::preview;
 #[cfg(test)]
 use crate::preview::CompositedFrame;
 use crate::probe;
@@ -1049,10 +1048,6 @@ pub struct VideoEditorApp {
     /// answer, so a control drawn from it can never offer an undo that
     /// Ctrl+Z would decline.
     undo: ui::UndoAccess,
-    /// Real preview decoder. Only driven under `--features decode`, where it
-    /// decodes the true frame of the clip under the playhead through `GStreamer`.
-    #[cfg(feature = "decode")]
-    preview_decoder: preview::PreviewDecoder,
     /// The preview's frame source, held for the app's lifetime.
     ///
     /// It owns the decode sessions and one YUV converter per layer slot, so
@@ -1460,8 +1455,6 @@ impl VideoEditorApp {
             import_notice: ui::widget::toast::Transient::new(),
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
-            #[cfg(feature = "decode")]
-            preview_decoder: preview::PreviewDecoder::new(),
             frame_source: None,
             frame_source_sig: 0,
             prune_countdown: 0,
@@ -1552,15 +1545,8 @@ impl VideoEditorApp {
     /// until this is true, so an asynchronously-prerolled frame is captured
     /// instead of a stand-in.
     ///
-    /// This must be answered by whatever actually *paints* the canvas. It used
-    /// to read `preview_decoder`, which the GPU compositor replaced: the
-    /// screenshot path then waited on a decoder that no longer fed the picture,
-    /// saw a frame in it, and captured the representative fill believing it had
-    /// the footage. Measured on the demo clip, the captured preview's
-    /// horizontal detail fell from 11.42 to 0.56 — a flat gradient — while
-    /// every test stayed green, because no test compared the *canvas* against
-    /// the source. The compositor's frame source now reports whether it put a
-    /// decoded picture on any layer, and that is the answer.
+    /// Answered by the compositor's frame source, which is what paints the
+    /// canvas.
     pub fn has_preview_frame(&self) -> bool {
         self.frame_source
             .as_ref()
@@ -1607,9 +1593,9 @@ impl VideoEditorApp {
         (src, frame)
     }
 
-    /// The colour of the decoded preview frame at normalised source
-    /// coordinates `(u, v)`, or `None` when there is no decoded picture to
-    /// read one out of.
+    /// The colour of the decoded picture the preview shows for the clip
+    /// under the playhead, at normalised source coordinates `(u, v)`, or
+    /// `None` when the canvas is not showing a decoded picture of it.
     ///
     /// `None` is the honest answer on a build with no decoder, on an
     /// un-hydrated reference, and before the pipeline has prerolled — in
@@ -1620,35 +1606,29 @@ impl VideoEditorApp {
     pub fn preview_pixel(&self, normalized_x: f64, normalized_y: f64) -> Option<[f64; 3]> {
         #[cfg(feature = "decode")]
         {
-            let frame = self.preview_decoder.frame()?;
-            // The sample must belong to the clip under the playhead, not to
-            // whatever the decoder last held for a different one.
-            let want = self.project.top_video_clip_at(self.playhead)?.media;
-            if self.preview_decoder.frame_media() != Some(want) {
-                return None;
-            }
-            if frame.width == 0 || frame.height == 0 {
-                return None;
-            }
-            let pixel_x = ((normalized_x.clamp(0.0, 1.0) * f64::from(frame.width)) as u32)
-                .min(frame.width - 1);
-            let pixel_y = ((normalized_y.clamp(0.0, 1.0) * f64::from(frame.height)) as u32)
-                .min(frame.height - 1);
-            let byte_index = ((pixel_y * frame.width + pixel_x) * 4) as usize;
-            let [red, green, blue] = frame.rgba.get(byte_index..byte_index + 3)? else {
-                return None;
-            };
-            Some([
-                f64::from(*red) / 255.0,
-                f64::from(*green) / 255.0,
-                f64::from(*blue) / 255.0,
-            ])
+            let media = self.project.top_video_clip_at(self.playhead)?.media;
+            self.frame_source
+                .as_ref()?
+                .pixel(media, normalized_x, normalized_y)
         }
         #[cfg(not(feature = "decode"))]
         {
             let _ = (normalized_x, normalized_y);
             None
         }
+    }
+
+    /// Whether [`Self::preview_pixel`] has a decoded picture to sample.
+    pub fn has_preview_pixel(&self) -> bool {
+        #[cfg(feature = "decode")]
+        {
+            self.project
+                .top_video_clip_at(self.playhead)
+                .zip(self.frame_source.as_ref())
+                .is_some_and(|(clip, source)| source.has_picture(clip.media))
+        }
+        #[cfg(not(feature = "decode"))]
+        false
     }
 
     /// Resolve the bin's docked-vs-overlay layout purely from the allocated
@@ -5488,24 +5468,6 @@ impl VideoEditorApp {
         Some(Rect::new(cx - w / 2.0, cy, cx + w / 2.0, cy + h))
     }
 
-    /// Pump the real preview decoder for the clip under the playhead. No-op
-    /// build carries no decoder; the decode build seeks + decodes the frame.
-    #[cfg(feature = "decode")]
-    fn pump_preview_decode(&mut self) {
-        // The demo project a capture shows references placeholder
-        // sample-media, not real bytes, so decoding it would spin a real
-        // GStreamer pipeline for no usable frame and make a headless render
-        // depend on the gst runtime. Keep its preview on the deterministic
-        // representative composite. `decode` stays compiled in: the live app
-        // and a capture launched on a real file still decode. This is the
-        // runtime half of "features compile the code in; the run mode
-        // decides live vs sample".
-        if self.seed.hermetic {
-            return;
-        }
-        self.preview_decoder.update(&self.project, self.playhead);
-    }
-
     /// Composite the preview picture for the current playhead, into
     /// `self.composited`.
     ///
@@ -6207,8 +6169,6 @@ impl VideoEditorApp {
         }
         self.advance_flap_with_motion(theme.reduce_motion);
         self.poll_export();
-        #[cfg(feature = "decode")]
-        self.pump_preview_decode();
 
         self.place_timeline_split();
         let mut regions = self.regions();
@@ -6430,10 +6390,6 @@ impl Widget for VideoEditorApp {
         // from. After the scenario, so a staged capture's levels survive into
         // the frame that captures them.
         self.pump_mix_meter();
-        // Keep the real preview decoder tracking the clip under the playhead so
-        // the `--shots` warm-up (which pumps `sync`) captures a decoded frame.
-        #[cfg(feature = "decode")]
-        self.pump_preview_decode();
         self.publish_notices();
     }
 
