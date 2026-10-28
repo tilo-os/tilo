@@ -45,7 +45,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, Launchpad
 use tilo_desktop::overview::{OverviewHost, room_cards};
 use tilo_desktop::overview_panel::{OverviewPanel, OverviewPick};
 use tilo_desktop::profile_card::{
-    ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
+    LazyProfileCard, ProfileAction, ProfileChoice, ProfileGroup, ProfileModel,
 };
 use tilo_desktop::shortcuts::{page_chord, page_shortcut_action};
 use tilo_desktop::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
@@ -575,7 +575,7 @@ pub(crate) struct BrowserShell {
     offers: HostOffers,
     requests: HostRequests,
     workspace_menu: WorkspaceMenu,
-    profile: ProfileCard,
+    profile: LazyProfileCard,
     /// Whose card the profile card shows, by roster id; `None` for the
     /// person's own.
     profile_of: Option<String>,
@@ -751,7 +751,7 @@ impl BrowserShell {
             offers,
             requests,
             workspace_menu: WorkspaceMenu::new(),
-            profile: ProfileCard::new(),
+            profile: LazyProfileCard::new(),
             profile_of: None,
             people: CollaboratorsOverlay::default(),
             people_open: false,
