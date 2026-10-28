@@ -248,6 +248,25 @@ The same chain runs against a local t server without any credential: give the se
 micro-VM steps, then `t dispatch publish-release-rehearsal --ref stable`. Signing then uses a
 throwaway key and publishing an OCI layout in the step.
 
+## Without t
+
+`tools/ci/run-checks.py` runs t.toml's checks on one machine with python3, git and a local
+podman: the named checks and everything they need, each in its image with its setup, env and
+`isolation`, in dependency order, with one shared `/target`; a check that passed with the same
+key is kept. It runs a committed checkout (its `HEAD`), so a builder runs a publishing chain in
+one command, for example main's dev image up to its gate and the model runtimes' uploads:
+
+```sh
+python3 tools/ci/run-checks.py --target /srv/scratch/target --ref main --jobs 10 \
+  os-dev-gate-x86_64 publish-model-runtime-vllm-cuda-x86_64 --secret TILO_PACKAGES_TOKEN
+```
+
+Secrets come from its environment, named with `--secret`. Of the identity tokens only
+registry.tilo.so's has a stand-in: `REGISTRY_TOKEN`, a Forgejo token that may push to this
+repository, which the registry takes from its owner (lib.sh `registry_login`). Signing needs
+t's identity token, so a check that signs runs on t; where its outputs were made another way,
+`--given CHECK` takes it as passed.
+
 ## Mirrored images
 
 The images the publishing checks run in (buildah, skopeo) and the bases t's own web interface
