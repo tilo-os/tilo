@@ -85,8 +85,9 @@ action react(m: Message, emoji: Emoji, on: Bool = not m.reactions[emoji].contain
 /// Starts a thread from a message.
 action start_thread(m: Message, name: Text = m.body.excerpt) -> Thread (icon: .messages_square) {
     require m.thread == .none else "This message already has a thread"
-    m.thread = .some(Thread(name: name))
-    m.thread!
+    let t = Thread(name: name)
+    m.thread = .some(t)
+    t
 }
 
 /// Pins or unpins a message.
@@ -96,7 +97,7 @@ action pin(m: Message, pinned: Bool = not m.pinned) (icon: .pin, on: m.pinned) {
 
 /// Joins a voice channel: the system's call, with this channel as its place.
 action join(v: VoiceChannel) uses call (icon: .phone) {
-    require v.limit == .none or call.participants(v).count < v.limit! else "{v.name} is full"
+    if let max = v.limit { require call.participants(v).count < max else "{v.name} is full" }
     call.join(v)
 }
 
@@ -149,8 +150,8 @@ view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens
             on paste(files), drop(files): std.attach(draft, files)
             key up when draft.is_empty: edit_last(in)
             key escape when replying != .none: replying = .none
-            key enter: send(in, body: draft, reply_to: replying)
-                then { draft = .empty; replying = .none }
+            key enter: send(in, body: draft, reply_to: replying),
+                then: { draft = .empty; replying = .none }
         }
     }
 }
