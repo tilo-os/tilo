@@ -991,9 +991,8 @@ impl App {
         }
     }
 
-    /// The window's root widget, for a test that drives a live window and
-    /// looks at what it mounted.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The window's root widget: what a host or a test drives the window
+    /// through when it looks at what the app mounted.
     pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
