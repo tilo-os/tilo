@@ -4,16 +4,14 @@
 # test, so the plan always follows that tree's rules rather than those of an
 # older commit's workflow file.
 #
-# The base is the last commit main promoted to `stable`, not the parent of the
-# push: main is allowed to be unstable, so a batch of commits is planned and
-# tested as one change against the last state that was known good. A push that
-# supersedes an in-flight run cancels it, and its commits stay covered by the
-# newer run's diff.
+# The base of a push is the main commit it was pushed onto (the event's
+# `before`), so the plan covers exactly the commits that push added; every push
+# gets its own run.
 #
 # Environment (from the workflow):
 #   EVENT_NAME          github.event_name
 #   PULL_REQUEST_BASE   the main commit a dispatch was merged onto
-#   STABLE_REF          the promotion ref to diff against (origin/stable)
+#   PUSH_BEFORE         the main commit the push landed on (github.event.before)
 #   HEAD_SHA, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY
 set -euo pipefail
 
@@ -25,22 +23,17 @@ if [ "$EVENT_NAME" = workflow_dispatch ]; then
   # native architectures instead of silently reducing the run to one diff.
   selection_args+=(--full)
 elif [ -z "$base" ] || [ "$base" = "null" ]; then
-  # A push to main: compare with the promoted commit. When stable is missing
-  # or is not an ancestor of this commit (history was rewritten, or the ref was
-  # recreated), there is no diff to trust and the plan is the full one.
+  # A push to main: compare with the commit it landed on. When that commit is
+  # unknown or not an ancestor (a new branch, or history was rewritten), there
+  # is no diff to trust and the plan is the full one.
   base=''
-  stable_ref=${STABLE_REF:-origin/stable}
-  if git rev-parse --verify --quiet "$stable_ref^{commit}" >/dev/null; then
-    candidate=$(git rev-parse "$stable_ref^{commit}")
-    if git merge-base --is-ancestor "$candidate" HEAD; then
-      base=$candidate
-    else
-      echo "::notice::$stable_ref is not an ancestor of $HEAD_SHA; planning the full workspace"
-    fi
+  before=${PUSH_BEFORE:-}
+  if [ -n "$before" ] && [ "$before" != "$zero" ] \
+    && git rev-parse --verify --quiet "$before^{commit}" >/dev/null \
+    && git merge-base --is-ancestor "$before" HEAD; then
+    base=$(git rev-parse "$before^{commit}")
   else
-    echo "::notice::no $stable_ref to compare against; planning the full workspace"
-  fi
-  if [ -z "$base" ]; then
+    echo "::notice::no usable push base for $HEAD_SHA; planning the full workspace"
     selection_args+=(--full)
   fi
 fi

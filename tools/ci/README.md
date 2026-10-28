@@ -76,43 +76,22 @@ image. Run them from the checkout on Linux, in the builder image
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap some check commands,
 only label and time a command; leave them out locally.
 
-## Main, `stable` and promotion
+## Main and `stable`
 
 `main` is an unstable integration branch: many agents push to it directly, no
 pull request gates it, and a commit that fails is fixed by a later one rather
-than reverted. What a commit's checks decide is whether `stable` may advance to
-it, and `stable` is the only ref publications build from.
+than reverted. `stable` is the release branch: it is moved by hand when a
+release is cut (it requires signed commits), and it is the only ref
+publications build from.
 
-- `check.yml` runs after every push to `main`. It plans what the push changed
-  **relative to `origin/stable`**, the last commit main promoted, not relative
-  to the push's parent, so commits whose own run was superseded are still
-  covered. A newer push cancels the in-flight run (`cancel-in-progress`), so a
-  burst of merges costs one run.
-- Its `promote` job fast-forwards `stable` to the commit the run tested, and
-  only when the aggregate check passed. `tools/ci/promote_stable.py` refuses a
-  target that is not an ancestor of `main`, and a push that is not a
-  fast-forward; nothing is ever force-pushed.
-- The push authenticates with the `STABLE_PUSH_TOKEN` secret rather than the job
-  token, so branch protection on `stable` can admit exactly one bot and refuse
-  everyone else. Without the secret the promotion job fails and `stable` stays
-  where it is; no other workflow is affected.
+- `check.yml` runs after every push to `main` and plans what that push added,
+  relative to the main commit it was pushed onto (`github.event.before`). Every
+  push gets its own run; none is cancelled by a later push, so every commit is
+  planned exactly once.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the
   artifact builds carry their own nightly schedule.
-- `main-green` named the same idea and nothing reads it any more; `stable` is
-  the single promotion ref.
-
-The first promotion after these workflows are enabled is a full run: `stable`
-trails `main` by weeks, so the plan is the whole workspace. Every later
-promotion plans only what main gained since the previous one.
-
-Promoting by hand is the same push:
-
-```sh
-git fetch origin
-git push origin <verified-main-commit>:refs/heads/stable   # fast-forward only
-```
 
 ## Forks on GitHub Actions or stock Forgejo
 
@@ -144,7 +123,7 @@ run them on a Forgejo instance with stock runners. They need:
   the job token. Image, package and release publication on `stable` need
   registry, signing and release credentials and are not expected to run in a
   fork; moving `stable` needs `STABLE_PUSH_TOKEN` (see
-  [Main, `stable` and promotion](#main-stable-and-promotion)).
+  [Main and `stable`](#main-and-stable)).
 
 Jobs that need more than an unprivileged container:
 
