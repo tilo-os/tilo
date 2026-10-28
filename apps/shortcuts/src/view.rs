@@ -349,14 +349,12 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
 mod window_bar;
 
 /// What [`follow`] last derived the editor from: the open sidebar item, the
-/// open draft, the door, the open picker, whether the save sheet shows, and
-/// whether the draft is read as blocks or as text.
+/// open draft, the door, the open picker and whether the save sheet shows.
 type Followed = (
     Option<String>,
     Option<(Id, Draft)>,
     DoorState,
     Option<String>,
-    bool,
     bool,
 );
 
@@ -433,20 +431,12 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         {
             ui.picker.set(None);
         }
-        // What the page is drawn from, so any change to it rebuilds the page.
-        let current = (
-            selected,
-            draft,
-            door,
-            ui.picker.get(),
-            ui.sheet.get(),
-            ui.as_text.get(),
-        );
+        let current = (selected, draft, door, ui.picker.get(), ui.sheet.get());
         if seen.as_ref() == Some(&current) {
             return;
         }
         seen = Some(current.clone());
-        let (_, draft, door, picker, sheet, _) = current;
+        let (_, draft, door, picker, sheet) = current;
         let catalog = door.catalog();
         let saved = door.library.ready().cloned().unwrap_or_default();
         let problems = draft
@@ -1088,7 +1078,13 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
             if let Ok(mut follow) = follow.try_borrow_mut() {
                 follow();
             }
-            editor.with(EditorInput::structure)
+            // Reading the program as text is a different page, so it is
+            // part of what the pane is keyed on.
+            format!(
+                "{}|{}",
+                editor.with(EditorInput::structure),
+                builder.as_text.get()
+            )
         },
         move || {
             let content = builder.editor.with(|input| build_page(&builder, input));
