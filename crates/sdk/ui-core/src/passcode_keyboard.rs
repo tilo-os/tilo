@@ -11,8 +11,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 
+use crate::icons::Icon;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+
+/// What a key shows: its character, or the icon of what it does.
+enum Face {
+    Text(String),
+    Icon(Icon),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasscodeKey {
@@ -132,16 +139,16 @@ impl PasscodeKeyboard {
         }
     }
 
-    fn label(self, key: PasscodeKey) -> String {
+    fn face(self, key: PasscodeKey) -> Face {
         match key {
-            PasscodeKey::Char(c) if self.shift => c.to_uppercase().collect(),
-            PasscodeKey::Char(c) => c.to_string(),
-            PasscodeKey::Shift => "⇧".into(),
-            PasscodeKey::Symbols if self.symbols => "abc".into(),
-            PasscodeKey::Symbols => "?123".into(),
-            PasscodeKey::Space => String::new(),
-            PasscodeKey::Backspace => "⌫".into(),
-            PasscodeKey::Enter => "↵".into(),
+            PasscodeKey::Char(c) if self.shift => Face::Text(c.to_uppercase().collect()),
+            PasscodeKey::Char(c) => Face::Text(c.to_string()),
+            PasscodeKey::Shift => Face::Icon(Icon::ArrowBigUp),
+            PasscodeKey::Symbols if self.symbols => Face::Text("abc".into()),
+            PasscodeKey::Symbols => Face::Text("?123".into()),
+            PasscodeKey::Space => Face::Text(String::new()),
+            PasscodeKey::Backspace => Face::Icon(Icon::Delete),
+            PasscodeKey::Enter => Face::Icon(Icon::CornerDownLeft),
         }
     }
 
@@ -174,15 +181,26 @@ impl PasscodeKeyboard {
                 &shape,
             );
             scene.stroke(&Stroke::new(1.0), transform, hairline, None, &shape);
-            let label = self.label(key);
-            if label.is_empty() {
-                continue;
-            }
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a key label size is a few dozen pixels"
             )]
             let size = (key_height * 0.45).clamp(12.0, 28.0) as f32;
+            let label = match self.face(key) {
+                Face::Text(label) if label.is_empty() => continue,
+                Face::Text(label) => label,
+                Face::Icon(icon) => {
+                    let side = f64::from(size);
+                    let center = key_rect.center();
+                    icon.draw(
+                        scene,
+                        transform,
+                        Rect::from_center_size(center, (side, side)),
+                        colors.text_primary,
+                    );
+                    continue;
+                }
+            };
             let (w, h) = text.measure(&label, size, None);
             text.draw_text(
                 scene,
