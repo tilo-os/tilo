@@ -19,3 +19,5 @@ tar
 gzip
 zstd
 shadow-utils
+# modprobe, for the fuse and loop modules the build loads first
+kmod
