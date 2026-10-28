@@ -146,7 +146,6 @@ impl RetainedGpuTarget {
             completion_markers: 0,
             #[cfg(test)]
             completion_test: None,
-            #[cfg(test)]
             phase_wait_override: None,
             size: (width, height),
             last_frame_full: false,
@@ -369,16 +368,8 @@ impl RetainedGpuTarget {
     }
 
     /// A Linux allowance: `nominal` outside correctness fixtures.
-    #[allow(
-        clippy::unused_self,
-        reason = "correctness fixtures replace the allowance on this actual target instance"
-    )]
     fn linux_allowance(&self, nominal: Duration) -> Duration {
-        #[cfg(test)]
-        if let Some(wait) = self.phase_wait_override {
-            return wait;
-        }
-        nominal
+        self.phase_wait_override.unwrap_or(nominal)
     }
 
     /// The Linux policy for a frame starting now: its per-phase allowances share one

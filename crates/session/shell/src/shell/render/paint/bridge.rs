@@ -766,7 +766,15 @@ impl VelloDrmBridge {
     /// what is rendered, not how fast, opt in here; device loss still fails immediately.
     #[cfg(test)]
     pub(crate) fn wait_for_gpu_completion_for_test(&mut self) {
-        self.target.phase_wait_override = Some(tilo_test_env::hang_bound());
+        self.wait_for_gpu_completion_within(tilo_test_env::hang_bound());
+    }
+
+    /// [`wait_for_gpu_completion_for_test`](Self::wait_for_gpu_completion_for_test) with the
+    /// backstop given, for fixtures outside this crate's tests (the redraw benchmark's pixel
+    /// oracle). Never set on a presenting bridge: its frames keep the production allowance.
+    #[doc(hidden)]
+    pub fn wait_for_gpu_completion_within(&mut self, backstop: Duration) {
+        self.target.phase_wait_override = Some(backstop);
     }
 
     /// Compile the renderer's full and sparse pipelines outside any frame deadline, then start
