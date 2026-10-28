@@ -617,7 +617,6 @@ mod tests {
             &governor,
             std::slice::from_ref(&governor),
             "Garden",
-            1,
         )
         .unwrap();
         governed_owner
