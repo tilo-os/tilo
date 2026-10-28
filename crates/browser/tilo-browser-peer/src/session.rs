@@ -2781,6 +2781,28 @@ impl Task {
 
     /// One retained message from the host: channel governance, a member's
     /// certificate, or a document.
+    /// A room's topology, for whether it shares its members' layout.
+    fn hear_layout(&mut self, room: String, changes: &[Vec<u8>]) {
+        let personal = self.room_layouts.hear(&room, changes).is_personal();
+        let members = self.room_layouts.members(&room);
+        if self.status().room_members.get(&room) != members.as_ref() {
+            self.update(|status| match members {
+                Some(members) => _ = status.room_members.insert(room.clone(), members),
+                None => _ = status.room_members.remove(&room),
+            });
+        }
+        if self.status().personal_rooms.contains(&room) != personal {
+            self.update(|status| {
+                if personal {
+                    status.personal_rooms.insert(room.clone());
+                } else {
+                    status.personal_rooms.remove(&room);
+                }
+            });
+            self.emit(&PeerEvent::RoomLayout { room, personal });
+        }
+    }
+
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
         let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
@@ -2808,30 +2830,8 @@ impl Task {
                 let changes = self.channels.steward_ack(&room, *ack);
                 self.absorb(changes);
             }
-            // The room's topology, for whether it shares its members' layout.
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
-                let personal = self.room_layouts.hear(&room, &changes).is_personal();
-                let members = self.room_layouts.members(&room);
-                if self.status().room_members.get(&room) != members.as_ref() {
-                    self.update(|status| match members {
-                        Some(members) => {
-                            status.room_members.insert(room.clone(), members);
-                        }
-                        None => {
-                            status.room_members.remove(&room);
-                        }
-                    });
-                }
-                if self.status().personal_rooms.contains(&room) != personal {
-                    self.update(|status| {
-                        if personal {
-                            status.personal_rooms.insert(room.clone());
-                        } else {
-                            status.personal_rooms.remove(&room);
-                        }
-                    });
-                    self.emit(&PeerEvent::RoomLayout { room, personal });
-                }
+                self.hear_layout(room, &changes);
             }
             Ok(neighbour_wire::NeighbourMsg::AppDocument {
                 app_id,

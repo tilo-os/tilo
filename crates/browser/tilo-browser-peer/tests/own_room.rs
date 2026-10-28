@@ -12,6 +12,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::too_many_lines,
+    clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -55,19 +56,17 @@ async fn voice<T>(page: &PeerHandle, mut pick: impl FnMut(VoiceEvent) -> Option<
 async fn document(page: &PeerHandle, pages: &[&PeerHandle]) -> DocumentMutation {
     let mut events = Vec::new();
     let wait = std::time::Duration::from_secs(90);
-    match tokio::time::timeout(wait, next_document(page, &mut events)).await {
-        Ok(document) => document,
-        Err(_) => {
-            let states: Vec<String> = pages
-                .iter()
-                .map(|page| {
-                    let status = page.status();
-                    format!("{}\nfailures: {:?}", status.channels, status.failures)
-                })
-                .collect();
-            panic!("no document arrived; channels:\n{}", states.join("\n---\n"));
-        }
+    if let Ok(document) = tokio::time::timeout(wait, next_document(page, &mut events)).await {
+        return document;
     }
+    let states: Vec<String> = pages
+        .iter()
+        .map(|page| {
+            let status = page.status();
+            format!("{}\nfailures: {:?}", status.channels, status.failures)
+        })
+        .collect();
+    panic!("no document arrived; channels:\n{}", states.join("\n---\n"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

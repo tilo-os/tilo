@@ -572,7 +572,7 @@ impl Channels {
     }
 
     /// A member's acknowledgement of a channel this page stewards.
-    pub(crate) fn steward_ack(&mut self, room: &str, ack: MlsGovernanceAckV1) -> Changes {
+    pub(crate) fn steward_ack(&self, room: &str, ack: MlsGovernanceAckV1) -> Changes {
         let mut changes = Changes::default();
         if self.stewards(room, ack.channel) {
             changes.steward.push(StewardChange::Ack {
