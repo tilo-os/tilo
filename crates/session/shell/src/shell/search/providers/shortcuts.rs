@@ -427,7 +427,10 @@ mod tests {
         plain.inputs.clear();
         plain.output = None;
         workspace.set_owner(owner);
-        workspace.shortcuts = vec![on_file, plain];
+        workspace.shortcuts = [on_file, plain]
+            .iter()
+            .map(tilo_automation::SavedShortcut::encode)
+            .collect();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
         tree.desktop.active = WorkspaceId(1);

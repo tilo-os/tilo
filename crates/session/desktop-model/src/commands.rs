@@ -762,22 +762,24 @@ fn apply_shortcut_command(
 ) -> Result<(), String> {
     match command {
         DesktopCommand::SaveShortcut { shortcut_json } => {
-            let shortcut = decode_shortcut(shortcut_json)?;
+            // Kept encoded: the program is decoded where it runs or is
+            // edited, so applying the command reads only its id.
+            let shortcut = tilo_automation::SavedShortcut::parse(shortcut_json)?;
             match workspace
                 .shortcuts
                 .iter_mut()
-                .find(|saved| saved.id == shortcut.id)
+                .find(|saved| saved.id() == shortcut.id())
             {
                 Some(saved) => *saved = shortcut,
                 None => workspace.shortcuts.push(shortcut),
             }
             workspace
                 .shortcuts
-                .compact_sort_by(|left, right| left.id.cmp(&right.id));
+                .compact_sort_by(|left, right| left.id().cmp(right.id()));
         }
         DesktopCommand::DeleteShortcut { id } => {
             let before = workspace.shortcuts.len();
-            workspace.shortcuts.retain(|shortcut| shortcut.id != *id);
+            workspace.shortcuts.retain(|shortcut| shortcut.id() != id);
             if workspace.shortcuts.len() == before {
                 return Err(format!("there is no shortcut `{id}`"));
             }

@@ -203,7 +203,7 @@ impl Clock for ManualClock {
 #[derive(Clone, Debug)]
 pub struct Armed<'a> {
     pub room: String,
-    pub shortcut: &'a Shortcut,
+    pub shortcut: Shortcut,
     pub claims: &'a [ScheduleClaim],
 }
 
@@ -222,6 +222,7 @@ pub fn armed(
             workspace
                 .shortcuts
                 .iter()
+                .filter_map(|saved| saved.decode().ok())
                 .filter(move |shortcut| {
                     !shortcut.triggers.is_empty()
                         && shortcut.saved_by.as_deref() == Some(person.as_str())
@@ -1118,7 +1119,7 @@ fn record_firings(
                     shortcut: &armed.shortcut.id,
                     saver,
                 },
-                shortcut: armed.shortcut,
+                shortcut: &armed.shortcut,
             }],
             Event::Record(event),
         );
@@ -1412,7 +1413,7 @@ mod tests {
         });
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
             claims: &[],
         }];
         let clock = SystemClock;
@@ -1703,7 +1704,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: room.into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
             claims: &[],
         }];
         let clock = SystemClock;
@@ -1936,7 +1937,7 @@ mod tests {
         );
         let armed = [Armed {
             room: "room".into(),
-            shortcut: &saved,
+            shortcut: saved,
             claims: &[],
         }];
         let deadline = tilo_test_env::hang_deadline();
@@ -2144,12 +2145,12 @@ mod tests {
                 .with_id("me-host"),
             )
             .expect("the owner shares a host");
-        workspace.shortcuts = vec![event_shortcut(
+        workspace.shortcuts = vec![tilo_automation::SavedShortcut::encode(&event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
             },
             &[],
-        )];
+        ))];
         let folders = |workspaces: &[Workspace]| {
             let armed = armed(workspaces, |_| "person:me".into());
             watched_folders(workspaces, &armed)
@@ -2248,7 +2249,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: "room".into(),
-            shortcut: saved,
+            shortcut: saved.clone(),
             claims: &[],
         }];
         let devices = PersonalDevices {
@@ -2364,7 +2365,7 @@ mod tests {
     ) -> Vec<Firing> {
         let armed = [Armed {
             room: PERSONAL.into(),
-            shortcut: tidy,
+            shortcut: tidy.clone(),
             claims: &[],
         }];
         schedules.observe(
