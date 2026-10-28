@@ -27,11 +27,10 @@
 #                       TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> ./os/dev/build-dev-image.sh
 #   TILO_DEV_BASE_BUILD  0 (default): the base must exist. 1: rebuild it first.
 #                     auto (./os/build.sh --dev --local): rebuild it when it is
-#                     missing or its inputs changed. The inputs are every file of
-#                     the production build context except the dev-image-only
-#                     sources, CI workflows and crates/dev/tilo-vm, hashed from git's
-#                     index and working tree (outside a git checkout, from the
-#                     files themselves), plus the build's input variables; the
+#                     missing or its inputs changed. The inputs are the files the
+#                     base build reads (os/dev/base-input-paths.py), hashed from
+#                     git's index and working tree (outside a git checkout, from
+#                     the files themselves), plus the build's input variables; the
 #                     hash is the base's sh.tilo.base-inputs label. A base without
 #                     that label (built elsewhere) is used as it is. The base is
 #                     built with os/dev/local-inputs.sh, which resolves the RPM
@@ -94,25 +93,30 @@ case "$base_build" in 0|1|auto) ;; *) die "TILO_DEV_BASE_BUILD must be 0, 1 or a
 python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" >/dev/null \
   || { python3 "$TILO_REPO/tools/policy/check_dev_image_contract.py" || true; die "fix the dev image contract first (see above)"; }
 
-# The production build context, minus what cannot change the base image: the
-# sources only os/Containerfile.dev reads, CI workflows, and the host-side tilo-vm.
-_base_spec=(. ':(exclude)os/Containerfile.dev' ':(exclude)os/dev-image'
-  ':(exclude)os/dev/build-dev-image.sh' ':(exclude)crates/dev/tilo-vmd/data'
-  ':(exclude)os/scripts/unseal-rootfs.py' ':(exclude)os/scripts/check-dev-kernel.sh'
-  ':(exclude)os/scripts/finalize-dev-image.py' ':(exclude)crates/dev/tilo-vm'
-  ':(exclude).forgejo' ':(exclude)os/external-assets/cache')
-# Outside a git checkout (a copy of the tree synced to a build host) the same
-# files are hashed from the tree itself: everything but what the build context
-# leaves out (.containerignore's big entries) and the excludes above.
+# What the base build reads (os/dev/base-input-paths.py): os/Containerfile's build-context
+# sources, the workspace its compile builds, and the scripts and pins the build runs. A change
+# anywhere else (docs, the VM acceptance harness, CI scripts, the dev image's own sources)
+# reuses the base.
+mapfile -t _base_paths < <(python3 "$TILO_OS_DIR/dev/base-input-paths.py" --repo "$TILO_REPO")
+[ "${#_base_paths[@]}" -gt 0 ] || die "os/dev/base-input-paths.py named no base inputs"
+_base_spec=() _base_include=() _base_exclude=()
+for _p in "${_base_paths[@]}"; do
+  case "$_p" in
+    '!'*) _base_spec+=(":(exclude)${_p#!}"); _base_exclude+=("./${_p#!}") ;;
+    *) _base_spec+=("$_p"); _base_include+=("./$_p") ;;
+  esac
+done
+# Outside a git checkout (a copy of the tree synced to a build host) the same files are
+# hashed from the tree itself, leaving out what the build context does (.containerignore's
+# big entries).
 _base_prune=(./.git ./target ./os/output ./os/output-host ./os/external-assets/cache
-  ./os/Containerfile.dev ./os/dev-image ./os/dev/build-dev-image.sh ./crates/dev/tilo-vmd/data
-  ./os/scripts/unseal-rootfs.py ./os/scripts/check-dev-kernel.sh
-  ./os/scripts/finalize-dev-image.py ./crates/dev/tilo-vm ./.forgejo)
+  "${_base_exclude[@]}")
 tree_inputs() {
-  local prune=() p
+  local prune=() p present=()
   for p in "${_base_prune[@]}"; do prune+=(-path "$p" -o); done
-  ( cd "$TILO_REPO" && find . \( "${prune[@]}" -false \) -prune -o -type f -print0 |
-      LC_ALL=C sort -z | xargs -0 -r sha256sum )
+  for p in "${_base_include[@]}"; do [ -e "$TILO_REPO/$p" ] && present+=("$p"); done
+  ( cd "$TILO_REPO" && find "${present[@]}" \( "${prune[@]}" -path '*/target' -o -false \) -prune -o -type f -print0 |
+      LC_ALL=C sort -zu | xargs -0 -r sha256sum )
 }
 base_inputs() {
   {
