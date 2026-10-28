@@ -122,10 +122,13 @@ jobs:
             # The workspace pins wasm32; a job that has to download the target
             # mid-run stalls against rust-toolchain.toml's offline shims.
             printf "expect the wasm32 target in the image\n"
-            rustup show
-            rustup target list --installed
-            # The target's compiled std, which is what a build needs; the
-            # rustup listings above say how rustup accounts for it.
+            # The target's compiled std, which is what a build reads. Print the
+            # toolchain that answered too: the image carries the builder's
+            # rustup home, and a second rustup on PATH would report its own.
+            command -v rustup rustc cargo
+            env | grep -E "^(RUSTUP|CARGO)_" || true
+            rustc --print sysroot
+            ls "$(rustc --print sysroot)/lib/rustlib"
             test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown"
             printf "expect the Fedora primary RPM key\n"
             test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name "RPM-GPG-KEY-fedora-*-primary" -print -quit)"'
