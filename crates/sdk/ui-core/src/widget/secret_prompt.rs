@@ -884,6 +884,23 @@ impl SecretPrompt {
             .map(|field| &mut field.input)
     }
 
+    /// Edit the field holding `role` as typing into it does: an on-screen
+    /// keyboard of the host's own types this way. What is typed reaches the
+    /// host's buffer ([`Self::with_secret_buffer`]), clears the error and
+    /// keeps a PIN to its longest. `false` when there is no such field or
+    /// the prompt is busy.
+    pub fn edit_field(&mut self, role: FieldRole, edit: impl FnOnce(&mut TextInput)) -> bool {
+        if self.busy.is_some() {
+            return false;
+        }
+        let Some(field) = self.field_mut(role) else {
+            return false;
+        };
+        edit(field);
+        self.after_edit(true);
+        true
+    }
+
     /// Every field, in order, with what it holds.
     pub fn fields(&self) -> impl Iterator<Item = (FieldRole, &TextInput)> {
         self.fields.iter().map(|field| (field.role, &field.input))

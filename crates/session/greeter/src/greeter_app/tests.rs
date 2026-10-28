@@ -1982,3 +1982,18 @@ fn switching_between_the_pad_and_the_letters_keeps_the_card_in_place() {
     );
     assert_eq!(field_and_keys(&app), placed);
 }
+
+#[test]
+fn keys_from_the_on_screen_keyboard_reach_the_passcode_a_delete_too() {
+    use ui::passcode_keyboard::PasscodeInput;
+    let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
+    shown_keyboard(&mut app);
+    app.touch_keyboard.typed.borrow_mut().extend([
+        PasscodeInput::Text("1".into()),
+        PasscodeInput::Text("2".into()),
+        PasscodeInput::Backspace,
+        PasscodeInput::Text("3".into()),
+    ]);
+    app.take_touch_keys();
+    assert_eq!(*app.password_buffer.lock_recover(), "13");
+}
