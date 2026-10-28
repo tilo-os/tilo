@@ -931,7 +931,13 @@ async fn governor_authors_a_room_record_no_factory_makes() {
             .into_string()
             .unwrap()
     };
-    assert!(read().await.is_none());
+    // A room holds its shared desktop from the start
+    // (`tilo_peer_state::workspace_seed`), with nothing written in it yet.
+    assert!(
+        read()
+            .await
+            .is_none_or(|doc| doc.get(ROOT, "desktop").unwrap().is_none())
+    );
     rooms
         .author_room_record(room, &cert, DESKTOP, |doc| {
             doc.put(ROOT, "desktop", "first").map_err(|e| e.to_string())
