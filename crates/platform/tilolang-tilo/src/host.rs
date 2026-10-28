@@ -189,8 +189,17 @@ pub(crate) fn value_of(
     json: &Json,
     ty: &str,
 ) -> Result<Value, String> {
-    match parse_ty(ty, &meta.app)? {
-        Ty::Record(key) => {
+    value_of_ty(host, meta, json, &parse_ty(ty, &meta.app)?)
+}
+
+/// The value of the type `ty` an argument given as `json` stands for, as the door publishes the
+/// parameter ([`crate::surface::published_param`]): a record by the catalogue's reference to it
+/// (or its resource id), a plain enum by the name of its case, a principal as the workspace
+/// subject it is, lists and options as plain JSON. A value encoded as the runtime stores it
+/// ([`from_json`]) is taken as it is.
+fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Value, String> {
+    match (ty, json) {
+        (Ty::Record(key), _) => {
             // A parameter may be a type of another app of the room.
             let owner = if key.app == meta.app {
                 meta.clone()
@@ -200,13 +209,79 @@ pub(crate) fn value_of(
             let declared = owner
                 .type_named(&key.name)
                 .ok_or_else(|| format!("unknown type `{}`", key.name))?;
-            let text = json
-                .as_str()
-                .ok_or_else(|| format!("a {} is given by its resource id", key.name))?;
-            let target = ResourceRef::parse_id(text, declared.id.clone())
+            let text = match json {
+                Json::String(text) => text.as_str(),
+                Json::Object(reference) => {
+                    let kind = owner.kind_of(&declared.name);
+                    if reference.get("kind").and_then(Json::as_str) != Some(kind.as_str()) {
+                        return Err(format!("a {} is a resource of kind `{kind}`", key.name));
+                    }
+                    reference
+                        .get("id")
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| format!("a {} reference names its id", key.name))?
+                }
+                _ => return Err(format!("a {} is given by a reference to it", key.name)),
+            };
+            // The published id of the resource (`tl:<app>:<id>`), or the id inside the app.
+            let id = text
+                .strip_prefix(&crate::publish::resource_id(&key.app, ""))
+                .unwrap_or(text);
+            let target = ResourceRef::parse_id(id, declared.id.clone())
                 .ok_or_else(|| format!("`{text}` is not a resource id"))?;
             Ok(Value::resource(&target))
         }
+        (Ty::Enum(key), Json::String(case)) if key.app == meta.app => {
+            let declared = meta
+                .enums
+                .iter()
+                .find(|declared| declared.name == key.name)
+                .ok_or_else(|| format!("unknown enum `{}`", key.name))?;
+            let variant = declared
+                .variants
+                .iter()
+                .find(|variant| variant.name == *case || variant.id == *case)
+                .filter(|variant| variant.fields.is_empty())
+                .ok_or_else(|| format!("`{case}` is not a case of {}", key.name))?;
+            Ok(Value::Enum(tilolang_runtime::value::EnumValue {
+                ty: declared.id.clone(),
+                variant: variant.id.clone(),
+                fields: std::collections::BTreeMap::new(),
+            }))
+        }
+        (Ty::Principal, Json::Object(subject)) if subject.len() == 1 => {
+            let principal = match (subject.get("person"), subject.get("agent")) {
+                (Some(Json::String(person)), None) => person.clone(),
+                (None, Some(Json::String(agent))) => format!("agent:{agent}"),
+                _ => from_json(json).and_then(|value| match value {
+                    Value::Principal(principal) => Ok(principal.0),
+                    _ => Err("a principal is a person or an agent".to_owned()),
+                })?,
+            };
+            Ok(Value::Principal(Principal::new(principal)))
+        }
+        (Ty::Option(_), Json::Null) => Ok(Value::none()),
+        (Ty::Option(_), Json::Object(encoded))
+            if encoded.contains_key("some") || encoded.contains_key("none") =>
+        {
+            from_json(json)
+        }
+        (Ty::Option(inner), _) => Ok(Value::some(value_of_ty(host, meta, json, inner)?)),
+        (Ty::List(inner) | Ty::Set(inner) | Ty::Collection(inner), Json::Array(items)) => items
+            .iter()
+            .map(|item| value_of_ty(host, meta, item, inner))
+            .collect::<Result<_, _>>()
+            .map(Value::List),
+        (Ty::Tuple(types), Json::Array(items)) if types.len() == items.len() => types
+            .iter()
+            .zip(items)
+            .map(|(ty, item)| value_of_ty(host, meta, item, ty))
+            .collect::<Result<_, _>>()
+            .map(Value::Tuple),
+        (Ty::Float, Json::Number(number)) => number
+            .as_f64()
+            .map(Value::Float)
+            .ok_or_else(|| "number out of range".to_owned()),
         _ => from_json(json),
     }
 }
