@@ -124,7 +124,7 @@ impl AppCatalogue {
     pub fn app_for_kind(&self, kind: &str) -> Option<&'static str> {
         self.iter()
             .find(|definition| definition.record_kind.as_str() == kind)
-            .map(|definition| definition.app_id())
+            .map(ApplicationDefinition::app_id)
     }
 
     /// What `doc`, a record of `app_id`, is called when its app names it
