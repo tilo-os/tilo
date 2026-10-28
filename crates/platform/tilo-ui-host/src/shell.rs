@@ -14,9 +14,8 @@
 //! The window after the root's keeps its own keys in the composed tree, each carrying
 //! [`DETAIL`], so what its controls report reaches its view.
 
-use tilolang_tilo::runtime::{ResourceRef, UiNode, Value, ViewInstance};
-
 use crate::adapter::{SLOT, kind};
+use crate::{Event, UiNode, Value};
 
 /// What the keys of the window after the root's carry in the composed tree.
 pub const DETAIL: &str = "detail~";
@@ -96,7 +95,7 @@ pub fn has_overview(shell: &UiNode) -> bool {
 /// `node` without the rows a virtual list holds: the list reads those as it shows them.
 #[must_use]
 pub fn without_rows(node: &UiNode) -> UiNode {
-    let virtual_list = tilolang_tilo::runtime::view::is_virtual(&node.kind);
+    let virtual_list = crate::is_virtual(&node.kind);
     UiNode {
         kind: node.kind.clone(),
         key: node.key.clone(),
@@ -121,19 +120,15 @@ const HEADER_PROPS: &[&str] = &["title", "count", "content_kind"];
 
 /// The window's shell: the root's shell, with the window after it (its shell, keys carrying
 /// [`DETAIL`]) as its content column. Beside an overview the next column is the content; in
-/// place of the root's content it is pushed, with Back. `back` is the retained event a shell
-/// that can go back carries, which the window answers itself.
+/// place of the root's content it is pushed, with Back: a shell that can go back carries the
+/// event [`BACK`], which the window answers itself.
 #[must_use]
-pub fn compose(
-    root: &UiNode,
-    detail: Option<&UiNode>,
-    back: tilolang_tilo::runtime::handles::Retained,
-) -> UiNode {
+pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();
     if !overview {
         // A window of a page or a document goes back from the window after it.
-        shell.events.insert(BACK.to_owned(), back);
+        shell.events.insert(BACK.to_owned(), Event::default());
         shell
             .props
             .insert("can_go_back".to_owned(), Value::Bool(detail.is_some()));
@@ -161,50 +156,13 @@ pub fn compose(
     with_slot(shell, "content", content)
 }
 
-/// What the header rules read of the views: the action each control applies.
-pub trait Controls {
-    /// The resource the control `key` applies an action on, and the field that action toggles,
-    /// when it toggles one (`pin` toggles `pinned`).
-    fn toggles(&self, key: &str, event: &str) -> Option<(ResourceRef, String)>;
-}
-
-/// The window's views, as the header rules read them.
-pub struct Views<'a> {
-    pub root: Option<&'a ViewInstance>,
-    pub detail: Option<&'a ViewInstance>,
-    pub host: &'a tilolang_tilo::host::Host,
-}
-
-impl Controls for Views<'_> {
-    fn toggles(&self, key: &str, event: &str) -> Option<(ResourceRef, String)> {
-        let (view, key) = match key.strip_prefix(DETAIL) {
-            Some(own) => (self.detail?, own),
-            None => (self.root?, key),
-        };
-        let aref = view.event_action(key, event)?;
-        let action = self.host.packages().into_iter().find_map(|package| {
-            package
-                .meta
-                .actions
-                .iter()
-                .find(|action| action.id == aref.action)
-                .cloned()
-        })?;
-        let field = action.toggles?;
-        match aref.args.first() {
-            Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), field)),
-            _ => None,
-        }
-    }
-}
-
 /// Apply the header rules to the content column of the composed shell: its header repeats
 /// neither an action its content offers nor a title its content edits.
 #[must_use]
-pub fn header_rules(mut shell: UiNode, controls: &dyn Controls) -> UiNode {
+pub fn header_rules(mut shell: UiNode) -> UiNode {
     let content = slot_children(&shell, "content").to_vec();
     let mut shown: Vec<String> = Vec::new();
-    let mut bound: Vec<(ResourceRef, String)> = Vec::new();
+    let mut bound: Vec<(String, String)> = Vec::new();
     let mut titled = false;
     for node in &content {
         offered(node, &mut shown, &mut bound, &mut titled);
@@ -218,9 +176,11 @@ pub fn header_rules(mut shell: UiNode, controls: &dyn Controls) -> UiNode {
             _ => "",
         };
         shown.iter().any(|shown| shown == label)
-            || controls
-                .toggles(&node.key, event)
-                .is_some_and(|toggled| bound.contains(&toggled))
+            || node
+                .events
+                .get(event)
+                .and_then(|event| event.toggles.as_ref())
+                .is_some_and(|toggled| bound.contains(toggled))
     };
     let actions: Vec<UiNode> = slot_children(&shell, "actions")
         .iter()
@@ -249,7 +209,7 @@ pub fn header_rules(mut shell: UiNode, controls: &dyn Controls) -> UiNode {
 fn offered(
     node: &UiNode,
     shown: &mut Vec<String>,
-    bound: &mut Vec<(ResourceRef, String)>,
+    bound: &mut Vec<(String, String)>,
     titled: &mut bool,
 ) {
     if node.kind == kind("Button")
@@ -259,7 +219,7 @@ fn offered(
         shown.push(label.clone());
     }
     if let Some((target, field)) = node.binding.as_ref().and_then(|binding| binding.field()) {
-        bound.push((target.clone(), field.clone()));
+        bound.push((target.to_owned(), field.to_owned()));
     }
     if node.kind == kind("TextInput")
         && matches!(
@@ -274,9 +234,26 @@ fn offered(
     }
 }
 
-/// The keys of `node`'s nodes, each carrying `prefix`: the window after the root's in the
-/// composed tree.
-pub use super::rows::prefixed;
+/// `node` with each key carrying `prefix`: the window after the root's in the composed tree.
+#[must_use]
+pub fn prefixed(node: &UiNode, prefix: &str) -> UiNode {
+    if prefix.is_empty() {
+        return node.clone();
+    }
+    UiNode {
+        kind: node.kind.clone(),
+        key: format!("{prefix}{}", node.key),
+        props: node.props.clone(),
+        binding: node.binding.clone(),
+        events: node.events.clone(),
+        anchor: node.anchor.clone(),
+        children: node
+            .children
+            .iter()
+            .map(|child| prefixed(child, prefix))
+            .collect(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -292,10 +269,7 @@ mod tests {
 
     fn button(key: &str, label: &str) -> UiNode {
         let mut button = node("Button", key, &[("label", Value::text(label))]);
-        button.events.insert(
-            "press".to_owned(),
-            tilolang_tilo::runtime::handles::Retained(1),
-        );
+        button.events.insert("press".to_owned(), Event::default());
         button
     }
 
@@ -305,14 +279,6 @@ mod tests {
             shell.children.push(slot(name, key, children));
         }
         shell
-    }
-
-    struct NoToggles;
-
-    impl Controls for NoToggles {
-        fn toggles(&self, _key: &str, _event: &str) -> Option<(ResourceRef, String)> {
-            None
-        }
     }
 
     #[test]
@@ -343,11 +309,7 @@ mod tests {
             ),
             DETAIL,
         );
-        let composed = compose(
-            &root,
-            Some(&detail),
-            tilolang_tilo::runtime::handles::Retained(9),
-        );
+        let composed = compose(&root, Some(&detail));
         assert_eq!(composed.key, "root", "the root's shell stays");
         assert_eq!(composed.props.get("title"), Some(&Value::text("Q3 plan")));
         assert_eq!(
@@ -374,14 +336,10 @@ mod tests {
             vec![("content", vec![node("Scroll", "c", &[])])],
             &[],
         );
-        let pushed = compose(
-            &page,
-            Some(&detail),
-            tilolang_tilo::runtime::handles::Retained(9),
-        );
+        let pushed = compose(&page, Some(&detail));
         assert!(pushed.events.contains_key(BACK));
         assert_eq!(pushed.props.get("can_go_back"), Some(&Value::Bool(true)));
-        let alone = compose(&page, None, tilolang_tilo::runtime::handles::Retained(9));
+        let alone = compose(&page, None);
         assert_eq!(alone.props.get("can_go_back"), Some(&Value::Bool(false)));
     }
 
@@ -391,10 +349,7 @@ mod tests {
         title.binding = None;
         let mut more = node("MenuButton", "more", &[("label", Value::text("More"))]);
         let mut item = node("MenuItem", "add", &[("label", Value::text("Increment"))]);
-        item.events.insert(
-            "choose".to_owned(),
-            tilolang_tilo::runtime::handles::Retained(2),
-        );
+        item.events.insert("choose".to_owned(), Event::default());
         more.children.push(item);
         let page = shell(
             "page",
@@ -422,7 +377,7 @@ mod tests {
             ],
             &[("title", Value::text("Counter"))],
         );
-        let ruled = header_rules(page, &NoToggles);
+        let ruled = header_rules(page);
         let actions: Vec<&str> = slot_children(&ruled, "actions")
             .iter()
             .map(|node| node.key.as_str())

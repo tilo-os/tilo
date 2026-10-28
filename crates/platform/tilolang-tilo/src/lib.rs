@@ -10,6 +10,8 @@
 //! * [`meta`] and [`surface`]: what the platform derives from package metadata, and the surface
 //!   generated from it;
 //! * [`publish`]: the resources and typed actions published on the action door;
+//! * [`instance`]: one window of an app as an app host runs it, without the toolkit, sending
+//!   its window component patches and taking what the person did;
 
 pub mod action;
 pub mod authority;
@@ -19,6 +21,7 @@ pub mod bundle;
 pub mod effects;
 pub mod host;
 pub mod index;
+pub mod instance;
 pub mod meta;
 pub mod publish;
 pub mod reads;
