@@ -1309,8 +1309,22 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
             settle(&mut fb);
             std::thread::sleep(std::time::Duration::from_millis(8));
         }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        settle(&mut fb);
+        // The opening card fades into the frame on the clock: paint until
+        // nothing animates, not for a fixed time a busy runner outlasts, so
+        // the window is captured at full opacity.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            settle(&mut fb);
+            let animating = fb.animation_owners();
+            if animating.is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{arrangement}: the desktop never came to rest: {animating:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
         let clean = fb.paint();
         let targets = fb.host().capture_targets();
         assert!(
