@@ -2,8 +2,7 @@
 //! `tilo-app` and the App Publisher app both find it through [`stored`],
 //! [`create`] and [`discover`]. Anywhere else — a file a command names, the
 //! CI secret in [`KEY_ENV`], a backup — a key is the one key file format,
-//! `{"secret_key_hex": "<64 hex digits>"}`, which [`encode`] writes and
-//! [`parse`] reads.
+//! `{"secret_key_hex": "<64 hex digits>"}` ([`registry_types::key_file`]).
 
 use std::path::Path;
 
@@ -11,7 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 pub use ed25519_dalek::SigningKey;
 use getrandom::SysRng;
 use getrandom::rand_core::UnwrapErr;
-use serde::Deserialize;
+use registry_types::key_file;
 use tilo_secrets::{ItemSecret, Secret, SecretError, SecretStore};
 
 /// The environment variable CI puts a publisher key in.
@@ -26,11 +25,6 @@ pub const SECRETS_APP: &str = "so.tilo.publisher";
 /// machine.
 const PURPOSE: &str = "publisher-key";
 const ITEM: &str = "signing";
-
-#[derive(Deserialize)]
-struct KeyFile {
-    secret_key_hex: String,
-}
 
 /// [`SECRETS_APP`]'s secrets in this machine's secret store, for a caller
 /// with no host to hand it the App Publisher's store.
@@ -48,27 +42,16 @@ fn secret(store: &SecretStore) -> ItemSecret {
     store.item(PURPOSE, ITEM)
 }
 
-/// A key from a key file's contents.
+/// A key from a key file's contents ([`registry_types::key_file`]).
 ///
 /// # Errors
 ///
 /// When `text` is not a key file holding a 32-byte seed.
 pub fn parse(text: &str) -> Result<SigningKey> {
-    let hex_seed = serde_json::from_str::<KeyFile>(text)
-        .context("a publisher key file is {\"secret_key_hex\": \"<64 hex digits>\"}")?
-        .secret_key_hex;
-    let seed: [u8; 32] = hex::decode(hex_seed.trim())
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| anyhow!("a publisher key is 32 bytes of hex"))?;
-    Ok(SigningKey::from_bytes(&seed))
+    Ok(key_file::parse(text)?)
 }
 
-/// `key` as a key file's contents, what [`parse`] reads back.
-#[must_use]
-pub fn encode(key: &SigningKey) -> String {
-    serde_json::json!({ "secret_key_hex": hex::encode(key.to_bytes()) }).to_string() + "\n"
-}
+pub use key_file::encode;
 
 /// The key in the file at `path`.
 ///
@@ -76,9 +59,7 @@ pub fn encode(key: &SigningKey) -> String {
 ///
 /// When the file cannot be read or holds no key.
 pub fn load(path: &Path) -> Result<SigningKey> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read publisher key {}", path.display()))?;
-    parse(&text).with_context(|| format!("publisher key {}", path.display()))
+    key_file::load(path).with_context(|| format!("publisher key {}", path.display()))
 }
 
 /// The key `store` holds, or `None` when it holds none.

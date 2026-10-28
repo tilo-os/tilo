@@ -98,25 +98,10 @@ pub fn sign(feed: &[u8], key: &SigningKey) -> String {
     hex::encode(key.sign(feed).to_bytes())
 }
 
-/// A signing key from a publisher key file (`{"secret_key_hex": "…"}`, what
-/// `tilo-app keys new` and `tilo-runtime-bundle key generate` write) or its
-/// bare hex seed.
+/// The signing key in a publisher key file's contents
+/// ([`registry_types::key_file`]).
 pub fn parse_signing_key(text: &str) -> Result<SigningKey, Error> {
-    #[derive(Deserialize)]
-    struct KeyFile {
-        secret_key_hex: String,
-    }
-    let text = text.trim();
-    let seed = if text.starts_with('{') {
-        serde_json::from_str::<KeyFile>(text)
-            .map_err(|_| Error::Malformed("signing key file"))?
-            .secret_key_hex
-    } else {
-        text.to_owned()
-    };
-    decode_hex(&seed)
-        .map(|seed| SigningKey::from_bytes(&seed))
-        .ok_or(Error::Malformed("signing key"))
+    registry_types::key_file::parse(text).map_err(|_| Error::Malformed("signing key file"))
 }
 
 fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
@@ -215,14 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn signing_keys_parse_from_a_key_file_or_bare_hex() {
+    fn signing_keys_parse_from_a_key_file_only() {
         let seed = hex::encode([7; 32]);
         let from_file = parse_signing_key(&format!("{{\"secret_key_hex\": \"{seed}\"}}")).unwrap();
         assert_eq!(from_file.to_bytes(), key().to_bytes());
-        assert_eq!(
-            parse_signing_key(&seed).unwrap().to_bytes(),
-            key().to_bytes()
-        );
+        assert!(parse_signing_key(&seed).is_err(), "bare hex is no key file");
         assert!(parse_signing_key("{}").is_err());
     }
 }

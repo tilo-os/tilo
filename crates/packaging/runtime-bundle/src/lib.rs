@@ -421,51 +421,36 @@ pub struct BuildOptions<'a> {
     pub extra_bins: &'a [PathBuf],
 }
 
-/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `tilo-app-package`.
+/// Signing identity for [`build_bundle_with`]: a publisher key file
+/// ([`registry_types::key_file`]), the same file `tilo-app-package` signs with.
 #[derive(Clone)]
 pub struct Identity {
     signing_key: ed25519_dalek::SigningKey,
 }
 
 impl Identity {
-    /// Load from a JSON file on disk.
+    /// Load from a key file on disk.
     ///
     /// # Errors
     ///
     /// Returns [`BundleError::IdentityIo`] if `path` can't be read, or
-    /// any error [`Self::from_json_bytes`] returns for a malformed file.
+    /// [`BundleError::IdentityParse`] if it is no key file.
     pub fn load(path: &Path) -> Result<Self, BundleError> {
         let bytes = fs::read(path).map_err(|e| BundleError::IdentityIo(e.to_string()))?;
         Self::from_json_bytes(&bytes)
     }
 
-    /// Parse an identity JSON blob directly.
+    /// Parse a key file's contents.
     ///
     /// # Errors
     ///
-    /// Returns [`BundleError::IdentityParse`] if `bytes` isn't valid
-    /// JSON for the expected shape, or if `secret_key_hex` doesn't
-    /// decode to exactly 32 bytes.
+    /// Returns [`BundleError::IdentityParse`] if `bytes` is no key file.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, BundleError> {
-        #[derive(Deserialize)]
-        struct File {
-            secret_key_hex: String,
-        }
-        let f: File =
-            serde_json::from_slice(bytes).map_err(|e| BundleError::IdentityParse(e.to_string()))?;
-        let raw = hex::decode(&f.secret_key_hex)
-            .map_err(|e| BundleError::IdentityParse(format!("secret_key_hex: {e}")))?;
-        if raw.len() != 32 {
-            return Err(BundleError::IdentityParse(format!(
-                "secret_key_hex must decode to 32 bytes (got {})",
-                raw.len()
-            )));
-        }
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&raw);
-        Ok(Self {
-            signing_key: ed25519_dalek::SigningKey::from_bytes(&seed),
-        })
+        let text =
+            std::str::from_utf8(bytes).map_err(|e| BundleError::IdentityParse(e.to_string()))?;
+        let signing_key = registry_types::key_file::parse(text)
+            .map_err(|e| BundleError::IdentityParse(e.to_string()))?;
+        Ok(Self { signing_key })
     }
 
     /// Generate a fresh random identity; used by tests and the CLI's `key generate`.
@@ -476,10 +461,9 @@ impl Identity {
         }
     }
 
-    /// Serialise as the same JSON shape `load` reads.
+    /// Serialise as the key file `load` reads.
     pub fn to_json_bytes(&self) -> Vec<u8> {
-        let hex = hex::encode(self.signing_key.to_bytes());
-        format!("{{\"secret_key_hex\":\"{hex}\"}}\n").into_bytes()
+        registry_types::key_file::encode(&self.signing_key).into_bytes()
     }
 
     /// The 32-byte Ed25519 public key.

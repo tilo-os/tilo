@@ -66,6 +66,7 @@ pub mod entry;
 mod external_moderation;
 pub mod handshake;
 pub mod interfaces;
+pub mod key_file;
 pub mod moderation;
 pub use external_moderation::{
     ExternalModerationOperation, ModerationCredential, ModerationDestination,

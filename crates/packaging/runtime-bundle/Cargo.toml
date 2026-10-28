@@ -24,6 +24,8 @@ path = "src/lib.rs"
 
 [dependencies]
 tilo-files = { path = "../../platform/tilo-files" }
+# The publisher key file the bundle is signed with.
+registry-types = { path = "../registry-types" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # Installs share the bundle root's collection lock; a collection holds it alone.
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

@@ -10,28 +10,14 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::pack::SigningIdentity;
 
-/// A publisher identity file: `{ "secret_key_hex": "<64 hex>" }`, the shape `tilo-app-package`
-/// and `tilo-runtime-bundle` read.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct IdentityFile {
-    secret_key_hex: String,
-}
-
-/// The signing identity in `path`.
+/// The signing identity in the publisher key file at `path` ([`registry_types::key_file`]).
 ///
 /// # Errors
-/// The file is missing or not an identity file.
+/// The file is missing or not a key file.
 pub fn load_identity(path: &Path) -> Result<SigningIdentity, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let file: IdentityFile =
-        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    let raw = hex::decode(file.secret_key_hex.trim())
-        .map_err(|e| format!("{}: secret key: {e}", path.display()))?;
-    let seed: [u8; 32] = raw
-        .as_slice()
-        .try_into()
-        .map_err(|_| format!("{}: the secret key is not 32 bytes", path.display()))?;
-    Ok(SigningIdentity::from_seed(&seed))
+    registry_types::key_file::load(path)
+        .map(SigningIdentity::from_signing_key)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// The identity at `path`, made the first time it is asked for: a development publisher key
@@ -45,14 +31,11 @@ pub fn identity_at(path: &Path) -> Result<SigningIdentity, String> {
     }
     let mut seed = [0_u8; 32];
     getrandom::fill(&mut seed).map_err(|e| format!("no randomness for a key: {e}"))?;
-    let text = serde_json::to_vec(&IdentityFile {
-        secret_key_hex: hex::encode(seed),
-    })
-    .map_err(|e| e.to_string())?;
+    let text = registry_types::key_file::encode(&ed25519_dalek::SigningKey::from_bytes(&seed));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    write_private(path, &text)?;
+    write_private(path, text.as_bytes())?;
     Ok(SigningIdentity::from_seed(&seed))
 }
 
