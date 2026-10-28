@@ -17,6 +17,10 @@ path = "src/lib.rs"
 # to a host (`ServerPreferred`). This is a pure state layer with no `ui`,
 # `winit`, or rendering dependencies.
 
+[features]
+# `remote::TestHost`, a closure-built action host for other crates' tests.
+test-support = []
+
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

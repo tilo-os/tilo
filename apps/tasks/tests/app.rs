@@ -143,63 +143,6 @@ fn a_reference_as_it_reads_opens_its_issue_whose_links_are_chips() {
     assert!(app.call("open", json!({ "anchor": "#9" })).is_err());
 }
 
-/// The session's door: records what it is asked and grants it.
-#[derive(Default)]
-struct Door {
-    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
-}
-
-impl ui::tilo_actions::remote::ActionHost for Door {
-    fn query(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: ui::tilo_actions::remote::CatalogueQuery,
-    ) -> ui::tilo_actions::remote::Pending<
-        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
-    > {
-        ui::tilo_actions::remote::Pending::ready(Err(
-            ui::tilo_actions::remote::ActionHostError::NotPermitted,
-        ))
-    }
-
-    fn invoke(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        request: ui::tilo_actions::remote::InvokeRequest,
-    ) -> ui::tilo_actions::remote::Pending<
-        Result<
-            ui::tilo_actions::remote::InvocationReceipt,
-            ui::tilo_actions::remote::ActionHostError,
-        >,
-    > {
-        let invocation = request.invocation;
-        self.asked.lock().unwrap().push(request);
-        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
-            invocation,
-            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
-                output: ui::tilo_actions::ActionOutput::default(),
-            },
-        }))
-    }
-
-    fn observe(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: &ui::tilo_actions::InvocationId,
-    ) -> Option<ui::tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: &ui::tilo_actions::InvocationId,
-    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
-    {
-        ui::tilo_actions::remote::Pending::ready(Ok(()))
-    }
-}
-
 /// "Link a note" takes a note already written as the reference the system
 /// palette picks by its title (and an agent passes): it publishes what it
 /// picks, so nobody types an id, and links the note it names, never
@@ -280,7 +223,7 @@ fn a_link_opens_in_the_record_it_names() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
     env.set("TILO_WORKSPACE_ID", room);
-    let door = std::sync::Arc::new(Door::default());
+    let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
     let _served = ui::RemoteActions::enter(
         door.clone(),
         ui::tilo_actions::remote::Caller::local_person("ada"),
@@ -331,7 +274,7 @@ fn a_link_opens_in_the_record_it_names() {
             .perform_a11y_action(chip, &ui::a11y::Action::Activate)
             .unwrap();
         app.settle();
-        let asked = door.asked.lock().unwrap().pop().expect("one open");
+        let asked = door.take_asked().pop().expect("one open");
         let reference = ui::tilo_reference::ResourceRef::whole(
             "tasks.tracker.issues",
             format!("tasks.tracker/issues/{label}"),
@@ -466,7 +409,7 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
 #[test]
 fn a_runs_question_is_answered_through_the_host() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};
-    let door = std::sync::Arc::new(Door::default());
+    let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
     let _served = ui::RemoteActions::enter(
         door.clone(),
         ui::tilo_actions::remote::Caller::local_person("ada"),
@@ -508,7 +451,7 @@ fn a_runs_question_is_answered_through_the_host() {
         .perform_a11y_action(answer, &ui::a11y::Action::Activate)
         .unwrap();
     app.settle();
-    let asked = door.asked.lock().unwrap().pop().expect("one answer");
+    let asked = door.take_asked().pop().expect("one answer");
     assert_eq!(
         asked.target.provider,
         ui::tilo_actions::remote::OWN_PROVIDER
@@ -794,68 +737,18 @@ fn choose(app: &mut TestApp<App>, name: &str) {
 
 /// Notes as the session's door reaches it: makes the note each call asks
 /// for and answers its resource, as `create-page` does.
-#[derive(Default)]
-struct NotesDoor {
-    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
-}
-
-impl ui::tilo_actions::remote::ActionHost for NotesDoor {
-    fn query(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: ui::tilo_actions::remote::CatalogueQuery,
-    ) -> ui::tilo_actions::remote::Pending<
-        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
-    > {
-        ui::tilo_actions::remote::Pending::ready(Err(
-            ui::tilo_actions::remote::ActionHostError::NotPermitted,
-        ))
-    }
-
-    fn invoke(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        request: ui::tilo_actions::remote::InvokeRequest,
-    ) -> ui::tilo_actions::remote::Pending<
-        Result<
-            ui::tilo_actions::remote::InvocationReceipt,
-            ui::tilo_actions::remote::ActionHostError,
-        >,
-    > {
-        let invocation = request.invocation;
-        let count = {
-            let mut asked = self.asked.lock().unwrap();
-            asked.push(request);
-            asked.len()
-        };
+fn notes_door() -> ui::tilo_actions::remote::TestHost {
+    let made = std::sync::atomic::AtomicUsize::new(0);
+    ui::tilo_actions::remote::TestHost::new().completing(move |_| {
+        let count = made
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
         let note = format!("notes.notebook/pages/{count}");
-        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
-            invocation,
-            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
-                output: ui::tilo_actions::ActionOutput {
-                    value: Some(json!({ "resource": note })),
-                    resources: vec![note],
-                },
-            },
-        }))
-    }
-
-    fn observe(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: &ui::tilo_actions::InvocationId,
-    ) -> Option<ui::tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _: &ui::tilo_actions::remote::Caller,
-        _: &ui::tilo_actions::InvocationId,
-    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
-    {
-        ui::tilo_actions::remote::Pending::ready(Ok(()))
-    }
+        ui::tilo_actions::ActionOutput {
+            value: Some(json!({ "resource": note })),
+            resources: vec![note],
+        }
+    })
 }
 
 /// Writing an issue's note asks Notes through its own published action, as
@@ -873,7 +766,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
     env.set("TILO_WORKSPACE_ID", room);
-    let door = std::sync::Arc::new(NotesDoor::default());
+    let door = std::sync::Arc::new(notes_door());
     let _served = ui::RemoteActions::enter(
         door.clone(),
         ui::tilo_actions::remote::Caller::local_person("ada"),
@@ -905,7 +798,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .expect("the agent's invocation starts");
     app.settle();
 
-    let asked = door.asked.lock().unwrap().clone();
+    let asked = door.asked();
     assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
     let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
     assert_eq!(
@@ -980,7 +873,7 @@ fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
         .perform_a11y_action(button, &ui::a11y::Action::Activate)
         .unwrap();
     app.settle();
-    let asked = door.asked.lock().unwrap().clone();
+    let asked = door.asked();
     assert_eq!(asked.len(), 2, "{asked:?}");
     assert_eq!(asked[1].on_behalf_of, None);
     assert_eq!(
