@@ -47,8 +47,8 @@ use tilo_actions::contract::ResultSpec;
 mod tests;
 mod trigger;
 
-use crate::text_read::{binding_and_rest, binding_of, condition_of, input_of};
 pub(super) use crate::text_read::number_at;
+use crate::text_read::{binding_and_rest, binding_of, condition_of, input_of};
 
 /// Most bytes a rendering of a shortcut may have, so a pathologically nested
 /// program cannot be turned into text without bound.

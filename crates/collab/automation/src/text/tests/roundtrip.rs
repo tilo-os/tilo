@@ -50,8 +50,12 @@ impl Seed {
         if bound == 0 {
             return 0;
         }
-        usize::try_from(self.next().checked_rem(u64::try_from(bound).unwrap_or(1)).unwrap_or(0))
-            .unwrap_or(0)
+        usize::try_from(
+            self.next()
+                .checked_rem(u64::try_from(bound).unwrap_or(1))
+                .unwrap_or(0),
+        )
+        .unwrap_or(0)
     }
 
     fn pick<'a, T>(&mut self, choices: &'a [T]) -> &'a T {
@@ -180,9 +184,11 @@ fn generate(seed: &mut Seed) -> Shortcut {
             .to_string(),
         inputs: inputs(seed),
         steps: steps.clone(),
-        step_timeout_secs: seed
-            .chance()
-            .then(|| u64::try_from(seed.below(300)).unwrap_or(0).saturating_add(5)),
+        step_timeout_secs: seed.chance().then(|| {
+            u64::try_from(seed.below(300))
+                .unwrap_or(0)
+                .saturating_add(5)
+        }),
         output: output_for(seed, &steps),
         grant: grant(seed),
         triggers: triggers(seed),
