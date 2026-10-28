@@ -1019,7 +1019,10 @@ fn template_text(text: &str, namings: &[Naming]) -> String {
                     break;
                 };
                 if let Some(binding) = next.next() {
-                    let _ = write!(written, "{{{}}}", value_text(binding, namings));
+                    // A placeholder is the value it stands for, said the way
+                    // the rest of the line says a value: `{{List notes …}}`
+                    // for a step's result, `{{input folder}}` for an input.
+                    let _ = write!(written, "{{{{{}}}}}", value_text(binding, namings));
                 }
                 rest = tail;
             }
@@ -1283,11 +1286,18 @@ impl Targets {
             StepKind::ForEach { item, .. } => Binding::Var(item.clone()),
             StepKind::SetVar { name, .. } => Binding::Var(name.clone()),
             StepKind::Ask { param } => Binding::Var(param.name.to_string()),
-            // A step that asks the agent names its result by the variable it
-            // holds it under, which is the name the text refers to it by.
+            // A step that asks the agent names its result by the words the
+            // text writes it with, which is also what the line after it refers
+            // to, so both names reach the same step.
             StepKind::Ai { .. } | StepKind::Task { .. } => {
                 match refer_name_step(&Shared::empty(), step) {
-                    Some(name) => Binding::Var(name),
+                    Some(named) => {
+                        if !self.phrases.contains(&named) {
+                            self.bindings.push(Binding::Var(named.clone()));
+                            self.phrases.push(named.clone());
+                        }
+                        Binding::Var(named)
+                    }
                     None => Binding::step(phrase, ""),
                 }
             }

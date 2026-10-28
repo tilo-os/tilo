@@ -6,7 +6,7 @@
 //! module states once. Text the module cannot read is refused with the words
 //! for what to write instead, never guessed at.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Number, Value};
 use tilo_actions::params::{ActionParam, ParamType};
@@ -25,13 +25,24 @@ pub(crate) fn binding_and_rest(
     let text = text.trim_start();
     if text.starts_with('"') {
         let (words, rest) = text_at(text)?;
-        return Ok((template_of(words), rest.to_owned()));
+        return Ok((template_of(shared, targets, words)?, rest.to_owned()));
     }
     if let Some(rest) = text.strip_prefix('[') {
         return list_at(shared, rest, targets);
     }
     if let Some(rest) = text.strip_prefix('{') {
-        return object_at(shared, rest, targets);
+        // A dictionary's entries are `"name": value`, so a brace that opens
+        // anything else holds one value — the text a template's placeholder
+        // stands for — and that value is what the braces enclose.
+        if rest.trim_start().starts_with('"') {
+            return object_at(shared, rest, targets);
+        }
+        let (value, after) = binding_and_rest(shared, rest, targets)?;
+        let after = after
+            .trim_start()
+            .strip_prefix('}')
+            .ok_or_else(|| "close the value's brace".to_owned())?;
+        return Ok((value, after.to_owned()));
     }
     for word in prefixes(text).into_iter().rev() {
         if let Some(binding) = named_binding(word, targets) {
@@ -245,11 +256,51 @@ pub(crate) fn object_at(
 
 /// A quoted text as the binding it is: a plain text, or a template when it
 /// holds `{...}` placeholders.
-fn template_of(words: String) -> Binding {
+fn template_of(shared: &Shared<'_>, targets: &Targets, words: String) -> Result<Binding, String> {
     if !words.contains('{') {
-        return Binding::Literal(Value::String(words));
+        return Ok(Binding::Literal(Value::String(words)));
     }
-    Binding::Template(words)
+    Ok(Binding::Template(placeholders_of(shared, targets, &words)?))
+}
+
+/// A text a template holds, with each `{{value}}` written as the placeholder
+/// the document holds: `{{step.BASE/pointer}}`, `{{input NAME}}`,
+/// `{{var NAME}}`. A step is named by the phrase its line reads with, and
+/// [`rebind`] points the placeholder at the step's id.
+fn placeholders_of(shared: &Shared<'_>, targets: &Targets, text: &str) -> Result<String, String> {
+    let mut written = String::new();
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once("{{") {
+        written.push_str(before);
+        let Some((inner, tail)) = after.split_once("}}") else {
+            return Err("close the value's `{{` with `}}`".to_owned());
+        };
+        let (binding, following) = binding_and_rest(shared, inner.trim(), targets)?;
+        if !following.trim().is_empty() {
+            return Err(format!("`{}` follows the value", following.trim()));
+        }
+        let placeholder = match &binding {
+            Binding::Input(name) => format!("{{{{input {name}}}}}"),
+            Binding::Var(name) => format!("{{{{var {name}}}}}"),
+            Binding::StepOutput { step, pointer } => {
+                // A template holds the JSON pointer as it is, so the
+                // placeholder reads back as the same value.
+                format!("{{{{step.{step}{pointer}}}}}")
+            }
+            // A placeholder stands for a value a step above gave, which is the
+            // only thing a template's braces hold.
+            _ => {
+                return Err(format!(
+                    "`{}` is not something a text can insert: write an input, a variable or a step's result",
+                    inner.trim()
+                ));
+            }
+        };
+        written.push_str(&placeholder);
+        rest = tail;
+    }
+    written.push_str(rest);
+    Ok(written)
 }
 
 /// A condition read from a whole line.
@@ -470,16 +521,78 @@ pub(crate) fn choices_of(text: &str) -> Result<Vec<String>, String> {
 /// phrase: it reaches no step, which reports itself as a broken link rather
 /// than quietly acting on a different one.
 pub(crate) fn rebind(shortcut: &mut Shortcut, names: &BTreeMap<String, String>) {
+    let bound = bound_names(&shortcut.steps);
     if let Some(output) = &mut shortcut.output {
-        retarget(output, names);
+        retarget(output, names, &bound);
     }
     for binding in bindings_of(&mut shortcut.steps) {
-        retarget(binding, names);
+        retarget(binding, names, &bound);
     }
 }
 
+/// Every name a step in the program makes a variable out of: a set step's
+/// variable and a loop's item.
+fn bound_names(steps: &[Step]) -> BTreeSet<String> {
+    let mut bound = BTreeSet::new();
+    for step in steps {
+        match &step.kind {
+            StepKind::SetVar { name, .. } => {
+                bound.insert(name.clone());
+            }
+            StepKind::ForEach { item, body, .. } => {
+                bound.insert(item.clone());
+                bound.extend(bound_names(body));
+            }
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                bound.extend(bound_names(then));
+                bound.extend(bound_names(otherwise));
+            }
+            StepKind::Invoke { .. }
+            | StepKind::Ask { .. }
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
+        }
+    }
+    bound
+}
+
+/// A template's text, with each placeholder's step named by its id.
+fn pointed(text: &str, names: &BTreeMap<String, String>) -> String {
+    let mut written = String::new();
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once("{{") {
+        written.push_str(before);
+        let Some((inner, tail)) = after.split_once("}}") else {
+            written.push_str(rest);
+            return written;
+        };
+        if let Some(name) = inner.strip_prefix("step.") {
+            let (base, pointer) = Binding::named_part(name);
+            written.push_str("{{step.");
+            written.push_str(names.get(base).map_or(base, String::as_str));
+            written.push_str(&pointer);
+            written.push_str("}}");
+        } else {
+            // An input's or a variable's placeholder is already the name the
+            // document holds it under.
+            written.push_str("{{");
+            written.push_str(inner);
+            written.push_str("}}");
+        }
+        rest = tail;
+    }
+    written.push_str(rest);
+    written
+}
+
 /// One binding, with the step it names pointed at that step's id.
-fn retarget(binding: &mut Binding, names: &BTreeMap<String, String>) {
+fn retarget(
+    binding: &mut Binding,
+    names: &BTreeMap<String, String>,
+    bound_names: &BTreeSet<String>,
+) {
     match binding {
         Binding::StepOutput { step, .. } => {
             if let Some(id) = names.get(step.as_str()) {
@@ -488,28 +601,34 @@ fn retarget(binding: &mut Binding, names: &BTreeMap<String, String>) {
         }
         Binding::Object(members) => {
             for member in members.values_mut() {
-                retarget(member, names);
+                retarget(member, names, bound_names);
             }
         }
         Binding::List(items) => {
             for item in items {
-                retarget(item, names);
+                retarget(item, names, bound_names);
             }
         }
-        // A variable that names a step's own result reads as that result, so
-        // what the text names by the variable points at the step that sets it.
+        // A variable a set step or a loop's item makes is the program's own,
+        // so it stays the variable the text wrote; a name that no such step
+        // makes is the words a step's result is called by, and what the text
+        // named by those words points at the step that holds the result.
         Binding::Var(name) => {
-            if let Some(id) = names.get(Binding::named_part(name).0) {
+            let (base, pointer) = Binding::named_part(name);
+            if bound_names.contains(base) {
+                return;
+            }
+            if let Some(id) = names.get(base) {
                 *binding = Binding::StepOutput {
                     step: id.clone(),
-                    pointer: Binding::named_part(name).1,
+                    pointer,
                 };
             }
         }
-        // A placeholder names a step by an identifier, and the phrase the text
-        // names a step by is never one, so a template holds no phrase to point
-        // at an id. Nothing else here names a step at all.
-        Binding::Template(_) | Binding::Literal(_) | Binding::Input(_) => {}
+        // A template's placeholders name their values as the rest of the line
+        // does, so each one is pointed at the step it means.
+        Binding::Template(text) => *text = pointed(text, names),
+        Binding::Literal(_) | Binding::Input(_) => {}
     }
 }
 
