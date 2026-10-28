@@ -465,6 +465,30 @@ pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> D
     .await
 }
 
+/// The next document `peer` opened on `route`, as [`next_document`] waits
+/// for any: what the room sends on its other routes (its shared desktop
+/// record, which every room holds) is left in `pending`.
+pub async fn next_document_on(
+    peer: &PeerHandle,
+    pending: &mut Vec<PeerEvent>,
+    route: &tilo_browser_peer::DocumentRoute,
+) -> DocumentMutation {
+    wait_for("a document on the route", || {
+        pending.extend(peer.drain());
+        let found = pending
+            .iter()
+            .position(|event| {
+                matches!(event, PeerEvent::Document(document) if document.route == *route)
+            })
+            .and_then(|index| match pending.remove(index) {
+                PeerEvent::Document(document) => document.mutation(),
+                _ => None,
+            });
+        async move { found }
+    })
+    .await
+}
+
 /// The room's one-time pre-admission for `person`, as the room service's
 /// door asks the room for it: the owner's grant for a token's digest,
 /// issued as an invitation only `person` redeems. Returns the invitation

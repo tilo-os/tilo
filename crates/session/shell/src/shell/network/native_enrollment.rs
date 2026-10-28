@@ -39,6 +39,10 @@ pub(super) struct State {
     /// The open [`ShellNetwork::opened_native_owner`] runs off the frame loop.
     background: Arc<Mutex<Background>>,
     pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
+    /// How each enrollment finished, by id: a join installs itself from the
+    /// frame loop, and whoever else follows it (the sheet, a test) asks
+    /// after it has; they hear how it ended rather than of no attempt.
+    finished: Mutex<std::collections::HashMap<u64, Result<PeerSyncResponse, String>>>,
     /// The identity selection is the session's as given, read-only
     /// ([`ShellNetwork::hold_identity_selection_as_given`]): an enrollment
     /// installs under it and records nothing in it.
@@ -598,8 +602,17 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "native enrollment registry unavailable")?
             .get(&id)
-            .cloned()
-            .ok_or("native enrollment attempt no longer active")?;
+            .cloned();
+        let Some(attempt) = attempt else {
+            return self
+                .native_enrollment
+                .finished
+                .lock()
+                .map_err(|_| "native enrollment registry unavailable")?
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| Err("native enrollment attempt no longer active".into()));
+        };
         let result = attempt.finish(|enrollment| {
             self.install_enrollment(attempt.owner(), attempt.identity_topic(), &enrollment)
         });
@@ -626,10 +639,14 @@ impl ShellNetwork {
                 }
             }
         }
-        result.map(|room| PeerSyncResponse::EnrollmentJoined {
+        let answer = result.map(|room| PeerSyncResponse::EnrollmentJoined {
             id,
             room: room.to_string(),
-        })
+        });
+        if let Ok(mut finished) = self.native_enrollment.finished.lock() {
+            finished.insert(id, answer.clone());
+        }
+        answer
     }
     /// Cancel the pending enrollment `id`.
     ///

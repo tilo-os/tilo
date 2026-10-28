@@ -16,6 +16,8 @@
 
 mod support;
 
+tilo_automerge_isolate::test_worker!();
+
 use collab_types::{DocumentMutation, document_channel_id};
 use tilo_app::prelude::*;
 use tilo_browser_peer::{ContentCipher, PeerEvent, PeerHandle};

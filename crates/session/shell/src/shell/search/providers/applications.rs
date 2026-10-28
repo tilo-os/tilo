@@ -1308,6 +1308,10 @@ mod tests {
             tree.desktop.workspaces = vec![workspace];
             tree.desktop.active_group.insert(strip_id, group_id);
             let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+            // Apps open in a room a host holds and this device's native
+            // owner entered: the workspace's room is placed on this device's
+            // host.
+            let _hosted = crate::shell::test_support::host_active_room(&handle);
             let chrome = ChromeState::new_with_handle(handle.clone());
             let rows = ApplicationsProvider::new()
                 .results_for(&name.to_lowercase(), vec![app(package, name)]);
