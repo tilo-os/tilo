@@ -5,9 +5,11 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 
 ## Structural
 
-1. **Enum fields with payloads.** A record field can be an enum whose cases carry values; it
-   merges as a register of the whole value. Chat's `Part` stops tagging itself with strings
-   (`kind: "text" | "block"`).
+1. **Union types.** Types compose directly: `type Channel = TextChannel | VoiceChannel`, usable
+   wherever a type is (fields, parameters, `List<Category | Channel>`), and matched by type:
+   `match c { t: TextChannel => …, v: VoiceChannel => … }`. A union field merges as a register of
+   the whole value. `enum` is only for plain named cases without data (`enum NoteOrder { created,
+   title }`).
 2. **Reflection.** The log already records every change with its author, time and action, so
    views and code can read it: `created(r)` and `updated(r)` (when, and by whom) and
    `history(r)` (versions, each with who, when and which action). Apps stop storing their own
