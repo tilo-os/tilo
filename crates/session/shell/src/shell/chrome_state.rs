@@ -561,7 +561,6 @@ pub struct ChromeState {
     system_sounds: Option<crate::shell::system_sounds::SystemSounds>,
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
-    notification_policy_checked: Option<std::time::Instant>,
     /// True while this session projects to a wireless display. Notification
     /// contents must not reach a room full of people, so banners are held
     /// in history exactly as under Do Not Disturb.
@@ -888,7 +887,6 @@ impl ChromeState {
             system_sounds: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
-            notification_policy_checked: None,
             presenting: false,
             visual_alert_until: None,
             typing_until: None,
@@ -3918,7 +3916,7 @@ impl ChromeState {
     }
 
     /// No-op (no revision bump) when the value is unchanged. A live session
-    /// (one with a notification bridge, which also reloads the policy) persists
+    /// (one with a notification bridge, which also follows the policy) persists
     /// the change to the shared settings document; unit tests and offscreen
     /// captures never write the developer's real settings.
     pub fn set_dnd(&mut self, on: bool) {
@@ -4095,23 +4093,6 @@ impl ChromeState {
         self.system_sounds.as_ref().is_some_and(|sounds| {
             sounds.play(event, self.notifications_auto_quiet(), delivery_allows)
         })
-    }
-
-    /// Keep notification unit tests independent of the developer account's
-    /// live policy document. Production always refreshes from the shared
-    /// settings authority in `pump_dbus_notifications`.
-    #[cfg(test)]
-    pub(crate) fn set_notification_policy_for_tests(
-        &mut self,
-        policy: settings_store::notification_policy::NotificationPolicy,
-    ) {
-        self.quick_settings.do_not_disturb = policy.do_not_disturb;
-        self.notification_policy = policy;
-        // The test's policy stands for the chrome's life: the periodic
-        // reread of the settings file never comes due, so a slow test does
-        // not take back what it set (a test `set_dnd` is not written down).
-        self.notification_policy_checked =
-            std::time::Instant::now().checked_add(std::time::Duration::from_secs(24 * 3600));
     }
 
     pub fn set_session_locked(&mut self, locked: bool) {
@@ -4342,6 +4323,20 @@ impl ChromeState {
         }
     }
 
+    /// Take `policy`, the notification policy as the settings now hold it.
+    /// The compositor hands it over when the settings change, so a frame
+    /// never reads the settings.
+    pub fn follow_notification_policy(
+        &mut self,
+        policy: settings_store::notification_policy::NotificationPolicy,
+    ) {
+        if policy != self.notification_policy {
+            self.quick_settings.do_not_disturb = policy.do_not_disturb;
+            self.notification_policy = policy;
+            self.bump();
+        }
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
@@ -4349,18 +4344,6 @@ impl ChromeState {
             return;
         };
         self.pump_alarm_action_results(&bridge);
-        let refresh_policy = self
-            .notification_policy_checked
-            .is_none_or(|checked| checked.elapsed() >= std::time::Duration::from_millis(750));
-        if refresh_policy {
-            let policy = settings_store::notification_policy::NotificationPolicy::load();
-            if policy != self.notification_policy {
-                self.quick_settings.do_not_disturb = policy.do_not_disturb;
-                self.notification_policy = policy;
-                self.bump();
-            }
-            self.notification_policy_checked = Some(std::time::Instant::now());
-        }
         for inc in bridge.drain_incoming() {
             let dbus_id = inc.dbus_id;
             let scheduled_target = bridge.take_scheduled_target(dbus_id, inc.caller.as_ref());

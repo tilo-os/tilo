@@ -1859,6 +1859,13 @@ mod people_overlay_tests;
 
 #[cfg(test)]
 #[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod control_hints_tests;
+
+#[cfg(test)]
+#[allow(
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]

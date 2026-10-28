@@ -614,6 +614,9 @@ pub(crate) struct BrowserShell {
     /// them.
     hints: tilo_desktop::control_hints::ControlHints,
     hints_frame: tilo_desktop::control_hints::HintFrame,
+    /// The page's settings as the hints last took the person's record from
+    /// them.
+    hints_settings: Option<settings_store::SettingsStamp>,
     /// How the person points, as the page last learned it: hints name what
     /// a finger does once they touch the screen.
     interaction: ui::InteractionEnvironment,
@@ -769,6 +772,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_frame: tilo_desktop::control_hints::HintFrame::default(),
+            hints_settings: settings_store::stamp(),
             interaction: ui::InteractionEnvironment::default(),
             hints_painted_before: None,
         }
