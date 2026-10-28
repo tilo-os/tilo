@@ -953,7 +953,9 @@ impl App {
     /// pointer events a tap, drag or pinch makes go to the widgets as the
     /// platform window's do (`emulator` keeps the gesture across contacts),
     /// then the contact itself for widgets that read fingers. Once every
-    /// gesture has landed, touch is the input in use.
+    /// gesture has landed, touch is the input in use. While the built-in
+    /// screen reader is on, a finger explores instead and no widget sees it
+    /// ([`Self::explore_by_touch`]).
     #[cfg(feature = "native")]
     pub fn surface_touch(
         &mut self,
@@ -962,6 +964,10 @@ impl App {
         emulator: &mut crate::interaction::TouchPointerEmulator,
     ) -> bool {
         let scale = window.scale_factor();
+        if self.explore_by_touch(&touch, scale) {
+            window.request_redraw();
+            return true;
+        }
         let events = emulator.events_claimed(&touch, |at| {
             self.touch_claim_at(Point::new(at.x / scale, at.y / scale))
         });

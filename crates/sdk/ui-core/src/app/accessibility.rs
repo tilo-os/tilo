@@ -148,6 +148,7 @@ impl App {
                     sr.stop();
                 }
                 self.accessibility.screen_reader = None;
+                self.accessibility.touch_explorer.reset();
                 self.accessibility.live_region_last.clear();
             }
             _ => {}
@@ -207,20 +208,34 @@ impl App {
         }
     }
 
-    /// When the volume-key hold toggles the screen reader if both keys stay
-    /// down; the runner wakes then and calls [`Self::tick_screen_reader_chord`].
-    pub fn screen_reader_chord_deadline(&self) -> Option<crate::time::Instant> {
-        self.accessibility.screen_reader_chord.deadline()
+    /// When the screen reader next has something to do with no input to
+    /// bring it: the volume-key hold toggles it if both keys stay down, or
+    /// a finger resting on the screen is read (`App::explore_by_touch`).
+    /// The runner wakes then and calls [`Self::tick_screen_reader`].
+    pub fn screen_reader_deadline(&self) -> Option<crate::time::Instant> {
+        let touch = self
+            .accessibility
+            .screen_reader
+            .as_ref()
+            .and(self.accessibility.touch_explorer.deadline());
+        self.accessibility
+            .screen_reader_chord
+            .deadline()
+            .into_iter()
+            .chain(touch)
+            .min()
     }
 
-    /// Toggle the screen reader when the volume-key hold is due. `true` when
-    /// it toggled.
-    pub fn tick_screen_reader_chord(&mut self, now: crate::time::Instant) -> bool {
+    /// Toggle the screen reader when the volume-key hold is due, and read
+    /// what a finger's timing completed by `now`. `true` when either
+    /// happened.
+    pub fn tick_screen_reader(&mut self, now: crate::time::Instant) -> bool {
         let toggled = self.accessibility.screen_reader_chord.tick(now);
         if toggled {
             self.toggle_screen_reader_by_chord();
         }
-        toggled
+        let explored = self.tick_touch_exploration(now);
+        toggled || explored
     }
 
     /// Turn the screen reader on or off as the chord does, saying which.
@@ -247,6 +262,7 @@ impl App {
                 true,
             );
             self.accessibility.parting_screen_reader = Some(reader);
+            self.accessibility.touch_explorer.reset();
             self.accessibility.live_region_last.clear();
         }
         self.accessibility.a11y.screen_reader = on;
@@ -327,23 +343,25 @@ impl App {
             let shift = self.input.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
+                    self.with_screen_reader_order(|sr, order| {
+                        let is_heading = crate::screen_reader::is_heading;
                         if shift {
-                            sr.read_prev_heading(self.root_widget.as_ref());
+                            sr.read_prev_matching_in(order, is_heading);
                         } else {
-                            sr.read_next_heading(self.root_widget.as_ref());
+                            sr.read_next_matching_in(order, is_heading);
                         }
-                    }
+                    });
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
+                    self.with_screen_reader_order(|sr, order| {
+                        let is_field = crate::screen_reader::is_form_field;
                         if shift {
-                            sr.read_prev_control(self.root_widget.as_ref());
+                            sr.read_prev_matching_in(order, is_field);
                         } else {
-                            sr.read_next_control(self.root_widget.as_ref());
+                            sr.read_next_matching_in(order, is_field);
                         }
-                    }
+                    });
                     return true;
                 }
                 _ => {}
@@ -355,21 +373,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_all(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| sr.read_all_in(order));
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_next(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| {
+                    sr.read_next_in(order);
+                });
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
-                    sr.read_prev(self.root_widget.as_ref());
-                }
+                self.with_screen_reader_order(|sr, order| {
+                    sr.read_prev_in(order);
+                });
                 true
             }
             NamedKey::ArrowUp => {
@@ -1718,6 +1734,10 @@ impl App {
                 )
             });
         self.accessibility.semantic_tree = tree;
+        if !delta.is_empty() {
+            self.accessibility.semantic_tree_revision =
+                self.accessibility.semantic_tree_revision.wrapping_add(1);
+        }
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
