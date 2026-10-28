@@ -52,7 +52,7 @@ fields = [
   { path = "annotations.*.end", type = "usize" },
   { path = "annotations.*.excerpt", type = "String", label = true },
   { path = "annotations.*.text", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
-  { path = "annotations.*.color", type = "HiColor" },
+  { path = "annotations.*.color", type = "HighlightColor" },
   { path = "annotations.*.created", type = "u64" },
   { path = "annotations.*.group", type = "Uuid", readonly = true },
 ]

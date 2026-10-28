@@ -1681,7 +1681,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
         );
 
         app.dispatch(
-            Action::SetColor(HiColor::Yellow),
+            Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
         app.read_record(&doc);
@@ -2653,7 +2653,10 @@ fn highlight_markers_reanchor_and_open_comments() {
             ),
         );
         ptr_up(&mut app, &mut doc);
-        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::SetColor(HighlightColor::Green),
+            &mut Edits::lend(&mut doc),
+        );
         app.read_record(&doc);
         let hl = TestLibrary::list_annotations(&doc)
             .into_iter()
@@ -2673,7 +2676,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             end: hl.end,
             excerpt: "x".into(),
             note: "keep me".into(),
-            color: HiColor::Green,
+            color: HighlightColor::Green,
             created: 5,
             group,
             blocks: Vec::new(),
@@ -2774,7 +2777,10 @@ fn highlight_markers_reanchor_and_open_comments() {
             ),
         );
         ptr_up(&mut app, &mut doc);
-        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::SetColor(HighlightColor::Green),
+            &mut Edits::lend(&mut doc),
+        );
         app.read_record(&doc);
         let group = TestLibrary::list_annotations(&doc)
             .into_iter()
@@ -2852,7 +2858,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
         // A highlight covering both words (a real ranged annotation on the page).
         let book_id = app.book_id();
         let mut hl = Annotation::new(&book_id, AnnoKind::Highlight, app.chapter, a.block)
-            .with_color(HiColor::Yellow);
+            .with_color(HighlightColor::Yellow);
         hl.start = a.cs;
         hl.end = b.cs + b.cl;
         TestLibrary::upsert_annotation(&mut doc, &hl);
@@ -2886,23 +2892,29 @@ fn highlights_are_written_and_recoloured_from_selections() {
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
-            Action::SetColor(HiColor::Yellow),
+            Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
         app.read_record(&doc);
         assert_eq!(count(&doc), 1);
-        assert_eq!(color_of(&doc), Some(HiColor::Yellow));
+        assert_eq!(color_of(&doc), Some(HighlightColor::Yellow));
 
         // Re-select the same word; picking a DIFFERENT colour replaces it.
         dbl_click(&mut app, &mut doc, p);
-        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::SetColor(HighlightColor::Green),
+            &mut Edits::lend(&mut doc),
+        );
         app.read_record(&doc);
         assert_eq!(count(&doc), 1, "different colour replaces (never layers)");
-        assert_eq!(color_of(&doc), Some(HiColor::Green));
+        assert_eq!(color_of(&doc), Some(HighlightColor::Green));
 
         // Re-select the same word; picking the SAME colour toggles it off.
         dbl_click(&mut app, &mut doc, p);
-        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::SetColor(HighlightColor::Green),
+            &mut Edits::lend(&mut doc),
+        );
         app.read_record(&doc);
         assert_eq!(count(&doc), 0, "same colour again removes the highlight");
     }
@@ -3922,7 +3934,7 @@ fn annotation_cards_delete_and_jump_to_their_location() {
         let nblocks = app.library[app.book_idx].chapters[0].blocks.len().max(1);
         let target = (nblocks / 2).min(nblocks - 1);
         let a = Annotation::new(&book_id, AnnoKind::Highlight, 0, target)
-            .with_color(HiColor::Green)
+            .with_color(HighlightColor::Green)
             .with_excerpt("anchored passage");
         TestLibrary::upsert_annotation(&mut doc, &a);
         frame(&mut app, &mut doc, 1280.0, 800.0);
@@ -3971,7 +3983,7 @@ fn chapter_navigation_discards_previous_passage_and_seek() {
         assert_eq!(app.page, 0);
         assert_eq!(app.scroll_y, 0.0);
         assert!(app.sel.is_none());
-        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Green));
+        dispatch(&mut app, &mut doc, Action::SetColor(HighlightColor::Green));
         dispatch(&mut app, &mut doc, Action::AddNote);
         assert!(TestLibrary::list_annotations(&doc).is_empty());
     }
@@ -4004,8 +4016,10 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         let __p = page_point(&app);
         dbl_click(&mut app, &mut doc, __p);
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(HiColor::Yellow)))
-            .expect("the yellow swatch");
+        let swatch = find_hit(&app, |a| {
+            matches!(a, Action::SetColor(HighlightColor::Yellow))
+        })
+        .expect("the yellow swatch");
         click(&mut app, &mut doc, swatch);
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let hl = TestLibrary::list_annotations(&doc)
@@ -4017,7 +4031,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         // the test doesn't depend on a second hit-test resolving under load), so
         // the swatch would toggle it off — a deterministic plan (pure removal, no
         // freshly-minted ids), the case where the two paths encode identically.
-        app.hi_color = HiColor::Yellow;
+        app.hi_color = HighlightColor::Yellow;
         app.sel = Some(TextSel {
             anchor: DocPos {
                 block: hl.block,
@@ -4040,11 +4054,11 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
                 ),
             )
             .unwrap();
-        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Yellow));
+        dispatch(&mut app, &mut doc, Action::SetColor(HighlightColor::Yellow));
         let places = |marks: Vec<Annotation>| {
             let mut places: Vec<_> = marks
                 .into_iter()
-                .map(|a| (a.kind.as_str(), a.block, a.start, a.end, a.color.as_str()))
+                .map(|a| (a.kind.as_str(), a.block, a.start, a.end, a.color.key()))
                 .collect();
             places.sort_unstable();
             places
@@ -4071,7 +4085,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
-        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Blue));
+        dispatch(&mut app, &mut doc, Action::SetColor(HighlightColor::Blue));
         app.read_record(&doc);
         assert_eq!(
             TestLibrary::list_annotations(&doc)
@@ -4610,7 +4624,10 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
         ptr_up(&mut app, &mut doc);
-        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
+        app.dispatch(
+            Action::SetColor(HighlightColor::Green),
+            &mut Edits::lend(&mut doc),
+        );
         app.read_record(&doc);
         let hl = TestLibrary::list_annotations(&doc)
             .into_iter()
@@ -4670,7 +4687,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
-            Action::SetColor(HiColor::Yellow),
+            Action::SetColor(HighlightColor::Yellow),
             &mut Edits::lend(&mut doc),
         );
         app.read_record(&doc);

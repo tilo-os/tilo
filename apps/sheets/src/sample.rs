@@ -9,7 +9,7 @@ use ui::tilo_resource::{Atom, Id, Invoke};
 
 use crate::model::{CellFormat, a1_to_addr};
 use crate::resource::verbs;
-use crate::workbook::{Cell, ChartKind, Comment, FIRST_SHEET_ID, Sheet, Workbook};
+use crate::workbook::{Cell, ChartKind, Comment, CommentCells, FIRST_SHEET_ID, Sheet, Workbook};
 use tilo_locale::{Currency, DateStyle};
 
 /// The budget sheet's identity: a new workbook's first sheet, which the
@@ -189,13 +189,17 @@ const COMMENT_ID: &str = "5d1c1a52-6a1e-4c7e-9d0b-0b5a6c2e0201";
 /// asks, Sam replies.
 pub fn comments() -> Vec<(&'static str, Invoke<Workbook>)> {
     let mut budget = budget();
-    let comment = budget.area((1, 1), (4, 1)).map(|area| Comment {
-        sheet: budget_id(),
-        area,
-        author: Atom("Alex".into()),
-        body: "Check the rent increase before sending this budget.".into(),
-        resolved: false,
-        replies: ui::tilo_resource::Collection::new(),
+    let comment = budget.area((1, 1), (4, 1)).map(|area| {
+        let cells = CommentCells {
+            sheet: budget_id(),
+            area,
+        };
+        Comment::new(
+            cells,
+            "Alex".into(),
+            String::new(),
+            "Check the rent increase before sending this budget.".into(),
+        )
     });
     let ask = comment.and_then(|comment| {
         let path = Workbook::paths().comments;

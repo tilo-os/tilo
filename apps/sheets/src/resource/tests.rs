@@ -108,7 +108,7 @@ fn a_comment_is_signed_by_its_invoker() {
     let state = app.state();
     let comments: Vec<_> = state.comments.values().collect();
     assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].author.0, "test-author");
+    assert_eq!(comments[0].author, "test-author");
 
     let item = tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
     app.call_on(

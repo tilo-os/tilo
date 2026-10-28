@@ -43,40 +43,8 @@ pub struct Document {
 }
 
 /// A comment thread on some text of the document.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Comment {
-    /// The text the comment is about.
-    pub anchor: TextAnchor,
-    /// Who wrote it.
-    #[model(readonly)]
-    pub author: String,
-    /// When it was written, as an ISO-8601 time.
-    #[model(readonly)]
-    pub date: String,
-    /// What it says.
-    #[model(label)]
-    pub text: String,
-    /// The answers, in the order they were written.
-    pub replies: Collection<Reply>,
-}
-
-/// An answer in a comment thread.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Reply {
-    /// Who wrote it.
-    #[model(readonly)]
-    pub author: String,
-    /// When it was written, as an ISO-8601 time.
-    #[model(readonly)]
-    pub date: String,
-    /// What it says, as plain text.
-    #[model(label)]
-    pub text: String,
-    /// Its paragraphs as written, with their formatting; empty when it is
-    /// plain text.
-    #[model(readonly)]
-    pub body: Vec<ClipBlock>,
-}
+pub type Comment = tilo_document::annotation::Comment<TextAnchor>;
+pub use tilo_document::annotation::Reply;
 
 /// Bring a document of version 1 up to this one: a reply's formatted
 /// paragraphs were one JSON string, and are a list of paragraphs now.
@@ -291,16 +259,8 @@ impl Document {
             return Err(Refusal::new("a comment says something"));
         }
         let anchor = TextAnchor::new(&self.body, &block, start, end).map_err(Refusal::new)?;
-        self.comments.push(
-            cx.id(),
-            Comment {
-                anchor,
-                author: author(cx),
-                date: date(cx),
-                text,
-                replies: Collection::new(),
-            },
-        );
+        self.comments
+            .push(cx.id(), Comment::new(anchor, author(cx), date(cx), text));
         Ok(())
     }
 
@@ -370,9 +330,14 @@ impl Document {
             let Ok(anchor) = TextAnchor::new(&self.body, &block, start, end) else {
                 continue;
             };
-            let mut replies = Collection::new();
+            let mut thread = Comment::new(
+                anchor,
+                comment.author,
+                comment.date,
+                joined(&comment.blocks),
+            );
             for reply in &comment.replies {
-                replies.push(
+                thread.replies.push(
                     cx.id(),
                     Reply {
                         author: reply.author.clone(),
@@ -382,16 +347,7 @@ impl Document {
                     },
                 );
             }
-            self.comments.push(
-                cx.id(),
-                Comment {
-                    anchor,
-                    author: comment.author,
-                    date: comment.date,
-                    text: joined(&comment.blocks),
-                    replies,
-                },
-            );
+            self.comments.push(cx.id(), thread);
         }
         Ok(())
     }
@@ -1045,13 +1001,7 @@ pub(crate) fn comment_by(
     let anchor = TextAnchor::new(&document.body, block, start, end).expect("text to anchor to");
     document.comments.push(
         id.clone(),
-        Comment {
-            anchor,
-            author: author.to_owned(),
-            date: String::new(),
-            text: text.to_owned(),
-            replies: Collection::new(),
-        },
+        Comment::new(anchor, author.to_owned(), String::new(), text.to_owned()),
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the comment is written");
     id.to_string()
@@ -1068,12 +1018,7 @@ pub(crate) fn reply_by(doc: &mut AutoCommit, comment: &str, author: &str, date: 
     let id = Id::from_raw(format!("{comment}-reply-{}", thread.replies.len()));
     thread.replies.push(
         id,
-        Reply {
-            author: author.to_owned(),
-            date: date.to_owned(),
-            text: text.to_owned(),
-            body: Vec::new(),
-        },
+        Reply::new(author.to_owned(), date.to_owned(), text.to_owned()),
     );
     ui::tilo_resource::Fields::write_fields(&document, doc, &ROOT).expect("the reply is written");
 }

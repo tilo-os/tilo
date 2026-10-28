@@ -1990,11 +1990,11 @@ fn annotation_edits_ask_for_the_published_actions() {
 
     let state = doc_workbook(&doc);
     let thread = state.comments.get(&comment).unwrap();
-    assert_eq!(thread.body, "Checked");
+    assert_eq!(thread.text, "Checked");
     let replies: Vec<&str> = thread
         .replies
         .values()
-        .map(|reply| reply.body.as_str())
+        .map(|reply| reply.text.as_str())
         .collect();
     assert_eq!(replies, ["Done"]);
 }
@@ -2168,7 +2168,7 @@ fn an_agent_edits_charts_and_comments_in_one_call_each() {
         .unwrap();
     assert_eq!((snapshot.start, snapshot.end), ((1, 1), (2, 4)));
     let thread = state.comments.get(&comment).unwrap();
-    assert_eq!(thread.body, "Checked");
+    assert_eq!(thread.text, "Checked");
     assert_eq!(thread.replies.len(), 1);
 }
 

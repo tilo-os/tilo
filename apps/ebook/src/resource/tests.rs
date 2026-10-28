@@ -52,7 +52,7 @@ fn annotated() -> (Replica<Ebook>, Uuid) {
         Ebook::HIGHLIGHT.with(books::Highlight {
             book: BOOK.into(),
             chapter: 0,
-            color: HiColor::Green,
+            color: HighlightColor::Green,
             replacing: Vec::new(),
             pieces: vec![HiPiece {
                 block: 3,
@@ -98,7 +98,7 @@ fn note(block: usize, text: &str) -> Invoke<Ebook> {
             end: 4,
             excerpt: "here".into(),
         },
-        color: HiColor::Blue,
+        color: HighlightColor::Blue,
         text: text.into(),
     })
 }
@@ -403,7 +403,7 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
     let comment = find(&library, Annotation::is_comment);
     assert_eq!(
         (comment.block, comment.start, comment.end, comment.color),
-        (3, 0, 12, HiColor::Green),
+        (3, 0, 12, HighlightColor::Green),
         "a comment sits on its highlight's first piece"
     );
 
@@ -411,7 +411,7 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         &mut library,
         Ebook::CHANGE_COLOR.with(books::ChangeColor {
             highlight: group,
-            color: HiColor::Purple,
+            color: HighlightColor::Purple,
         }),
     )
     .unwrap();
@@ -419,7 +419,7 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         marks(&library)
             .iter()
             .filter(|mark| mark.group == group)
-            .all(|mark| mark.color == HiColor::Purple),
+            .all(|mark| mark.color == HighlightColor::Purple),
         "a highlight is recoloured with its comments"
     );
 
@@ -463,7 +463,7 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
             Ebook::HIGHLIGHT.with(books::Highlight {
                 book: BOOK.into(),
                 chapter: 0,
-                color: HiColor::Yellow,
+                color: HighlightColor::Yellow,
                 replacing: vec![group],
                 pieces: vec![HiPiece {
                     block: 1,
@@ -512,7 +512,7 @@ fn annotations_change_through_their_verbs_and_refuse_what_is_gone() {
         }),
         Ebook::CHANGE_COLOR.with(books::ChangeColor {
             highlight: group,
-            color: HiColor::Pink,
+            color: HighlightColor::Pink,
         }),
         Ebook::DELETE_HIGHLIGHT.with(books::DeleteHighlight { highlight: group }),
     ] {
@@ -608,7 +608,7 @@ fn concurrent_changes_converge() {
         &mut theirs,
         Ebook::CHANGE_COLOR.with(books::ChangeColor {
             highlight: group,
-            color: HiColor::Purple,
+            color: HighlightColor::Purple,
         }),
     )
     .unwrap();
@@ -622,7 +622,7 @@ fn concurrent_changes_converge() {
     let merged = find(&ours, |mark| mark.id == comment.id);
     assert_eq!(
         (merged.note.as_str(), merged.color),
-        ("comment edited", HiColor::Purple)
+        ("comment edited", HighlightColor::Purple)
     );
     let settings = state(&ours).settings;
     assert_eq!(
@@ -903,7 +903,7 @@ fn an_agents_changes_read_back_as_the_apps_sentences() {
     for change in [
         Ebook::paths().settings.theme.set(ReadTheme::Dark),
         Ebook::paths().prefs.hide_read.set(true),
-        note_paths(note.id).color.set(HiColor::Pink),
+        note_paths(note.id).color.set(HighlightColor::Pink),
     ] {
         app.call_by(
             agent.clone(),

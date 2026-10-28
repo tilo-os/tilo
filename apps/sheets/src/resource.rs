@@ -28,9 +28,10 @@ use crate::actions::SheetsEffect;
 use crate::app::SheetsApp;
 use crate::model::{Addr, CellFormat, GridEdit, a1_to_addr, addr_to_a1, letters_to_col};
 use crate::workbook::{
-    Area, Chart, ChartKind, Comment, Layout, MAX_ANNOTATION_BYTES, MAX_COLUMN, MAX_ROW, Reply,
-    Sheet, Workbook,
+    Area, Chart, ChartKind, Comment, CommentCells, Layout, MAX_ANNOTATION_BYTES, MAX_COLUMN,
+    MAX_ROW, Sheet, Workbook,
 };
+use tilo_document::annotation::Reply;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
@@ -368,18 +369,18 @@ fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, R
     let comments: Vec<Id> = book
         .comments
         .iter()
-        .filter(|(_, comment)| comment.sheet == *id)
+        .filter(|(_, comment)| comment.anchor.sheet == *id)
         .map(|(comment, _)| comment.clone())
         .collect();
     for comment in comments {
         let moved = book
             .comments
             .get(&comment)
-            .and_then(|it| reanchored(&layout, edit, &it.area));
+            .and_then(|it| reanchored(&layout, edit, &it.anchor.area));
         match moved {
             Some(area) => {
                 if let Some(it) = book.comments.get_mut(&comment) {
-                    it.area = area;
+                    it.anchor.area = area;
                 }
             }
             None => {
@@ -620,7 +621,7 @@ impl Workbook {
         let gone: Vec<Id> = self
             .comments
             .iter()
-            .filter(|(_, comment)| comment.sheet == *sheet)
+            .filter(|(_, comment)| comment.anchor.sheet == *sheet)
             .map(|(id, _)| id.clone())
             .collect();
         for comment in gone {
@@ -1022,24 +1023,19 @@ impl Workbook {
     ) -> Result<(), Refusal> {
         let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
-        let body = annotation(&text)?;
-        let author = Atom(cx.author().unwrap_or_default().to_owned());
+        let text = annotation(&text)?;
+        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
         let area = self
             .sheet_mut(sheet)?
             .area(start, end)
             .ok_or_else(|| Refusal::new("the range is outside the sheet"))?;
-        self.comments.push(
-            id,
-            Comment {
-                sheet: sheet.clone(),
-                area,
-                author,
-                body,
-                resolved: false,
-                replies: tilo_resource::Collection::new(),
-            },
-        );
+        let cells = CommentCells {
+            sheet: sheet.clone(),
+            area,
+        };
+        self.comments
+            .push(id, Comment::new(cells, author, String::new(), text));
         Ok(())
     }
 
@@ -1051,14 +1047,14 @@ impl Workbook {
         comment: &Id,
         #[param("Reply")] text: String,
     ) -> Result<(), Refusal> {
-        let body = annotation(&text)?;
-        let author = Atom(cx.author().unwrap_or_default().to_owned());
+        let text = annotation(&text)?;
+        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
         self.comments
             .get_mut(comment)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))?
             .replies
-            .push(id, Reply { author, body });
+            .push(id, Reply::new(author, String::new(), text));
         Ok(())
     }
 
@@ -1073,7 +1069,7 @@ impl Workbook {
         self.comments
             .get_mut(comment)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))?
-            .body = body;
+            .text = body;
         Ok(())
     }
 

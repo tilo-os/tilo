@@ -12,7 +12,7 @@
 use tilo_actions::{ActionSpec, ResourceSpec};
 use ui::tilo_resource::{ActionDecl, Effect};
 
-use crate::model::HiColor;
+use crate::model::HighlightColor;
 use crate::resource::{BooksEffect, Ebook, HiPiece, books};
 
 /// What invoking `effect` where it is bound sends its handler.
@@ -181,7 +181,7 @@ fn highlight(params: &books::Highlight) -> ui::tilo_resource::Bound<Ebook> {
 pub(crate) fn highlight_params(
     book: &str,
     chapter: usize,
-    color: HiColor,
+    color: HighlightColor,
     replacing: Vec<uuid::Uuid>,
     pieces: Vec<HiPiece>,
 ) -> books::Highlight {
