@@ -10696,6 +10696,10 @@ mod quiet_pump_tests;
 mod layout_owed_tests;
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder is the test's subject from its first layout to its last assertion"
+)]
 #[path = "frame_ready_focus_tests.rs"]
 mod ready_focus_tests;
 
