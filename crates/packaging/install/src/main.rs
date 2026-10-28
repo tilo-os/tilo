@@ -15,6 +15,7 @@ use std::process::Command;
 use clap::{Args, Parser, Subcommand};
 
 mod language_pack;
+mod offered;
 mod trust_cmd;
 use install::shim;
 use language_pack::install_language_pack;
@@ -468,8 +469,6 @@ enum Error {
     },
     #[error("fetching {app_id} from the configured registries: {detail}")]
     Fetch { app_id: String, detail: String },
-    #[error("starting the async runtime for a registry fetch: {0}")]
-    Runtime(#[source] tilo_rt::Error),
     #[error("package store: {0}")]
     Store(String),
     #[error(
@@ -704,21 +703,24 @@ fn verify_and_gate(meta: &PackageMeta, trust: &TrustFlags) -> Result<Gated, Erro
 /// Where a candidate package's bytes are.
 enum Candidate {
     File(PathBuf),
-    Fetched(Vec<u8>),
+    /// Downloaded from a registry into the store client's staging directory.
+    Fetched(app_cli::install::StagedPackage),
 }
 
 impl Candidate {
     fn reader(&self) -> Result<Box<dyn Read + Send + '_>, Error> {
         Ok(match self {
             Self::File(path) => Box::new(std::io::BufReader::new(fs::File::open(path)?)),
-            Self::Fetched(bytes) => Box::new(bytes.as_slice()),
+            Self::Fetched(staged) => {
+                Box::new(std::io::BufReader::new(fs::File::open(staged.path())?))
+            }
         })
     }
 
     fn len(&self) -> Result<u64, Error> {
         Ok(match self {
             Self::File(path) => fs::metadata(path)?.len(),
-            Self::Fetched(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            Self::Fetched(staged) => fs::metadata(staged.path())?.len(),
         })
     }
 }
@@ -1619,11 +1621,11 @@ fn update_allowed(
             found: checked.id().to_string(),
         });
     }
-    // A local file has no signed registry index authorising a publisher-key
+    // A local file has no signed registry entry authorising a publisher-key
     // rotation. Keep the identity recorded at install time unless the user
-    // explicitly pins the candidate key on this command line. Registry-backed
-    // updates have their own owner-signed publisher authorisation chain in
-    // `resolve_and_fetch`, so legitimate rotations remain possible there.
+    // explicitly pins the candidate key on this command line. A registry
+    // update takes its publisher from the entry the registry owner signed,
+    // so legitimate rotations remain possible there.
     if request.from.is_some()
         && !entry.publisher_key_hex.is_empty()
         && !entry
@@ -1748,22 +1750,29 @@ fn update_one(
     //    way `check` verifies them before anything is stored.
     // A registry serves thin packages; their payload comes from the node that
     // served them, and only the blobs the store lacks are fetched.
-    let (candidate, source, provider) = if let Some(path) = request.from {
+    let (candidate, source, trust, provider) = if let Some(path) = request.from {
         (
             Candidate::File(path.to_path_buf()),
             path.display().to_string(),
+            request.trust.clone(),
             None,
         )
     } else {
-        let (bytes, source, provider) = fetch_from_registries(&entry.id, request.version_req)?;
-        (Candidate::Fetched(bytes), source, Some(provider))
+        let offered =
+            offered::fetch_from_registries(&entry.id, request.version_req, request.trust)?;
+        (
+            Candidate::Fetched(offered.staged),
+            offered.source,
+            offered.trust,
+            offered.payload,
+        )
     };
     let payload: Option<&dyn BlobFetcher> = match (&provider, &request.payload_from) {
         (Some(provider), _) => Some(provider),
         (None, Some(server)) => Some(server),
         (None, None) => None,
     };
-    let checked = check(&candidate, request.trust)?;
+    let checked = check(&candidate, &trust)?;
     if let Some(outcome) = update_allowed(entry, &checked, request)? {
         return Ok(outcome);
     }
@@ -2264,36 +2273,6 @@ fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Orderi
     let a = semver::Version::parse(installed).ok()?;
     let b = semver::Version::parse(candidate).ok()?;
     Some(a.cmp(&b))
-}
-
-/// Resolve `app_id` through the configured registries; returns the
-/// verified `.tapp` bytes plus the registry that served them.
-///
-/// This verifies the registry protocol (signed index, signed entry,
-/// blake3 of the blob) — separately from `ingest`'s later check of the
-/// package's own publisher signature against local trust config. Two
-/// independent checks answering different questions.
-fn fetch_from_registries(
-    app_id: &str,
-    version_req: Option<&str>,
-) -> Result<(Vec<u8>, String, app_registry::ProviderBlobs), Error> {
-    let host = app_registry::HostProfile::detect();
-    let outcome = tilo_rt::block_on(app_registry::resolve::resolve_and_fetch(
-        None,
-        &host,
-        app_id,
-        version_req,
-    ))
-    .map_err(Error::Runtime)?
-    .map_err(|e| Error::Fetch {
-        app_id: app_id.to_string(),
-        // `{e:#}` renders anyhow's full context chain — where the useful part
-        // of a fetch failure lives (e.g. "no registry offers X" vs "index
-        // signature not trusted").
-        detail: format!("{e:#}"),
-    })?;
-    let source = format!("{} (registry {})", outcome.version, outcome.registry);
-    Ok((outcome.bytes, source, outcome.payload))
 }
 
 fn runtime_bundle_present(version: &str) -> bool {

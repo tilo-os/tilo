@@ -120,6 +120,7 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
+irpc = { version = "0.17", default-features = false, features = ["derive", "spans", "stream", "varint-util"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
@@ -365,6 +366,7 @@ idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
+irpc = { version = "0.17", default-features = false, features = ["derive", "spans", "stream", "varint-util"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 kurbo = { version = "0.13" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }

@@ -1,8 +1,7 @@
-//! Reading + verifying `.tapp` bytes on the registry protocol's edges.
+//! Reading + verifying `.tapp` bytes on the registry's edges.
 //!
-//! Both the publish side (build an index entry from a tapp's manifest)
-//! and the fetch side (verify downloaded bytes before install) need to
-//! open a `.tapp`; the archive format itself lives in
+//! A registry server reviewing an upload and an installer taking a
+//! download both open a `.tapp`; the archive format itself lives in
 //! [`tilo_app_package::tapp`], and this module adds the registry's
 //! checks on top of it.
 

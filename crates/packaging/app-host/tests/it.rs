@@ -17,8 +17,6 @@ mod gc_removes_tried_under_pressure;
 mod install_resolves_round_trip;
 #[path = "pin_unpin_changes_state.rs"]
 mod pin_unpin_changes_state;
-#[path = "registry_roundtrip.rs"]
-mod registry_roundtrip;
 #[path = "socket_activation.rs"]
 mod socket_activation;
 
