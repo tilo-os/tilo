@@ -114,7 +114,7 @@ export async function mountDesktop(target,options={}) {
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
-  let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
+  let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
@@ -372,21 +372,40 @@ export async function mountDesktop(target,options={}) {
       const waiter={after,resolve:()=>{clearTimeout(timeout);resolve();},reject:error=>{clearTimeout(timeout);reject(error);}};presentationWaiters.add(waiter);
     });
   }
-  async function persist(){
-    if(!active()||!storage||persistenceFailed)return;
-    const current=id;
-    flush=flush.catch(()=>{}).then(async()=>{
-      if(!active()||persistenceFailed)return;
-      // pending_writes also moves the record's unsaved edits into the store.
-      const writes=Array.from(runtime.pending_writes(current));
+  // Every presented frame asks to persist, but only a frame that changed
+  // something has anything to save. One persist runs at a time: a request
+  // arriving while it runs marks `again`, and one more runs after it, so a
+  // burst of frames costs one round trip instead of a task per frame.
+  let persisting=null,persistAgain=false;
+  function persist(){
+    if(!active()||!storage||persistenceFailed)return Promise.resolve();
+    if(persisting){persistAgain=true;return persisting;}
+    persisting=(async()=>{
       try{
-        await runtime.flush_files();await storage.commit(writes);await storage.flush();
-        report({persistence:'committed',pendingWrites:0,error:null});
-      }catch(error){
-        persistenceFailed=true;report({persistence:'failed',pendingWrites:storage.status.pendingWrites,error:String(error)});throw error;
-      }
-    });
-    return flush;
+        do{
+          persistAgain=false;
+          if(!active()||persistenceFailed)return;
+          await persistOnce();
+        }while(persistAgain&&!persistenceFailed);
+      }finally{persisting=null;}
+    })();
+    return persisting;
+  }
+  async function persistOnce(){
+    const current=id;
+    // pending_writes also moves the record's unsaved edits into the store.
+    const writes=Array.from(runtime.pending_writes(current));
+    // Apps' files and stored credentials commit on their own; while neither
+    // is waiting, only the records' writes are left to commit.
+    const files=runtime.files_dirty?runtime.files_dirty():true;
+    try{
+      if(files)await runtime.flush_files();
+      if(!writes.length&&!files)return;
+      await storage.commit(writes);await storage.flush();
+      report({persistence:'committed',pendingWrites:0,error:null});
+    }catch(error){
+      persistenceFailed=true;report({persistence:'failed',pendingWrites:storage.status.pendingWrites,error:String(error)});throw error;
+    }
   }
   function onCrash(crash){
     // The module is stopped: nothing on this page may call into it again.
@@ -407,7 +426,9 @@ export async function mountDesktop(target,options={}) {
       surface.remove();
     },
     async settle(){
-      await flush.catch(()=>{});
+      // An explicit close waits for every persist outstanding, then saves
+      // whatever the mount's own close wrote.
+      while(persisting)await persisting.catch(()=>{});
       await runtime.flush_files();
       if(storage&&closeWrites.length){await storage.commit(closeWrites);closeWrites=[];}
       if(storage){await storage.release();storage=undefined;}

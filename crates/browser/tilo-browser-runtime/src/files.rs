@@ -32,6 +32,14 @@ pub async fn mirror_files(profile: String) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Whether any change apps made to their files or stored secrets is still
+/// waiting to reach OPFS or `IndexedDB`: the page skips [`flush_files`]
+/// while nothing is.
+#[wasm_bindgen]
+pub fn files_dirty() -> bool {
+    tilo_secrets::web::pending() || tilo_files::web::pending(&tilo_paths::default_profile()) > 0
+}
+
 /// Wait until every change apps made to their files is in OPFS, and every
 /// secret they stored is in `IndexedDB`.
 ///
