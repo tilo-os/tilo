@@ -8069,6 +8069,10 @@ enum PriorityRoute {
     /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
     /// focus, since the person who needs it may have no other pointer.
     ToggleMouseKeys,
+    /// Ctrl+Super+Enter, or both volume keys held, turns the screen reader
+    /// on or off, on the lock screen too: whoever needs it cannot see where
+    /// else to turn it on.
+    ToggleScreenReader,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -10257,6 +10261,7 @@ pub fn run() {
     // first press on: `wpctl` must never hold up input or painting.
     let mut media_key_audio: Option<crate::shell::audio_writer::AudioWriter> = None;
     let mut super_tap = crate::shell::input_policy::SuperTap::default();
+    let mut screen_reader_chord = ui::screen_reader_chord::ScreenReaderChord::new();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -11234,6 +11239,11 @@ pub fn run() {
             );
             session_changed = true;
         }
+        // Both volume keys held past the chord's hold, with no new event to
+        // carry it.
+        if screen_reader_chord.tick(Instant::now()) {
+            session_changed |= toggle_screen_reader_by_chord(&mut frame_builder);
+        }
         let mut event_step = "accessibility";
         // Pointer events a touch contact became, still at the front of the
         // queue: the input-route lines say a click came from a finger.
@@ -11361,12 +11371,21 @@ pub fn run() {
                     // Whether the chrome handled this event itself; for raw
                     // touch that means a shell gesture or a touch-aware widget.
                     let mut chrome_handled = false;
-                    let route = priority_route(
+                    let route = if crate::shell::input_policy::screen_reader_chord_toggles(
+                        &mut screen_reader_chord,
                         wev,
                         test_control_ctx.modifiers,
-                        locked,
-                        frame_builder.host().shortcut_config(),
-                    );
+                        Instant::now(),
+                    ) {
+                        PriorityRoute::ToggleScreenReader
+                    } else {
+                        priority_route(
+                            wev,
+                            test_control_ctx.modifiers,
+                            locked,
+                            frame_builder.host().shortcut_config(),
+                        )
+                    };
                     if let Some(steps) = key_steps.as_mut() {
                         steps.steps.mark("route");
                     }
@@ -11589,6 +11608,8 @@ pub fn run() {
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         apply_session_transitions!(session.request_lock(Instant::now()));
+                    } else if route == PriorityRoute::ToggleScreenReader {
+                        session_changed |= toggle_screen_reader_by_chord(&mut frame_builder);
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
@@ -15261,6 +15282,7 @@ pub fn run() {
                 ("text-commit", state.text_commit_deadline()),
                 ("app-liveness", state.app_liveness_deadline()),
                 ("super-hold", super_tap.deadline()),
+                ("screen-reader-hold", screen_reader_chord.deadline()),
                 (
                     "network-retry",
                     peer_sync
@@ -15491,6 +15513,19 @@ fn apply_pointer_constraint_change(
     }
 }
 
+/// Turn the person's screen reader on or off for its chord, say so and show
+/// it. `true` when the setting changed.
+fn toggle_screen_reader_by_chord(frame_builder: &mut FrameBuilder) -> bool {
+    let Some(on) = crate::shell::media_keys::toggle_screen_reader() else {
+        return false;
+    };
+    frame_builder.screen_reader_turned(on);
+    frame_builder.with_chrome(|chrome| {
+        publish_media_osd(chrome, crate::shell::osd::Osd::screen_reader(on));
+    });
+    true
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
@@ -15538,6 +15573,7 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Touchpad { .. }
         | crate::shell::osd::OsdKind::PointerHeld { .. }
         | crate::shell::osd::OsdKind::MouseKeys { .. }
+        | crate::shell::osd::OsdKind::ScreenReader { .. }
         | crate::shell::osd::OsdKind::Magnifier { .. }
         | crate::shell::osd::OsdKind::InputSource(_)
         | crate::shell::osd::OsdKind::KeysCaptured { .. }

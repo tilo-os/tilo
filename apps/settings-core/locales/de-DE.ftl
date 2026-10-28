@@ -200,6 +200,7 @@ shortcut-explore-workspace-history = Arbeitsbereichsverlauf erkunden
 shortcut-guide = Tastenkürzel
 shortcut-stop-remote-input = Alle Ferneingaben beenden
 shortcut-toggle-mouse-keys = Maustasten umschalten
+shortcut-toggle-screen-reader = Bildschirmleser ein- oder ausschalten
 shortcut-name-search = Überall suchen
 shortcut-name-workspace-overview = Übersicht
 shortcut-name-lock = Bildschirm sperren

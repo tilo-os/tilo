@@ -200,6 +200,7 @@ shortcut-explore-workspace-history = Explore workspace history
 shortcut-guide = Keyboard shortcuts
 shortcut-stop-remote-input = Stop all remote input
 shortcut-toggle-mouse-keys = Toggle mouse keys
+shortcut-toggle-screen-reader = Turn the screen reader on or off
 shortcut-name-search = Search everywhere
 shortcut-name-workspace-overview = Overview
 shortcut-name-lock = Lock screen

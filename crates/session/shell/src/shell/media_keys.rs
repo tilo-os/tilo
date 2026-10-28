@@ -474,6 +474,22 @@ pub fn toggle_mouse_keys() -> Option<Osd> {
     }
 }
 
+/// The change origin the screen reader chord records: its fixed-chord id.
+const SCREEN_READER_ORIGIN: &str = "fixed-toggle-screen-reader";
+
+/// Flip the person's screen reader setting, the one Settings and every app
+/// read, for its chord. Returns whether it is now on.
+pub fn toggle_screen_reader() -> Option<bool> {
+    let origin = settings_store::ChangeOrigin::local(SCREEN_READER_ORIGIN);
+    match settings_store::accessibility::SCREEN_READER.update_by(&origin, |on| !on) {
+        Ok(on) => Some(on),
+        Err(error) => {
+            tracing::warn!(%error, "screen reader toggle could not be saved");
+            None
+        }
+    }
+}
+
 fn transport(
     cmd: crate::shell::mpris::Command,
     transport_osd: &crate::session_runtime::Delivery<Osd>,
@@ -1005,6 +1021,28 @@ mod tests {
                     "pressed at this device's keyboard"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn the_screen_reader_chord_flips_the_setting_every_app_reads() {
+        with_session_records(|paths| {
+            assert_eq!(toggle_screen_reader(), Some(true), "absent means off");
+            assert!(settings_store::accessibility::ScreenReaderSettings::load().enabled);
+            assert_eq!(
+                settings_store::load_at(&paths.copy)["accessibility"]["screen_reader"],
+                true,
+                "the compositor reads the copy"
+            );
+            assert_eq!(toggle_screen_reader(), Some(false));
+            assert!(!settings_store::accessibility::ScreenReaderSettings::load().enabled);
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let actions: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON"))
+                .map(|entry| entry["action"].clone())
+                .collect();
+            assert_eq!(actions, [SCREEN_READER_ORIGIN, SCREEN_READER_ORIGIN]);
         });
     }
 

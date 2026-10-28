@@ -2547,6 +2547,31 @@ pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
         ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
 }
 
+/// Feed `event` to the screen reader chord: `true` when it turns the screen
+/// reader on or off. Keys held when the seat loses focus are forgotten.
+pub fn screen_reader_chord_toggles(
+    chord: &mut ui::screen_reader_chord::ScreenReaderChord,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    now: std::time::Instant,
+) -> bool {
+    use ui::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+    match event {
+        WindowEvent::KeyboardInput { event: key, .. } => chord.key(ChordEvent {
+            key: ChordKey::from_winit(key),
+            modifiers: ChordModifiers::from_winit(modifiers.state()),
+            pressed: key.state == ElementState::Pressed,
+            repeat: key.repeat,
+            at: now,
+        }),
+        WindowEvent::Focused(false) => {
+            chord.reset();
+            false
+        }
+        _ => false,
+    }
+}
+
 /// Is `event` a press of the configured session-lock binding?
 ///
 /// Called for every input event the compositor takes off the backend,
