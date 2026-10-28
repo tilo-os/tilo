@@ -34,6 +34,7 @@ path = "junit.xml"
 # follow, so a run ends on short tests.
 [test-groups]
 compositor = { max-threads = 2 }
+mounted-code = { max-threads = 1 }
 desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
@@ -110,13 +111,18 @@ filter = 'package(shell) and test(=network::native_media::audio_tests::native_op
 threads-required = "num-cpus"
 priority = 100
 
-# These four mounted Code journeys fsync a growing retained selection. Under
+# These mounted Code journeys fsync a growing retained selection. Under
 # concurrent native journeys, the owner queue passed four seconds and a real
-# checkpoint refresh hit its existing deadline; serial focused runs pass.
+# checkpoint refresh hit its existing deadline; serial focused runs pass. They
+# run one at a time in a group of their own rather than with the whole pool:
+# as pool-wide tests the twelve of them (about 170 s) ran before anything
+# else could start, while this way the chain runs beside the rest of the
+# suite. Nextest waits at a test whose group is full, so the group goes last
+# in the order, where waiting holds back nothing behind it.
 [[profile.default.overrides]]
 filter = 'package(shell) and test(/^network::invite::exchange_tests::mounted_code::/)'
-threads-required = "num-cpus"
-priority = 100
+test-group = "mounted-code"
+priority = -100
 
 [[profile.default.overrides]]
 filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
