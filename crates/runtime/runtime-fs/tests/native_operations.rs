@@ -190,7 +190,7 @@ fn first(updates: &[FsUpdate]) -> &runtime_fs::operations::ItemOutcome {
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
 )]
-fn copies_and_moves_preserve_bytes_links_and_conflicts() {
+fn conflicts_preserve_both_bytes() {
     // phase: rename_conflict_preserves_both_bytes
     {
         let f = Fixture::new(true);
@@ -204,138 +204,6 @@ fn copies_and_moves_preserve_bytes_links_and_conflicts() {
         assert!(first(&u).destination.is_none());
         assert_eq!(fs::read(f.src("original")).unwrap(), b"source");
         assert_eq!(fs::read(f.src("taken")).unwrap(), b"destination");
-    }
-    // phase: copy_tree_keeps_source
-    {
-        let destination = tempfile::tempdir().unwrap();
-        let f = Fixture::new(true);
-        fs::create_dir_all(f.src("tree/empty")).unwrap();
-        fs::create_dir(f.src("tree/nested")).unwrap();
-        let bytes = vec![73; 2 * 1024 * 1024 + 19];
-        fs::write(f.src("tree/nested/large"), &bytes).unwrap();
-        let target = f
-            .authority
-            .admit_directory(
-                fs::File::open(destination.path()).unwrap(),
-                owner(),
-                rights(),
-            )
-            .unwrap();
-        let session = f
-            .authority
-            .bind(
-                owner(),
-                uuid::Uuid::from_u128(0xb22),
-                &[f.source.clone(), target.clone()],
-                &[],
-            )
-            .unwrap();
-        let mut job = session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("tree")],
-                into: target,
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        let u = drain(&mut job);
-        assert_eq!(
-            f.store.report(&job.operation_id()).unwrap().items[0].state,
-            ItemState::Completed
-        );
-        assert_eq!(first(&u).state, ItemState::Completed);
-        assert!(first(&u).destination.is_some());
-        for path in [
-            f.src("tree/nested/large"),
-            destination.path().join("tree/nested/large"),
-        ] {
-            assert_eq!(fs::read(path).unwrap(), bytes);
-        }
-        assert!(f.src("tree/empty").is_dir());
-        assert!(destination.path().join("tree/empty").is_dir());
-        assert!(u.iter().any(
-            |u| matches!(u, FsUpdate::Progress { phase:"copy", bytes:b, .. } if *b>1024*1024)
-        ));
-    }
-    // phase: copy_preserves_dangling_link
-    {
-        let f = Fixture::new(true);
-        std::os::unix::fs::symlink("missing-target", f.src("dangling")).unwrap();
-        let u = f.run(FsOperation::Copy {
-            entries: vec![f.entry("dangling")],
-            into: f.destination.clone(),
-            conflict: ConflictPolicy::Fail,
-        });
-        assert_eq!(first(&u).state, ItemState::Completed);
-        for p in [f.src("dangling"), f.dst("dangling")] {
-            assert_eq!(
-                fs::read_link(&p).unwrap(),
-                std::path::Path::new("missing-target")
-            );
-            assert!(!p.exists());
-        }
-    }
-    // phase: move_same_directory_is_not_copy
-    {
-        use std::os::unix::fs::MetadataExt;
-        let f = Fixture::new(true);
-        fs::write(f.src("a"), b"same").unwrap();
-        let inode = fs::metadata(f.src("a")).unwrap().ino();
-        let u = f.run(FsOperation::Move {
-            entries: vec![f.entry("a")],
-            into: f.source.clone(),
-            conflict: ConflictPolicy::KeepBoth,
-        });
-        assert_eq!(first(&u).state, ItemState::Failed);
-        assert_eq!(fs::metadata(f.src("a")).unwrap().ino(), inode);
-        assert_eq!(fs::read(f.src("a")).unwrap(), b"same");
-        assert_eq!(fs::read_dir(f.src("")).unwrap().count(), 1);
-        assert!(
-            !u.iter()
-                .any(|u| matches!(u, FsUpdate::Progress { phase: "copy", .. }))
-        );
-    }
-    // phase: recursive_destination_rejected_before_creation
-    {
-        let f = Fixture::new(true);
-        fs::create_dir_all(f.src("tree/child")).unwrap();
-        fs::write(f.src("tree/file"), b"unchanged").unwrap();
-        let tree = f.entry("tree");
-        let GrantedEntry::Directory(ref dir) = tree else {
-            panic!()
-        };
-        let GrantedEntry::Directory(child) = f.session.lookup(dir, &name("child")).unwrap() else {
-            panic!()
-        };
-        let u = f.run(FsOperation::Copy {
-            entries: vec![tree.clone()],
-            into: child,
-            conflict: ConflictPolicy::Fail,
-        });
-        assert_eq!(first(&u).state, ItemState::Failed);
-        std::os::unix::fs::symlink(f.src("tree/child"), f.dst("alias")).unwrap();
-        let alias = f
-            .authority
-            .admit_directory(fs::File::open(f.dst("alias")).unwrap(), owner(), rights())
-            .unwrap();
-        let session = f
-            .authority
-            .bind(
-                owner(),
-                uuid::Uuid::from_u128(0xb22),
-                &[f.source.clone(), alias.clone()],
-                &[],
-            )
-            .unwrap();
-        let mut job = session
-            .start(FsOperation::Copy {
-                entries: vec![tree],
-                into: alias,
-                conflict: ConflictPolicy::Fail,
-            })
-            .unwrap();
-        assert_eq!(first(&drain(&mut job)).state, ItemState::Failed);
-        assert_eq!(fs::read(f.src("tree/file")).unwrap(), b"unchanged");
-        assert_eq!(fs::read_dir(f.src("tree/child")).unwrap().count(), 0);
     }
     // phase: keep_both_uses_exclusive_native_candidates
     {
@@ -369,40 +237,15 @@ fn copies_and_moves_preserve_bytes_links_and_conflicts() {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn operations_publish_exact_bytes_and_durable_reports() {
-    // phase: batch_reports_success_and_missing_item
-    {
-        let f = Fixture::new(true);
-        fs::write(f.src("valid"), b"valid").unwrap();
-        fs::write(f.src("missing"), b"missing").unwrap();
-        let entries = vec![f.entry("valid"), f.entry("missing")];
-        fs::remove_file(f.src("missing")).unwrap();
-        let u = f.run(FsOperation::Copy {
-            entries,
-            into: f.destination.clone(),
-            conflict: ConflictPolicy::Fail,
-        });
-        let states: Vec<_> = u
-            .iter()
-            .filter_map(|u| {
-                if let FsUpdate::Item(i) = u {
-                    Some(i.state)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(states, vec![ItemState::Completed, ItemState::Failed]);
-        assert_eq!(fs::read(f.dst("valid")).unwrap(), b"valid");
-        assert!(!f.dst("missing").exists());
-    }
     // phase: missing_operation_store_prevents_effect
     {
         let f = Fixture::new(false);
         fs::write(f.src("a"), b"original").unwrap();
         assert!(matches!(
-            f.session.start(FsOperation::Copy {
-                entries: vec![f.entry("a")],
-                into: f.destination.clone(),
+            f.session.start(FsOperation::CreateFile {
+                parent: f.destination.clone(),
+                name: name("a"),
+                bytes: fs::read(f.src("a")).unwrap(),
                 conflict: ConflictPolicy::Fail
             }),
             Err(FsError::StoreUnavailable)
@@ -436,9 +279,10 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         fs::write(f.src("a"), vec![41; 2 * 1024 * 1024]).unwrap();
         let job = f
             .session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("a")],
-                into: f.destination.clone(),
+            .start(FsOperation::CreateFile {
+                parent: f.destination.clone(),
+                name: name("a"),
+                bytes: fs::read(f.src("a")).unwrap(),
                 conflict: ConflictPolicy::Fail,
             })
             .unwrap();
@@ -541,82 +385,6 @@ fn operations_publish_exact_bytes_and_durable_reports() {
         drop(replacement_meta);
     }
 }
-#[test]
-#[ignore = "requires two explicitly supplied disposable volumes"]
-fn real_cross_volume_move_copy_remove_stages() {
-    use std::os::unix::fs::MetadataExt;
-    let source = tempfile::tempdir_in(
-        std::env::var_os("RUNTIME_FS_TEST_SOURCE_VOLUME")
-            .expect("explicit disposable source volume required"),
-    )
-    .unwrap();
-    let destination = tempfile::tempdir_in(
-        std::env::var_os("RUNTIME_FS_TEST_DESTINATION_VOLUME")
-            .expect("explicit disposable destination volume required"),
-    )
-    .unwrap();
-    assert_ne!(
-        fs::metadata(source.path()).unwrap().dev(),
-        fs::metadata(destination.path()).unwrap().dev(),
-        "distinct device prerequisite"
-    );
-    let meta = tempfile::Builder::new()
-        .permissions(<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let authority = NativeGrantAuthority::new();
-    let src = authority
-        .admit_directory(fs::File::open(source.path()).unwrap(), owner(), rights())
-        .unwrap();
-    let dst = authority
-        .admit_directory(
-            fs::File::open(destination.path()).unwrap(),
-            owner(),
-            rights(),
-        )
-        .unwrap();
-    let session = authority
-        .bind(
-            owner(),
-            uuid::Uuid::from_u128(0xa11),
-            &[src.clone(), dst.clone()],
-            &[],
-        )
-        .unwrap();
-    let store = OperationOwner::open(fs::File::open(meta.path()).unwrap(), owner()).unwrap();
-    authority.attach_operations(store.clone()).unwrap();
-    fs::write(source.path().join("a"), b"cross-volume").unwrap();
-    let entry = session.lookup(&src, &name("a")).unwrap();
-    let mut job = session
-        .start(FsOperation::Move {
-            entries: vec![entry],
-            into: dst,
-            conflict: ConflictPolicy::Fail,
-        })
-        .unwrap();
-    let u = drain(&mut job);
-    assert_eq!(first(&u).state, ItemState::Completed);
-    assert_eq!(
-        fs::read(destination.path().join("a")).unwrap(),
-        b"cross-volume"
-    );
-    assert!(!source.path().join("a").exists());
-    let phases: Vec<_> = u
-        .iter()
-        .filter_map(|u| {
-            if let FsUpdate::Progress { phase, .. } = u {
-                Some(*phase)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(phases, vec!["copy", "publish", "remove-source"]);
-    assert_eq!(
-        store.report(&job.operation_id()).unwrap().items[0].state,
-        ItemState::Completed
-    );
-}
 
 #[test]
 fn mutations_require_their_exact_rights() {
@@ -633,7 +401,7 @@ fn mutations_require_their_exact_rights() {
         assert!(!f.src("original").exists());
         assert_eq!(fs::read(f.src("renamed")).unwrap(), b"rename-only");
     }
-    // phase: missing_read_and_isolated_file_do_not_authorize_mutations
+    // phase: isolated_file_does_not_authorize_a_sibling_rename
     {
         let f = Fixture::with_rights(
             true,
@@ -645,13 +413,6 @@ fn mutations_require_their_exact_rights() {
             ],
         );
         fs::write(f.src("a"), b"preserve").unwrap();
-        let u = f.run(FsOperation::Copy {
-            entries: vec![f.entry("a")],
-            into: f.destination.clone(),
-            conflict: ConflictPolicy::Fail,
-        });
-        assert!(matches!(first(&u).error, Some(FsError::Denied)));
-        assert_eq!(fs::read_dir(f.dst("")).unwrap().count(), 0);
         let isolated = f
             .authority
             .admit_file(fs::File::open(f.src("a")).unwrap(), owner(), rights())
@@ -773,9 +534,10 @@ fn receipt_publication_retains_renamed_directory_and_writer_exclusion() {
         fs::write(f.src("a"), b"held authority").unwrap();
         let mut job = f
             .session
-            .start(FsOperation::Copy {
-                entries: vec![f.entry("a")],
-                into: f.destination.clone(),
+            .start(FsOperation::CreateFile {
+                parent: f.destination.clone(),
+                name: name("a"),
+                bytes: fs::read(f.src("a")).unwrap(),
                 conflict: ConflictPolicy::Fail,
             })
             .unwrap();
