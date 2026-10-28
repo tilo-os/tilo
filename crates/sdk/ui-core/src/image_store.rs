@@ -510,11 +510,15 @@ thread_local! {
 /// The factory serving the window whose code is running, if its host keeps
 /// one. Windows that closed since are let go.
 fn host_factory() -> Option<HostImageFactory> {
-    let current = WakeHandle::new();
+    factory_of(&WakeHandle::new())
+}
+
+/// The factory serving `window`, if its host keeps one.
+fn factory_of(window: &WakeHandle) -> Option<HostImageFactory> {
     HOST_FACTORIES.with_borrow_mut(|kept| {
-        kept.retain(|(window, _)| window.same_open_scope(window));
+        kept.retain(|(kept, _)| kept.same_open_scope(kept));
         kept.iter()
-            .find(|(window, _)| window.same_open_scope(&current))
+            .find(|(kept, _)| kept.same_open_scope(window))
             .map(|(_, factory)| std::rc::Rc::clone(factory))
     })
 }
@@ -532,6 +536,16 @@ impl ImageStore {
             kept.retain(|(kept, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
             kept.push((window.clone(), factory));
         });
+    }
+
+    /// Serve `successor`, a window opened in `window`'s place (the window a
+    /// record opens in once it is had, another record opened here), the way
+    /// `window` is served: it shows in the same host, which never built it.
+    /// Nothing changes for a window no host serves.
+    pub fn serve_successor(window: &WakeHandle, successor: &WakeHandle) {
+        if let Some(factory) = factory_of(window) {
+            Self::serve_window(successor, factory);
+        }
     }
 
     /// Build a store with the default worker count.
