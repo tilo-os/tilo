@@ -15,6 +15,9 @@ COPY \
     /usr/lib/systemd/system-generators/
 COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
 COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d/92tilo-sibling-unlock
+# The greeter as the boot's sign-in screen, with its faces, keymaps and voice;
+# the boot-greeter component installs the binary it copies.
+COPY os/usr/lib/dracut/modules.d/94tilo-greeter /usr/lib/dracut/modules.d/94tilo-greeter
 # tilo-authd, which owns every person's record and does every unwrap, sits
 # with the rollback units: both hold the machine's TPM and LUKS2 secrets.
 COPY \

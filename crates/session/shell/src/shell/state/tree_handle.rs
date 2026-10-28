@@ -160,7 +160,7 @@ struct WorkspacePolicy {
     collaborators: Vec<tilo_desktop_model::Collaborator>,
     policy: tilo_action_policy::RoomPolicy,
     sandbox: Vec<collab_types::caps::CapOverride>,
-    shortcuts: Vec<tilo_automation::Shortcut>,
+    shortcuts: Vec<tilo_automation::SavedShortcut>,
     pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
 }
 

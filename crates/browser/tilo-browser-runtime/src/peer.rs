@@ -293,6 +293,10 @@ struct ConnectConfig {
     /// spectator ([`PeerConfig::watching`]).
     #[serde(default)]
     watching: bool,
+    /// The page keeps this peer beside the room in front, to deliver for
+    /// it ([`PeerConfig::background`]).
+    #[serde(default)]
+    background: bool,
 }
 
 /// The certified user as the toolkit's local identity.
@@ -1694,6 +1698,7 @@ impl WasmPeer {
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
                 watching: config.watching,
+                background: config.background,
             },
             Arc::new(signer),
             store,

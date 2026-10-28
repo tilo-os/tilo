@@ -284,6 +284,10 @@ pub struct SessionFinish {
     pub handshake: [u8; 16],
     /// The same [`HelloAck2`] the relay stream carries.
     pub ack2: HelloAck2,
+    /// The device's page keeps this session beside the room it is in, only
+    /// to deliver for it: nobody is online by it, so it takes no seat and
+    /// shows no face, and its person counts only by another session.
+    pub background: bool,
 }
 
 /// An authenticated session.

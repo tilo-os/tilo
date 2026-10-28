@@ -377,7 +377,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         ROOM_AUTOMATIONS_KEY,
         ws.shortcuts
             .iter()
-            .map(|shortcut| (shortcut.id.clone(), shortcut)),
+            .map(|shortcut| (shortcut.id().to_owned(), shortcut)),
     );
     sync_blob_map(
         doc,
@@ -497,10 +497,18 @@ fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
     Some(presets)
 }
 
-fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Shortcut> {
-    let mut shortcuts: Vec<tilo_automation::Shortcut> =
-        read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
-    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
+fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::SavedShortcut> {
+    let mut shortcuts: Vec<tilo_automation::SavedShortcut> = obj(doc, entry, ROOM_AUTOMATIONS_KEY)
+        .map(|map| {
+            doc.keys(&map)
+                .filter_map(|key| {
+                    let blob = doc.bytes_at(&map, key.as_str())?;
+                    tilo_automation::SavedShortcut::parse(std::str::from_utf8(&blob).ok()?).ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    shortcuts.compact_sort_by(|left, right| left.id().cmp(right.id()));
     shortcuts
 }
 
@@ -863,13 +871,13 @@ pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &P
 pub fn upsert_shortcut(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
-    shortcut: &tilo_automation::Shortcut,
+    shortcut: &tilo_automation::SavedShortcut,
 ) -> bool {
     upsert_blob(
         doc,
         workspace_id,
         ROOM_AUTOMATIONS_KEY,
-        &shortcut.id,
+        shortcut.id(),
         shortcut,
     )
 }

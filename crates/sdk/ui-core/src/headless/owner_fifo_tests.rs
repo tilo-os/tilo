@@ -50,6 +50,14 @@ impl Widget for OwnerProbe {
         false
     }
     crate::testing::inert_widget_methods!(leaf_layout, name = "shared-owner-probe");
+    // Nothing it syncs changes its size: a window over it re-solves its
+    // layout only for what it shows itself.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+    fn layout_needs_measure(&self) -> bool {
+        false
+    }
     fn sync(&mut self, model: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         let (doc, _) = crate::doc::document_ref(model, path);
         assert!(crate::record::identity(doc).is_some());
@@ -1077,18 +1085,27 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     );
 }
 
-/// A window shows its record saved by measuring and drawing what the status
-/// changed. The change is no structure change: that would rebuild its host's
-/// layout tree and repaint the whole window for a save label after every
-/// keystroke.
+/// A window shows its record saved by drawing what the status changed. The
+/// change is no structure change: that would rebuild its host's layout tree
+/// and repaint the whole window for a save label after every keystroke. Nor
+/// does it re-solve the layout when nothing showing it changed size, or wake
+/// the owner a second time: the save landing woke it once, and the sync that
+/// took the new status up belongs to the frame that shows it. Each would add
+/// work, or a whole frame, after every keystroke.
 #[test]
 fn a_save_status_change_is_no_structure_change() {
     let host = ProbeHost::new();
     let queue = OwnerWakeQueue::default();
-    let (mut owner, seen, _) = prepared(&host, &queue, 7000, true);
+    let (mut owner, seen, wakes) = prepared(&host, &queue, 7000, true);
     let _ = owner.take_structure_change();
     host.records.try_flush().unwrap();
+    let woken = wakes.lock().unwrap().len();
     owner.sync(&AutoCommit::new(), &ROOT);
+    assert_eq!(
+        wakes.lock().unwrap().len(),
+        woken,
+        "taking up the new status wakes no one"
+    );
     let heard = seen.heard.borrow().clone();
     assert!(
         heard.windows(2).any(|pair| pair == [false, true]),
@@ -1099,9 +1116,10 @@ fn a_save_status_change_is_no_structure_change() {
         crate::widget::StructureChange::None,
         "a save status change rebuilds no layout tree"
     );
+    assert!(owner.needs_redraw(), "what shows the status is drawn again");
     assert!(
-        owner.layout_needs_measure() && owner.needs_redraw(),
-        "what shows the status is measured and drawn again"
+        !owner.layout_needs_measure(),
+        "a status that changed no size re-solves no layout"
     );
     let (mut frame, _, _) = frame(&queue, vec![owner]);
     close(&mut frame, 1);

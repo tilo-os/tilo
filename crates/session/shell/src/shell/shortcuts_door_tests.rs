@@ -764,7 +764,7 @@ impl Door {
                 room_workspace(&self.membership.read(), self.room)
                     .shortcuts
                     .iter()
-                    .any(|saved| saved.id == id)
+                    .any(|saved| saved.id() == id)
                     .then_some(())
             },
         );
@@ -977,9 +977,9 @@ fn assert_attributed_to(doc: &mut AutoCommit, run: InvocationId) {
 /// The room's workspace holds `shortcut` alone, as the owner saved it,
 /// under their device's proof.
 fn assert_held_as_saved_by_the_owner(door: &Door, shortcut: Shortcut) {
-    let held = room_workspace(&door.membership.read(), door.room)
-        .shortcuts
-        .clone();
+    let held = tilo_automation::decode_saved(
+        &room_workspace(&door.membership.read(), door.room).shortcuts,
+    );
     assert_eq!(held.len(), 1, "the workspace holds the saved shortcut");
     assert_eq!(
         tilo_peer_state::room::proven_saver(
@@ -1557,7 +1557,7 @@ fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
     let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
     let armed = [crate::shell::automation_triggers::Armed {
         room: arrived.room.clone(),
-        shortcut: &on_message,
+        shortcut: on_message.clone(),
         saver: owner.clone(),
         claims: &[],
     }];

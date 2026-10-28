@@ -1569,12 +1569,13 @@ impl AppComponent {
                 .is_some_and(|previous| *previous != status);
         self.record_save = Some(status);
         if changed {
-            // The caller syncs the root again with the new state; a frame
-            // shows it. An `App` asks for that frame through
-            // `take_save_status_presentation`; a host that does not ask
-            // presents it as a structure change.
+            // The caller, a sync, syncs the root again with the new state,
+            // and the frame that sync belongs to shows it: an `App` asks
+            // through `take_save_status_presentation`, a host through the
+            // widget's redraw. No wake: one would run the owner model's
+            // update and sync again and draw another frame for every save
+            // that lands, a second frame after each keystroke.
             self.save_status_changed = true;
-            self.context.wake_handle().wake();
         }
         changed
     }

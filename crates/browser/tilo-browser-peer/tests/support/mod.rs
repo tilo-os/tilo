@@ -367,6 +367,7 @@ pub fn start_peer_with_store(
             host_cert,
             revocations: RevocationList::new(),
             watching: false,
+            background: false,
         },
         Arc::new(key),
         store,

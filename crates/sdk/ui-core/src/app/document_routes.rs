@@ -4,7 +4,9 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::collaboration::RouteSpec;
+pub(super) use crate::collaboration::document_routes::{
+    decode_routed_mutation, validated_route_payload_with,
+};
 
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
@@ -101,73 +103,6 @@ thread_local! {
     pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-pub(super) fn validated_route_payload(
-    route: &RouteSpec,
-    envelope: &collab_types::SignedOp,
-) -> Option<collab_types::WholeDocumentPayload> {
-    collab_types::validate_whole_document_payload_route(
-        &route.app_id,
-        &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
-        envelope,
-    )
-    .ok()
-}
-
-/// [`validated_route_payload`] for an envelope as it reaches the endpoint:
-/// a reassembled cleartext transfer arrives on its last segment's envelope
-/// with the complete mutation beside it. The segment envelope must belong to
-/// `route`, and the complete payload must be a current-format mutation (the
-/// only format that is ever segmented).
-pub(super) fn validated_route_payload_with(
-    route: &RouteSpec,
-    envelope: &collab_types::SignedOp,
-    decrypted_payload: Option<&[u8]>,
-) -> Option<collab_types::WholeDocumentPayload> {
-    let (None, Some(complete)) = (envelope.encryption.as_ref(), decrypted_payload) else {
-        return validated_route_payload(route, envelope);
-    };
-    let segment = collab_types::validate_document_payload_route(
-        &route.app_id,
-        &route.cluster_id.to_string(),
-        route.record.as_deref().unwrap_or(""),
-        envelope,
-    )
-    .ok()?;
-    if !matches!(
-        segment,
-        collab_types::RoutedDocumentPayload::CleartextSegment(_)
-    ) {
-        return None;
-    }
-    let mutation = collab_types::DocumentMutation::decode(complete).ok()?;
-    Some(collab_types::WholeDocumentPayload::Cleartext(mutation))
-}
-
-pub(super) fn decode_routed_mutation(
-    route: &RouteSpec,
-    payload: collab_types::WholeDocumentPayload,
-    decrypted_payload: Option<&[u8]>,
-) -> Result<collab_types::DocumentMutation, collab_types::DocumentMutationError> {
-    match payload {
-        collab_types::WholeDocumentPayload::Cleartext(mutation) => Ok(mutation),
-        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => {
-            let decrypted_payload =
-                decrypted_payload.ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
-            let mutation = collab_types::DocumentMutation::decode(decrypted_payload)?;
-            let record = route.record.as_deref().unwrap_or("");
-            if collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id.to_string(),
-                record,
-            ) != channel
-            {
-                return Err(collab_types::DocumentMutationError::RouteMismatch);
-            }
-            Ok(mutation)
-        }
-    }
-}
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
         let _background = crate::local_document_action::suspend();

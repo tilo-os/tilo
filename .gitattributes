@@ -19,6 +19,8 @@ os/external-assets/bootc/*.patch whitespace=-blank-at-eol,-blank-at-eof
 os/external-assets/xwayland-satellite/*.patch whitespace=-blank-at-eol,-blank-at-eof
 scripts/browser/cef-source/*.patch whitespace=-blank-at-eol,-blank-at-eof
 tools/release/fixtures/nemo_descriptor.patch whitespace=-blank-at-eol,-blank-at-eof
+# Accounting repair context retains the instrumenter's original C indentation.
+tools/perf/typing-valgrind-accounting.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
 # Pinned seccomp-bpf programs are compared byte for byte by tests.
 *.bpf binary
 
