@@ -7,6 +7,7 @@ use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
 use super::units::{Length, WidthClass};
 
 /// The readable width of a page, in `rem`.
+// ratchet-allow(pixel_const): a width in rem, which the text size scales, not pixels
 pub const MEASURE_REM: f32 = 40.0;
 
 pub struct PageLayout {

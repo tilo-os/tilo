@@ -63,7 +63,7 @@ impl Names {
             return name.to_owned();
         }
         if let Some(kind) = id.strip_prefix("agent:") {
-            return format!("{} (agent)", sentence(kind));
+            return format!("{} (agent)", ui::format::capitalize_first(kind));
         }
         if &*self.me == id {
             return ui::local_identity::bound()
@@ -79,14 +79,6 @@ impl NameHost for Names {
     fn name(&self, who: &Principal) -> String {
         self.label(&who.0)
     }
-}
-
-/// `planner` as `Planner`.
-fn sentence(word: &str) -> String {
-    let mut chars = word.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 /// An id no roster named, short enough to read: a long id keeps its first characters.
