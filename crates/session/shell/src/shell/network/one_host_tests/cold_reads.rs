@@ -77,6 +77,7 @@ impl Device {
             socket: socket.to_path_buf(),
             app,
             room,
+            window: None,
             record: None,
             device: hex::encode(self.cert().device_public_key),
             identity: self.endpoint_identity(room),
@@ -94,11 +95,12 @@ impl Device {
         room: RoomId,
         instance: u64,
     ) -> AppLaunch {
-        crate::shell::launcher::register_in_process_window(app, &room.to_string(), Some(instance));
+        crate::shell::launcher::register_in_process_window(app, &room.to_string(), instance);
         AppLaunch {
             socket: socket.to_path_buf(),
             app,
             room,
+            window: Some(instance),
             record: None,
             device: hex::encode(self.cert().device_public_key),
             identity: self.endpoint_identity(room),
@@ -164,6 +166,8 @@ pub(crate) struct AppLaunch {
     socket: std::path::PathBuf,
     app: &'static str,
     room: RoomId,
+    /// The window the session connects this for, which its handoff names.
+    window: Option<u64>,
     /// The record the window opens, on the wire; `None` for the package's
     /// own record of the room.
     record: Option<String>,
@@ -183,8 +187,17 @@ impl AppLaunch {
     pub(crate) fn connect(self) -> ui::collaboration::CollaborationManager {
         let mut stream =
             std::os::unix::net::UnixStream::connect(&self.socket).expect("connect to the broker");
-        launcher::services::write_collab_handoff(&mut stream, self.app, &self.room.to_string())
-            .expect("hand the connection over as the launcher does");
+        let room = self.room.to_string();
+        match self.window {
+            Some(instance) => launcher::services::write_collab_window_handoff(
+                &mut stream,
+                self.app,
+                &room,
+                instance,
+            ),
+            None => launcher::services::write_collab_handoff(&mut stream, self.app, &room),
+        }
+        .expect("hand the connection over as the session does");
         ui::collaboration::CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             self.app,
