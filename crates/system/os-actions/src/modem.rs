@@ -5,7 +5,7 @@
 //! their locks, signal, operator, registration, network modes, traffic)
 //! and for what only it does (PIN, PUK, network mode, SIM slot). The data
 //! connection, its APN, roaming and metering are a `NetworkManager` profile,
-//! changed through `nmcli` as the rest of the network settings are.
+//! changed through [`tilo_nm`] as the rest of the network settings are.
 //!
 //! PINs and PUKs travel as D-Bus message bodies. They never appear in argv,
 //! an environment variable, `NetworkManager` profile storage, a log or Tilo
@@ -16,8 +16,9 @@ use std::collections::HashMap;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zeroize::Zeroizing;
 
-use crate::network::{MeteredPolicy, split_terse, validate_uuid};
-use crate::process::{run, run_capture};
+use tilo_nm::{NmClient, NmError, Profile, Settings};
+
+use crate::network::{MeteredPolicy, validate_uuid, with_nm};
 
 /// `ModemManager`'s bus name.
 pub const SERVICE: &str = "org.freedesktop.ModemManager1";
@@ -973,99 +974,62 @@ pub const MOBILE_PROFILE_NAME: &str = "Mobile data";
 /// connects by itself, else the one used last. `None` when there is none.
 ///
 /// # Errors
-/// When `nmcli` cannot list or read the profiles.
+/// When `NetworkManager` cannot list the profiles.
 pub fn read_mobile_profile() -> Result<Option<MobileProfile>, String> {
-    let list = run_capture(
-        "nmcli",
-        &[
-            "-t",
-            "-f",
-            "UUID,TYPE,AUTOCONNECT,ACTIVE,TIMESTAMP",
-            "connection",
-            "show",
-        ],
-    )?;
-    let Some(chosen) = choose_mobile_profile(&list) else {
-        return Ok(None);
-    };
-    let details = run_capture(
-        "nmcli",
-        &[
-            "-t",
-            "--escape",
-            "yes",
-            "-f",
-            "connection.id,connection.autoconnect,connection.metered,gsm.apn,gsm.auto-config,gsm.home-only",
-            "connection",
-            "show",
-            "uuid",
-            &chosen.uuid,
-        ],
-    )?;
-    Ok(Some(parse_mobile_profile(chosen, &details)))
+    with_nm(|nm| async move { mobile_profile(&nm).await })
 }
 
-/// One row of `nmcli connection show`, before its details are read.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ListedProfile {
-    pub uuid: String,
-    pub autoconnect: bool,
-    pub active: bool,
-    pub timestamp: u64,
+async fn mobile_profile(nm: &NmClient) -> Result<Option<MobileProfile>, NmError> {
+    let profiles = nm.profiles().await?;
+    let active = nm.active_connections().await.unwrap_or_default();
+    Ok(choose_mobile_profile(&profiles, |profile| {
+        active
+            .iter()
+            .any(|connection| connection.profile == profile.path)
+    }))
 }
 
-/// The mobile data profile among `nmcli -t -f
-/// UUID,TYPE,AUTOCONNECT,ACTIVE,TIMESTAMP connection show`.
-#[must_use]
-pub fn choose_mobile_profile(list: &str) -> Option<ListedProfile> {
-    list.lines()
-        .filter_map(|line| {
-            let fields = split_terse(line);
-            let [uuid, kind, autoconnect, active, timestamp] = fields.as_slice() else {
-                return None;
-            };
-            (kind == "gsm" && validate_uuid(uuid).is_ok()).then(|| ListedProfile {
-                uuid: uuid.clone(),
-                autoconnect: autoconnect == "yes",
-                active: active == "yes",
-                timestamp: timestamp.parse().unwrap_or(0),
-            })
+/// The mobile data profile among `profiles`, of which `is_active` says
+/// which are connected.
+fn choose_mobile_profile(
+    profiles: &[Profile],
+    is_active: impl Fn(&Profile) -> bool,
+) -> Option<MobileProfile> {
+    profiles
+        .iter()
+        .filter(|profile| {
+            profile.settings.kind() == "gsm" && validate_uuid(&profile.settings.uuid()).is_ok()
         })
-        .max_by_key(|profile| (profile.active, profile.autoconnect, profile.timestamp))
+        .map(|profile| {
+            (
+                mobile_profile_of(&profile.settings, is_active(profile)),
+                profile.settings.timestamp().unwrap_or(0),
+            )
+        })
+        .max_by_key(|(profile, timestamp)| (profile.active, profile.autoconnect, *timestamp))
+        .map(|(profile, _)| profile)
 }
 
-/// `listed`'s details, from `nmcli -t --escape yes -f … connection show`.
-#[must_use]
-pub fn parse_mobile_profile(listed: ListedProfile, details: &str) -> MobileProfile {
-    let mut values = HashMap::new();
-    for line in details.lines() {
-        let fields = split_terse(line);
-        if let Some((key, rest)) = fields.split_first() {
-            values.insert(key.clone(), rest.join(":"));
-        }
-    }
-    let value = |key: &str| values.get(key).map_or("", |v| v.trim());
-    let automatic_apn = value("gsm.auto-config") == "yes";
+/// A mobile data profile's settings as Settings shows them.
+fn mobile_profile_of(settings: &Settings, active: bool) -> MobileProfile {
+    let automatic_apn = settings.boolean("gsm", "auto-config").unwrap_or(false);
     MobileProfile {
-        name: Some(value("connection.id"))
+        name: Some(settings.id())
             .filter(|name| !name.is_empty())
-            .unwrap_or(MOBILE_PROFILE_NAME)
-            .to_owned(),
-        autoconnect: values
-            .get("connection.autoconnect")
-            .map_or(listed.autoconnect, |v| v.trim() == "yes"),
-        active: listed.active,
-        apn: Some(value("gsm.apn"))
-            .filter(|apn| !apn.is_empty() && *apn != "--" && !automatic_apn)
-            .map(str::to_owned),
+            .unwrap_or_else(|| MOBILE_PROFILE_NAME.to_owned()),
+        autoconnect: settings.autoconnect(),
+        active,
+        apn: settings
+            .string("gsm", "apn")
+            .filter(|apn| !apn.is_empty() && !automatic_apn),
         automatic_apn,
-        roaming: value("gsm.home-only") != "yes",
-        metered: match value("connection.metered") {
-            "yes" => MeteredPolicy::Metered,
-            "no" => MeteredPolicy::Unmetered,
+        roaming: !settings.boolean("gsm", "home-only").unwrap_or(false),
+        metered: match settings.metered() {
+            1 => MeteredPolicy::Metered,
+            2 => MeteredPolicy::Unmetered,
             _ => MeteredPolicy::Automatic,
         },
-        uuid: listed.uuid,
+        uuid: settings.uuid(),
     }
 }
 
@@ -1085,43 +1049,30 @@ fn valid_apn(apn: &str) -> Result<(), String> {
 /// Make the mobile data profile: the APN chosen from the provider database,
 /// connecting by itself. Its PIN is never stored: the SIM is unlocked
 /// through `ModemManager`.
-fn create_mobile_profile() -> Result<String, String> {
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "add",
-            "type",
-            "gsm",
-            "ifname",
-            "*",
-            "con-name",
-            MOBILE_PROFILE_NAME,
-            "gsm.auto-config",
-            "yes",
-            "gsm.pin-flags",
-            "2",
-            "gsm.password-flags",
-            "2",
-            "connection.autoconnect",
-            "yes",
-        ],
-    )?;
-    read_mobile_profile()?
-        .map(|profile| profile.uuid)
-        .ok_or_else(|| "NetworkManager did not keep the mobile data profile".into())
+async fn create_mobile_profile(nm: &NmClient) -> Result<String, NmError> {
+    let mut settings = Settings::default();
+    settings.set("connection", "id", MOBILE_PROFILE_NAME);
+    settings.set("connection", "type", "gsm");
+    settings.set("connection", "autoconnect", true);
+    settings.set("gsm", "auto-config", true);
+    // NM_SETTING_SECRET_FLAG_NOT_SAVED.
+    settings.set("gsm", "pin-flags", 2_u32);
+    settings.set("gsm", "password-flags", 2_u32);
+    nm.add(settings).await
 }
 
 /// The mobile data profile's uuid, making the profile when there is none,
 /// so its roaming, APN and metering can be set before data is first on.
 ///
 /// # Errors
-/// What `nmcli` refused.
+/// What `NetworkManager` refused.
 pub fn mobile_profile_uuid() -> Result<String, String> {
-    match read_mobile_profile()? {
-        Some(profile) => Ok(profile.uuid),
-        None => create_mobile_profile(),
-    }
+    with_nm(|nm| async move {
+        match mobile_profile(&nm).await? {
+            Some(profile) => Ok(profile.uuid),
+            None => create_mobile_profile(&nm).await,
+        }
+    })
 }
 
 /// Turn mobile data on or off: the modem's radio, and the profile that
@@ -1129,93 +1080,71 @@ pub fn mobile_profile_uuid() -> Result<String, String> {
 /// and connects it.
 ///
 /// # Errors
-/// What `nmcli` refused.
+/// What `NetworkManager` refused.
 pub fn set_mobile_data(on: bool) -> Result<(), String> {
-    run("nmcli", &["radio", "wwan", if on { "on" } else { "off" }])?;
-    if !on {
-        return Ok(());
-    }
-    let profile = read_mobile_profile()?;
-    let uuid = match &profile {
-        Some(profile) => profile.uuid.clone(),
-        None => create_mobile_profile()?,
-    };
-    if profile.as_ref().is_some_and(|profile| !profile.autoconnect) {
-        run(
-            "nmcli",
-            &[
-                "connection",
-                "modify",
-                "uuid",
-                &uuid,
-                "connection.autoconnect",
-                "yes",
-            ],
-        )?;
-    }
-    if profile.as_ref().is_some_and(|profile| profile.active) {
-        return Ok(());
-    }
-    run("nmcli", &["connection", "up", "uuid", &uuid])
+    with_nm(|nm| async move {
+        nm.set_wwan_enabled(on).await?;
+        if !on {
+            return Ok(());
+        }
+        let profile = mobile_profile(&nm).await?;
+        let uuid = match &profile {
+            Some(profile) => profile.uuid.clone(),
+            None => create_mobile_profile(&nm).await?,
+        };
+        if profile.as_ref().is_some_and(|profile| !profile.autoconnect) {
+            nm.edit(&uuid, |settings| {
+                settings.set("connection", "autoconnect", true);
+                Ok(())
+            })
+            .await?;
+        }
+        if profile.as_ref().is_some_and(|profile| profile.active) {
+            return Ok(());
+        }
+        let saved = nm.profile(&uuid).await?;
+        nm.activate(&saved, None, None, None).await
+    })
 }
 
 /// Let the mobile data profile connect on another operator's network, or
 /// keep it to the home network.
 ///
 /// # Errors
-/// A malformed profile id, or what `nmcli` refused.
+/// A malformed profile id, or what `NetworkManager` refused.
 pub fn set_mobile_roaming(uuid: &str, allowed: bool) -> Result<(), String> {
     validate_uuid(uuid)?;
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            "uuid",
-            uuid,
-            "gsm.home-only",
-            if allowed { "no" } else { "yes" },
-        ],
-    )
+    with_nm(|nm| async move {
+        nm.edit(uuid, |settings| {
+            settings.set("gsm", "home-only", !allowed);
+            Ok(())
+        })
+        .await
+    })
 }
 
 /// Use `apn`, or (`None`) the one the provider database names for the SIM.
 ///
 /// # Errors
-/// A malformed profile id or APN, or what `nmcli` refused.
+/// A malformed profile id or APN, or what `NetworkManager` refused.
 pub fn set_mobile_apn(uuid: &str, apn: Option<&str>) -> Result<(), String> {
     validate_uuid(uuid)?;
-    match apn {
-        Some(apn) => {
-            valid_apn(apn)?;
-            run(
-                "nmcli",
-                &[
-                    "connection",
-                    "modify",
-                    "uuid",
-                    uuid,
-                    "gsm.auto-config",
-                    "no",
-                    "gsm.apn",
-                    apn,
-                ],
-            )
-        }
-        None => run(
-            "nmcli",
-            &[
-                "connection",
-                "modify",
-                "uuid",
-                uuid,
-                "gsm.apn",
-                "",
-                "gsm.auto-config",
-                "yes",
-            ],
-        ),
+    if let Some(apn) = apn {
+        valid_apn(apn)?;
     }
+    with_nm(|nm| async move {
+        nm.edit(uuid, |settings| {
+            if let Some(apn) = apn {
+                settings.set("gsm", "auto-config", false);
+                settings.set("gsm", "apn", apn);
+            } else {
+                settings.remove("gsm", "apn");
+                settings.set("gsm", "auto-config", true);
+            }
+            Ok(())
+        })
+        .await
+    })
 }
 
 #[cfg(test)]

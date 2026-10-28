@@ -711,30 +711,6 @@ fn networks_of(points: &[AccessPoint]) -> Vec<WifiNetworkInfo> {
     networks
 }
 
-/// Split a single nmcli `-t` (terse) line on unescaped `:` separators. `\:` inside a field
-/// stays a literal colon.
-pub(crate) fn split_terse(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut buf = String::new();
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\'
-            && let Some(&next) = chars.peek()
-        {
-            buf.push(next);
-            chars.next();
-            continue;
-        }
-        if c == ':' {
-            out.push(std::mem::take(&mut buf));
-        } else {
-            buf.push(c);
-        }
-    }
-    out.push(buf);
-    out
-}
-
 /// Map an access point's strength percentage `0..=100` onto the popover's signal bucket `0..=4`.
 fn signal_pct_to_bucket(pct: u8) -> u8 {
     match pct {

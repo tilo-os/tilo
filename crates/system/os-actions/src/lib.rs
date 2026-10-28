@@ -1,6 +1,7 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
 //! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
-//! Both needed the same brightnessctl/wpctl/nmcli/bluetoothctl/powerprofilesctl bindings, and
+//! Both needed the same brightnessctl/wpctl/powerprofilesctl bindings and network and
+//! Bluetooth clients, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
 //!
@@ -16,8 +17,10 @@
 //!
 //! ## Dispatcher trait
 //!
-//! Bluetooth is the exception to the CLI wrappers: it uses the persistent
-//! `tilo-bluez` D-Bus client because discovery and pairing are connection-bound.
+//! Bluetooth and networking are the exceptions to the CLI wrappers: they use the
+//! `tilo-bluez` and `tilo-nm` D-Bus clients, because discovery, pairing and a secret
+//! handed over for one connection are bound to a bus connection, and so the shell, Settings
+//! and the rest of the OS read one model of each.
 //!
 //! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
 //! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
