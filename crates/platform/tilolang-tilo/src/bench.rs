@@ -1145,10 +1145,14 @@ impl Sized<'_> {
 /// # Errors
 /// The package does not compile or a scenario fails.
 pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Record>, String> {
-    let translation = tilolang_runtime::set_translation(config.translation);
-    if translation != config.translation {
+    let engine = tilolang_runtime::configure(tilolang_runtime::EngineConfig {
+        translation: config.translation,
+        ..tilolang_runtime::EngineConfig::default()
+    })?;
+    if engine.translation != config.translation {
         return Err(format!(
-            "the process's engine already translates {translation:?}"
+            "the process's engine already translates {:?}",
+            engine.translation
         ));
     }
     let compiling = Instant::now();

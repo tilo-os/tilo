@@ -310,7 +310,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   the module hash, so a package loaded again (a second window, a reload of unchanged code)
   compiles nothing. Each runtime keeps its own linker, limits and instance pools; an instance
   caches its export functions and their result types, so a call looks nothing up by name.
-  `set_translation(Lazy|Eager)` picks how modules are translated, once, before the first
+  `configure(EngineConfig)` picks the engine and how wasmi translates, once, before the first
   runtime. `Engine::profile(true)` (via `Runtime::engine()`) counts calls, time in wasm, time
   in the host's imports and compile time.
 - **No compiling at launch.** `Host::load_wasm(bytes)` loads a package from its module alone,
@@ -328,6 +328,13 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
   for that. The time is in the host (store reads behind imports, search, publication), which is
   where the work goes. Revisit when a profile shows guest time as the larger share.
+- **One seam for engines.** What the runtime asks of an engine is a private trait in `engine.rs`:
+  compile bytes into a shareable module, bind the import table, instantiate with fuel and a
+  memory limit, call one export with a host context in the store. The module cache, instance
+  pools, profile, import dispatch and the wording of every `CallError` sit above it, once, so a
+  call gives the same result on every engine. wasmtime (Cranelift or Winch) is a second
+  implementation behind the `wasmtime` feature, off by default, for comparing engines
+  (docs/tilolang-engines.md); `TILOLANG_ENGINE` runs the suites on it.
 - **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
   key carries one; any other node (the root view's own, an anchored one) by walking the tree
   once, after which where it was is kept and checked before use. Typing into an input of a view
