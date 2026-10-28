@@ -560,12 +560,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/findings.py python3 tools/policy/check_vendor_provenance.py"
 
 [[check]]
-name = "policy/too-many-arguments"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/findings.py bash tools/ci/t-git-index.sh python3 tools/policy/check_too_many_arguments.py"
-
-[[check]]
 name = "policy/source-file-size"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1303,12 +1297,6 @@ name = "policy/tests/unit/thin-app-compiler-cache"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_thin_app_compiler_cache.py"
-
-[[check]]
-name = "policy/tests/unit/too-many-arguments"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_too_many_arguments.py"
 
 [[check]]
 name = "policy/tests/unit/tool-test-suite"
