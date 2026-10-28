@@ -1947,7 +1947,7 @@ impl App {
                 .continuation
                 .last_private_route
                 .as_ref()
-                .is_some_and(|last| last.route != witness.route)
+                .is_some_and(|last| last.route() != witness.route())
                 || self.continuation.private_instance != Some(instance)
             {
                 self.continuation.owner_view = Default::default();
@@ -1963,7 +1963,7 @@ impl App {
             self.continuation.last_private_route = Some(witness.clone());
             self.continuation.private_instance = Some(instance);
         }
-        Some(witness.route)
+        Some(witness.route().clone())
     }
 }
 

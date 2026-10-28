@@ -245,7 +245,7 @@ impl App {
                             .collaboration
                             .manager
                             .primary_route()
-                            .map(|witness| witness.route.clone());
+                            .map(|witness| witness.route().clone());
                     }
                     if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
                         tracing::warn!(%error,"native document route switch remains unavailable");
