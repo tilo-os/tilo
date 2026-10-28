@@ -52,12 +52,18 @@
 		}
 	}
 
+	# The entry pages and what they name by relative path. No precompressed
+	# here: Caddy serves a sidecar file as another entity, and for one it
+	# names the sidecar's ETag but not the Last-Modified of the file asked
+	# for, so a browser's If-Modified-Since has nothing to match and the
+	# answer has one validator where it should have two (test-image.sh holds
+	# both). These are two small HTML files, so Caddy compresses them per
+	# request, and Vary: Accept-Encoding keeps an edge's gzip apart from the
+	# rest.
 	handle {
 		root * /srv/tilo-web
 		header Cache-Control "no-cache"
-		file_server {
-			precompressed br zstd
-		}
+		file_server
 	}
 
 	# No cache may keep an error, least of all one under /v/ as immutable: a

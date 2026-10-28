@@ -108,9 +108,10 @@ start() {
   done
   fail "the server did not start"
 }
-# get PATH [curl args…]: the body; head_of …: the headers, lowercased names.
-get() { curl -fsS --max-time 20 "${@:2}" "http://127.0.0.1:8080$1"; }
-head_of() { curl -fsS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1:8080$1" | tr -d '\r' | lower_names; }
+# get PATH [curl args…]: the body; head_of …: the headers, lowercased names. No -f: a body
+# read here is compared byte for byte, and curl keeps none of an answer it fails.
+get() { curl -sS --max-time 20 "${@:2}" "http://127.0.0.1:8080$1"; }
+head_of() { curl -sS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1:8080$1" | tr -d '\r' | lower_names; }
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
@@ -164,6 +165,21 @@ grep -q "<link rel=\"preload\" href=\"../v/$version/pkg/tilo_browser_runtime_bg.
   || fail "the app entry does not preload the versioned runtime module"
 grep -q "<link rel=\"modulepreload\" href=\"./v/$version/media-moq-library.mjs\"" <<<"$page" \
   || fail "the entry page does not preload the versioned live-plane library"
+# Every module the entry module statically reaches is named beside the entry
+# module itself (layout.py): a browser then fetches the whole graph at once,
+# instead of one level per round trip. Each hint must name a file the image
+# serves, or the preload fails and the module is fetched anyway.
+hints_of() { grep -o 'rel="modulepreload" href="[^"]*"' <<<"$1" | sed -n 's|.*href="\([^"]*\)".*|\1|p'; }
+for entry in / /app/; do
+  body=$(get "$entry")
+  [[ $(grep -c 'rel="modulepreload"' <<<"$body") -gt 2 ]] \
+    || fail "$entry names its entry modules but not the graph they import: $(hints_of "$body" | tr '\n' ' ')"
+  while read -r hint; do
+    # A hint is relative to the page it is on: ./ at /, ../ at /app/.
+    [[ -f "$root/srv/tilo-web/${hint#./}" || -f "$root/srv/tilo-web/${hint#../}" ]] \
+      || fail "$entry preloads $hint, which the image does not serve"
+  done < <(hints_of "$body")
+done
 grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
 # Safari's home-screen icon sits beside the entry pages, as their links and
 # Safari's own unasked lookup expect.
@@ -208,15 +224,71 @@ done
 
 # Every answer to a plain GET is a whole 200, encoded or not: CDNs never
 # cache a 206, so a partial answer to a request without Range sends every
-# visitor to the origin.
+# visitor to the origin. gzip is in the list because an edge that compresses
+# for a client the origin did not (Cloudflare does for gzip; a pod here
+# precompresses br and zstd only) must still pass the whole body through.
 for path in / "/v/$version/entry-page.mjs" "/v/$version/pkg/tilo_browser_runtime_bg.wasm"; do
-  for encoding in zstd br 'gzip, deflate, br, zstd' identity; do
+  for encoding in zstd br gzip 'gzip, deflate, br, zstd' identity; do
     status=$(head_of "$path" -H "Accept-Encoding: $encoding" | head -1)
     [[ $status == 'HTTP/1.1 200 OK' ]] || fail "$path with Accept-Encoding $encoding: $status"
   done
 done
 
+# Only br and zstd are precompressed on disk (the Containerfile's compress
+# stage, Caddyfile's precompressed). A client that accepts neither gets the
+# file as it is, byte for byte: a body that is not what its Content-Encoding
+# and length say is broken whatever a CDN does with it.
+cmp -s <(get "/v/$version/pkg/tilo_browser_runtime_bg.wasm" -H 'Accept-Encoding: gzip') \
+  "$root/srv/tilo-web/v/$version/pkg/tilo_browser_runtime_bg.wasm" \
+  || fail "a gzip-only client must get the runtime module as it is, whole"
+
+# An ETag as a conditional request echoes it: weak or strong, quoted, not bare,
+# and never two encodings of one file's bytes under one name.
+etag_of() { sed -n 's/^etag: *//Ip' <<<"$(head_of "$1" -H "Accept-Encoding: $2" -H 'Accept: */*')"; }
+
+# Every answer a visitor revalidates by carries an ETag naming the bytes it
+# answers with. br is a sidecar the image ships (the Containerfile's compress
+# stage) and gzip is compressed here, as an edge does for a client the origin
+# left unencoded; either way a validator and a body must not part ways, which
+# is what one ETag over both of a file's encodings would mean.
+for path in / /app/ /version.json /entry.json "/v/$version/entry-page.mjs" "/v/$version/pkg/tilo_browser_runtime_bg.wasm"; do
+  identity=$(etag_of "$path" identity)
+  [[ -n $identity ]] || fail "$path (identity) carries no ETag"
+  for encoding in br gzip; do
+    headers=$(head_of "$path" -H "Accept-Encoding: $encoding" -H 'Accept: */*')
+    grep -q "^content-encoding: $encoding\$" <<<"$headers" \
+      || fail "$path with Accept-Encoding $encoding: no Content-Encoding $encoding: $(tr '\n' ' ' <<<"$headers")"
+    etag=$(etag_of "$path" "$encoding")
+    [[ -n $etag ]] || fail "$path ($encoding) carries no ETag: $(tr '\n' ' ' <<<"$headers")"
+    [[ $etag != "$identity" ]] \
+      || fail "$path: one ETag, $etag, names both its $encoding and its identity bytes"
+  done
+done
+
+# The entry page is revalidated on every visit: it is no-cache, so nothing but
+# a 304 stops a restart from downloading the editor's module graph again, and
+# its ETag is what revalidates it. Caddy's file handler hands 304s to
+# ServeContent, which shares one 304 branch between If-Match and the date but
+# none between the ETag and the date. Over gzip the answer carries no
+# Last-Modified, so the ETag is what must answer.
+etag=$(etag_of / gzip)
+not_modified=$(head_of / -H 'Accept-Encoding: gzip' -H "If-None-Match: $etag")
+[[ $(head -1 <<<"$not_modified") == 'HTTP/1.1 304 Not Modified' ]] \
+  || fail "/ is not a 304 for the ETag it just sent: $(head -1 <<<"$not_modified")"
+
+# The start module is one immutable URL and one validator per encoding: a
+# revisit is a 304 whatever the age of the file, and the br answer a browser
+# gets keeps the Last-Modified a client's If-Modified-Since still sends.
 wasm="/v/$version/pkg/tilo_browser_runtime_bg.wasm"
+grep -qi '^last-modified:' <<<"$(head_of "$wasm" -H 'Accept-Encoding: br')" \
+  || fail "$wasm (br) carries no Last-Modified"
+for encoding in br identity; do
+  etag=$(etag_of "$wasm" "$encoding")
+  not_modified=$(head_of "$wasm" -H "Accept-Encoding: $encoding" -H "If-None-Match: $etag")
+  [[ $(head -1 <<<"$not_modified") == 'HTTP/1.1 304 Not Modified' ]] \
+    || fail "$wasm ($encoding) is not a 304 for the ETag $etag it just sent: $(head -1 <<<"$not_modified")"
+done
+
 headers=$(head_of "$wasm" -H 'Accept-Encoding: br, zstd')
 grep -q '^content-type: application/wasm' <<<"$headers" || fail "wasm type: $headers"
 grep -q '^content-encoding: br' <<<"$headers" || fail "wasm is not served as brotli, the smaller encoding: $headers"
