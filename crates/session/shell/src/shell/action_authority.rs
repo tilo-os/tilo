@@ -420,6 +420,20 @@ pub(crate) fn with_ordinary_room_current<T>(
         };
         await_published(&authority, room, revision).map_err(|error| error.to_string())?;
     }
+    with_ordinary_room_published(tree, room, operation)
+}
+
+/// [`with_ordinary_room_current`] without waiting for a save in flight: the
+/// room's policy as the tree holds it must already be the published one, or
+/// this refuses at once. For the frame loop, which asks which certificate
+/// this device's person acts with in every workspace's room while it lists
+/// actions: waiting there for the state writer stalls the whole desktop for
+/// as long as the writer is busy.
+pub(crate) fn with_ordinary_room_published<T>(
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+    operation: impl FnOnce(&crate::shell::state::Workspace) -> Result<T, String>,
+) -> Result<T, String> {
     let tree = tree.read();
     if tree.requires_native_owner(room) {
         return Err("This room requires its current native owner.".into());
