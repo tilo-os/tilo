@@ -33,6 +33,7 @@ pub mod retained_replacement;
 pub mod retained_role;
 pub mod runtime_request;
 pub mod service_socket;
+pub mod tilolang_host;
 pub mod tools;
 pub mod windows;
 

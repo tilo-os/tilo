@@ -639,7 +639,7 @@ fn push_gstreamer_plugins(argv: &mut Vec<String>, root: &Path, mount: &Path) {
     ]);
 }
 
-fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+pub(crate) fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
     };

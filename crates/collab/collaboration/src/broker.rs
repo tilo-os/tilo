@@ -2678,6 +2678,42 @@ impl CollaborationManager {
         ))
     }
 
+    /// The manager of one app instance a tilolang host runs, joining `route`
+    /// in the background on `connection`, as the person whose identity the
+    /// identity-service connection `identity` holds.
+    ///
+    /// The session opened both connections for that app's launch and handed
+    /// them to the host (`runtime_portal::tilolang_host`): the broker attests
+    /// `connection` against the session's launch record of the instance, never
+    /// against what the host says, and refuses a hello for another app or
+    /// room. Nothing is read from the process's environment, which is the
+    /// host's, not the app's. `identity` must outlive the manager.
+    ///
+    /// # Errors
+    ///
+    /// The identity service did not answer, or its identity has no certified
+    /// device.
+    #[cfg(all(feature = "native", unix))]
+    pub fn join_instance(
+        kind: &crate::record::RecordKind,
+        connection: runtime_portal::windows::Descriptor,
+        identity: std::os::fd::BorrowedFd<'_>,
+        route: RouteSpec,
+        handle: Option<String>,
+    ) -> Result<Self, crate::NativeLaunchError> {
+        let signing = runtime_identity::inherited::connect_service(identity)
+            .map_err(|error| native_launch_refusal(&error))?;
+        let identity = sdk_join_identity_from(signing, route.cluster_id)
+            .map_err(|error| native_launch_refusal(&error))?;
+        Ok(Self::connect_in_background(
+            SdkConnectSource::Fd(runtime_portal::windows::into_raw(connection)),
+            SdkIdentitySource::Ready(Some(identity)),
+            route,
+            Some(kind.as_str().to_owned()),
+            handle,
+        ))
+    }
+
     /// This manager, once the primary route it is joining is joined: waits
     /// on the calling thread for the broker's answer, for as long as it
     /// takes, and fails with the broker's reason or the connection's end. A
