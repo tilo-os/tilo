@@ -239,16 +239,12 @@ fn chrome_density_follows_measured_text_at_every_width() {
                 .window_toolbar()
                 .actions
                 .into_iter()
-                .map(|action| action.id)
+                .map(|action| action.icon)
                 .collect();
-            for id in [
-                window_bar::INSERT,
-                window_bar::PROPERTIES,
-                window_bar::PRESENT,
-            ] {
+            for icon in ["plus", "panel-right", "play"] {
                 assert!(
-                    actions.iter().any(|action| action == id),
-                    "{id} stays in the window bar: {actions:?}"
+                    actions.iter().any(|action| action == icon),
+                    "{icon} stays in the window bar: {actions:?}"
                 );
             }
             assert!(
@@ -499,7 +495,7 @@ fn inspector_docks_wide_and_overlays_narrow() {
                 .window_toolbar()
                 .actions
                 .into_iter()
-                .find(|action| action.id == window_bar::PROPERTIES)
+                .find(|action| action.icon == "panel-right")
                 .expect("the window bar offers the properties' toggle");
             assert!(!properties.on, "the toggle shows the properties closed");
         });
@@ -543,7 +539,7 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
                 toolbar
                     .actions
                     .iter()
-                    .any(|action| action.id == window_bar::PROPERTIES),
+                    .any(|action| action.icon == "panel-right"),
                 "the properties have their toggle"
             );
         });
@@ -1051,7 +1047,7 @@ fn chrome_labels_are_fluent_resolved_text() {
             .window_toolbar()
             .actions
             .into_iter()
-            .find(|action| action.id == window_bar::INSERT)
+            .find(|action| action.name == "Insert")
             .expect("the window bar's Insert menu");
         let tools: Vec<String> = insert.items.into_iter().map(|item| item.name).collect();
         assert_eq!(tools, ["Text", "Rectangle", "Ellipse", "Line", "Image"]);

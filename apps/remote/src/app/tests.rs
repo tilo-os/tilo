@@ -1051,20 +1051,28 @@ fn the_wheel_scrolls_a_vnc_desktop() {
 
 #[test]
 fn the_window_bar_names_the_screen_and_holds_its_actions() {
-    use super::window_bar::{LEAVE_FORM, NEW_CONNECTION, SAVE};
     use ui::window_toolbar::{ToolbarEvent, deliver};
 
-    let ids = |bar: &ui::window_toolbar::WindowToolbar| {
+    let names = |bar: &ui::window_toolbar::WindowToolbar| {
         bar.actions
             .iter()
-            .map(|action| action.id.clone())
+            .map(|action| action.name.clone())
             .collect::<Vec<_>>()
     };
     let label = |bar: &ui::window_toolbar::WindowToolbar| {
         bar.location.as_ref().map(|location| location.label.clone())
     };
-    let press = |app: &mut RemoteApp, id: &str| {
-        deliver(ToolbarEvent::Action { id: id.into() });
+    let press = |app: &mut RemoteApp, name: &str| {
+        let bar = app.window_toolbar();
+        let id = bar
+            .leading
+            .iter()
+            .chain(&bar.actions)
+            .find(|action| action.name == name)
+            .unwrap_or_else(|| panic!("the bar has no {name}: {bar:?}"))
+            .id
+            .clone();
+        deliver(ToolbarEvent::Action { id });
         app.take_window_toolbar_events();
         app.apply_requests();
     };
@@ -1072,24 +1080,23 @@ fn the_window_bar_names_the_screen_and_holds_its_actions() {
     let mut app = demo();
     let bar = app.window_toolbar();
     assert_eq!(label(&bar).as_deref(), Some("Connections"));
-    assert_eq!(ids(&bar), [NEW_CONNECTION]);
+    assert_eq!(names(&bar), ["New connection"]);
 
-    press(&mut app, NEW_CONNECTION);
+    press(&mut app, "New connection");
     assert_eq!(app.screen, Screen::Form { editing: None });
     let bar = app.window_toolbar();
     assert_eq!(label(&bar).as_deref(), Some("New connection"));
-    assert_eq!(ids(&bar), [SAVE]);
-    assert!(
-        bar.leading.iter().any(|action| action.id == LEAVE_FORM),
-        "the form is left from the bar"
-    );
+    assert_eq!(names(&bar), ["Save"]);
 
-    press(&mut app, SAVE);
+    press(&mut app, "Save");
     assert!(
         app.problems.name.is_some(),
         "Save in the bar saves the form"
     );
-    press(&mut app, LEAVE_FORM);
+    press(
+        &mut app,
+        &ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+    );
     assert_eq!(app.screen, Screen::List);
 
     let rdp = app.first_of_kind(ConnectionKind::Rdp).unwrap();

@@ -698,6 +698,8 @@ pub struct RemoteApp {
     immersive: Option<SessionPane>,
     /// The queue every control reports to.
     requests: Requests,
+    /// The window bar's entries, carrying the actions they ask for.
+    bar: ui::framework::BarCommands<Action>,
     /// Search hits picked in the platform search, waiting to be shown.
     opened: Rc<RefCell<Vec<String>>>,
     /// The fingerprint of what the window was last built to show.
@@ -749,6 +751,7 @@ impl RemoteApp {
                 .mode(NavMode::Docked),
             immersive: None,
             requests: Requests::default(),
+            bar: ui::framework::BarCommands::new(),
             opened: Rc::default(),
             built: None,
             rect: Rect::ZERO,
