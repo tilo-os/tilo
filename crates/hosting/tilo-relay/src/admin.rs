@@ -811,6 +811,12 @@ fn cmd_status(config: &std::path::Path) -> anyhow::Result<()> {
         println!("  bytes queued:         {}", metrics.bytes_queued);
         println!("  bytes sent:           {}", metrics.bytes_sent);
         println!("  bytes sent live:      {}", metrics.bytes_sent_live);
+        println!(
+            "  membership reads:     {} ({} shared, {} unwatched)",
+            metrics.membership_reads,
+            metrics.membership_reads_shared,
+            metrics.membership_reads_unwatched
+        );
         for (workspace_id, egress) in &metrics.rooms {
             println!(
                 "  {workspace_id}\tbytes sent={}\tlive={}",

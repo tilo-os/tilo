@@ -195,6 +195,14 @@ marginal cost today is a share of a node it already pays for.
 * **Alerts:** guests and spectators above 80 % of their caps
   (`tilo_rooms_max_guests` and `tilo_rooms_max_spectators`, which the room
   service now exports), and the container above 85 % of its memory limit.
+  For authorization cost, watch
+  `tilo_rooms_relay_membership_reads_total` against
+  `tilo_rooms_relay_membership_reads_shared_total` (a room's sessions share
+  one membership read per disk generation, so the first should grow with
+  membership churn while the second grows with sessions) and
+  `tilo_rooms_relay_membership_reads_unwatched_total`, which is nonzero only
+  when no live membership watch vouches for the room and every authorization
+  reads the files.
 
 t's `perf-hosting-room` check, in the performance run, guards the 100-guest
 point (`tools/perf/kpi-budgets.toml`, `hosting.room.*.g100`).

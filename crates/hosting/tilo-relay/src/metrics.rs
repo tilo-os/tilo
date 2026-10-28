@@ -57,6 +57,11 @@ pub struct Metrics {
     bytes_sent_live: AtomicU64,
     /// Egress per relay room.
     rooms: RwLock<HashMap<u64, RoomCounters>>,
+    /// Membership loads that reached a room's disk, those shared with a read
+    /// already made, and those made while no live watch vouched for the room.
+    membership_reads: AtomicU64,
+    membership_reads_shared: AtomicU64,
+    membership_reads_unwatched: AtomicU64,
     /// Egress per connected session, keyed by a serial number.
     sessions: Mutex<HashMap<u64, Arc<SessionCounters>>>,
     /// Serial number of the next session.
@@ -209,6 +214,21 @@ impl Metrics {
         }
     }
 
+    /// Charge one authorization's membership read of its room: a read that
+    /// reached the disk (`unwatched` when no live watch vouched for the
+    /// room), or one that took a read another authorization already made.
+    pub fn add_membership_read(&self, shared: bool, unwatched: bool) {
+        if shared {
+            self.membership_reads_shared.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.membership_reads.fetch_add(1, Ordering::Relaxed);
+        }
+        if unwatched {
+            self.membership_reads_unwatched
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Read a snapshot of every counter (for `admin status`).
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -228,6 +248,9 @@ impl Metrics {
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
             sessions_open: u64::try_from(self.sessions.lock_recover().len()).unwrap_or(u64::MAX),
+            membership_reads: self.membership_reads.load(Ordering::Relaxed),
+            membership_reads_shared: self.membership_reads_shared.load(Ordering::Relaxed),
+            membership_reads_unwatched: self.membership_reads_unwatched.load(Ordering::Relaxed),
             rooms: self.room_egress(),
         }
     }

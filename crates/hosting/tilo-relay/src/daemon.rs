@@ -2124,8 +2124,26 @@ impl RevocationRefresh {
     }
 }
 
+/// The running daemon's metrics, for counters that no task holds a handle to
+/// (a room's membership loads, read from the authorization path). Two relays
+/// in one process (only tests run that way) publish into the same one; the
+/// counters only ever count work this process did.
+pub(crate) fn daemon_metrics() -> Option<Arc<Metrics>> {
+    METRICS.get().cloned()
+}
+
+/// Publish `live_metrics` as the running daemon's metrics, unless another
+/// relay in this process already did (only tests run two).
+fn install_daemon_metrics(live_metrics: &Arc<Metrics>) {
+    let _ = METRICS.set(live_metrics.clone());
+}
+
+/// The running daemon's metrics, once [`install_daemon_metrics`] ran.
+static METRICS: std::sync::OnceLock<Arc<Metrics>> = std::sync::OnceLock::new();
+
 /// The metrics-persist loop: snapshot + save to disk every second.
 fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -> JoinHandle<()> {
+    install_daemon_metrics(&live_metrics);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

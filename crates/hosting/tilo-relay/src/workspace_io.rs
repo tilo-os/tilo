@@ -1,8 +1,14 @@
 //! Filesystem authority work is independent of state persistence. Admission is
 //! bounded before spawning work; one authorization lane serializes each room's
 //! reads and writes. No routing or registry guard crosses filesystem work.
+//!
+//! A membership reload is shared, not repeated: one read per room per watched
+//! disk generation, awaited by every authorization that needs it. Every guest
+//! who joins a public room changes its membership file, and the whole room's
+//! next authorization then needs the same read.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 
@@ -27,10 +33,216 @@ fn authorization_slots() -> &'static Arc<Semaphore> {
 }
 
 /// How long authorization work waits for a slot before its caller fails.
-/// Every guest who joins a public room changes its membership, so a burst
-/// of arrivals sends every session's next check to disk at once; they queue
-/// here rather than each ending its session.
+/// A burst of arrivals changes the room's membership once for each guest, so
+/// its sessions' next checks queue here rather than each ending; what they
+/// wait for is one shared reload per change ([`MembershipLoads`]), not one
+/// read each.
 const AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the reload that publishes a generation keeps its result for the
+/// authorizations already on their way to the same read. An authorization
+/// that reaches the room after it expired reads again, and sees the same
+/// answer: the generation it observed has not moved.
+const MEMBERSHIP_LOAD_KEPT: Duration = Duration::from_secs(2);
+
+/// Membership read from disk at one watched disk generation.
+#[derive(Clone, Debug)]
+struct LoadedMembership {
+    /// The generation observed before the read, `None` while no live watch
+    /// vouches for the room and every authorization reads the files.
+    generation: Option<u64>,
+    members: Vec<[u8; 32]>,
+}
+
+/// The read a reload is running at one generation: what it loaded, or the
+/// error it failed with. A failure is reported to every waiter and then
+/// forgotten, so the next caller tries the disk again rather than inherit it.
+#[derive(Clone, Debug)]
+enum LoadOutcome {
+    Loaded(LoadedMembership),
+    Failed(String),
+}
+
+/// One read in flight. Its identity is the allocation: a reload leads only
+/// the read it created, and a leader that lost its way must not publish on
+/// behalf of the one that replaced it.
+struct InflightLoad {
+    outcome: watch::Sender<Option<LoadOutcome>>,
+}
+
+struct KeptLoad {
+    outcome: LoadOutcome,
+    /// When the leader published it. Its waiters have been sent their copy;
+    /// only a straggler reads it after this.
+    published: Instant,
+}
+
+/// One room's membership loads: the read in flight for it, and the one just
+/// published. A burst of authorizations after one membership change waits on
+/// the first and reads the disk once.
+#[derive(Default)]
+struct MembershipLoads {
+    inflight: Option<Arc<InflightLoad>>,
+    kept: Option<KeptLoad>,
+}
+
+impl MembershipLoads {
+    /// Join the read in flight, or lead a new one when none is (or when the
+    /// one kept is for another generation, or is an error, or is too old to
+    /// be still on its way to anybody).
+    fn join_or_lead(&mut self, observed: Option<u64>) -> Join {
+        if let Some(inflight) = &self.inflight {
+            return Join::Follower(inflight.clone());
+        }
+        if let Some(kept) = &self.kept {
+            let reusable = matches!(&kept.outcome, LoadOutcome::Loaded(loaded) if loaded.generation == observed)
+                && kept.published.elapsed() < MEMBERSHIP_LOAD_KEPT;
+            if reusable {
+                return Join::Kept(kept.outcome.clone());
+            }
+        }
+        let (led, waiting) = self.lead();
+        Join::Leader { led, waiting }
+    }
+
+    /// Take the room's read slot, to read the disk and publish what it read.
+    fn lead(&mut self) -> (Arc<InflightLoad>, watch::Receiver<Option<LoadOutcome>>) {
+        let (outcome, waiting) = watch::channel(None);
+        let led = Arc::new(InflightLoad { outcome });
+        self.inflight = Some(led.clone());
+        (led, waiting)
+    }
+
+    /// Publish what the leading read loaded, to the waiters and to the
+    /// authorizations still on their way to the same read. `finished` is the
+    /// read it led; a leader that is gone must not replace a read others lead.
+    fn publish(
+        &mut self,
+        finished: &Arc<InflightLoad>,
+        observed: Option<u64>,
+        outcome: Result<LoadedMembership, StoreError>,
+    ) {
+        let outcome = match outcome {
+            Ok(loaded) => LoadOutcome::Loaded(loaded),
+            Err(error) => LoadOutcome::Failed(error.to_string()),
+        };
+        // Told before the slot is cleared, so no authorization arrives between
+        // the two and reads a disk the room is done reading.
+        finished.outcome.send_replace(Some(outcome.clone()));
+        if self
+            .inflight
+            .as_ref()
+            .is_some_and(|inflight| Arc::ptr_eq(inflight, finished))
+        {
+            self.inflight = None;
+        }
+        // Kept only for the generation that was read, and never an error:
+        // a failed load leaves the next caller to read the disk again.
+        self.kept = match &outcome {
+            LoadOutcome::Loaded(loaded) if loaded.generation == observed => Some(KeptLoad {
+                outcome: outcome.clone(),
+                published: Instant::now(),
+            }),
+            _ => None,
+        };
+    }
+}
+
+/// How this authorization takes part in its room's load.
+enum Join {
+    /// It reads the disk, and publishes what it read. The receiver carries
+    /// the published outcome, `led` is the read this reload created.
+    Leader {
+        led: Arc<InflightLoad>,
+        waiting: watch::Receiver<Option<LoadOutcome>>,
+    },
+    /// Another read is in flight; it takes that read's answer.
+    Follower(Arc<InflightLoad>),
+    /// The room just published this generation.
+    Kept(LoadOutcome),
+}
+
+/// Each room's [`MembershipLoads`], keyed by its state root. A room nobody
+/// is reloading, and whose counters already reached the metrics, is dropped:
+/// the paths of the rooms a process serves are stable, but the rooms a test
+/// run opens in a recycled temporary directory are not, and a new room must
+/// never inherit a finished one's kept read.
+fn membership_loads(root: &std::path::Path) -> Arc<Mutex<MembershipLoads>> {
+    static LOADS: OnceLock<Mutex<HashMap<std::path::PathBuf, Arc<Mutex<MembershipLoads>>>>> =
+        OnceLock::new();
+    let loads = LOADS.get_or_init(Mutex::default);
+    let mut loads = loads.lock_recover();
+    loads.retain(|_, loads| Arc::strong_count(loads) > 1);
+    loads.entry(root.to_path_buf()).or_default().clone()
+}
+
+/// The membership-load counters of every room this process reads for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MembershipLoadCounts {
+    /// Authorizations whose room read its membership files from disk.
+    pub(crate) disk_reads: u64,
+    /// Authorizations that took a read another authorization already made at
+    /// the same disk generation.
+    pub(crate) shared: u64,
+    /// Reads made while no live membership watch vouched for the room, so
+    /// every authorization of it reaches the disk.
+    pub(crate) unwatched: u64,
+}
+
+/// Each room's counters, keyed by its state root. Kept apart from the room's
+/// [`MembershipLoads`] because these are only numbers: they outlive the
+/// reads they count, and are never inherited as an answer.
+fn membership_load_counts_map() -> &'static Mutex<HashMap<std::path::PathBuf, MembershipLoadCounts>>
+{
+    static COUNTS: OnceLock<Mutex<HashMap<std::path::PathBuf, MembershipLoadCounts>>> =
+        OnceLock::new();
+    COUNTS.get_or_init(Mutex::default)
+}
+
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the guard is the room's counters; it is released when the entry is updated"
+)]
+fn count_membership_load(root: &std::path::Path, charge: Charge) {
+    let mut all = membership_load_counts_map().lock_recover();
+    let counts = all.entry(root.to_path_buf()).or_default();
+    match charge {
+        Charge::Read { watched } => {
+            counts.disk_reads = counts.disk_reads.saturating_add(1);
+            counts.unwatched = counts.unwatched.saturating_add(u64::from(!watched));
+        }
+        Charge::Shared => counts.shared = counts.shared.saturating_add(1),
+    }
+    // The relay's metrics count what this process did, so they take the same
+    // charges, one at a time: rooms of one daemon must add up, not overwrite.
+    if let Some(metrics) = crate::daemon::daemon_metrics() {
+        metrics.add_membership_read(
+            matches!(charge, Charge::Shared),
+            matches!(charge, Charge::Read { watched: false }),
+        );
+    }
+}
+
+/// What one authorization cost its room's membership.
+#[derive(Clone, Copy)]
+enum Charge {
+    /// It read the files from disk, at a generation the watch vouched for (or
+    /// did not).
+    Read { watched: bool },
+    /// It took a read another authorization already made at its generation.
+    Shared,
+}
+
+/// The membership-load counters of the room at `dir`, for tests that need to
+/// say how many reads reached its disk.
+#[cfg(test)]
+fn membership_load_counts(dir: &std::path::Path) -> MembershipLoadCounts {
+    membership_load_counts_map()
+        .lock_recover()
+        .get(dir)
+        .copied()
+        .unwrap_or_default()
+}
 
 async fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
     let slots = authorization_slots().clone();
@@ -231,19 +443,103 @@ async fn reload_membership(
     // Observed before the read: a change during it moves the generation on,
     // and the next call reads again.
     let observed = generation.as_ref().and_then(DiskGeneration::current);
-    if observed.is_some() {
+    {
         let runtime = workspace.lock().await;
-        if runtime.loaded_generation == observed {
+        if observed.is_some() && runtime.loaded_generation == observed {
             // Another reload finished while this one waited for the lane.
             return Ok(runtime);
         }
     }
-    let members = authorization_io(move || store.load_membership(), trace).await?;
+    // The room's one read at this generation, shared with every authorization
+    // that needs it. A waiter's own read could be overtaken by a newer
+    // generation, which the next authorization reads again.
+    let loads = membership_loads(store.root());
+    let root = store.root().to_path_buf();
+    let join = loads.lock_recover().join_or_lead(observed);
+    count_membership_load(
+        &root,
+        match join {
+            Join::Leader { .. } => Charge::Read {
+                watched: observed.is_some(),
+            },
+            Join::Follower(_) | Join::Kept(_) => Charge::Shared,
+        },
+    );
+    let loaded = match join {
+        Join::Kept(outcome) => outcome,
+        Join::Follower(inflight) => {
+            let mut waiting = inflight.outcome.subscribe();
+            drop(waiting.borrow_and_update());
+            let published = waiting.wait_for(Option::is_some).await;
+            let outcome = published.map(|published| published.clone()).ok();
+            drop(waiting);
+            match outcome {
+                // The leading reload went away without publishing, so this
+                // authorization leads the read itself instead.
+                None => {
+                    let (led, waiting) = loads.lock_recover().lead();
+                    drop(waiting);
+                    count_membership_load(
+                        &root,
+                        Charge::Read {
+                            watched: observed.is_some(),
+                        },
+                    );
+                    reload_shared(&store, trace, observed, &loads, &led).await?
+                }
+                Some(None) => {
+                    return Err(io_error("workspace membership load was dropped"));
+                }
+                Some(Some(outcome)) => outcome,
+            }
+        }
+        Join::Leader { led, waiting } => {
+            drop(waiting);
+            reload_shared(&store, trace, observed, &loads, &led).await?
+        }
+    };
+    let loaded = match loaded {
+        LoadOutcome::Loaded(loaded) => loaded,
+        LoadOutcome::Failed(error) => return Err(io_error(error)),
+    };
     membership_phase(trace, "delivery_membership_runtime_wait");
     let mut runtime = workspace.lock().await;
     membership_phase(trace, "delivery_membership_runtime_acquired");
-    apply_loaded_membership(&mut runtime, members, observed);
+    apply_loaded_membership(&mut runtime, loaded.members, loaded.generation);
     Ok(runtime)
+}
+
+/// Read the room's membership from disk and publish it to the authorizations
+/// waiting on `led`. The room's answer is whichever read its slot names;
+/// publishing from a read that another replaced would answer for the wrong
+/// one, so a read that lost the slot still reports its own outcome, and the
+/// authorizations that took it see that.
+async fn reload_shared(
+    store: &crate::store::WorkspaceStore,
+    trace: Option<MembershipTrace>,
+    observed: Option<u64>,
+    loads: &Mutex<MembershipLoads>,
+    led: &Arc<InflightLoad>,
+) -> Result<LoadOutcome, StoreError> {
+    let store = store.clone();
+    let outcome = authorization_io(move || store.load_membership(), trace)
+        .await
+        .map(|members| LoadedMembership {
+            generation: observed,
+            members,
+        });
+    loads.lock_recover().publish(
+        led,
+        observed,
+        match &outcome {
+            Ok(loaded) => Ok(loaded.clone()),
+            Err(error) => Err(io_error(error.to_string())),
+        },
+    );
+    match outcome {
+        Ok(loaded) => Ok(LoadOutcome::Loaded(loaded)),
+        Err(error) => Err(error),
+    }
 }
 
 /// Publish membership read from disk, bounded by any pending or failed
@@ -825,6 +1121,117 @@ mod tests {
             .unwrap();
         drop(release);
         assert_eq!(reader.await.unwrap(), vec![[1; 32]]);
+        assert!(workspace.lock().await.membership_is_current());
+        watch.abort();
+    }
+
+    /// How many membership reads of the room at `root` reached the disk, so a
+    /// test can say whether the authorizations shared one.
+    fn disk_reads(root: &std::path::Path) -> u64 {
+        membership_load_counts(root).disk_reads
+    }
+
+    #[tokio::test]
+    async fn concurrent_sessions_share_one_membership_read_per_generation() {
+        const SESSIONS: usize = 8;
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        let store = workspace.lock().await.store.clone();
+        store.save_membership(&[[1; 32]]).unwrap();
+        let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
+        warm(&workspace).await;
+        let generation = workspace.lock().await.disk_generation.clone().unwrap();
+        let before = disk_reads(store.root());
+
+        // One membership change: every live session's next authorization now
+        // finds its membership stale.
+        let (release, mut reached) = test_barrier::install(store.root(), "membership-read");
+        generation.bump();
+        let authorizations = (0..SESSIONS)
+            .map(|_| {
+                let workspace = workspace.clone();
+                tokio::spawn(async move {
+                    fresh_membership(&workspace)
+                        .await
+                        .map(|runtime| runtime.membership.devices.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        // The first authorization reaches the disk; the rest are in the room
+        // by now, and must be waiting on that same read.
+        tilo_test_env::within("the changed room to read its file once", &mut reached)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            reached.try_recv().is_err(),
+            "a second authorization read the membership file the first was already reading"
+        );
+        drop(release);
+        for authorization in authorizations {
+            assert_eq!(authorization.await.unwrap().unwrap(), vec![[1; 32]]);
+        }
+        assert_eq!(
+            disk_reads(store.root()) - before,
+            1,
+            "{SESSIONS} authorizations of one disk generation read the membership files more than once"
+        );
+        assert!(workspace.lock().await.membership_is_current());
+        watch.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_membership_read_still_observes_a_revocation() {
+        const SESSIONS: usize = 8;
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        let store = workspace.lock().await.store.clone();
+        store.save_membership(&[[1; 32], [2; 32]]).unwrap();
+        let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
+        warm(&workspace).await;
+        let generation = workspace.lock().await.disk_generation.clone().unwrap();
+
+        // Sessions share one read of the file as it stands, which lists the
+        // device a revocation is about to remove.
+        let (release, reached) = test_barrier::install(store.root(), "membership-read");
+        generation.bump();
+        let sharing = (0..SESSIONS)
+            .map(|_| {
+                let workspace = workspace.clone();
+                tokio::spawn(async move {
+                    fresh_membership(&workspace)
+                        .await
+                        .map(|runtime| runtime.membership.devices.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        tilo_test_env::within("the changed room to read its file", reached)
+            .await
+            .unwrap();
+        drop(release);
+        for authorization in sharing {
+            assert_eq!(
+                authorization.await.unwrap().unwrap(),
+                vec![[1; 32], [2; 32]]
+            );
+        }
+        assert!(workspace.lock().await.membership_is_current());
+
+        // The revocation is written and announced: nobody may authorize
+        // against the membership that shared read published.
+        store.save_membership(&[[1; 32]]).unwrap();
+        generation.bump();
+        let devices = fresh_membership(&workspace)
+            .await
+            .unwrap()
+            .membership
+            .devices
+            .clone();
+        assert_eq!(
+            devices,
+            vec![[1; 32]],
+            "a shared membership read hid a revocation from the authorizations after it"
+        );
         assert!(workspace.lock().await.membership_is_current());
         watch.abort();
     }

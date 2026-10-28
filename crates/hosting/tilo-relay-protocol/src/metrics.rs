@@ -66,6 +66,20 @@ pub struct MetricsSnapshot {
     /// the counters above).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub sessions_open: u64,
+    /// Member-authorized reads of a room's membership files that reached the
+    /// disk. Zero in snapshots from relays that predate the counter.
+    #[serde(default)]
+    pub membership_reads: u64,
+    /// Authorizations that took another's read of the same membership
+    /// generation instead of reading again: one membership change costs a
+    /// room one read, not one per session.
+    #[serde(default)]
+    pub membership_reads_shared: u64,
+    /// Authorizations that read a room's membership files because no live
+    /// membership watch vouched for them (the watch is not established or has
+    /// stopped). Nonzero means every authorization of the room reads the disk.
+    #[serde(default)]
+    pub membership_reads_unwatched: u64,
     /// Egress per workspace (relay room), for the frames that belong to one.
     /// Lists only rooms that were sent something since the daemon started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

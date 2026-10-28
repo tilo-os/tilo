@@ -142,6 +142,9 @@ fn json_encodings_are_pinned() {
         bytes_sent: 12,
         bytes_sent_live: 13,
         sessions_open: 0,
+        membership_reads: 17,
+        membership_reads_shared: 18,
+        membership_reads_unwatched: 1,
         rooms: BTreeMap::from([(
             14,
             RoomEgress {
@@ -164,6 +167,9 @@ fn json_encodings_are_pinned() {
   "subscriber_dropped_backpressure": 11,
   "bytes_sent": 12,
   "bytes_sent_live": 13,
+  "membership_reads": 17,
+  "membership_reads_shared": 18,
+  "membership_reads_unwatched": 1,
   "rooms": {
     "14": {
       "bytes_sent": 15,
@@ -179,8 +185,8 @@ fn json_encodings_are_pinned() {
         serde_json::from_str::<MetricsSnapshot>(encoded).unwrap(),
         snapshot
     );
-    // A snapshot a relay wrote before the egress counters still reads, with
-    // no egress.
+    // A snapshot a relay wrote before the egress and membership counters
+    // still reads, with none of them.
     let before_egress = r#"{
   "conns_accepted": 1,
   "conns_authed": 2,
@@ -200,6 +206,9 @@ fn json_encodings_are_pinned() {
             bytes_sent: 0,
             bytes_sent_live: 0,
             rooms: BTreeMap::new(),
+            membership_reads: 0,
+            membership_reads_shared: 0,
+            membership_reads_unwatched: 0,
             ..snapshot
         }
     );

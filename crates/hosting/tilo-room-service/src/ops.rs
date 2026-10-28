@@ -464,7 +464,7 @@ fn relay(out: &mut String, rooms: &[PathBuf]) {
     let sum = |field: fn(&MetricsSnapshot) -> u64| -> u64 {
         fresh.iter().map(|snapshot| field(snapshot)).sum()
     };
-    let rows: [(&str, &str, &str, u64); 8] = [
+    let rows: [(&str, &str, &str, u64); 11] = [
         (
             "tilo_rooms_relay_up",
             "gauge",
@@ -512,6 +512,24 @@ fn relay(out: &mut String, rooms: &[PathBuf]) {
             "counter",
             "Bytes written to peer sessions.",
             sum(|s| s.bytes_sent),
+        ),
+        (
+            "tilo_rooms_relay_membership_reads_total",
+            "counter",
+            "Authorizations that read a room's membership files from disk. Falls to one read per disk generation while sessions share them; rises with membership churn.",
+            sum(|s| s.membership_reads),
+        ),
+        (
+            "tilo_rooms_relay_membership_reads_shared_total",
+            "counter",
+            "Authorizations that took a membership read another authorization already made, instead of reading the disk.",
+            sum(|s| s.membership_reads_shared),
+        ),
+        (
+            "tilo_rooms_relay_membership_reads_unwatched_total",
+            "counter",
+            "Membership reads made while no live membership watch vouched for the room, so every authorization of it reached the disk.",
+            sum(|s| s.membership_reads_unwatched),
         ),
     ];
     for (name, kind, help, value) in rows {
@@ -707,6 +725,9 @@ mod tests {
             &MetricsSnapshot {
                 sessions_open: 7,
                 subscriber_dropped_backpressure: 2,
+                membership_reads: 4,
+                membership_reads_shared: 11,
+                membership_reads_unwatched: 1,
                 ..MetricsSnapshot::default()
             },
         )
@@ -739,6 +760,10 @@ mod tests {
             "tilo_rooms_relay_up 1",
             "tilo_rooms_relay_sessions 7",
             "tilo_rooms_relay_live_drops_total 2",
+            "# TYPE tilo_rooms_relay_membership_reads_total counter",
+            "tilo_rooms_relay_membership_reads_total 4",
+            "tilo_rooms_relay_membership_reads_shared_total 11",
+            "tilo_rooms_relay_membership_reads_unwatched_total 1",
             "tilo_rooms_bridge_queue_depth 3",
             "tilo_rooms_textfile_age_seconds{file=\"bridge.prom\"}",
             "tilo_rooms_mode{mode=\"normal\"} 1",
