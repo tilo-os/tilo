@@ -778,6 +778,30 @@ pub(crate) fn test_enrolled_owner() -> (
         SigningKey::from_bytes(&[63; 32]),
     )
 }
+/// An owner whose desktop shows its room still being placed on this
+/// device's own host, as a session's first workspace is as it starts: the
+/// enrollment is prepared, not committed. The returned call commits it.
+pub(crate) fn test_owner_before_enrollment() -> (
+    tempfile::TempDir,
+    NativeWorkspaceOwner,
+    RoomId,
+    Box<dyn FnOnce() + Send>,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let room = RoomId::parse(ROOM).unwrap();
+    tree.write().pending_placements.insert(room);
+    let owner = open(tree).unwrap();
+    let fixture = fixture(&owner);
+    let committing = owner.clone();
+    let commit = Box::new(move || {
+        committing
+            .install(&fixture.enrollment, fixture.now)
+            .unwrap();
+    });
+    (directory, owner, room, commit)
+}
 pub(crate) fn test_descriptor(
     owner: &NativeWorkspaceOwner,
     generation: u64,

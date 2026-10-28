@@ -19,7 +19,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) use publication_tests::edit as test_document_edit;
 #[cfg(test)]
-pub(crate) use tests::{test_enrolled_owner, tree_of};
+pub(crate) use tests::{test_enrolled_owner, test_owner_before_enrollment, tree_of};
 
 use super::{
     persist,

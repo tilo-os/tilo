@@ -205,6 +205,78 @@ impl LaunchSession {
     }
 }
 
+/// The device certificate this device holds `room` under, once the room's
+/// enrollment has committed: at once when it has, otherwise when it commits.
+/// An app opened as the session starts asks for its workspace while this
+/// device's own host is still placing it, or while it is still being
+/// joined; its opening waits for that enrollment rather than being refused
+/// for coming first. Woken by the owner's publications
+/// ([`tilo_identity_host::policy_change`], which every commit announces) and
+/// by the room's status changing ([`RoomStatusSource::change`]), never by a
+/// clock. Blocks: call it off the frame loop.
+///
+/// # Errors
+///
+/// No native owner is open; the room is fenced; its join was refused; or
+/// it will never be enrolled here: it holds no committed enrollment and is
+/// neither being placed, joined nor enrolled.
+pub(super) fn committed_device(
+    session: &LaunchSession,
+    tree: &crate::shell::state::WorkspaceTreeHandle,
+    room: RoomId,
+) -> Result<tilo_user_identity::DeviceCert, super::LaunchError> {
+    use super::LaunchError;
+    let source = lock(&session.rooms.0)
+        .source
+        .clone()
+        .unwrap_or_else(|| RoomStatusSource::new(tree.clone(), None));
+    let published = Arc::new(Notify::new());
+    let watch = tilo_identity_host::policy_change::Watch::new({
+        let published = Arc::clone(&published);
+        move || published.notify_one()
+    });
+    loop {
+        // Armed, then looked: a commit after the look announces, and wakes
+        // the wait below at once.
+        watch.arm();
+        // The status before the owner: a commit installs the room in the
+        // owner before it takes the room's placement or join off the tree,
+        // so a room no longer waiting and still not committed below will
+        // not be.
+        let status = source.status(room);
+        let owner = tree.read().installed_native_owner().ok_or_else(|| {
+            LaunchError::IdentityUnavailable {
+                detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
+            }
+        })?;
+        if owner.rooms().contains(&room) {
+            return owner
+                .with_current(room, |view| Ok(view.device().clone()))
+                .map_err(|detail| LaunchError::IdentityUnavailable { detail });
+        }
+        match &status {
+            RoomStatus::Refused(reason) => {
+                return Err(LaunchError::DeviceNotAdmitted {
+                    detail: reason.clone(),
+                });
+            }
+            RoomStatus::Ready if !owner.contains_room(room) => {
+                return Err(LaunchError::DeviceNotAdmitted {
+                    detail: "this device holds no enrollment in the workspace's room, and is \
+                             not placing, joining or enrolling into it"
+                        .into(),
+                });
+            }
+            RoomStatus::Ready | RoomStatus::Waiting { .. } => {}
+        }
+        drop(owner);
+        tracing::info!(%room, "an app opening waits for its room's enrollment to commit");
+        let committed = std::pin::pin!(published.notified());
+        let changed = std::pin::pin!(source.change(room, status));
+        pollster::block_on(select(committed, changed));
+    }
+}
+
 /// Whether no launch of this session waits for its room.
 #[cfg(test)]
 pub(super) fn nothing_waits(session: &LaunchSession) -> bool {
