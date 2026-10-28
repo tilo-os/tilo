@@ -31,7 +31,9 @@ pub mod perf;
 #[cfg(feature = "test-support")]
 mod reach;
 #[cfg(feature = "test-support")]
-pub use reach::{unreachable_actions, unreachable_actions_in_share};
+pub use reach::{
+    check_scenarios_reach_every_action, unreachable_actions, unreachable_actions_in_share,
+};
 
 /// The name tests use for [`HeadlessApp`].
 pub type TestApp<A> = HeadlessApp<A>;

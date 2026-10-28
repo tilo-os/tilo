@@ -188,19 +188,6 @@ mod tests {
     }
 
     #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action() {
-        for scenario in SCENARIOS {
-            let mut app = TestApp::<VideoPlayerShell>::drive(scenario)
-                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
-            assert_eq!(
-                ui::framework::testing::unreachable_actions(&mut app),
-                Vec::<String>::new(),
-                "{scenario}: published actions a drive cannot invoke"
-            );
-        }
-    }
-
-    #[test]
     fn a_drive_of_a_scenario_shows_the_library_and_seeks_by_address() {
         let mut app = TestApp::<VideoPlayerShell>::drive("playing").unwrap();
         drive_invoke(
@@ -547,3 +534,5 @@ mod tests {
         assert_eq!(sentences("de-DE")[0], "Wiedergabeliste Trip angelegt");
     }
 }
+
+ui::reach_tests!(VideoPlayerShell);
