@@ -15,8 +15,8 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
     below /target, kept between runs: cargo builds of checks run at once must not share one), and
     T_COMMIT with `git = true`, secrets or identity tokens; T_REF from --ref;
   * `isolation = "vm"`: root with podman of its own and /dev/kvm (here a privileged container
-    with its own /var/lib/containers, /tmp and /var/tmp; loop devices only with --vm-podman
-    running as root);
+    with its own /var/lib/containers, /tmp and /var/tmp, but the machine's kernel: no loop
+    devices and only the filesystems it has, so os-dev-disk-<arch> does not run here);
   * its `setup` before its `run`, its `requirement` as the container's cores and memory, and
     `timeout_secs`.
 
@@ -203,20 +203,13 @@ class Runner:
         stamp = self.state / f"{name}.passed"
         return stamp.is_file() and stamp.read_text().strip() == self.key(name)
 
-    def command(self, name: str) -> list[str]:
-        """The podman a check runs with: --vm-podman's for a micro-VM step, if given."""
-        if self.checks[name].get("isolation") == "vm" and self.args.vm_podman:
-            return shlex.split(self.args.vm_podman)
-        return ["podman"]
-
     def podman(self, name: str, *argv: str, **kw) -> subprocess.CompletedProcess:
-        return subprocess.run([*self.command(name), *argv], **kw)
+        return subprocess.run(["podman", *argv], **kw)
 
     def image(self, name: str) -> str:
         image = image_of(self.checks[name], self.project)
-        # One pull per image and store, however many checks start in it at once.
-        key = json.dumps([image, self.command(name)], sort_keys=True)
-        with self.pulling.setdefault(key, threading.Lock()):
+        # One pull per image, however many checks start in it at once.
+        with self.pulling.setdefault(json.dumps(image, sort_keys=True), threading.Lock()):
             return self.pull(name, image)
 
     def pull(self, name: str, image: str | dict) -> str:
@@ -299,9 +292,6 @@ class Runner:
         env.update(self.project.get("env", {}))
         if check.get("git") or check.get("secrets") or check.get("id_token"):
             env["T_COMMIT"] = self.tree.commit
-        if check.get("git"):
-            # The checkout belongs to whoever runs this, not to the check's root (with --vm-podman).
-            env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0="/src")
         if self.args.ref:
             env["T_REF"] = self.args.ref
         env.update(check.get("env", {}))
@@ -327,7 +317,7 @@ class Runner:
         with log.open("w") as out:
             out.write(f"# podman {shlex.join(argv)}\n")
             out.flush()
-            proc = subprocess.Popen([*self.command(name), *argv], stdout=out, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(["podman", *argv], stdout=out, stderr=subprocess.STDOUT)
             try:
                 code = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -396,10 +386,6 @@ def main(argv: list[str]) -> int:
     p.add_argument("--no-limits", action="store_true", help="give checks every core and all memory")
     p.add_argument("--secret", action="append", default=[], metavar="NAME",
                    help="give checks that declare the secret NAME its value from this environment")
-    p.add_argument("--vm-podman", metavar="COMMAND",
-                   help="the podman micro-VM steps run with, such as `sudo podman --root DIR`: one that "
-                   "runs as root can attach loop devices, which a rootless one's containers can't, but "
-                   "unlike t's micro-VMs it shares the machine's devices with the step")
     p.add_argument("--given", action="append", default=[], metavar="CHECK",
                    help="take CHECK as passed: its outputs are in TARGET already, made elsewhere")
     p.add_argument("--keep-work", action="store_true", help="keep each check's scratch")
