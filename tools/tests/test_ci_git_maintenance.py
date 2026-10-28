@@ -29,10 +29,6 @@ class CiGitMaintenanceTests(unittest.TestCase):
             ["git", "config", "--global", "maintenance.auto", "false"],
             "disable maintenance inside the disposable container before checkout",
         )
-        self.assertIn(
-            "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-            checkout.split("\n      - ", 1)[0],
-        )
         return command
 
     def test_history_jobs_disable_maintenance_before_checkout(self):

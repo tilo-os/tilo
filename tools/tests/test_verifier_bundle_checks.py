@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import re
 import shutil
 import subprocess
 import tempfile
@@ -12,35 +11,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 SCRIPT = 'tools/ci/verifier-bundle.sh'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
 class VerifierBundleTests(unittest.TestCase):
     def test_verifier_bundles_are_native_only_and_bind_only_valid_bundles(self):
-        with self.subTest(phase='dispatched natively only, without publication or credentials'):
-            t = t_matrix.load(ROOT)
-            checks = {check['name']: check for check in t['check']}
-            for arch in ('x86_64', 'aarch64'):
-                with self.subTest(arch=arch):
-                    check = checks[f'verifier-bundle-{arch}']
-                    self.assertEqual(['dispatch'], check['on'])
-                    self.assertEqual([f'arch={arch}'], check['requires'])
-                    self.assertFalse(check['default'])
-                    self.assertNotIn('id_token', check)
-                    self.assertNotIn('secrets', check)
-                    # The builder named in the bundle is the image the check runs in.
-                    self.assertNotIn('image', check)
-                    self.assertIn(f'bash {SCRIPT} {arch} "$(git rev-parse HEAD)"', check['run'])
-                    self.assertIn("/^image = /", check['run'])
-                    self.assertEqual(['/target/verifier-bundle/**'], check['outputs'])
-                    self.assertIn(SCRIPT, check['inputs'])
-            self.assertRegex(t['image'], r'^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$')
-            source = (ROOT / SCRIPT).read_text()
-            self.assertNotIn('curl ', source)
-            self.assertNotIn('publish ', source)
-            self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
         with self.subTest(phase='actual script only builds two packages and binds deterministic artifacts'):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

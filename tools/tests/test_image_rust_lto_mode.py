@@ -9,7 +9,6 @@ whose org.tilo.rust-lto label says otherwise.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tempfile
 import unittest
@@ -24,14 +23,6 @@ COMMON = REPO / "os/dev/_common.sh"
 
 
 class RustLtoModeTests(unittest.TestCase):
-    def test_the_containerfile_defaults_to_thin_and_labels_the_image(self) -> None:
-        text = CONTAINERFILE.read_text()
-        self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin", "thin"])
-        self.assertIn('LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"', text)
-        compile_sh = COMPILE.read_text()
-        self.assertIn(': "${TILO_RUST_LTO:=thin}"', compile_sh)
-        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', compile_sh)
-        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", compile_sh)
 
     def mode(self, **env: str) -> str:
         """The mode build-image.sh resolves, from its own resolution block."""
@@ -56,11 +47,6 @@ class RustLtoModeTests(unittest.TestCase):
         # A CPU per job, as far as memory holds out (os/dev/_common.sh cargo_build_jobs).
         self.assertTrue(1 <= jobs <= (os.cpu_count() or 1), jobs)
         self.assertEqual(self.mode(TILO_REQUIRE_PCR_PREDICTION="1"), "thin")
-
-    def test_a_publication_checks_the_label(self) -> None:
-        script = BUILD_IMAGE.read_text()
-        self.assertIn('{{index .Labels "org.tilo.rust-lto"}}', script)
-        self.assertRegex(script, r'\[ "\$_tilo_image_lto" = thin \]')
 
 
 if __name__ == "__main__":

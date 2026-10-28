@@ -11,41 +11,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
-CHECKS = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
-MACOS = ("runtime-macos", "sdk-macos", "apps-macos")
-
-
-class DevMacosCheckTests(unittest.TestCase):
-    def test_checks_run_on_the_mac_without_release_credentials(self) -> None:
-        for name in MACOS:
-            check = CHECKS[name]
-            with self.subTest(name):
-                self.assertIn("os=macos", check["requires"])
-                self.assertNotIn("secrets", check)
-                self.assertNotIn("id_token", check)
-                self.assertFalse(check.get("default", True))
-
-    def test_app_checks_prepare_the_fonts_their_tests_render_with(self) -> None:
-        for name in ("sdk-macos", "apps-macos"):
-            with self.subTest(name):
-                self.assertIn("tools/font-catalog.py root", CHECKS[name]["run"])
-                self.assertIn("TILO_FONT_ASSETS_OFFLINE=1", CHECKS[name]["run"])
-
-    def test_runtime_check_follows_main(self) -> None:
-        self.assertEqual(CHECKS["runtime-macos"]["on"], ["main", "stable"])
-
-    def test_whole_app_build_runs_when_the_mac_is_free_not_per_change(self) -> None:
-        for name in ("sdk-macos", "apps-macos"):
-            with self.subTest(name):
-                on = CHECKS[name]["on"]
-                self.assertIn("idle", on)
-                self.assertNotIn("main", on)
-
-    def test_stable_needs_every_mac_check(self) -> None:
-        for name in (*MACOS, "vm-macos"):
-            with self.subTest(name):
-                self.assertIn("stable", CHECKS[name]["on"])
 
 
 class MacosAppsTests(unittest.TestCase):

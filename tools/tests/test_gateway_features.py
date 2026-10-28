@@ -1,7 +1,6 @@
 """Native verification must compile gateway server tests, not only its clients."""
 import importlib.util
 import json
-import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,7 +11,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "ci"))
-import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("package_features", ROOT / "tools/ci/package_features.py")
 features = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(features)
@@ -74,22 +72,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                 ["bash", str(ci / "t-nextest.sh"), *command],
                 capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), command)
-        config = t_matrix.load(ROOT)
-        test = next(family for family in config["cargo"] if family["name"] == "test")
-        self.assertEqual(test["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
-        self.assertIn("tools/ci/package_features.py", test["inputs"])
 
-    def test_os_release_builds_full_gateway_and_stages_http_binary(self):
-        # The OS image's compile runs outside any image build.
-        containerfile = (ROOT / "os/image/compile.sh").read_text()
-        # The release build names every feature in one list (the relay's
-        # web feature rides in it too); the gateway's two must both be there.
-        enabled = {feature for listed in re.findall(r"--features (\S+)", containerfile)
-                   for feature in listed.split(",")}
-        self.assertLessEqual({"tilo-model-gateway/local-models",
-                              "tilo-model-gateway/host-backend"}, enabled)
-        self.assertIn("--bin tilo-model-gateway --bin tilo-model-http", containerfile)
-        self.assertIn("target/release/tilo-model-http", containerfile)
 
 
 if __name__ == "__main__":

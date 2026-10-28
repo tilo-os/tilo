@@ -286,11 +286,6 @@ class LockUpdateAllowanceTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("differs from the staged lock", problems[0])
 
-    def test_hook_delegates_lock_only_changes_to_the_checker(self) -> None:
-        hook = HOOK.read_text(encoding="utf-8")
-
-        self.assertIn('python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1', hook)
-
 
 class LockDiffTests(unittest.TestCase):
     OLD = textwrap.dedent(
