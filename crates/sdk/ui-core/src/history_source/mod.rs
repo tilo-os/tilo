@@ -41,20 +41,27 @@ pub mod facets;
 pub mod groups;
 mod log;
 pub mod narrative;
-pub mod revert;
+/// Taking back a run of changes, below the toolkit.
+pub use collaboration::history_source::revert;
 pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
-pub mod steps;
-pub mod typing;
 pub(crate) use authors::room_agents_revision;
 pub use authors::{
     AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
     agent_display_label, agent_principal_name, author_coloured, author_for_identity,
     local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
+/// Undo, redo, restore and checkpoints written into the document, below
+/// the toolkit.
+pub use collaboration::history_source::steps;
+/// One person's typing in one field, as History lists it, below the toolkit.
+pub use collaboration::history_source::typing;
+/// What a history verb speaks in, below the toolkit.
+pub use collaboration::history_source::words::{self, HistoryWords};
+pub use collaboration::history_source::{entry_id_from_hash, is_history_metadata};
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_id, human_label};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
@@ -84,6 +91,7 @@ pub use schema_ops::{
     schema_operations_since,
 };
 pub use seen::HistorySeenFrontier;
+pub use sentence::ThreadWords;
 
 /// The structural path materialises one snapshot per version, so cost is
 /// linear in versions and document size; 200 is well past what a scrubber
@@ -284,28 +292,6 @@ pub fn version_index_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Opt
     })
 }
 
-/// The hash is the document's own content address, so two peers
-/// independently building a timeline over the same history agree on the
-/// ids — what lets one peer's `[Revert]` mean anything to another.
-pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
-    let mut bytes = [0u8; 16];
-    let src = change_hash_hex.as_bytes();
-    for (i, slot) in bytes.iter_mut().enumerate() {
-        // `i` walks a fixed 16-byte array, so `idx` never approaches
-        // `usize::MAX`; `saturating_mul`/`saturating_add` are a no-op here
-        // and only exist to satisfy the arithmetic-side-effects lint.
-        let idx = i.saturating_mul(2);
-        let (hi, lo) = (src.get(idx), src.get(idx.saturating_add(1)));
-        let hi = hi.and_then(|c| (*c as char).to_digit(16)).unwrap_or(0);
-        let lo = lo.and_then(|c| (*c as char).to_digit(16)).unwrap_or(0);
-        // `to_digit(16)` only ever returns `0..=15`, so `combined` is always
-        // `0..=255` and the `try_from` below can never actually fail.
-        let combined = hi.saturating_mul(16).saturating_add(lo);
-        *slot = u8::try_from(combined).unwrap_or(u8::MAX);
-    }
-    HistoryEntryId(bytes)
-}
-
 /// `time_ms` is `0` for a change committed without a timestamp. The epoch is
 /// the rendering of "we don't know when this happened": it sorts
 /// oldest rather than being quietly filed under today.
@@ -483,19 +469,6 @@ fn patch_summary(
 ) -> (String, EntryKind, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
     summarize_patches(doc, &patches, paths)
-}
-
-/// Whether a change only wrote history's own metadata about other changes:
-/// names of runs ([`groups`]), cross-app runs ([`runs`]) and descriptions
-/// ([`descriptions`]). Such a change is neither a row nor an undo step.
-pub fn is_history_metadata(patches: &[automerge::Patch]) -> bool {
-    !patches.is_empty()
-        && patches.iter().all(|patch| {
-            let one = std::slice::from_ref(patch);
-            groups::is_group_marker(one)
-                || runs::is_run_marker(one)
-                || descriptions::is_description_marker(one)
-        })
 }
 
 /// [`patch_summary`] of patches already read; `doc` is a replica holding

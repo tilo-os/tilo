@@ -30,6 +30,7 @@ use tilo_actions::{
 };
 use tilo_resource::history::Version;
 use ui_core::automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop};
+use ui_core::history_source::ThreadWords;
 use ui_core::history_source::steps::{self, Checkpoint, Scope};
 
 /// The registry type of the history verbs that change the document.
@@ -984,17 +985,28 @@ impl HistoryEdit {
                 };
                 let compensate = |version: &Version| inverse(&mut original, &registry, version);
                 match to {
-                    Some(to) => steps::resolve(doc, to)
-                        .and_then(|heads| steps::undo_since(doc, &scope, &heads, compensate)),
-                    None => steps::undo(doc, &scope, limit(*steps, default), compensate),
+                    Some(to) => steps::resolve(doc, to).and_then(|heads| {
+                        steps::undo_since(doc, &scope, &heads, compensate, &ThreadWords)
+                    }),
+                    None => steps::undo(
+                        doc,
+                        &scope,
+                        limit(*steps, default),
+                        compensate,
+                        &ThreadWords,
+                    ),
                 }
                 .map(drop)
             }
             Self::Redo { steps } => {
                 let scope = Scope::invoking(doc);
-                steps::redo(doc, &scope, limit(*steps, 1), |version| {
-                    restoration(&mut original, &registry, version)
-                })
+                steps::redo(
+                    doc,
+                    &scope,
+                    limit(*steps, 1),
+                    |version| restoration(&mut original, &registry, version),
+                    &ThreadWords,
+                )
                 .map(drop)
             }
             Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {

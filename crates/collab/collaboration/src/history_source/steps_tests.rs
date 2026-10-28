@@ -2,6 +2,26 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
 use super::*;
+use crate::history_source::TestWords;
+
+// The verbs as the tests call them, in the tests' words.
+fn undo(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    limit: usize,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+) -> Result<Vec<Version>, String> {
+    super::undo(doc, scope, limit, compensate, &TestWords)
+}
+
+fn redo(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    limit: usize,
+    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+) -> Result<Vec<Version>, String> {
+    super::redo(doc, scope, limit, restore, &TestWords)
+}
 
 /// No step has an inverse action: every one is undone by its patches.
 #[allow(clippy::unnecessary_wraps, reason = "the shape every compensator has")]

@@ -59,6 +59,12 @@ libc.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tilo-actions = { version = "0.1.0", path = "../actions" }
+# A document's history as versions, and what the schema genesis is: the
+# steps undo reads (`history_source`).
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc" }
+# The actor a handle writes as from one device (`history_source::authors`).
+sha2.workspace = true
 # The local document action report is the broker SDK's vocabulary.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
