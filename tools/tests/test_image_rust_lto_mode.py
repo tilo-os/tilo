@@ -26,7 +26,7 @@ COMMON = REPO / "os/dev/_common.sh"
 class RustLtoModeTests(unittest.TestCase):
     def test_the_containerfile_defaults_to_thin_and_labels_the_image(self) -> None:
         text = CONTAINERFILE.read_text()
-        self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin"])
+        self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin", "thin"])
         self.assertIn('LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"', text)
         compile_sh = COMPILE.read_text()
         self.assertIn(': "${TILO_RUST_LTO:=thin}"', compile_sh)
