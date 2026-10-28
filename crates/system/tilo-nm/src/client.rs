@@ -28,17 +28,17 @@ pub const ROOT_PATH: &str = "/org/freedesktop/NetworkManager";
 pub const ROOT_INTERFACE: &str = "org.freedesktop.NetworkManager";
 /// An active connection's interface.
 pub const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
-const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
+pub(crate) const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
 /// The saved profiles' interface: a profile added or removed.
-const SETTINGS_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings";
+pub(crate) const SETTINGS_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings";
 /// One saved profile's interface: it was edited or removed.
-const PROFILE_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+pub(crate) const PROFILE_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 /// A Wi-Fi device's interface: `RequestScan` and the `LastScan` it advances.
 pub const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
-const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
+pub(crate) const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 /// Signals buffered per stream before the oldest is dropped. Every signal
 /// triggers a full re-read, so a dropped one loses nothing.
-const SIGNAL_QUEUE: usize = 64;
+pub(crate) const SIGNAL_QUEUE: usize = 64;
 
 /// Why `NetworkManager` could not be asked.
 #[derive(Debug, thiserror::Error)]
@@ -55,12 +55,37 @@ pub enum NmError {
     WifiDeviceRemoved,
     #[error("the connection to NetworkManager closed")]
     Disconnected,
+    /// `NetworkManager` answered with an error: a refusal, an invalid
+    /// setting, an unknown object.
+    #[error("{0}")]
+    Refused(String),
+    #[error("{0}")]
+    NotFound(String),
+    /// An activation ended without the connection coming up.
+    #[error("{0}")]
+    ActivationFailed(&'static str),
+    #[error("NetworkManager did not finish in time")]
+    Timeout,
+}
+
+impl NmError {
+    /// A method call's error: `NetworkManager`'s own message when it
+    /// answered, the bus's otherwise.
+    pub(crate) fn of_call(error: zbus::Error) -> Self {
+        match error {
+            zbus::Error::MethodError(name, message, _) => {
+                Self::Refused(message.unwrap_or_else(|| name.to_string()))
+            }
+            zbus::Error::FDO(error) => Self::Refused(error.to_string()),
+            other => Self::Bus(other),
+        }
+    }
 }
 
 /// A handle on `NetworkManager` over one D-Bus connection.
 #[derive(Clone, Debug)]
 pub struct NmClient {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl NmClient {
@@ -744,7 +769,7 @@ fn publish(sender: &watch::Sender<NetworkState>, state: NetworkState) {
     });
 }
 
-async fn proxy<'a>(
+pub(crate) async fn proxy<'a>(
     connection: &Connection,
     path: &'a str,
     interface: &'a str,
@@ -761,7 +786,7 @@ async fn proxy<'a>(
 /// Refuse early when `NetworkManager` is not on the bus. A method call to an
 /// absent well-known name would ask the bus to activate the daemon and wait
 /// out the activation timeout; a reader must not stall on that.
-async fn ensure_running(connection: &Connection) -> Result<(), NmError> {
+pub(crate) async fn ensure_running(connection: &Connection) -> Result<(), NmError> {
     if !connection.is_bus() {
         return Ok(());
     }

@@ -19592,8 +19592,10 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-test-env",
  "tokio",
+ "uuid",
  "workspace-hack",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
