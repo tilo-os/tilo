@@ -399,8 +399,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(
 # stage of their pieces, the seal's included, 151 of them.
 # The signed records of the runtimes and of the app store, each copied apart
 # from the bytes they sign, add two COPYs (158).
-[ "$instructions" -le 158 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 158)" >&2
+# Declaring TILO_RUST_LTO in the rootfs piece, which tells the initramfs build whether the
+# greeter's size budget is enforced or reported, adds one ARG (159).
+[ "$instructions" -le 159 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 159)" >&2
   exit 1
 }
 
