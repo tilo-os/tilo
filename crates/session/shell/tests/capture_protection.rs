@@ -113,41 +113,47 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
-/// Paint until the adopted client has latched as presented and its first
-/// frame's cross-fade in is over, so samples measure the client and not the
-/// placeholder.
+/// Paint until the adopted client has latched as presented and its arrival
+/// and first frame's cross-fade in are over, so samples measure the client
+/// and not the placeholder.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
     let deadline = tilo_test_env::hang_deadline();
     let mut published = false;
-    while std::time::Instant::now() < deadline {
+    while !(published && store().is_presented(surface_id)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the committed client frame never became presented"
+        );
         if !published && let Some((bw, bh)) = store().viewport(surface_id) {
             store().publish_rgba(surface_id, &solid(bw, bh, CLIENT), bw, bh);
             published = true;
         }
         let _ = fb.any_tile_arriving();
         let _ = frame(fb);
-        if published && store().is_presented(surface_id) {
-            break;
-        }
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
-    assert!(
-        store().is_presented(surface_id),
-        "the committed client frame never became presented"
-    );
-    let handover_end = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(250))
-        .unwrap_or_else(std::time::Instant::now);
-    // The last frame starts after the handover has ended, however long the
-    // frames before it took.
-    loop {
-        let ended = std::time::Instant::now() >= handover_end;
+    settle(fb, deadline);
+}
+
+/// Paint until two drawn frames in a row find no tile arriving and nothing
+/// animating. The arrival's reveal and cross-fade run on the clock from when
+/// the client's frame landed, and a loaded machine draws a frame only every
+/// few hundred milliseconds, so a fixed wait can end with the tile still
+/// standing as its placeholder or half faded in.
+fn settle(fb: &mut FrameBuilder, deadline: std::time::Instant) {
+    let mut quiet = 0;
+    while quiet < 2 {
         let _ = frame(fb);
-        if ended {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(8));
+        let arriving = fb.any_tile_arriving();
+        let animating = fb.needs_animation_frame();
+        quiet = if arriving || animating { 0 } else { quiet + 1 };
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the desktop never came to rest (tile arriving: {arriving}, animating: {animating}, \
+             waking for {:?})",
+            fb.wake_deadline_owners()
+        );
     }
 }
 
@@ -626,17 +632,7 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     fb.set_osk_surface(Some(KEYBOARD), None, None, true);
     // Paint until the keyboard's frame is presented and any opening
     // cross-fade is over, so samples measure the keyboard itself.
-    let settled = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(400))
-        .unwrap_or_else(std::time::Instant::now);
-    loop {
-        let ended = std::time::Instant::now() >= settled;
-        let _ = frame(&mut fb);
-        if ended {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(8));
-    }
+    settle(&mut fb, tilo_test_env::hang_deadline());
     let (_, keyboard) = fb
         .osk_surface_rect()
         .expect("the keyboard is shown for the focused field");
