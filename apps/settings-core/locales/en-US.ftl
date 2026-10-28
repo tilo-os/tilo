@@ -2060,6 +2060,8 @@ net-wake-saved = Wake configuration saved. Physical wake remains unverified.
 # Copy used by Settings panes and their status/error branches.
 a11y-shared-caption = Tilo apps use these shared accessibility settings.
 a11y-shared-title = Across Tilo
+a11y-sign-in = Use at the login screen
+a11y-sign-in-desc = The login screen starts with the screen reader, text size, contrast, language and keyboard layout you choose
 a11y-text-size = Text size
 accounts-form-caption = These details are saved for this account.
 accounts-nextcloud-calendars = Connect calendars

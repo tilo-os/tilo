@@ -295,7 +295,7 @@ impl AccessibilityPane {
             self.build_typing_card(),
             self.build_reader_card(),
             self.build_hearing_card(),
-            Self::build_explainer_card(),
+            self.build_explainer_card(),
         ])
     }
 
@@ -492,10 +492,18 @@ impl AccessibilityPane {
         )
     }
 
-    fn build_explainer_card() -> SettingsSection {
+    fn build_explainer_card(&self) -> SettingsSection {
         section(
             &t("a11y-shared-title"),
-            rows(vec![note(&t("a11y-shared-caption"))]),
+            rows(vec![
+                note(&t("a11y-shared-caption")),
+                self.assist(
+                    "a11y-sign-in",
+                    "a11y.apply_to_sign_in",
+                    AccessibilitySettings::paths().apply_to_sign_in,
+                )
+                .toggle(),
+            ]),
         )
     }
 
