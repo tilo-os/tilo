@@ -249,6 +249,27 @@ class LockGuardTest(unittest.TestCase):
         self.assertIn("left the session locked, and restarting the slot session failed", res.detail)
         self.assertEqual(ctx.facts["session_recovered_after"], ["X03"])
 
+    def test_checks_after_a_failed_restart_fail_at_once_without_another_restart(self):
+        vm = LockingVm()
+        vm.restart_failed = None
+
+        def broken_restart():
+            vm.calls.append(("restart_session",))
+            vm.restart_failed = "restarting the slot session failed: timed out after 300s"
+            raise VmError("timed out after 300s: slot restart acceptance")
+
+        vm.restart_session = broken_restart
+        ctx = Context(vm, self.out, {})
+        core.run_check(ctx, core.Check("X05", "window", "locks", lambda c, r: c.vm.key("super+l")))
+        ran = []
+        res = core.run_check(ctx, core.Check("X06", "window", "after it", lambda c, r: ran.append(1)))
+        self.assertEqual(res.status, "fail")
+        self.assertTrue(res.unobservable)
+        self.assertIn("not run: the slot session was lost after X05", res.detail)
+        self.assertIn("timed out after 300s", res.detail)
+        self.assertEqual(ran, [])
+        self.assertEqual(vm.calls.count(("restart_session",)), 1)
+
     def test_run_check_leaves_an_unlocked_session_alone(self):
         vm = LockingVm()
         ctx = Context(vm, self.out, {})

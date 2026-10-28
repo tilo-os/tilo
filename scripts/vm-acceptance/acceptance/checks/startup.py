@@ -284,16 +284,25 @@ def _first_int(text: str) -> int | None:
     return next((int(w) for w in text.split() if w.isdigit()), None)
 
 
-def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S):
+def _marks(ctx, since_ms: int, app: str = FILES, wait_s: float = MARKS_WAIT_S, log_from: int | None = None):
     """The startup marks of `app`'s first launch since `since_ms`, once they hold its
-    first presented frame (or whatever they hold after `wait_s`)."""
+    first presented frame (or whatever they hold after `wait_s`). With `log_from`, the
+    session log's line number before the launch, the wait is for the app's startup summary
+    (written right after its marks) or the compositor's first-frame line in the log,
+    returning the moment either is written."""
+    started = time.monotonic()
+    if log_from is not None:
+        core.wait_log_line(ctx, SESSION_LOG, log_from + 1, wait_s, f"APP-STARTUP app={re.escape(app)} ",
+                           f"first frame presented .*package_id={re.escape(app)} ")
     script = (f'for f in "${{XDG_DATA_HOME:-$HOME/.local/share}}"/tilo-rooms/*/{app}/.local/state/startup-*.json; '
               'do [ -f "$f" ] || continue; printf "%s\\t" "$f"; tr -d "\\n" < "$f"; echo; done')
 
     def probe():
         m = parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
         return m if m and "first-frame-presented" in m["events"] else None
-    return wait_until(probe, wait_s, 1.0) or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
+    left = max(0.0, wait_s - (time.monotonic() - started))
+    return wait_until(probe, left, 0.25 if log_from is not None else 1.0) \
+        or parse_startup_marks(ctx.vm.exec(script, check=False), since_ms)
 
 
 @check("A14", "apps", "Files draws its first frame within budget and lists the folder it opens on")
@@ -430,7 +439,9 @@ def _app_gone(ctx, app: str) -> dict | None:
         table = core.processes(ctx)
         return None if any(p["app"] == app for p in table["procs"].values()) else table
 
-    return wait_until(without_app, EXIT_WAIT_S, 1.0)
+    started = time.monotonic()
+    core.wait_app_exit(ctx, app, EXIT_WAIT_S)
+    return wait_until(without_app, max(0.0, EXIT_WAIT_S - (time.monotonic() - started)), 1.0)
 
 
 def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
@@ -448,7 +459,7 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
     log_lines, t0 = (numbers + [None, None])[:2]
     result = None
     if t0 is not None:
-        marks = _marks(ctx, t0, app, OPEN_WAIT_S)
+        marks = _marks(ctx, t0, app, OPEN_WAIT_S, log_from=log_lines)
         times = open_times(t0, marks)
         if times is not None:
             log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',

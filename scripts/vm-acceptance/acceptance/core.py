@@ -8,7 +8,9 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import session_unit
+import shlex
+
+from . import guest_wait, session_unit
 from .vm import VmError, wait_until
 
 # Who fixes what: each area's failures are routed to its owner.
@@ -135,6 +137,15 @@ def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
     ctx.current = res
+    lost = getattr(ctx.vm, "restart_failed", None)
+    if lost:
+        # The session stopped answering and the harness could not bring it back: this check
+        # cannot observe anything, and waiting out its bounds would only delay the report.
+        res.status, res.unobservable = "fail", True
+        res.detail = f"not run: the slot session was lost after {ctx.facts.get('session_lost_after', 'an earlier check')} ({lost})"
+        res.seconds = 0.0
+        ctx.current = None
+        return res
     if "session_unit" not in ctx.facts:
         ctx.facts["session_unit"] = session_unit.show(ctx)
         ctx.facts["session_requested"] = getattr(ctx.vm, "requested_restarts", 0)
@@ -168,6 +179,8 @@ def run_check(ctx, chk: Check) -> Result:
     if restarted:
         res.status = "fail"
         res.detail = _join(res.detail, restarted)
+    if getattr(ctx.vm, "restart_failed", None):
+        ctx.facts.setdefault("session_lost_after", chk.id)
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
@@ -1156,6 +1169,26 @@ def parse_processes(text: str) -> dict:
 
 def processes(ctx) -> dict:
     return parse_processes(ctx.vm.root_exec(PROCESSES))
+
+
+def _guest_wait(run, args: list, seconds: float) -> bool:
+    out = run(f"python3 - {shlex.join(args)} <<'EOF'\n{guest_wait.script()}\nEOF\necho \"wait-status=$?\"",
+              timeout=seconds + 60, check=False)
+    return "wait-status=0" in (out or "")
+
+
+def wait_app_exit(ctx, app: str, seconds: float) -> bool:
+    """Block until no process of `app` is left (pidfds in the guest), at most `seconds`:
+    one round trip that returns when its last process exits. True when none is left."""
+    return _guest_wait(ctx.vm.root_exec, ["exit", app, str(seconds)], seconds)
+
+
+def wait_log_line(ctx, path: str, first_line: int, seconds: float, *patterns: str) -> bool:
+    """Block until a line of the slot user's file `path` (sh-expanded) from line
+    `first_line` on matches one of the regexes `patterns` (inotify in the guest), at most
+    `seconds`."""
+    return _guest_wait(lambda script, **kw: ctx.vm.exec(script.replace("__PATH__", f'"{path}"', 1), **kw),
+                       ["line", "__PATH__", str(first_line), str(seconds), *patterns], seconds)
 
 
 # Read as root, for one process (the compositor): what its anonymous memory is. Its
