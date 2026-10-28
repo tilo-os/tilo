@@ -1209,12 +1209,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_sdk_publish_check.py"
 
 [[check]]
-name = "policy/tests/unit/sealed-speech-scope"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_sealed_speech_scope.py"
-
-[[check]]
 name = "policy/tests/unit/settings-writes"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }

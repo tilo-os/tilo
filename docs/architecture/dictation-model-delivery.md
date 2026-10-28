@@ -156,7 +156,7 @@ reader-buffer release retains an immutable anchor for upstream lazy sessions.
 Explicit input retirement prohibits subsequent tensor reads. Tensor range checks use subtraction
 to reject overflowing offsets. Existing path callers retain their API defaults.
 
-`tools/release/qualify_nemo_descriptor.py --out <fresh-directory>` compiles the
+[`qualify_nemo_descriptor.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/qualify_nemo_descriptor.py)` --out <fresh-directory>` compiles the
 actual loader, checks the model and recognizer call sites, and runs a tiny GGUF
 through the production reader. It checks caller close/unlink, exact tensor bytes,
 writable and invalid descriptor rejection, overflowing reads, and released-input

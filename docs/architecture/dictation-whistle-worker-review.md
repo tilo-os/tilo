@@ -80,7 +80,7 @@ The scope harness requires an explicit builder receipt tying the bridge, worker
 binary and checked-out Rust/C++/JS sources to their measured bytes. It verifies
 all earlier pinned runtime and licence objects, exact public corpus PCM, the
 existing cgroup limits, memory-pressure admission and observed native process
-identity. Run `tools/release/qualify_whistle_worker_scope.py` inside the same
+identity. Run [`qualify_whistle_worker_scope.py`](https://code.tilo.so/tilo/tilo/src/commit/8f5e68fc5b85473f619659deeb4d47b9d464a618/tools/release/qualify_whistle_worker_scope.py) inside the same
 admitted transient scope documented in `dictation-whistle-v8-endpoint-review.md`.
 A missing observation or absent successful endpoint **fails** qualification; the
 known code-page refusal is never converted into a skip or a passing speech test.

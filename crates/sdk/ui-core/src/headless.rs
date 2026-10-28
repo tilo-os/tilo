@@ -10709,8 +10709,8 @@ mod tests {
     /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
     /// the first draw happened to show: a scroll thumb mid-fade, or a page
     /// still drawn from the bitmap of the width it had a moment ago, which is
-    /// a difference about the capture and reads as a layout difference to
-    /// `tools/ci/capture_parity.py`.
+    /// a difference about the capture and reads as a layout difference when
+    /// two captures are compared.
     #[cfg(feature = "native")]
     #[test]
     fn writing_a_shot_runs_the_animation_out_first() {
