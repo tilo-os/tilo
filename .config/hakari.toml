@@ -87,6 +87,9 @@ third-party = [
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
     # bundled sources, so it may stay.
     { name = "smithay-client-toolkit" },
+    # Keyboard translation links libxkbcommon; keep that native library with
+    # input clients rather than every managed server and cross-build member.
+    { name = "xkbcommon" },
     # The compositor's backends link libseat, libinput, udev and gbm; only the
     # shell builds them. The color-management handlers' crate builds smithay
     # with just its Wayland frontend, and the union would put every backend
