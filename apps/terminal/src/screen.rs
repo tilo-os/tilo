@@ -2,22 +2,23 @@
 //! alternate buffer full-screen programs draw on, the cursor, the OSC 8
 //! hyperlinks and the image placements.
 //!
-//! The emulator keeps one [`Screen`] for the process it runs. It is live
-//! output and stays on the device that runs the process. Lines are shared
-//! ([`Rc`]): a line the emulator did not touch keeps its allocation, so a
-//! redraw converts only the lines that changed.
+//! The emulator projects its grid onto one [`Screen`] for the process it
+//! runs. It is live output and stays on the device that runs the process.
+//! Lines are shared ([`Rc`]): a line the emulator did not touch keeps its
+//! allocation, so a redraw converts only the lines that changed.
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::graphics::TerminalImagePlacement;
+use crate::inner::Attr;
 
 /// One row of a buffer: its text, one character per cell (a wide glyph is
-/// followed by a padding space), and the packed attributes of each cell.
+/// followed by a padding space), and the attributes of each cell.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     pub text: String,
-    pub attrs: Vec<u8>,
+    pub attrs: Vec<Attr>,
 }
 
 /// What a terminal shows. See the [module docs](self).

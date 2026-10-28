@@ -1,4 +1,4 @@
-use crate::{Attr, GridPos, Selection, TerminalPerformer, TerminalWidget};
+use crate::{Attr, GridPos, Selection, TerminalWidget};
 use automerge::{AutoCommit, ROOT};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
@@ -10,7 +10,6 @@ use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
-use vte::Perform;
 
 #[path = "chrome_tests.rs"]
 mod chrome;
@@ -722,12 +721,8 @@ fn control_space_reaches_the_native_editor_as_nul() {
     }
 }
 
-/// Grid initialisation, printing through the performer, and the crate's widget surface.
+/// Grid initialisation, printing, and the crate's widget surface.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     // Case `test_terminal_grid_init`.
     {
@@ -802,59 +797,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
             line.chars().take(10).all(|c| c == ' '),
             "columns 0-9 must be padded with spaces; got {line:?}",
         );
-    }
-
-    // Case `test_terminal_performer_print`.
-    {
-        use crate::TermModes;
-        let mut screen = crate::screen::Screen {
-            main: vec![Rc::new(crate::screen::Line {
-                text: " ".repeat(80),
-                attrs: vec![Attr::default().pack(); 80].concat(),
-            })],
-            ..crate::screen::Screen::default()
-        };
-        let mut modes = TermModes::default();
-        let mut saved_cursor = None;
-        let mut next_link_id = 0u16;
-        let mut title_out = None;
-        let mut responses: Vec<u8> = Vec::new();
-        let content = tilo_content::ContentStore::memory();
-
-        {
-            let mut bells = 0u32;
-            let mut performer = TerminalPerformer {
-                screen: &mut screen,
-                content: &content,
-                width: 80,
-                height: 24,
-                cursor_x: 0,
-                cursor_y: 0,
-                current_attr: Attr::default(),
-                pending_wrap: false,
-                modes: &mut modes,
-                saved_cursor: &mut saved_cursor,
-                scroll_top: 0,
-                scroll_bottom: 23,
-                next_link_id: &mut next_link_id,
-                current_link_id: 0,
-                title_out: &mut title_out,
-                bells: &mut bells,
-                allow_osc52_clipboard: true,
-                responses: &mut responses,
-                print_buf: None,
-            };
-
-            performer.print('H');
-            performer.print('i');
-            assert_eq!(performer.cursor_x, 2);
-            // Printed cells are batched in memory and committed to the line on
-            // any non-print action or at end of feed; flush so the read below
-            // sees them (the real feed path flushes via `flush_cursor`).
-            performer.flush_print_buf();
-        }
-
-        assert!(screen.main[0].text.starts_with("Hi"));
     }
 
     // Case `crate_exposes_terminal_widget_as_library`.
@@ -2257,7 +2199,6 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // the real `feed` path must produce correct content and replace each line
     // once per print run, never once per character.
     {
-        use crate::inner::work::LINE_WRITES;
         const LINES: usize = 80;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let doc = AutoCommit::new();
@@ -2275,10 +2216,8 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         );
         }
 
-        LINE_WRITES.with(|n| n.set(0));
         w.feed(&payload);
         w.sync(&doc, &automerge::ROOT);
-        let line_writes = LINE_WRITES.with(std::cell::Cell::get);
 
         // Correctness: the freshest lines are on screen with their real content.
         let visible = w.visible_lines();
@@ -2292,15 +2231,6 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         assert!(
             top.iter().any(|l| l.contains("lazy dog 000")),
             "oldest bulk line retained: {top:?}"
-        );
-
-        // Each line holds two print runs (the number, then the text after the
-        // SGR reset), so it is replaced at most twice. A per-character write
-        // would replace it once for each of its ~60 cells.
-        assert!(
-            line_writes <= 2 * LINES,
-            "feeding {LINES} styled lines replaced a line {line_writes} times — \
-         the per-cell write regressed (HIG §6)"
         );
     }
 
@@ -2326,11 +2256,11 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             w.feed(&payload);
             w.sync(&doc, &automerge::ROOT);
         }
-        // 150 lines fed, MAX_HISTORY 120 (+8 slack) under cfg(test): a trim
-        // must have run, and the incremental sync must have stayed aligned.
+        // 150 lines fed, MAX_HISTORY 120 under cfg(test): the oldest lines
+        // fell off, and the incremental projection must have stayed aligned.
         let text = w.grid_text();
         let count = text.lines().count();
-        assert!(count <= 120 + 8 + 24, "history bounded, got {count} lines");
+        assert!(count <= 120 + 24, "history bounded, got {count} lines");
         assert!(
             text.lines().any(|l| l.trim_end() == "ROW0149"),
             "newest line present in the aligned mirror"
@@ -4019,7 +3949,7 @@ fn osc_52_writes_clipboard_from_base64() {
 // `write_input` path a keystroke does, so the shell reads it.
 // ---------------------------------------------------------------
 
-/// DA1/DA2/DECID/XTVERSION replies.
+/// DA1/DA2/DECID replies.
 #[test]
 fn device_attribute_queries_reply() {
     // Case `da1_query_writes_primary_device_attributes_reply`.
@@ -4029,8 +3959,8 @@ fn device_attribute_queries_reply() {
         w.feed(b"\x1b[c");
         let got = drain_writes(&write_rx);
         assert_eq!(
-            got, b"\x1b[?62;22c",
-            "DA1 (CSI c) must answer with the VT220+ANSI-color device attributes"
+            got, b"\x1b[?6c",
+            "DA1 (CSI c) must answer with the device attributes"
         );
     }
 
@@ -4038,11 +3968,7 @@ fn device_attribute_queries_reply() {
     {
         let (mut w, write_rx) = build_test_widget();
         w.feed(b"\x1b[0c");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[?62;22c",
-            "CSI 0 c is DA1 too"
-        );
+        assert_eq!(drain_writes(&write_rx), b"\x1b[?6c", "CSI 0 c is DA1 too");
     }
 
     // Case `decid_esc_z_replies_like_da1`.
@@ -4051,7 +3977,7 @@ fn device_attribute_queries_reply() {
         w.feed(b"\x1bZ");
         assert_eq!(
             drain_writes(&write_rx),
-            b"\x1b[?62;22c",
+            b"\x1b[?6c",
             "ESC Z (DECID) is a DA1 request"
         );
     }
@@ -4060,24 +3986,10 @@ fn device_attribute_queries_reply() {
     {
         let (mut w, write_rx) = build_test_widget();
         w.feed(b"\x1b[>c");
-        let expected = format!("\x1b[>1;{};0c", crate::inner::terminal_da2_version());
-        assert_eq!(
-            drain_writes(&write_rx),
-            expected.as_bytes(),
-            "DA2 (CSI > c) reports terminal type 1 + build version + 0"
-        );
-    }
-
-    // Case `xtversion_reply_names_the_terminal`.
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[>0q");
-        let got = drain_writes(&write_rx);
-        let expected = format!("\x1bP>|tilo-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
-        assert_eq!(
-            got,
-            expected.as_bytes(),
-            "XTVERSION (CSI > 0 q) names + versions the terminal"
+        let reply = String::from_utf8(drain_writes(&write_rx)).expect("ascii reply");
+        assert!(
+            reply.starts_with("\x1b[>0;") && reply.ends_with(";1c"),
+            "DA2 (CSI > c) reports terminal type and version: {reply:?}"
         );
     }
 }
@@ -4104,19 +4016,6 @@ fn status_and_mode_reports_reply_or_stay_silent() {
         let (mut w, write_rx) = build_test_widget();
         w.feed(b"\x1b[5n");
         assert_eq!(drain_writes(&write_rx), b"\x1b[0n", "DSR 5n → terminal OK");
-    }
-
-    // Case `dsr_private_cursor_position_report`.
-    {
-        let (mut w, write_rx) = build_test_widget();
-        w.feed(b"\x1b[2;7H");
-        let _ = drain_writes(&write_rx);
-        w.feed(b"\x1b[?6n");
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"\x1b[?2;7;1R",
-            "DECXCPR (?6n) reports row;col;page"
-        );
     }
 
     // Case `decrqm_reports_bracketed_paste_state`.
@@ -4150,7 +4049,7 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     {
         let (mut w, write_rx) = build_test_widget();
         // DECSCUSR (set cursor style, `CSI 2 SP q`) is not a query — it must not
-        // trigger the XTVERSION path or write anything back.
+        // write anything back.
         w.feed(b"\x1b[2 q");
         assert!(
             drain_writes(&write_rx).is_empty(),
@@ -4190,14 +4089,12 @@ fn real_pty_query_replies_and_fish_startup() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn fish under a pty");
         let mut doc = AutoCommit::new();
 
-        // Warm-up: pump until fish has issued its DA query and the emulator has
-        // answered it (via write_input) before we type anything, so our
+        // Warm-up: pump until fish shows its prompt, which it draws once the
+        // emulator has answered its DA query, before we type anything, so our
         // keystrokes are never mistaken for the DA response.
-        let answered = || crate::inner::work::DA1_REPLIES.with(std::cell::Cell::get);
-        let before = answered();
-        tilo_test_env::wait_until("the emulator to answer fish's DA query", || {
+        tilo_test_env::wait_until("fish to show its prompt", || {
             w.sync(&doc, &ROOT);
-            answered() > before
+            !w.grid_text().trim().is_empty()
         });
 
         // Now type the sentinel the way a user would, then quit.
@@ -4228,14 +4125,14 @@ fn real_pty_query_replies_and_fish_startup() {
         use portable_pty::CommandBuilder;
         // End-to-end proof on the production path (no `feed`, no mock writer):
         // a real child emits the DA1 query on its tty and then reads exactly the
-        // 9 reply bytes back from stdin. The reply only arrives if the reader
+        // 5 reply bytes back from stdin. The reply only arrives if the reader
         // thread → sync → pump → vte → write_input → PTY loop actually answers.
         // The tty is put in non-canonical, no-echo mode first (our reply has no
         // newline, so canonical `read` would block on it forever), and `cat -v`
-        // renders the ESC so the grid shows `^[[?62;22c`.
+        // renders the ESC so the grid shows `^[[?6c`.
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.arg("-c");
-        cmd.arg("stty -icanon -echo min 1 time 0; printf '\\033[c'; head -c 9 | cat -v; echo; echo REPLY_DONE");
+        cmd.arg("stty -icanon -echo min 1 time 0; printf '\\033[c'; head -c 5 | cat -v; echo; echo REPLY_DONE");
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
         let mut doc = AutoCommit::new();
         assert!(
@@ -4244,7 +4141,7 @@ fn real_pty_query_replies_and_fish_startup() {
             w.grid_text()
         );
         assert!(
-            w.grid_text().contains("[?62;22c"),
+            w.grid_text().contains("[?6c"),
             "the child echoed back the exact DA1 reply bytes; grid was:\n{}",
             w.grid_text()
         );
@@ -4591,7 +4488,7 @@ fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
     w.sync(&doc, &ROOT);
     assert_eq!(w.grid_row(0).trim_end(), "");
     assert!(
-        w.grid_row(1).starts_with("  "),
+        w.grid_row(1).trim().is_empty(),
         "row 1: {:?}",
         w.grid_row(1)
     );

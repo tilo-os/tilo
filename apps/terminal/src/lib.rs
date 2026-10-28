@@ -21,6 +21,7 @@
     reason = "app-local arithmetic; see the note above"
 )]
 pub mod actions;
+mod emulator;
 mod graphics;
 pub mod history;
 mod i18n;
@@ -39,7 +40,7 @@ pub use graphics::TerminalImagePlacement;
 
 pub use crate::inner::{
     Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
-    TerminalPerformer, TerminalWidget, parse_target_argument, resolve_login_shell,
+    TerminalWidget, parse_target_argument, resolve_login_shell,
 };
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]

@@ -14,7 +14,6 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -37,11 +36,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
-use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
-use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, parse_kitty};
+use crate::graphics::TerminalImagePlacement;
 
 /// The PTY reader applies natural backpressure once this many chunks are
 /// waiting for the UI. A terminal must never silently discard process output,
@@ -93,12 +91,6 @@ const MAX_PUMP_BYTES: usize = 256 * 1024;
 /// A palette/agent invocation is intentionally much smaller than local paste:
 /// it is a reviewed command submission, not a bulk data transport.
 pub(crate) const MAX_RESOURCE_SEND_BYTES: usize = 8 * 1024;
-/// OSC is process-controlled input. Keep its metadata bounded before it can
-/// enter the replicated document, clipboard, or app title.
-const MAX_OSC_TITLE_BYTES: usize = 256;
-const MAX_OSC_LINK_BYTES: usize = 2 * 1024;
-const MAX_OSC_LINKS: usize = 4096;
-const MAX_OSC_CLIPBOARD_BYTES: usize = 1024 * 1024;
 /// Keep contextual resource publication proportional to what is on screen.
 /// Historical OSC links remain lazily resolvable by their stable id, but a
 /// malicious process cannot make every palette refresh materialise thousands
@@ -265,45 +257,21 @@ pub(crate) fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
 /// tracks the theme (fg → `palette.fg_default`, bg → transparent /
 /// `palette.bg_default`); `Indexed` is an ANSI-256 palette slot; `Rgb`
 /// is a 24-bit truecolor triple.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CellColor {
     Default,
     Indexed(u8),
     Rgb(u8, u8, u8),
 }
 
-impl CellColor {
-    /// Fixed 4-byte encoding: `[kind, a, b, c]`.
-    fn pack(self) -> [u8; 4] {
-        match self {
-            CellColor::Default => [0, 0, 0, 0],
-            CellColor::Indexed(n) => [1, n, 0, 0],
-            CellColor::Rgb(r, g, b) => [2, r, g, b],
-        }
-    }
-    fn unpack(b: &[u8]) -> Self {
-        match b.first().copied().unwrap_or(0) {
-            1 => b
-                .get(1)
-                .copied()
-                .map_or(CellColor::Default, CellColor::Indexed),
-            2 => match (b.get(1), b.get(2), b.get(3)) {
-                (Some(&r), Some(&g), Some(&blue)) => CellColor::Rgb(r, g, blue),
-                _ => CellColor::Default,
-            },
-            _ => CellColor::Default,
-        }
-    }
-}
-
 /// Per-cell rendering attributes. Colors are `CellColor` (default / ANSI-256
-/// / truecolor); the four SGR style bits plus the wide-glyph continuation
-/// marker are packed into a single flags byte.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// / truecolor), plus the SGR style bits and the wide-glyph continuation
+/// marker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each is an independent SGR style bit, packed into one flags byte by `pack`; \
-              grouping them would not change what they mean"
+    reason = "each is an independent SGR style bit; grouping them would not change what \
+              they mean"
 )]
 pub struct Attr {
     pub fg: CellColor,
@@ -320,68 +288,8 @@ pub struct Attr {
     /// OSC 8 hyperlink id. `0` means "no link"; any other value indexes the
     /// widget's link registry (`TerminalWidget::links`, the screen's links)
     /// to resolve the target URL for rendering (underline + link tint) and
-    /// click-to-open. Packed alongside the cell so it rides the same
-    /// session record and render mirror as every other attr.
+    /// click-to-open.
     pub link_id: u16,
-}
-
-/// Bytes per cell in the packed `attrs` blob: fg(4) + bg(4) + flags(1) +
-/// `link_id(2`, little-endian).
-const ATTR_BYTES: usize = 11;
-
-impl Attr {
-    pub fn pack(self) -> [u8; ATTR_BYTES] {
-        let f = self.fg.pack();
-        let b = self.bg.pack();
-        let mut flags = 0u8;
-        if self.bold {
-            flags |= 0b000_0001;
-        }
-        if self.italic {
-            flags |= 0b000_0010;
-        }
-        if self.underline {
-            flags |= 0b000_0100;
-        }
-        if self.reverse {
-            flags |= 0b000_1000;
-        }
-        if self.is_wide_cont {
-            flags |= 0b001_0000;
-        }
-        if self.dim {
-            flags |= 0b010_0000;
-        }
-        if self.strike {
-            flags |= 0b100_0000;
-        }
-        let l = self.link_id.to_le_bytes();
-        [
-            f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags, l[0], l[1],
-        ]
-    }
-    pub fn unpack(bytes: &[u8]) -> Self {
-        if bytes.len() < ATTR_BYTES {
-            return Self::default();
-        }
-        let flags = bytes.get(8).copied().unwrap_or(0);
-        let link_id = match (bytes.get(9), bytes.get(10)) {
-            (Some(&lo), Some(&hi)) => u16::from_le_bytes([lo, hi]),
-            _ => 0,
-        };
-        Self {
-            fg: CellColor::unpack(bytes.get(0..4).unwrap_or(&[])),
-            bg: CellColor::unpack(bytes.get(4..8).unwrap_or(&[])),
-            bold: flags & 0b000_0001 != 0,
-            italic: flags & 0b000_0010 != 0,
-            underline: flags & 0b000_0100 != 0,
-            reverse: flags & 0b000_1000 != 0,
-            is_wide_cont: flags & 0b001_0000 != 0,
-            dim: flags & 0b010_0000 != 0,
-            strike: flags & 0b100_0000 != 0,
-            link_id,
-        }
-    }
 }
 
 impl Default for Attr {
@@ -401,15 +309,13 @@ impl Default for Attr {
     }
 }
 
-/// Terminal mode flags toggled by DEC private set/reset (`CSI ? Ps h/l`).
-/// Owned by the widget and passed by mutable reference into the vte
-/// performer so parsed modes (bracketed paste, cursor visibility, mouse
-/// reporting, application cursor keys) survive across PTY reads.
+/// Terminal mode flags toggled by DEC private set/reset (`CSI ? Ps h/l`), as
+/// the emulator last left them.
 #[derive(Clone, Copy, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each is an independent DEC private mode (CSI ? Ps h/l), set and read \
-              separately by the vte performer; grouping them would not change what they mean"
+    reason = "each is an independent DEC private mode (CSI ? Ps h/l), read separately; \
+              grouping them would not change what they mean"
 )]
 pub struct TermModes {
     /// `?25` — block cursor drawn when true (DECTCEM).
@@ -525,8 +431,6 @@ pub struct TerminalWidget {
     /// Stable, non-sensitive reason shown in the retained terminal surface and
     /// its accessibility description. Kept local with the transport state.
     session_status_message: Arc<Mutex<String>>,
-    parser: Parser,
-
     grid: Vec<String>,
     grid_attrs: Vec<Vec<Attr>>,
     cursor_x: usize,
@@ -547,9 +451,9 @@ pub struct TerminalWidget {
     /// default-background cell is the surface the framework already painted.
     palette: ui::tokens::TerminalPalette,
 
-    /// What the terminal shows: the emulator's screen of the process it
-    /// runs. It is live output and never part of the session record.
-    screen: crate::screen::Screen,
+    /// The emulator of the process's output, and the screen it shows. It
+    /// is live output and never part of the session record.
+    emulator: crate::emulator::Emulator,
     /// The lines `grid`/`grid_attrs` were last built from, so a rebuild
     /// converts only lines that changed.
     mirrored: Vec<std::rc::Rc<crate::screen::Line>>,
@@ -566,18 +470,8 @@ pub struct TerminalWidget {
     /// The relay session the record says this session re-attaches to.
     recorded_relay_session: Option<String>,
 
-    current_attr: Attr,
-    pending_wrap: bool,
-
     /// True while the alternate screen is the active buffer.
     alt_active: bool,
-    /// Cursor + attribute saved on alt-screen entry / DECSC, restored on
-    /// exit / DECRC.
-    saved_cursor: Option<(usize, usize, Attr)>,
-    /// DEC scrolling region (0-based, inclusive). Defaults to the full
-    /// screen; honoured for the alternate buffer's scroll/insert/delete.
-    scroll_top: usize,
-    scroll_bottom: usize,
 
     /// Terminal mode flags (cursor visibility, bracketed paste, …).
     modes: TermModes,
@@ -706,13 +600,6 @@ pub struct TerminalWidget {
     /// rebuilt from the screen's links whenever it changes. Used to render
     /// link tint/underline and to resolve a click into a URL to open.
     links: HashMap<u16, String>,
-    /// Monotonic OSC 8 link-id allocator (host side). `0` is reserved for
-    /// "no link"; the first hyperlink gets id 1.
-    next_link_id: u16,
-    /// The link id currently open (between `OSC 8 ; ; URL` and its close);
-    /// every printed cell adopts it so a multi-cell link shares one id.
-    /// Survives across `feed` calls so a link spanning PTY reads stays whole.
-    current_link_id: u16,
     /// Where graphics bytes are stored and read back (verified) by hash.
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
@@ -720,7 +607,6 @@ pub struct TerminalWidget {
     /// holds only immutable content addresses; each peer reads, validates and
     /// decodes bytes on a worker when a placement comes into view.
     images: crate::image_loads::ImageLoads,
-    graphics_scanner: GraphicsScanner,
 
     /// Stable per-instance id used to scope this terminal's collaboration
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
@@ -865,7 +751,6 @@ impl TerminalWidget {
             #[cfg(windows)]
             child_killer: None,
             session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
-            parser: Parser::new(),
             grid: vec![" ".repeat(width); height],
             grid_attrs: vec![vec![Attr::default(); width]; height],
             cursor_x: 0,
@@ -881,19 +766,14 @@ impl TerminalWidget {
             forced_cell: false,
             cell_style: None,
             palette: ui::tokens::TerminalPalette::dark(),
-            screen: crate::screen::Screen::default(),
+            emulator: crate::emulator::Emulator::new(width, height),
             mirrored: Vec::new(),
             emulating: false,
             pending_actions: Vec::new(),
             recorded_target: None,
             local_session: None,
             recorded_relay_session: None,
-            current_attr: Attr::default(),
-            pending_wrap: false,
             alt_active: false,
-            saved_cursor: None,
-            scroll_top: 0,
-            scroll_bottom: height - 1,
             modes: TermModes::default(),
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
@@ -932,12 +812,9 @@ impl TerminalWidget {
             ever_nonblank: false,
             title: "Terminal".to_string(),
             links: HashMap::new(),
-            next_link_id: 0,
-            current_link_id: 0,
             image_placements: Vec::new(),
             images: crate::image_loads::ImageLoads::new(content.clone()),
             content,
-            graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             dispatch: None,
             waker: Arc::new(Mutex::new(ui::WakeHandle::new())),
@@ -964,13 +841,9 @@ impl TerminalWidget {
         self.submit(crate::resource::Terminal::CLAIM_PANE.with(self.pane_id.clone()));
         self.begin_runs();
         self.emulating = true;
-        self.screen = crate::screen::Screen::default();
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.saved_cursor = None;
+        self.emulator = crate::emulator::Emulator::new(self.width, self.height);
         self.ever_nonblank = false;
         self.title = "Terminal".to_string();
-        self.ensure_lines();
         self.show_screen();
     }
 
@@ -1270,7 +1143,7 @@ impl TerminalWidget {
     /// newest part of the screen and scrollback), title, cursor and where it
     /// runs.
     pub(crate) fn read_session(&self) -> serde_json::Value {
-        let (output, truncated) = crate::resource::readable_output(&self.screen);
+        let (output, truncated) = crate::resource::readable_output(self.emulator.screen());
         serde_json::json!({
             "kind": <crate::resource::Terminal as ui::tilo_resource::Resource>::KIND,
             "title": self.title,
@@ -1278,11 +1151,11 @@ impl TerminalWidget {
             "session": self.local_session,
             "relay_session": self.recorded_relay_session,
             "pane": self.pane_id,
-            "alternate": self.screen.alternate,
-            "cursor": { "column": self.screen.cursor.0, "row": self.screen.cursor.1 },
+            "alternate": self.emulator.screen().alternate,
+            "cursor": { "column": self.emulator.screen().cursor.0, "row": self.emulator.screen().cursor.1 },
             "output": output,
             "output_truncated": truncated,
-            "retained_lines": self.screen.active().len(),
+            "retained_lines": self.emulator.screen().active().len(),
         })
     }
 
@@ -2141,7 +2014,6 @@ impl TerminalWidget {
         if !self.emulating {
             self.begin_local_session();
         }
-        self.ensure_lines();
 
         // Any PTY bytes mean the session is live, even when the first batch is
         // entirely cursor movement, colour setup, or a prompt whose visible
@@ -2152,74 +2024,35 @@ impl TerminalWidget {
             self.ever_nonblank = true;
         }
 
-        // Clamp cursors in case of resize.
-        self.cursor_x = self.cursor_x.min(self.width.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
-
-        let mut title_out: Option<String> = None;
-        // Reply bytes for any capability query in this batch (DA1/DA2, DSR,
-        // XTVERSION, DECRQM). Written back to the PTY after the parse — the
-        // vte performer only reads, so it stages answers here.
-        let mut responses: Vec<u8> = Vec::new();
-        let mut bells: u32 = 0;
-        let mut performer = TerminalPerformer {
-            screen: &mut self.screen,
-            content: &self.content,
-            width: self.width,
-            height: self.height,
-            cursor_x: self.cursor_x,
-            cursor_y: self.cursor_y,
-            current_attr: self.current_attr,
-            pending_wrap: self.pending_wrap,
-            modes: &mut self.modes,
-            saved_cursor: &mut self.saved_cursor,
-            scroll_top: self.scroll_top,
-            scroll_bottom: self.scroll_bottom,
-            next_link_id: &mut self.next_link_id,
-            current_link_id: self.current_link_id,
-            title_out: &mut title_out,
-            bells: &mut bells,
-            responses: &mut responses,
-            print_buf: None,
-            allow_osc52_clipboard: self.allow_osc52_clipboard,
-        };
-        // vte deliberately discards APC payloads, while Kitty graphics uses
-        // APC (`ESC _ G … ESC \\`). A tiny streaming pre-parser extracts only
-        // that protocol and leaves every ordinary ANSI byte untouched.
-        for event in self.graphics_scanner.push(bytes) {
-            match event {
-                StreamEvent::Bytes(bytes) => self.parser.advance(&mut performer, &bytes),
-                StreamEvent::Kitty(payload) => performer.kitty_graphics(&payload),
-            }
-        }
-        // Record the cursor once per feed rather than on every printed cell.
-        performer.flush_cursor();
-        self.cursor_x = performer.cursor_x;
-        self.cursor_y = performer.cursor_y;
-        self.current_attr = performer.current_attr;
-        self.pending_wrap = performer.pending_wrap;
-        self.scroll_top = performer.scroll_top;
-        self.scroll_bottom = performer.scroll_bottom;
-        self.current_link_id = performer.current_link_id;
+        let output = self
+            .emulator
+            .feed(bytes, &self.content, self.allow_osc52_clipboard);
+        self.modes = self.emulator.modes();
         if !self.modes.mouse_report {
             self.mouse_buttons = 0;
         }
+        for (text, primary) in &output.clipboard {
+            if *primary {
+                clipboard_copy_primary(text);
+            } else {
+                clipboard_copy(text);
+            }
+        }
 
-        // Answer any capability queries this batch raised. The performer's
-        // borrow of `self` has ended, so we can take the PTY writer lock and
-        // send the reply back on the shell's stdin — the same wire keystrokes
-        // use, which is where the shell expects to read a query response.
-        if !responses.is_empty() {
-            self.write_input(&responses);
+        // Answer any capability queries this batch raised on the shell's
+        // stdin — the same wire keystrokes use, which is where the shell
+        // expects to read a query response.
+        if !output.responses.is_empty() {
+            self.write_input(&output.responses);
         }
 
         // An OSC 0/2 title change shows as the window's title.
-        if let Some(t) = title_out {
+        if let Some(t) = output.title {
             self.title = t;
         }
         // A bell rings once per feed, however many times it was rung: one
         // flash is as much attention as one burst of bells deserves.
-        if bells > 0 {
+        if output.bells > 0 {
             self.ring_bell();
         }
         self.show_screen();
@@ -2319,33 +2152,17 @@ impl TerminalWidget {
         let new_width = (grid_rect.width() / self.char_w.max(1.0)).floor() as usize;
         let new_height = (grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
 
-        // Cap the grid at a sensible terminal size: every cell of the screen
-        // is recorded in the session's document, one text op per character,
-        // and a full-screen embed (186 × 219 ≈ 40 700 chars) made that record
-        // freeze the process while the document compacted. The visible region
-        // can be larger than the grid — overflow rows render empty.
+        // Cap the grid at a sensible terminal size, which bounds what every
+        // feed converts for drawing. The visible region can be larger than
+        // the grid — overflow rows render empty.
         let new_width = new_width.min(200);
         let new_height = new_height.min(80);
         if new_width > 0 && new_height > 0 && (new_width != self.width || new_height != self.height)
         {
-            let lines = self.screen.main.len();
-            let history_offset = lines.saturating_sub(self.height);
-            let absolute_y = history_offset + self.cursor_y;
-
-            let new_history_offset = lines.saturating_sub(new_height);
-            let new_cursor_y = absolute_y
-                .saturating_sub(new_history_offset)
-                .min(new_height.saturating_sub(1));
-
-            self.cursor_y = new_cursor_y;
-            self.cursor_x = self.cursor_x.min(new_width.saturating_sub(1));
-
             self.width = new_width;
             self.height = new_height;
-            // Reset the scrolling region to the full new screen unless an
-            // app narrows it again.
-            self.scroll_top = 0;
-            self.scroll_bottom = new_height.saturating_sub(1);
+            self.emulator.resize(new_width, new_height);
+            self.show_screen();
             // A poisoned lock means some other thread already panicked while
             // holding it; skip the PTY resize rather than propagate that
             // panic here too — the grid dimensions above are updated either way.
@@ -2359,35 +2176,7 @@ impl TerminalWidget {
             }
         }
     }
-
-    /// Grow both buffers to a screen's height. Blank lines stay empty:
-    /// drawing pads them, and `print` grows a line when the cursor lands past
-    /// its end.
-    fn ensure_lines(&mut self) {
-        for alternate in [false, true] {
-            let lines = self.screen.lines_mut(alternate);
-            while lines.len() < self.height {
-                lines.push(std::rc::Rc::default());
-            }
-        }
-    }
 }
-
-/// Retained scrollback lines for the main buffer. Sized for a daily-driver
-/// terminal; the incremental `sync` re-read means a deep history no longer
-/// costs anything per frame. Under `cfg(test)` it is small so the trim path
-/// is reachable without feeding thousands of lines through the (much slower)
-/// unoptimised automerge build.
-#[cfg(not(test))]
-const MAX_HISTORY: usize = 5000;
-#[cfg(test)]
-const MAX_HISTORY: usize = 120;
-/// The main buffer is allowed to overrun `MAX_HISTORY` by this many lines
-/// before a batched front-trim runs, amortising the trim's cost.
-#[cfg(not(test))]
-const HISTORY_TRIM_SLACK: usize = 256;
-#[cfg(test)]
-const HISTORY_TRIM_SLACK: usize = 8;
 
 impl TerminalWidget {
     /// Do `effect`, invoked by the palette, an agent or a script through the
@@ -2541,7 +2330,7 @@ impl TerminalWidget {
             E::HistoryTop => self.scroll_to_top(),
             E::HistoryLive => self.scroll_to_bottom(),
             E::OpenLink { url } => {
-                if safe_osc_text(url.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
+                if safe_osc_text(url.as_bytes(), crate::emulator::MAX_OSC_LINK_BYTES).is_none()
                     || !is_public_web_link(&url)
                 {
                     return Err("link target is not a safe public web URL".to_string());
@@ -2995,7 +2784,8 @@ impl TerminalWidget {
     /// line changed are converted again.
     fn show_screen(&mut self) {
         use std::collections::hash_map::Entry;
-        let lines = self.screen.active().clone();
+        let screen = self.emulator.screen();
+        let lines = screen.active().clone();
         let unchanged = lines.len() == self.mirrored.len()
             && lines
                 .iter()
@@ -3013,43 +2803,22 @@ impl TerminalWidget {
                 }
             }
             for line in &lines {
-                let (text, attrs) =
-                    previous
-                        .remove(&std::rc::Rc::as_ptr(line))
-                        .unwrap_or_else(|| {
-                            (
-                                line.text.clone(),
-                                line.attrs
-                                    .chunks_exact(ATTR_BYTES)
-                                    .map(Attr::unpack)
-                                    .collect(),
-                            )
-                        });
+                let (text, attrs) = previous
+                    .remove(&std::rc::Rc::as_ptr(line))
+                    .unwrap_or_else(|| (line.text.clone(), line.attrs.clone()));
                 self.grid.push(text);
                 self.grid_attrs.push(attrs);
             }
             self.mirrored = lines;
         }
-        self.alt_active = self.screen.alternate;
-        if !self.emulating {
-            let (x, y) = self.screen.cursor;
-            let history_offset = self.grid.len().saturating_sub(self.height);
-            self.cursor_x = usize::try_from(x).unwrap_or(0);
-            self.cursor_y = usize::try_from(y)
-                .unwrap_or(0)
-                .saturating_sub(history_offset)
-                .min(self.height.saturating_sub(1));
-        }
-        self.links = self
-            .screen
+        self.alt_active = screen.alternate;
+        (self.cursor_x, self.cursor_y) = self.emulator.cursor();
+        self.links = screen
             .links
             .iter()
             .map(|(id, url)| (*id, url.clone()))
             .collect();
-        self.next_link_id = self
-            .next_link_id
-            .max(self.links.keys().copied().max().unwrap_or(0));
-        self.image_placements.clone_from(&self.screen.images);
+        self.image_placements.clone_from(&screen.images);
         if self.grid.iter().any(|row| !row.trim().is_empty()) {
             self.ever_nonblank = true;
         }
@@ -5387,1158 +5156,6 @@ impl TerminalWidget {
         } else {
             None
         }
-    }
-}
-
-pub struct TerminalPerformer<'a> {
-    /// The screen the output is drawn on.
-    pub screen: &'a mut crate::screen::Screen,
-    /// Where Kitty graphics payloads are stored; the screen keeps only the hash.
-    pub content: &'a ContentStore,
-    pub width: usize,
-    pub height: usize,
-    pub cursor_x: usize,
-    pub cursor_y: usize,
-    pub current_attr: Attr,
-    pub pending_wrap: bool,
-    pub modes: &'a mut TermModes,
-    pub saved_cursor: &'a mut Option<(usize, usize, Attr)>,
-    pub scroll_top: usize,
-    pub scroll_bottom: usize,
-    /// Monotonic OSC 8 link-id allocator (shared with the widget so ids stay
-    /// unique across feeds). `0` is reserved for "no link".
-    pub next_link_id: &'a mut u16,
-    /// Link id of the currently-open OSC 8 hyperlink (`0` = none). Every cell
-    /// printed while this is non-zero adopts it.
-    pub current_link_id: u16,
-    /// Out-param for an OSC 0/2 window-title change parsed this feed; the
-    /// widget records it in the session and its own `title` field afterwards.
-    pub title_out: &'a mut Option<String>,
-    /// Out-param: how many times a program rang the bell (BEL) in this feed,
-    /// so the widget flashes the pane after the parse.
-    pub bells: &'a mut u32,
-    /// Reply bytes accumulated for terminal capability queries (Device
-    /// Attributes, Device Status Report, XTVERSION, DECRQM, …). A real
-    /// terminal answers these on the same wire the keyboard writes to; the
-    /// vte parser only *reads*, so the performer stages the answer here and
-    /// [`feed`](TerminalWidget::feed) flushes it through `write_input` after
-    /// the parse. This is what stops fish (and any terminfo-probing program)
-    /// from blocking for 10s on a Primary Device Attributes query that never
-    /// gets answered.
-    pub responses: &'a mut Vec<u8>,
-    /// Whether OSC 52 may write the clipboard this feed (the widget's
-    /// `allow_osc52_clipboard`).
-    pub allow_osc52_clipboard: bool,
-    /// Batches consecutive `print`s to the same line so a run of characters
-    /// replaces the line once rather than once per cell, which keeps a
-    /// screenful of output linear. Any non-`print` action flushes the buffer
-    /// first (see `flush_print_buf`) so it never observes stale grid state.
-    pub print_buf: Option<PrintBuf>,
-}
-
-/// Emulator work the tests count on the thread that parses output.
-#[cfg(test)]
-pub(crate) mod work {
-    use std::cell::Cell;
-
-    thread_local! {
-        /// Grid lines replaced by a finished print run.
-        pub(crate) static LINE_WRITES: Cell<usize> = const { Cell::new(0) };
-        /// Primary Device Attributes queries answered.
-        pub(crate) static DA1_REPLIES: Cell<usize> = const { Cell::new(0) };
-    }
-}
-
-/// In-memory accumulator for a run of `print`s landing on one grid line.
-/// Mutated per character; written to the line once when the line changes,
-/// any other emulator action runs, or the feed ends.
-pub struct PrintBuf {
-    text: String,
-    attrs: Vec<u8>,
-    alternate: bool,
-    index: usize,
-}
-
-fn splice_chars(text: &str, at: usize, delete: usize, insert: &str) -> String {
-    let mut chars: Vec<char> = text.chars().collect();
-    let at = at.min(chars.len());
-    let end = (at + delete).min(chars.len());
-    chars.splice(at..end, insert.chars());
-    chars.into_iter().collect()
-}
-
-fn blank_attr_range(attrs: &mut [u8], from: usize, count: usize) {
-    if count == 0 {
-        return;
-    }
-    let empty = Attr::default().pack();
-    for index in from..(from + count) {
-        let start = index * ATTR_BYTES;
-        if let Some(dest) = attrs.get_mut(start..start + ATTR_BYTES) {
-            dest.copy_from_slice(&empty);
-        }
-    }
-}
-
-/// Name this emulator reports for itself in the XTVERSION reply
-/// (`CSI > 0 q` → `DCS > | tilo-terminal(<version>) ST`).
-pub const TERMINAL_NAME: &str = "tilo-terminal";
-
-/// Numeric build version reported in the Secondary Device Attributes (DA2)
-/// reply `CSI > 1 ; Pv ; 0 c`. Encoded `major*10000 + minor*100 + patch` so a
-/// program keying off it sees the real build as a single integer (xterm's
-/// "patch level" convention). Derived from the crate version at compile time.
-pub fn terminal_da2_version() -> u32 {
-    let major: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0);
-    let minor: u32 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0);
-    let patch: u32 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0);
-    major * 10000 + minor * 100 + patch
-}
-
-impl Perform for TerminalPerformer<'_> {
-    fn print(&mut self, c: char) {
-        let char_w = c.width().unwrap_or(1);
-        if char_w == 0 {
-            return;
-        }
-
-        if self.pending_wrap {
-            self.cursor_x = 0;
-            self.newline();
-            self.pending_wrap = false;
-        }
-
-        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let alternate = self.screen.alternate;
-        // Point the write buffer at this line, loading its current text + attrs
-        // once. Consecutive prints to the same line then mutate memory only;
-        // the line is replaced a single time when the print run ends.
-        let need_load = self
-            .print_buf
-            .as_ref()
-            .is_none_or(|b| b.index != y || b.alternate != alternate);
-        if need_load {
-            self.flush_print_buf();
-            let Some(line) = self.screen.active().get(y) else {
-                return;
-            };
-            self.print_buf = Some(PrintBuf {
-                text: line.text.clone(),
-                attrs: line.attrs.clone(),
-                alternate,
-                index: y,
-            });
-        }
-        // `need_load` above always leaves `print_buf` populated by this
-        // point — unless the line is missing, in which case that branch
-        // already returned.
-        let Some(buf) = self.print_buf.as_mut() else {
-            return;
-        };
-
-        // Text edit, in char space (Automerge `Text` is char-addressed, so the
-        // buffer mirrors that exactly). Lines grow on demand: pad with spaces
-        // when the cursor sits past the current end (a cursor jump on a fresh
-        // line), then overwrite (or append) the cell(s) this glyph occupies.
-        let mut chars: Vec<char> = buf.text.chars().collect();
-        if self.cursor_x > chars.len() {
-            chars.resize(self.cursor_x, ' ');
-        }
-        let mut repl: Vec<char> = vec![c];
-        repl.resize(char_w, ' ');
-        if self.cursor_x < chars.len() {
-            let end = (self.cursor_x + char_w).min(chars.len());
-            chars.splice(self.cursor_x..end, repl);
-        } else {
-            chars.extend(repl);
-        }
-        buf.text = chars.into_iter().collect();
-
-        // Attrs mirror the text; the array is grown to fit the cell being
-        // written (matching the on-demand text fill).
-        let start = self.cursor_x * ATTR_BYTES;
-        let end = (self.cursor_x + char_w) * ATTR_BYTES;
-        if buf.attrs.len() < end {
-            buf.attrs.resize(end, 0);
-        }
-
-        // Carry the active OSC 8 hyperlink id onto the cell, independent of SGR
-        // so a link and its styling compose.
-        let mut cell_attr = self.current_attr;
-        cell_attr.link_id = self.current_link_id;
-        if let Some(dest) = buf.attrs.get_mut(start..start + ATTR_BYTES) {
-            dest.copy_from_slice(&cell_attr.pack());
-        }
-        if char_w > 1 {
-            let mut cont = cell_attr;
-            cont.is_wide_cont = true;
-            let cont_packed = cont.pack();
-            for i in 1..char_w {
-                let s = (self.cursor_x + i) * ATTR_BYTES;
-                if let Some(dest) = buf.attrs.get_mut(s..s + ATTR_BYTES) {
-                    dest.copy_from_slice(&cont_packed);
-                }
-            }
-        }
-
-        self.cursor_x += char_w;
-        if self.cursor_x >= self.width {
-            self.pending_wrap = true;
-            self.cursor_x = self.width - 1;
-        }
-        self.update_cursor();
-    }
-
-    fn execute(&mut self, byte: u8) {
-        self.flush_print_buf();
-        match byte {
-            b'\n' | 0x0B | 0x0C => {
-                self.pending_wrap = false;
-                self.newline();
-            }
-            b'\r' => {
-                self.pending_wrap = false;
-                self.cursor_x = 0;
-            }
-            8 => {
-                self.pending_wrap = false;
-                if self.cursor_x > 0 {
-                    self.cursor_x -= 1;
-                }
-            }
-            b'\t' => {
-                self.pending_wrap = false;
-                let next = ((self.cursor_x / 8) + 1) * 8;
-                self.cursor_x = next.min(self.width.saturating_sub(1));
-            }
-            // BEL: the toolkit has no audible bell, so a bell the person
-            // asked for is the pane flashing. No other single byte means
-            // anything here.
-            7 => *self.bells = self.bells.saturating_add(1),
-            _ => {}
-        }
-        self.update_cursor();
-    }
-
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        self.flush_print_buf();
-        match byte {
-            b'7' => {
-                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
-            } // DECSC
-            b'8' => {
-                // DECRC
-                if let Some((x, y, a)) = *self.saved_cursor {
-                    self.cursor_x = x.min(self.width.saturating_sub(1));
-                    self.cursor_y = y.min(self.height.saturating_sub(1));
-                    self.current_attr = a;
-                }
-            }
-            b'D' => {
-                self.pending_wrap = false;
-                self.newline();
-            } // IND — index (line feed)
-            b'E' => {
-                self.pending_wrap = false;
-                self.cursor_x = 0;
-                self.newline();
-            } // NEL
-            b'M' => {
-                // RI — reverse index
-                self.pending_wrap = false;
-                if self.cursor_y == self.scroll_top {
-                    self.scroll_region_down(1);
-                } else if self.cursor_y > 0 {
-                    self.cursor_y -= 1;
-                }
-            }
-            b'Z' => self.reply_da1(), // DECID — deprecated primary-DA request
-            _ => {}
-        }
-        self.update_cursor();
-    }
-
-    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
-        self.flush_print_buf();
-        self.pending_wrap = false;
-        if intermediates.first() == Some(&b'?') {
-            self.csi_dispatch_private(params, intermediates, c);
-        } else {
-            self.csi_dispatch_public(params, intermediates, c);
-        }
-        self.update_cursor();
-    }
-
-    /// OSC — Operating System Command. vte 0.15 pre-splits the payload on `;`
-    /// into `params`, so `params[0]` is the command number as ASCII bytes.
-    /// Handles window title (0/2), clipboard (52), and hyperlinks (8).
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        self.flush_print_buf();
-        let kind = params.first().copied().unwrap_or(b"");
-        let code: u32 = std::str::from_utf8(kind)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(u32::MAX);
-        match code {
-            // OSC 0 = icon name + window title; OSC 2 = window title. Both set
-            // the title for our purposes.
-            0 | 2 => {
-                if let Some(title) = params.get(1).copied()
-                    && let Some(title) = safe_osc_text(title, MAX_OSC_TITLE_BYTES)
-                {
-                    *self.title_out = Some(title);
-                }
-            }
-            // OSC 52 — manipulate the selection/clipboard. Form:
-            // `OSC 52 ; <targets> ; <base64|?> ST`. We honour the *set* path
-            // (write decoded text to the clipboard / primary selection); a
-            // `?` query would need to write back to the PTY, which the parser
-            // can't do, so it's ignored.
-            52 => {
-                if !self.allow_osc52_clipboard {
-                    return;
-                }
-                let targets = params.get(1).copied().unwrap_or(b"");
-                let data = params.get(2).copied().unwrap_or(b"");
-                if data == b"?" || data.is_empty() {
-                    return;
-                }
-                let max_encoded = MAX_OSC_CLIPBOARD_BYTES
-                    .saturating_mul(4)
-                    .saturating_div(3)
-                    .saturating_add(4);
-                if data.len() > max_encoded {
-                    return;
-                }
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
-                    && bytes.len() <= MAX_OSC_CLIPBOARD_BYTES
-                    && let Ok(text) = String::from_utf8(bytes)
-                {
-                    // `p` selects the primary selection; anything else
-                    // (`c`, `s`, default) targets the clipboard.
-                    if targets.contains(&b'p') {
-                        clipboard_copy_primary(&text);
-                    } else {
-                        clipboard_copy(&text);
-                    }
-                }
-            }
-            // OSC 8 — hyperlink. Form: `OSC 8 ; <params> ; <URI> ST`. An empty
-            // URI closes the current link. We register the URI on the screen and
-            // stamp its id onto subsequent cells via `current_link_id`.
-            8 => {
-                let uri = params.get(2).copied().unwrap_or(b"");
-                if uri.is_empty() {
-                    self.current_link_id = 0;
-                } else if self.screen.links.len() < MAX_OSC_LINKS
-                    && let Some(url) = safe_osc_text(uri, MAX_OSC_LINK_BYTES)
-                    && let Some(id) = self.next_link_id.checked_add(1)
-                {
-                    *self.next_link_id = id;
-                    self.screen.links.insert(id, url);
-                    self.current_link_id = id;
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-impl TerminalPerformer<'_> {
-    /// Persist a complete direct Kitty transmission as a content-addressed blob
-    /// plus a lightweight placement on the screen. The local renderer
-    /// validates and paints this subset, but no protocol success reply is sent:
-    /// clients must not infer broad Kitty support from an acknowledgement.
-    fn kitty_graphics(&mut self, payload: &[u8]) {
-        self.flush_print_buf();
-        let Some(image) = parse_kitty(payload) else {
-            return;
-        };
-        if image.mime == "image/png" && tilo_content::sniff(&image.bytes).mime != "image/png" {
-            return;
-        }
-        let hash = match self.content.put(&image.bytes) {
-            Ok(hash) => hash,
-            Err(error) => {
-                tracing::warn!(%error, "terminal: couldn't store graphics payload");
-                return;
-            }
-        };
-        if image.columns == 0 || image.rows == 0 || image.columns > 1024 || image.rows > 1024 {
-            return;
-        }
-        self.screen.images.push(TerminalImagePlacement {
-            hash,
-            mime: image.mime.to_string(),
-            byte_len: image.bytes.len() as u64,
-            row: self.absolute_y(),
-            col: self.cursor_x,
-            columns: image.columns,
-            rows: image.rows,
-            pixel_width: image.pixel_width,
-            pixel_height: image.pixel_height,
-            protocol_id: image.protocol_id,
-            alternate_screen: self.screen.alternate,
-        });
-    }
-
-    fn csi_first(p: &vte::Params) -> u16 {
-        p.iter()
-            .next()
-            .and_then(|x| x.first())
-            .copied()
-            .unwrap_or(0)
-    }
-
-    fn csi_first_or1(p: &vte::Params) -> usize {
-        let v = Self::csi_first(p);
-        if v == 0 { 1 } else { v as usize }
-    }
-
-    /// DEC-private CSI sequences (`CSI ? ... <final>`), dispatched separately
-    /// from the ANSI/xterm set below since a private and a public sequence
-    /// can share the same final byte with unrelated meanings.
-    fn csi_dispatch_private(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
-        match c {
-            'h' => self.set_dec_modes(params, true),
-            'l' => self.set_dec_modes(params, false),
-            // DECRQM — request the setting of a DEC-private mode
-            // (`CSI ? Pm $ p`). Answered with DECRPM so terminfo probes
-            // that ask "is bracketed paste / alt-screen on?" get a reply
-            // instead of stalling.
-            'p' if intermediates.contains(&b'$') => self.reply_decrqm(Self::csi_first(params)),
-            // DECXCPR — DEC-private cursor position report (`CSI ? 6 n`).
-            'n' => self.reply_dsr_private(Self::csi_first(params)),
-            _ => {}
-        }
-    }
-
-    /// ANSI/xterm CSI sequences (cursor motion, erase, scroll region,
-    /// SGR, device attributes/status).
-    fn csi_dispatch_public(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
-        // A private marker or intermediate byte makes it a different command
-        // from the plain sequence with the same final byte: `CSI > 4 ; 2 m` is
-        // XTMODKEYS (modifyOtherKeys), not SGR 4;2 (underline + faint), and
-        // `CSI > 5 u` / `CSI < u` push and pop Kitty keyboard flags, not a
-        // cursor restore. Claude Code sends all three at start-up, so reading
-        // them as their plain forms left its whole UI underlined and dimmed.
-        if !intermediates.is_empty() {
-            self.csi_dispatch_intermediate(params, intermediates, c);
-            return;
-        }
-        match c {
-            'A' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_y = self.cursor_y.saturating_sub(n);
-            }
-            'B' | 'e' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_y = (self.cursor_y + n).min(self.height - 1);
-            }
-            'C' | 'a' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_x = (self.cursor_x + n).min(self.width - 1);
-            }
-            'D' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_x = self.cursor_x.saturating_sub(n);
-            }
-            'G' | '`' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_x = (n - 1).min(self.width - 1);
-            } // CHA
-            'd' => {
-                let n = Self::csi_first_or1(params);
-                self.cursor_y = (n - 1).min(self.height - 1);
-            } // VPA
-            'H' | 'f' => {
-                let mut it = params.iter();
-                let y = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                let x = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                self.cursor_y = (y.saturating_sub(1)).min(self.height - 1);
-                self.cursor_x = (x.saturating_sub(1)).min(self.width - 1);
-            }
-            'J' => self.erase_display(Self::csi_first(params)),
-            'K' => self.erase_line(Self::csi_first(params)),
-            'X' => self.erase_chars(Self::csi_first_or1(params)), // ECH
-            '@' => self.insert_chars(Self::csi_first_or1(params)), // ICH
-            'P' => self.delete_chars(Self::csi_first_or1(params)), // DCH
-            'L' => self.insert_lines(Self::csi_first_or1(params)), // IL
-            'M' => self.delete_lines(Self::csi_first_or1(params)), // DL
-            'S' => self.scroll_region_up(Self::csi_first_or1(params)), // SU
-            'T' => self.scroll_region_down(Self::csi_first_or1(params)), // SD
-            'r' => {
-                // DECSTBM — set scrolling region
-                let mut it = params.iter();
-                let top = it.next().and_then(|p| p.first()).copied().unwrap_or(1) as usize;
-                let bot = it
-                    .next()
-                    .and_then(|p| p.first())
-                    .copied()
-                    .unwrap_or(self.height as u16) as usize;
-                let top0 = top.saturating_sub(1).min(self.height.saturating_sub(1));
-                let bot0 = if bot == 0 {
-                    self.height - 1
-                } else {
-                    (bot - 1).min(self.height - 1)
-                };
-                if top0 < bot0 {
-                    self.scroll_top = top0;
-                    self.scroll_bottom = bot0;
-                }
-                self.cursor_x = 0;
-                self.cursor_y = 0;
-            }
-            's' => {
-                *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
-            } // SCP
-            'u' => {
-                // RCP
-                if let Some((x, y, a)) = *self.saved_cursor {
-                    self.cursor_x = x.min(self.width - 1);
-                    self.cursor_y = y.min(self.height - 1);
-                    self.current_attr = a;
-                }
-            }
-            'm' => self.apply_sgr(params),
-            // Device Attributes, Primary request (DA1): `CSI c` / `CSI 0 c`.
-            // fish blocks on the DA1 reply for up to 10s at startup.
-            'c' => self.reply_da1(),
-            // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
-            // cursor position (CPR).
-            'n' => self.reply_dsr(Self::csi_first(params)),
-            _ => {}
-        }
-    }
-
-    /// CSI sequences carrying a private marker (`>`, `<`, `=`) or an
-    /// intermediate byte (`$`, `!`, …). Only the ones named here act; every
-    /// other one (XTMODKEYS `CSI > Ps ; Ps m`, Kitty keyboard `CSI > Ps u` /
-    /// `CSI < u` / `CSI = Ps u`, …) is ignored rather than run as the plain
-    /// command sharing its final byte.
-    fn csi_dispatch_intermediate(&mut self, params: &vte::Params, intermediates: &[u8], c: char) {
-        match c {
-            // Device Attributes, Secondary request (DA2): `CSI > c` /
-            // `CSI > 0 c`.
-            'c' if intermediates.first() == Some(&b'>') => self.reply_da2(),
-            // XTVERSION — `CSI > 0 q` → the terminal's name + version.
-            'q' if intermediates.first() == Some(&b'>') && Self::csi_first(params) == 0 => {
-                self.reply_xtversion();
-            }
-            // DECRQM for ANSI (non-private) modes, `CSI Pm $ p`. We do not
-            // track ANSI modes, so answer "mode not recognised" (0) rather
-            // than leave the requester waiting.
-            'p' if intermediates.contains(&b'$') => {
-                let m = Self::csi_first(params);
-                self.respond(format!("\x1b[{m};0$y").as_bytes());
-            }
-            _ => {}
-        }
-    }
-
-    fn active_len(&self) -> usize {
-        self.screen.active().len()
-    }
-
-    fn active_lines_mut(&mut self) -> &mut Vec<std::rc::Rc<crate::screen::Line>> {
-        let alternate = self.screen.alternate;
-        self.screen.lines_mut(alternate)
-    }
-
-    fn blank_line(&self) -> std::rc::Rc<crate::screen::Line> {
-        std::rc::Rc::new(crate::screen::Line {
-            text: " ".repeat(self.width),
-            attrs: vec![Attr::default().pack(); self.width].concat(),
-        })
-    }
-
-    /// Insert a blank line into the active buffer at `index`.
-    fn insert_blank_line(&mut self, index: usize) {
-        let line = self.blank_line();
-        let lines = self.active_lines_mut();
-        let index = index.min(lines.len());
-        lines.insert(index, line);
-    }
-
-    fn delete_grid_line(&mut self, index: usize) {
-        let lines = self.active_lines_mut();
-        if index < lines.len() {
-            lines.remove(index);
-        }
-    }
-
-    /// Replace one line of the active buffer. An unchanged line keeps its
-    /// allocation, which is how the session record learns it did not change.
-    fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
-        if let Some(line) = self.active_lines_mut().get_mut(index)
-            && (line.text != text || line.attrs != attrs)
-        {
-            *line = std::rc::Rc::new(crate::screen::Line { text, attrs });
-        }
-    }
-
-    fn line_text_and_attrs(&self, index: usize) -> Option<(String, Vec<u8>)> {
-        self.screen
-            .active()
-            .get(index)
-            .map(|line| (line.text.clone(), line.attrs.clone()))
-    }
-
-    fn newline(&mut self) {
-        // A line feed leaves the current line; commit any buffered prints first
-        // so the appended/scrolled structure is computed over the fresh line
-        // (and so a print → auto-wrap → newline doesn't strand the old line).
-        self.flush_print_buf();
-        self.cursor_y += 1;
-        if self.cursor_y < self.height {
-            return;
-        }
-        self.cursor_y = self.height - 1;
-
-        if self.screen.alternate {
-            // Fixed-height alternate buffer: scroll the region up in place.
-            self.scroll_region_up(1);
-        } else {
-            // Main buffer accumulates scrollback.
-            let line = self.blank_line();
-            self.screen.main.push(line);
-
-            // Bound the retained scrollback. Trimming one line at a time on
-            // every append made `Vec::remove(0)` an O(n) shift per output line
-            // (O(n²) over a flood); instead let history overrun by a slack
-            // margin and drop the overflow in a single `drain`. Images on the
-            // dropped rows go with them; the others move up.
-            if self.screen.main.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
-                let overflow = self.screen.main.len() - MAX_HISTORY;
-                self.screen.main.drain(0..overflow);
-                self.screen.images.retain_mut(|image| {
-                    if image.alternate_screen {
-                        return true;
-                    }
-                    let kept = image.row >= overflow;
-                    image.row = image.row.saturating_sub(overflow);
-                    kept
-                });
-            }
-        }
-    }
-
-    /// Scroll the current scrolling region up by `n` lines (content moves up;
-    /// blank lines appear at the bottom of the region). Honours the DEC
-    /// scrolling margins.
-    fn scroll_region_up(&mut self, n: usize) {
-        let Some(last) = self.active_len().checked_sub(1) else {
-            return;
-        };
-        self.shift_rows(
-            self.scroll_top.min(last),
-            self.scroll_bottom.min(last),
-            n,
-            false,
-        );
-    }
-
-    /// Scroll the current scrolling region down by `n` lines (content moves
-    /// down; blank lines appear at the top of the region).
-    fn scroll_region_down(&mut self, n: usize) {
-        let Some(last) = self.active_len().checked_sub(1) else {
-            return;
-        };
-        self.shift_rows(
-            self.scroll_top.min(last),
-            self.scroll_bottom.min(last),
-            n,
-            true,
-        );
-    }
-
-    /// IL — insert `n` blank lines at the cursor row, within the region.
-    fn insert_lines(&mut self, n: usize) {
-        let Some(last) = self.active_len().checked_sub(1) else {
-            return;
-        };
-        let at = self.cursor_y.max(self.scroll_top);
-        if self.shift_rows(at, self.scroll_bottom.min(last), n, true) {
-            self.cursor_x = 0;
-        }
-    }
-
-    /// DL — delete `n` lines at the cursor row, within the region.
-    fn delete_lines(&mut self, n: usize) {
-        let Some(last) = self.active_len().checked_sub(1) else {
-            return;
-        };
-        let at = self.cursor_y.max(self.scroll_top);
-        if self.shift_rows(at, self.scroll_bottom.min(last), n, false) {
-            self.cursor_x = 0;
-        }
-    }
-
-    /// Move rows `top..=bot` by `n` (at most the whole span): `down` pushes
-    /// content towards `bot` and opens blank lines at `top`, otherwise the
-    /// reverse. Whether the span held any rows; nothing moves when it is
-    /// empty.
-    fn shift_rows(&mut self, top: usize, bot: usize, n: usize, down: bool) -> bool {
-        if top > bot {
-            return false;
-        }
-        let (removed, opened) = if down { (bot, top) } else { (top, bot) };
-        for _ in 0..n.min(bot - top + 1) {
-            self.delete_grid_line(removed);
-            self.insert_blank_line(opened);
-        }
-        true
-    }
-
-    fn erase_display(&mut self, mode: u16) {
-        let len = self.active_len();
-        if len == 0 {
-            return;
-        }
-        let screen_top = len.saturating_sub(self.height);
-        let cursor_y = self.absolute_y().min(len - 1);
-        // The cursor's own row is erased only up to or from the cursor, as
-        // `EL` would; blanking it whole wipes a prompt drawn before the cursor.
-        let range: Vec<usize> = match mode {
-            0 => {
-                self.erase_line(0);
-                (cursor_y + 1..len).collect()
-            }
-            1 => {
-                self.erase_line(1);
-                (screen_top..cursor_y).collect()
-            }
-            2 | 3 => (screen_top..len).collect(), // whole screen
-            _ => return,
-        };
-        for abs_y in range {
-            self.write_grid_line(
-                abs_y,
-                " ".repeat(self.width),
-                vec![Attr::default().pack(); self.width].concat(),
-            );
-        }
-    }
-
-    fn erase_line(&mut self, mode: u16) {
-        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some((text, mut attrs)) = self.line_text_and_attrs(y) else {
-            return;
-        };
-        let len = text.chars().count();
-        let (from, count): (usize, usize) = match mode {
-            0 => (self.cursor_x, len.saturating_sub(self.cursor_x)),
-            1 => (0, self.cursor_x.min(len)),
-            2 => (0, len),
-            _ => return,
-        };
-        if count == 0 {
-            return;
-        }
-        let text = splice_chars(&text, from, count, &" ".repeat(count));
-        blank_attr_range(&mut attrs, from, count);
-        self.write_grid_line(y, text, attrs);
-    }
-
-    fn erase_chars(&mut self, n: usize) {
-        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some((text, mut attrs)) = self.line_text_and_attrs(y) else {
-            return;
-        };
-        let len = text.chars().count();
-        let count = n.min(len.saturating_sub(self.cursor_x));
-        if count == 0 {
-            return;
-        }
-        let text = splice_chars(&text, self.cursor_x, count, &" ".repeat(count));
-        blank_attr_range(&mut attrs, self.cursor_x, count);
-        self.write_grid_line(y, text, attrs);
-    }
-
-    fn insert_chars(&mut self, n: usize) {
-        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some((text, attrs)) = self.line_text_and_attrs(y) else {
-            return;
-        };
-        let n = n.min(self.width.saturating_sub(self.cursor_x));
-        if n == 0 {
-            return;
-        }
-        let mut text = splice_chars(&text, self.cursor_x, 0, &" ".repeat(n));
-        if text.chars().count() > self.width {
-            text = text.chars().take(self.width).collect();
-        }
-        self.write_grid_line(y, text, attrs);
-    }
-
-    fn delete_chars(&mut self, n: usize) {
-        let y = self.absolute_y().min(self.active_len().saturating_sub(1));
-        let Some((text, attrs)) = self.line_text_and_attrs(y) else {
-            return;
-        };
-        let len = text.chars().count();
-        let count = n.min(len.saturating_sub(self.cursor_x));
-        if count == 0 {
-            return;
-        }
-        let mut text = splice_chars(&text, self.cursor_x, count, "");
-        let new_len = text.chars().count();
-        if new_len < self.width {
-            text.push_str(&" ".repeat(self.width - new_len));
-        }
-        self.write_grid_line(y, text, attrs);
-    }
-
-    /// DEC private set/reset — `CSI ? Ps h` / `CSI ? Ps l`.
-    fn set_dec_modes(&mut self, params: &vte::Params, enable: bool) {
-        for p in params {
-            let Some(&n) = p.first() else { continue };
-            match n {
-                1 => self.modes.app_cursor_keys = enable,
-                25 => self.modes.cursor_visible = enable,
-                1000 | 1002 | 1003 => {
-                    if enable {
-                        self.modes.mouse_report = true;
-                        self.modes.mouse_tracking = n;
-                    } else if self.modes.mouse_tracking == n {
-                        self.modes.mouse_report = false;
-                        self.modes.mouse_tracking = 0;
-                    }
-                }
-                1004 => self.modes.focus_report = enable,
-                1006 => self.modes.mouse_sgr = enable,
-                2004 => self.modes.bracketed_paste = enable,
-                1048 => {
-                    if enable {
-                        *self.saved_cursor =
-                            Some((self.cursor_x, self.cursor_y, self.current_attr));
-                    } else if let Some((x, y, a)) = *self.saved_cursor {
-                        self.cursor_x = x.min(self.width - 1);
-                        self.cursor_y = y.min(self.height - 1);
-                        self.current_attr = a;
-                    }
-                }
-                47 | 1047 | 1049 => {
-                    if enable {
-                        self.enter_alt(n == 1049);
-                    } else {
-                        self.exit_alt(n == 1049);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn enter_alt(&mut self, save_cursor: bool) {
-        if self.screen.alternate {
-            return;
-        }
-        if save_cursor {
-            *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr));
-        }
-        self.screen.alternate = true;
-        // Present a cleared alternate screen and home the cursor.
-        self.clear_alt_buffer();
-        self.cursor_x = 0;
-        self.cursor_y = 0;
-        self.pending_wrap = false;
-        self.scroll_top = 0;
-        self.scroll_bottom = self.height.saturating_sub(1);
-    }
-
-    fn exit_alt(&mut self, restore_cursor: bool) {
-        if !self.screen.alternate {
-            return;
-        }
-        self.screen.alternate = false;
-        self.scroll_top = 0;
-        self.scroll_bottom = self.height.saturating_sub(1);
-        if restore_cursor && let Some((x, y, a)) = self.saved_cursor.take() {
-            self.cursor_x = x.min(self.width.saturating_sub(1));
-            self.cursor_y = y.min(self.height.saturating_sub(1));
-            self.current_attr = a;
-        }
-        self.pending_wrap = false;
-    }
-
-    /// Blank every line of the alternate buffer and trim it back to exactly
-    /// `height` lines (a previous alt session may have left it longer).
-    fn clear_alt_buffer(&mut self) {
-        let width = self.width;
-        let count = self.screen.alt.len();
-        let text = " ".repeat(width);
-        let attrs = vec![Attr::default().pack(); width].concat();
-        for index in 0..count {
-            self.write_grid_line(index, text.clone(), attrs.clone());
-        }
-        while self.screen.alt.len() > self.height {
-            let idx = self.screen.alt.len() - 1;
-            self.delete_grid_line(idx);
-        }
-    }
-
-    /// SGR — `CSI Ps... m`. Handles reset, the four style bits, the 8+8 ANSI
-    /// slots, and both truecolor forms (`38;2;r;g;b`, `38:2::r:g:b`) plus
-    /// 256-indexed (`38;5;n`).
-    fn apply_sgr(&mut self, params: &vte::Params) {
-        // Flatten into groups so we can look across `;`-separated params for
-        // the extended-color introducers while still handling `:`-subparam
-        // colon form within a single group.
-        let groups: Vec<Vec<u16>> = params.iter().map(<[u16]>::to_vec).collect();
-        if groups.is_empty() {
-            self.current_attr = Attr::default();
-            return;
-        }
-        let mut i = 0;
-        while let Some(group) = groups.get(i) {
-            let code = group.first().copied().unwrap_or(0);
-            match code {
-                0 => self.current_attr = Attr::default(),
-                1 => self.current_attr.bold = true,
-                2 => self.current_attr.dim = true,
-                3 => self.current_attr.italic = true,
-                // `4` underlines; the colon form picks a style (`4:1` single,
-                // `4:3` curly, …) and `4:0` means no underline.
-                4 => self.current_attr.underline = group.get(1).copied().unwrap_or(1) != 0,
-                7 => self.current_attr.reverse = true,
-                9 => self.current_attr.strike = true,
-                // SGR 22 turns off both bold *and* faint (they share the
-                // intensity axis in the spec).
-                22 => {
-                    self.current_attr.bold = false;
-                    self.current_attr.dim = false;
-                }
-                23 => self.current_attr.italic = false,
-                24 => self.current_attr.underline = false,
-                27 => self.current_attr.reverse = false,
-                29 => self.current_attr.strike = false,
-                30..=37 => self.current_attr.fg = CellColor::Indexed((code - 30) as u8),
-                39 => self.current_attr.fg = CellColor::Default,
-                40..=47 => self.current_attr.bg = CellColor::Indexed((code - 40) as u8),
-                49 => self.current_attr.bg = CellColor::Default,
-                90..=97 => self.current_attr.fg = CellColor::Indexed((code - 90 + 8) as u8),
-                100..=107 => self.current_attr.bg = CellColor::Indexed((code - 100 + 8) as u8),
-                // SGR 58 — underline colour, not drawn (underlines take the
-                // text colour). Its semicolon form still has to swallow its
-                // arguments, or `58;2;r;g;b` would run `2` (faint) and the
-                // colour components as SGR codes of their own.
-                58 if group.len() < 2 => match groups.get(i + 1).and_then(|g| g.first()) {
-                    Some(2) => i += 4,
-                    Some(5) => i += 2,
-                    _ => {}
-                },
-                38 | 48 => {
-                    let is_fg = code == 38;
-                    if group.len() >= 2 {
-                        // Colon subparam form: `38:2:..:r:g:b` or `38:5:n`.
-                        if let Some(col) = group.get(1..).and_then(color_from_subparams) {
-                            if is_fg {
-                                self.current_attr.fg = col;
-                            } else {
-                                self.current_attr.bg = col;
-                            }
-                        }
-                    } else {
-                        // Semicolon form: pull the following groups.
-                        let mode = groups.get(i + 1).and_then(|g| g.first()).copied();
-                        match mode {
-                            Some(2) => {
-                                let r = groups
-                                    .get(i + 2)
-                                    .and_then(|g| g.first())
-                                    .copied()
-                                    .unwrap_or(0) as u8;
-                                let g = groups
-                                    .get(i + 3)
-                                    .and_then(|g| g.first())
-                                    .copied()
-                                    .unwrap_or(0) as u8;
-                                let b = groups
-                                    .get(i + 4)
-                                    .and_then(|g| g.first())
-                                    .copied()
-                                    .unwrap_or(0) as u8;
-                                let col = CellColor::Rgb(r, g, b);
-                                if is_fg {
-                                    self.current_attr.fg = col;
-                                } else {
-                                    self.current_attr.bg = col;
-                                }
-                                i += 4;
-                            }
-                            Some(5) => {
-                                let n = groups
-                                    .get(i + 2)
-                                    .and_then(|g| g.first())
-                                    .copied()
-                                    .unwrap_or(0) as u8;
-                                let col = CellColor::Indexed(n);
-                                if is_fg {
-                                    self.current_attr.fg = col;
-                                } else {
-                                    self.current_attr.bg = col;
-                                }
-                                i += 2;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
-
-    fn absolute_y(&self) -> usize {
-        let history_offset = self.active_len().saturating_sub(self.height);
-        history_offset + self.cursor_y
-    }
-
-    /// Cursor position is tracked in the `cursor_x`/`cursor_y` fields as the
-    /// stream is parsed; the screen's copy is written once per feed by
-    /// [`flush_cursor`](Self::flush_cursor) rather than on every cell, so this
-    /// is intentionally a no-op kept only so the call sites read naturally.
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        clippy::unused_self,
-        reason = "deliberate no-op: `&mut self` marks every cursor-moving call site as a mutation for readability/symmetry with flush_cursor, even though the actual screen write is batched there"
-    )]
-    fn update_cursor(&mut self) {}
-
-    /// Commit any buffered run of printed characters to its line, once for
-    /// the whole run. A no-op when nothing is buffered.
-    pub(crate) fn flush_print_buf(&mut self) {
-        if let Some(buf) = self.print_buf.take()
-            && let Some(line) = self.screen.lines_mut(buf.alternate).get_mut(buf.index)
-            && (line.text != buf.text || line.attrs != buf.attrs)
-        {
-            #[cfg(test)]
-            work::LINE_WRITES.with(|n| n.set(n.get() + 1));
-            *line = std::rc::Rc::new(crate::screen::Line {
-                text: buf.text,
-                attrs: buf.attrs,
-            });
-        }
-    }
-
-    /// Record the final cursor position. Called once at the end of a feed
-    /// rather than on every printed cell.
-    pub fn flush_cursor(&mut self) {
-        // Commit the last line of a print run that ended the feed (no trailing
-        // control byte to flush it).
-        self.flush_print_buf();
-        self.screen.cursor = (self.cursor_x as u64, self.absolute_y() as u64);
-    }
-
-    /// Stage `bytes` to be written back to the PTY once this feed's parse
-    /// finishes. The bytes travel the same path a keystroke does
-    /// ([`write_input`](TerminalWidget::write_input)), so the shell reads a
-    /// query reply exactly as a real terminal's would arrive.
-    fn respond(&mut self, bytes: &[u8]) {
-        self.responses.extend_from_slice(bytes);
-    }
-
-    /// Primary Device Attributes (DA1) reply. We identify as a VT220-class
-    /// terminal (`62`) that supports ANSI colour (`22`) — the honest set for an
-    /// `xterm-256color` emulator with SGR/truecolor. fish waits on this reply
-    /// for up to 10s at startup and disables optional features if it never
-    /// arrives.
-    fn reply_da1(&mut self) {
-        #[cfg(test)]
-        work::DA1_REPLIES.with(|n| n.set(n.get() + 1));
-        self.respond(b"\x1b[?62;22c");
-    }
-
-    /// Secondary Device Attributes (DA2) reply: `CSI > 1 ; Pv ; 0 c`. Terminal
-    /// type `1` = VT220, `Pv` = this build's version, trailing `0` = no ROM
-    /// cartridge.
-    fn reply_da2(&mut self) {
-        self.respond(format!("\x1b[>1;{};0c", terminal_da2_version()).as_bytes());
-    }
-
-    /// Device Status Report. `Ps == 5` → "terminal OK" (`CSI 0 n`); `Ps == 6`
-    /// → Cursor Position Report (`CSI row ; col R`, 1-based, viewport-relative).
-    fn reply_dsr(&mut self, ps: u16) {
-        match ps {
-            5 => self.respond(b"\x1b[0n"),
-            6 => {
-                let row = self.cursor_y + 1;
-                let col = self.cursor_x + 1;
-                self.respond(format!("\x1b[{row};{col}R").as_bytes());
-            }
-            _ => {}
-        }
-    }
-
-    /// DEC-private DSR. `?6n` (DECXCPR) → `CSI ? row ; col ; 1 R` (the trailing
-    /// `1` is the page number).
-    fn reply_dsr_private(&mut self, ps: u16) {
-        if ps == 6 {
-            let row = self.cursor_y + 1;
-            let col = self.cursor_x + 1;
-            self.respond(format!("\x1b[?{row};{col};1R").as_bytes());
-        }
-    }
-
-    /// XTVERSION reply — DCS `> | tilo-terminal(<version>) ST`.
-    fn reply_xtversion(&mut self) {
-        self.respond(
-            format!(
-                "\x1bP>|{}({})\x1b\\",
-                TERMINAL_NAME,
-                env!("CARGO_PKG_VERSION")
-            )
-            .as_bytes(),
-        );
-    }
-
-    /// DECRQM reply (DECRPM) for a DEC-private mode: `CSI ? Pm ; Pv $ y`, where
-    /// `Pv` is `1` (set), `2` (reset) or `0` (mode not recognised). We answer
-    /// for the modes this emulator actually tracks so a probe gets the truth.
-    fn reply_decrqm(&mut self, mode: u16) {
-        let state = match mode {
-            1 => Some(self.modes.app_cursor_keys),
-            25 => Some(self.modes.cursor_visible),
-            1000 | 1002 | 1003 => Some(self.modes.mouse_tracking == mode),
-            1004 => Some(self.modes.focus_report),
-            1006 => Some(self.modes.mouse_sgr),
-            2004 => Some(self.modes.bracketed_paste),
-            47 | 1047 | 1049 => Some(self.screen.alternate),
-            _ => None,
-        };
-        let pv = match state {
-            Some(true) => 1,
-            Some(false) => 2,
-            None => 0,
-        };
-        self.respond(format!("\x1b[?{mode};{pv}$y").as_bytes());
-    }
-}
-
-/// Decode a truecolor / indexed color from the subparams following a `38`
-/// or `48` introducer (colon form). `sub[0]` is the color space id (2 = RGB,
-/// 5 = indexed); RGB takes the last three values so an optional colorspace
-/// placeholder (`38:2::r:g:b`) is tolerated.
-fn color_from_subparams(sub: &[u16]) -> Option<CellColor> {
-    match sub.first().copied() {
-        Some(2) => {
-            let n = sub.len();
-            if n >= 4 {
-                let r = sub.get(n - 3).copied().unwrap_or(0) as u8;
-                let g = sub.get(n - 2).copied().unwrap_or(0) as u8;
-                let b = sub.get(n - 1).copied().unwrap_or(0) as u8;
-                Some(CellColor::Rgb(r, g, b))
-            } else if n >= 2 {
-                // `38:2:r` style with too few components — treat what we have.
-                Some(CellColor::Rgb(sub.get(1).copied().unwrap_or(0) as u8, 0, 0))
-            } else {
-                None
-            }
-        }
-        Some(5) => sub.get(1).map(|&n| CellColor::Indexed(n as u8)),
-        _ => None,
     }
 }
 

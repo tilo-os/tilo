@@ -384,6 +384,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "alacritty_terminal"
+version = "0.26.0"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.11.0",
+ "home",
+ "libc",
+ "log",
+ "miow",
+ "parking_lot",
+ "piper",
+ "polling",
+ "regex-automata",
+ "rustix 1.1.4",
+ "rustix-openpty",
+ "serde",
+ "signal-hook",
+ "unicode-width",
+ "vte",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9728,6 +9751,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miow"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "miracast"
 version = "0.1.0"
 dependencies = [
@@ -12063,6 +12095,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "piper"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c835479a4443ded371d6c535cbfd8d31ad92c5d23ae9770a61bc155e4992a3c1"
+dependencies = [
+ "atomic-waker",
+ "fastrand",
+ "futures-io",
+]
+
+[[package]]
 name = "pipewire"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14339,6 +14382,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustix-openpty"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de16c7c59892b870a6336f185dc10943517f1327447096bbb7bb32cd85e2393"
+dependencies = [
+ "errno",
+ "libc",
+ "rustix 1.1.4",
+]
+
+[[package]]
 name = "rustls"
 version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15543,6 +15597,16 @@ dependencies = [
  "tilo-history",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
 ]
 
 [[package]]
@@ -16772,6 +16836,7 @@ dependencies = [
 name = "terminal"
 version = "0.2.1"
 dependencies = [
+ "alacritty_terminal",
  "anyhow",
  "base64 0.22.1",
  "libc",
@@ -16797,7 +16862,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "uuid",
- "vte",
  "workspace-hack",
 ]
 
@@ -23543,7 +23607,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
 dependencies = [
  "arrayvec",
+ "bitflags 2.11.0",
+ "cursor-icon",
+ "log",
  "memchr",
+ "serde",
 ]
 
 [[package]]
@@ -25798,6 +25866,7 @@ dependencies = [
  "agent-provider-config",
  "ahash",
  "aho-corasick",
+ "alacritty_terminal",
  "alloc-no-stdlib",
  "alloc-stdlib",
  "allocator-api2",
@@ -26753,6 +26822,7 @@ dependencies = [
  "rustix 0.38.44",
  "rustix 1.1.4",
  "rustix-linux-procfs",
+ "rustix-openpty",
  "rustls",
  "rustls-cert-file-reader",
  "rustls-cert-read",
@@ -26832,6 +26902,7 @@ dependencies = [
  "shell-words",
  "shlex",
  "shortcuts",
+ "signal-hook",
  "signal-hook-registry",
  "signature 2.2.0",
  "signature 3.0.0",

@@ -808,3 +808,12 @@ blocking D-Bus call left hundreds of idle threads in the compositor on a large
 machine. `tilo-worker-threads.patch` gives that runtime one worker, as its
 `expect` message already says; nothing else changes. See
 `vendor/zbus/PROVENANCE.md`. Remove the copy once upstream bounds the runtime.
+
+## Terminal erase above the cursor
+
+`alacritty_terminal` 0.26.0 is the checksum-verified Apache-2.0 registry
+release. Its `CSI 1 J` (erase from the top of the screen to the cursor) left
+the first line in place when the cursor was on the second line. The patch
+clears every line above the cursor; the terminal app's
+`erasing_below_the_cursor_keeps_what_is_left_of_it` test covers it. See
+`vendor/alacritty_terminal/PROVENANCE.md`.

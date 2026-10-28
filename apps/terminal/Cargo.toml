@@ -36,7 +36,8 @@ runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 # Where a session runs, and the environment records it can run in.
 tilo-environment = { path = "../../crates/runtime/environment" }
 libc.workspace = true
-vte = "0.15.0"
+# The VT emulator: parser, grid with scrollback and reflow, modes and replies.
+alacritty_terminal = "0.26.0"
 # The window bar's search can find a regular expression in the scrollback.
 regex.workspace = true
 tracing.workspace = true
@@ -46,7 +47,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# OSC 52 clipboard writes carry base64-encoded payloads.
+# Kitty graphics transmissions carry base64-encoded payloads.
 base64.workspace = true
 tilo-content = { path = "../../crates/system/content" }
 workspace-hack = { version = "0.1" }

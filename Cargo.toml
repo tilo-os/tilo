@@ -31,6 +31,7 @@ exclude = [
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
     "vendor/cosmic-text",
+    "vendor/alacritty_terminal",
     "vendor/iroh",
     "vendor/iroh-gossip",
     "vendor/netwatch",
@@ -1278,6 +1279,9 @@ hyper-proxy2 = { path = "vendor/hyper-proxy2" }
 # text is measured and kerned at the width it is drawn. See
 # vendor/cosmic-text/TILO-PATCH.md.
 cosmic-text = { path = "vendor/cosmic-text" }
+# Erasing above the cursor clears the first line too. See
+# vendor/alacritty_terminal/PROVENANCE.md.
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
 # zbus's blocking API runs on a runtime of its own with a worker thread per
 # host CPU; one worker, as its message says. See vendor/zbus/PROVENANCE.md.
 zbus = { path = "vendor/zbus" }
