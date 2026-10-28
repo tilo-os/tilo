@@ -12,6 +12,8 @@ fn installed_modes_reject_path_or_receipt_input() {
         let error = run(mode, ["--root".into(), "/tmp".into()]).unwrap_err();
         assert!(error.contains("accepts"), "{mode}: {error}");
     }
-    let error = run("--data-consumer-catalog-facts", ["--check".into()]).unwrap_err();
-    assert!(error.contains("accepts no arguments"), "{error}");
+    for mode in ["--data-consumer-catalog-facts", "--receiving-browser"] {
+        let error = run(mode, ["--check".into()]).unwrap_err();
+        assert!(error.contains("accepts no arguments"), "{mode}: {error}");
+    }
 }
