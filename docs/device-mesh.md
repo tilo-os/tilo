@@ -6,15 +6,11 @@ operations used with another person are replicated between devices belonging
 to one identity. Same identity changes the authorization result, not the
 signature, revocation or record-validation path.
 
-The shell also has a private, user-root-derived continuation lane for the
-device-specific part of “continue on another device.” Its bounded checkpoint
-contains safe app launch intents, logical file references and per-device focus;
-it excludes local paths, credentials, compositor surface ids and file bytes.
-An authenticated same-identity peer merges the checkpoint, discovers missing
-workspaces, and opens matching local app instances in their synchronized tabs
-without stealing the active workspace or focus. The always-on relay retains
-the latest aggregate checkpoint so sleeping devices can catch up later without
-exposing personal session state to collaborators.
+The model these devices follow (members and devices, each device's role per
+workspace and how much it wants to do) is in
+[`architecture/workspace.md`](architecture/workspace.md). "Continue on another
+device" needs no lane of its own: the workspaces, their layout and their state
+are already on every device that holds them.
 
 ## How a person's devices find each other
 
@@ -65,10 +61,11 @@ content residency only while its aggregate freshness proof is complete.
 
 ## Device roles and authority
 
-A device is interactive, always-on, or hybrid. Runtime service advertisements
-are intersected with the immutable capabilities in its root-signed device
-certificate. In particular, only `can_act_as_host` devices serve, and retaining
-all workspace content additionally requires `can_read_all_workspaces`.
+Each device has a role in each workspace it holds (participant or store) and
+decides how much it wants to do: store everything, take work such as actions
+and search, or hydrate on demand
+([`architecture/workspace.md`](architecture/workspace.md)). A device's
+certificate says whose device it is, not what kind of device it is.
 Revoked, expired, foreign-identity or wrongly scoped devices remain rejected by
 the existing authentication and operation validators.
 
