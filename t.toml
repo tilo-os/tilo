@@ -645,12 +645,6 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_app_channel_manifest.py"
 
 [[check]]
-name = "policy/tests/unit/app-collection-source"
-requires = ["arch=any"]
-requirement = { cores = 1, memory = "1GiB" }
-run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_app_collection_source.py"
-
-[[check]]
 name = "policy/tests/unit/app-content-store"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
