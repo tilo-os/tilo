@@ -1662,6 +1662,33 @@ impl WorkspaceStore {
             group: None,
         }))
     }
+    /// The scratch directory a retain works in and the sorter of its
+    /// ordered pass. Only a checkpoint's ordered pass spills metadata to
+    /// scratch. A delta's scan compares sizes and cached digests and its
+    /// append names the next ordinal, so it creates no directory to remove
+    /// afterwards; a shell selection creates the scratch it needs itself.
+    fn retain_scratch(
+        &self,
+        scratch: Option<PathBuf>,
+        checkpoint: bool,
+    ) -> Result<(PathBuf, super::bounded::Sorter), StoreError> {
+        let scratch_root = self.root.join("store-work-v1");
+        let scratch = scratch.unwrap_or_else(|| {
+            scratch_root.join(format!(
+                "retain-{}",
+                hex::encode(rand::random::<[u8; 16]>())
+            ))
+        });
+        let sorter = if checkpoint {
+            fs::create_dir_all(&scratch_root)?;
+            fs::create_dir(&scratch)?;
+            super::bounded::Sorter::new(scratch.join("sort"))?
+        } else {
+            super::bounded::Sorter::unspilled(scratch.join("sort"))
+        };
+        Ok((scratch, sorter))
+    }
+
     fn start_retain_at(
         &self,
         channel: &[u8; 32],
@@ -1701,24 +1728,7 @@ impl WorkspaceStore {
             None if checkpoint => (lineage.join(hex::encode(rand::random::<[u8; 16]>())), true),
             None => (commit_generation(&lineage, &[], None)?, false),
         };
-        let scratch_root = self.root.join("store-work-v1");
-        let scratch = scratch.unwrap_or_else(|| {
-            scratch_root.join(format!(
-                "retain-{}",
-                hex::encode(rand::random::<[u8; 16]>())
-            ))
-        });
-        // Only a checkpoint's ordered pass spills metadata to scratch. A
-        // delta's scan compares sizes and cached digests and its append names
-        // the next ordinal, so it creates no directory to remove afterwards;
-        // a shell selection creates the scratch it needs itself.
-        let sorter = if checkpoint {
-            fs::create_dir_all(&scratch_root)?;
-            fs::create_dir(&scratch)?;
-            super::bounded::Sorter::new(scratch.join("sort"))?
-        } else {
-            super::bounded::Sorter::unspilled(scratch.join("sort"))
-        };
+        let (scratch, sorter) = self.retain_scratch(scratch, checkpoint)?;
         let digest = *blake3::hash(&bytes).as_bytes();
         // A delta needs the generation's last ordinal and whether it already
         // holds these bytes; the tail index answers both without listing it.
