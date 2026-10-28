@@ -463,9 +463,6 @@ fn draw_presence_layer(
         .unwrap_or_default()
     };
     layer.record(|scene| {
-        part_drawn(scene, PartKey::new("ui.legacy-cursors", ()), |scene| {
-            draw_legacy_cursors(app, scene, transform)
-        });
         part_drawn(scene, PartKey::new("ui.remote-presence", ()), |scene| {
             crate::presence::draw_remote_presence(
                 scene,
@@ -578,67 +575,6 @@ fn submit_presence_damage(
     );
     regions.retain(|rect| !rect.is_zero_area());
     true
-}
-
-/// Paint the `state.collab` cursors. Returns the bounds, in scene
-/// coordinates, of everything painted.
-#[cfg(feature = "native")]
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) -> Vec<KurboRect> {
-    let mut painted = Vec::new();
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            name_transform,
-            None,
-        );
-        // The arrow with its stroke, and the name below and right of it,
-        // with room for antialiasing and glyph overhang.
-        let (name_w, name_h) = app.text_renderer.measure(&cursor.name, 10.0, None);
-        let local = KurboRect::new(
-            -4.0,
-            -4.0,
-            (10.0 + f64::from(name_w)).max(14.0) + 4.0,
-            (20.0 + f64::from(name_h)).max(22.0) + 4.0,
-        );
-        painted.push(cursor_transform.transform_rect_bbox(local));
-    }
-    painted
 }
 
 /// Complete a native CPU frame only after drawing and damage collection.
