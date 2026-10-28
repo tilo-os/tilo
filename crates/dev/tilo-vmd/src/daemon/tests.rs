@@ -1405,13 +1405,13 @@ fn onboarding_is_pressed_through_in_a_persons_order() {
             .map(|name| (*name).to_owned())
             .collect::<Vec<_>>()
     };
-    let page = shown(&["onboarding.understood.box", "onboarding.create.button"]);
+    let page = shown(&["onboarding.understood.row", "onboarding.create.button"]);
     assert_eq!(
         next_onboarding_press(&page, &[]),
-        Some("onboarding.understood.box")
+        Some("onboarding.understood.row")
     );
     assert_eq!(
-        next_onboarding_press(&page, &shown(&["onboarding.understood.box"])),
+        next_onboarding_press(&page, &shown(&["onboarding.understood.row"])),
         Some("onboarding.create.button")
     );
     assert_eq!(
@@ -1420,14 +1420,35 @@ fn onboarding_is_pressed_through_in_a_persons_order() {
     );
     assert_eq!(
         onboarding_target_names(
-            r#"{"targets":[{"name":"onboarding.begin.button"},{"name":"shell.search"}]}"#
+            r#"{"targets":[{"name":"onboarding.begin.card"},{"name":"shell.search"}]}"#
         ),
-        ["onboarding.begin.button"]
+        ["onboarding.begin.card"]
     );
     assert_eq!(
         onboarding_target_names(r#"{"answer":{"targets":[{"name":"onboarding.finish.button"}]}}"#),
         ["onboarding.finish.button"]
     );
+}
+
+/// Every control tilo-vmd presses is one the session's onboarding names:
+/// a name it never registers is never listed, and the press waits out its
+/// timeout. A checkbox is named by its row (`with_id`); the first argument
+/// of `Checkbox::new` names nothing.
+#[test]
+fn onboarding_presses_name_the_sessions_own_controls() {
+    let view = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../session/shell/src/onboarding_view.rs"),
+    )
+    .unwrap();
+    for (name, checkbox) in ONBOARDING_PRESSES {
+        let named = if checkbox {
+            view.contains(&format!(".with_id(\"{name}\")"))
+        } else {
+            view.contains(&format!("\"{name}\""))
+        };
+        assert!(named, "the onboarding view names no control {name}");
+    }
 }
 
 /// A session whose onboarding shows its pages one after another as its
@@ -1447,15 +1468,15 @@ fn onboarding_session() -> RecordingApply {
         reply(serde_json::json!({ "targets": targets }).to_string())
     };
     let pages: [&[&str]; 5] = [
-        &["onboarding.begin.button"],
-        &["onboarding.understood.box", "onboarding.create.button"],
-        &["onboarding.understood.box", "onboarding.create.button"],
+        &["onboarding.begin.card"],
+        &["onboarding.understood.row", "onboarding.create.button"],
+        &["onboarding.understood.row", "onboarding.create.button"],
         &[
-            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.skip-acknowledged.row",
             "onboarding.backup.continue.button",
         ],
         &[
-            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.skip-acknowledged.row",
             "onboarding.backup.continue.button",
         ],
     ];
@@ -1520,10 +1541,10 @@ fn slot_create_device_identity_goes_through_onboarding_and_starts_fs() {
     assert_eq!(
         pressed,
         [
-            "onboarding.begin.button",
-            "onboarding.understood.box",
+            "onboarding.begin.card",
+            "onboarding.understood.row",
             "onboarding.create.button",
-            "onboarding.backup.skip-acknowledged.box",
+            "onboarding.backup.skip-acknowledged.row",
             "onboarding.backup.continue.button",
             "onboarding.finish.button",
         ]
