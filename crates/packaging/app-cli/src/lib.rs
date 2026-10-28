@@ -284,6 +284,25 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
     Ok(None)
 }
 
+/// The newest package of the runtime build `runtime` from the first enabled
+/// repository that offers it, in the user's repository order.
+///
+/// # Errors
+///
+/// Returns the last repository's error when none offers it and one could
+/// not be read.
+pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>, String> {
+    let mut last_error = None;
+    for registry in config::load_registries().enabled() {
+        match runtime_offer(runtime, &registry.name) {
+            Ok(Some(offer)) => return Ok(Some(offer)),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+    last_error.map_or(Ok(None), Err)
+}
+
 /// A language pack the enabled repositories offer: its locale (`de-DE`) and
 /// the newest version this device can install.
 #[derive(Clone, Debug)]
