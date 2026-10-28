@@ -95,6 +95,8 @@ jobs:
           # daemon's own builder adds the Docker client; it compiles nothing.
           docker buildx build --builder default --platform linux/amd64 --build-arg "CI_FAST_IMAGE=$fast" \
             --file os/Containerfile.ci-control --tag "$control" "$context"
+          printf "fast=%s\ncontrol=%s\n" "$fast" "$control"
+          docker image inspect --format '{{.Id}} {{json .Config.Env}}' "$fast"
           docker run --rm --network=none "$fast" bash -euo pipefail -c '
             . /etc/os-release
             printf "%s %s\n" "$NAME" "$VERSION_ID"
