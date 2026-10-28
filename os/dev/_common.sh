@@ -269,6 +269,20 @@ inenv() {
   fi
 }
 
+# Run tilo-vm where the VM tools live. It builds every QEMU command line
+# (`tilo-vm qemu`), so firmware, TPM and device choices exist in one place.
+# TILO_VM_BIN names a built tilo-vm (CI passes tilo-vm-binary-<arch>'s);
+# otherwise this checkout's is built on first use, in the same environment.
+tilo_vm() {
+  if [ -z "${TILO_VM_BIN:-}" ]; then
+    inenv "cd $(printf '%q' "$TILO_REPO") && cargo build --quiet --locked -p tilo-vm --bin tilo-vm" >&2 \
+      || die "building tilo-vm failed; set TILO_VM_BIN to a built tilo-vm"
+    TILO_VM_BIN="${CARGO_TARGET_DIR:-$TILO_REPO/target}/debug/tilo-vm"
+    export TILO_VM_BIN
+  fi
+  inenv "$(printf '%q ' "$TILO_VM_BIN" "$@")"
+}
+
 qemu_accel_args() {
   local kvm_cpu=host
   case "${TILO_KVM_CPU_VARIANT:-host}" in
