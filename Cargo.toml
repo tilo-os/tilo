@@ -195,6 +195,7 @@ members = [
     "crates/collab/channel-crypto",
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
+    "crates/collab/collaboration",
     "crates/collab/neighbour-wire",
     "crates/collab/owner-commit",
     "crates/collab/reference",
