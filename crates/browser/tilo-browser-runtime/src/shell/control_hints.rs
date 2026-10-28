@@ -49,7 +49,8 @@ impl BrowserShell {
         if self.pinned.followed().is_some() {
             return Some(Quiet::Following);
         }
-        let busy = self.handle.search_open()
+        let busy = self.report_composer_open()
+            || self.handle.search_open()
             || self.picker.is_open()
             || self.people_open
             || self.tilo_menu.is_open()
@@ -58,6 +59,27 @@ impl BrowserShell {
             || self.overview.is_open()
             || self.navigator.takes_keys();
         busy.then_some(Quiet::Busy)
+    }
+
+    /// Whether a window of the report composer is open. It asks the person a
+    /// question from the moment it opens ("What happened, and what did you
+    /// expect?"), so a hint would stand over what they are being asked; on
+    /// the native desktop it is a sheet, which keeps hints quiet already.
+    fn report_composer_open(&self) -> bool {
+        use tilo_desktop_model::TileContent;
+        self.handle.read(|tree| {
+            tree.workspaces.iter().any(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip.window_groups.iter().any(|group| {
+                        group.tabs.iter().any(|tab| {
+                            matches!(&tab.tile,
+                                TileContent::LocalApp { app_id, .. }
+                                    if app_id == tilo_desktop::feedback::PACKAGE)
+                        })
+                    })
+                })
+            })
+        })
     }
 
     /// Advance the hints to now, and keep what the person learned.
