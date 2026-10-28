@@ -21,8 +21,8 @@
 //! a shipped launcher has none of it: `package_store::dev_env::dev_override` closes the gate.
 //! The only thing that changes is which verified module the runtime interprets.
 
-use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use crate::manifest::ManifestView;
 use crate::run::{RunError, RunOptions};
@@ -123,23 +123,33 @@ impl LiveModule {
     /// # Errors
     /// The store cannot be watched.
     pub fn follow(self) -> Result<Following, RunError> {
-        let watch = StoreWatch::new(&self.store)?;
-        let stop = watch.stopper()?;
+        let (replaced, replacements) = mpsc::channel();
+        let watch = tilo_files::native::watch_changes(
+            &self.store,
+            |path| path.file_name().is_some_and(|name| name == REGISTRY_FILE),
+            move || {
+                let _ = replaced.send(());
+            },
+        )
+        .map_err(RunError::Io)?;
         let dir = self.dir.clone();
         let thread = std::thread::Builder::new()
             .name("live-module".into())
-            .spawn(move || self.run(&watch))
+            .spawn(move || self.run(&replacements))
             .map_err(RunError::Spawn)?;
         Ok(Following {
             dir,
-            stop: Some(stop),
+            watch: Some(watch),
             thread: Some(thread),
         })
     }
 
-    fn run(mut self, watch: &StoreWatch) {
+    /// Take each reinstall until the watch ends, which closes `replacements`.
+    fn run(mut self, replacements: &mpsc::Receiver<()>) {
         let mut generation = 0_u64;
-        while watch.wait_for_registry() {
+        while replacements.recv().is_ok() {
+            // A burst of replacements is one look at the store.
+            while replacements.try_recv().is_ok() {}
             let next = generation.saturating_add(1);
             match self.take_reinstall(next) {
                 Ok(Some(taken)) => {
@@ -271,132 +281,17 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 /// The running watch; dropping it stops the watch and removes the updates directory.
 pub struct Following {
     dir: PathBuf,
-    stop: Option<OwnedFd>,
+    watch: Option<tilo_files::native::ChangeWatch>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Following {
     fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let one = 1_u64.to_ne_bytes();
-            // SAFETY: an eventfd takes an 8-byte write from a valid buffer.
-            let _ = unsafe { libc::write(stop.as_raw_fd(), one.as_ptr().cast(), one.len()) };
-        }
+        // The watch's end closes the channel the thread waits on.
+        drop(self.watch.take());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
         let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// An inotify watch of an app store's directory, and the eventfd that ends it.
-struct StoreWatch {
-    inotify: OwnedFd,
-    stop: OwnedFd,
-}
-
-impl StoreWatch {
-    fn new(store: &Path) -> Result<Self, RunError> {
-        use std::os::unix::ffi::OsStrExt as _;
-        // SAFETY: plain syscalls; each result is checked before it is owned.
-        let inotify = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
-        if inotify < 0 {
-            return Err(RunError::Io(std::io::Error::last_os_error()));
-        }
-        // SAFETY: a fresh descriptor this function owns.
-        let inotify = unsafe { OwnedFd::from_raw_fd(inotify) };
-        let path = std::ffi::CString::new(store.as_os_str().as_bytes())
-            .map_err(|_| RunError::InvalidServiceLaunch("live module: store path".into()))?;
-        // SAFETY: a valid descriptor and a NUL-terminated path.
-        let watch = unsafe {
-            libc::inotify_add_watch(
-                inotify.as_raw_fd(),
-                path.as_ptr(),
-                libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE | libc::IN_CREATE,
-            )
-        };
-        if watch < 0 {
-            return Err(RunError::Io(std::io::Error::last_os_error()));
-        }
-        // SAFETY: as above.
-        let stop = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if stop < 0 {
-            return Err(RunError::Io(std::io::Error::last_os_error()));
-        }
-        // SAFETY: a fresh descriptor this function owns.
-        let stop = unsafe { OwnedFd::from_raw_fd(stop) };
-        Ok(Self { inotify, stop })
-    }
-
-    fn stopper(&self) -> Result<OwnedFd, RunError> {
-        self.stop.try_clone().map_err(RunError::Io)
-    }
-
-    /// Block until the store's registry was replaced (`true`) or the watch is stopped (`false`).
-    fn wait_for_registry(&self) -> bool {
-        loop {
-            let mut fds = [
-                libc::pollfd {
-                    fd: self.inotify.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: self.stop.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-            ];
-            // SAFETY: two valid pollfd entries; no timeout.
-            let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-            if ready < 0 {
-                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return false;
-            }
-            if fds[1].revents != 0 {
-                return false;
-            }
-            if fds[0].revents != 0 && self.drain_names_registry() {
-                return true;
-            }
-        }
-    }
-
-    /// Read every queued event; whether one names the registry file.
-    fn drain_names_registry(&self) -> bool {
-        let mut buffer = [0_u8; 4096];
-        let mut named = false;
-        loop {
-            // SAFETY: reading into a buffer this function owns.
-            let read = unsafe {
-                libc::read(
-                    self.inotify.as_raw_fd(),
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len(),
-                )
-            };
-            let Ok(read) = usize::try_from(read) else {
-                return named;
-            };
-            if read == 0 {
-                return named;
-            }
-            let mut offset = 0_usize;
-            let header = std::mem::size_of::<libc::inotify_event>();
-            while offset.saturating_add(header) <= read {
-                // SAFETY: the kernel wrote whole events; the header is read unaligned.
-                let event: libc::inotify_event =
-                    unsafe { std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast()) };
-                let len = event.len as usize;
-                let start = offset.saturating_add(header);
-                let end = start.saturating_add(len);
-                let name = buffer.get(start..end).unwrap_or_default();
-                let name = name.split(|byte| *byte == 0).next().unwrap_or_default();
-                named |= name == REGISTRY_FILE.as_bytes();
-                offset = end;
-            }
-        }
     }
 }

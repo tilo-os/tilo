@@ -121,7 +121,15 @@ pub fn start(app: &str) {
 
 #[cfg(target_os = "linux")]
 fn watch(dir: &Path, app: &str) {
-    let watch = match DirWatch::new(dir) {
+    let (replaced, replacements) = std::sync::mpsc::channel();
+    let watch = tilo_files::native::watch_changes(
+        dir,
+        |path| path.file_name() == Some(std::ffi::OsStr::new(CURRENT_FILE)),
+        move || {
+            let _ = replaced.send(());
+        },
+    );
+    let _watch = match watch {
         Ok(watch) => watch,
         Err(error) => {
             eprintln!("tilolang: not following later builds: {error}");
@@ -136,10 +144,12 @@ fn watch(dir: &Path, app: &str) {
             seen.clone_from(&name);
             take(dir, &name, app);
         }
-        if let Err(error) = watch.wait() {
-            eprintln!("tilolang: not following later builds: {error}");
+        if replacements.recv().is_err() {
+            eprintln!("tilolang: not following later builds: the watch ended");
             return;
         }
+        // One read covers every replacement queued meanwhile.
+        while replacements.try_recv().is_ok() {}
     }
 }
 
@@ -182,58 +192,5 @@ fn take(dir: &Path, name: &str, app: &str) {
     shared.wakes.retain(ui::wake::WakeHandle::is_active);
     for wake in &shared.wakes {
         wake.wake();
-    }
-}
-
-/// An inotify watch of the updates directory: wakes when `current` is replaced.
-#[cfg(target_os = "linux")]
-struct DirWatch {
-    fd: std::os::fd::OwnedFd,
-}
-
-#[cfg(target_os = "linux")]
-impl DirWatch {
-    fn new(dir: &Path) -> std::io::Result<Self> {
-        use std::os::fd::{AsRawFd as _, FromRawFd as _};
-        use std::os::unix::ffi::OsStrExt as _;
-        // SAFETY: a plain syscall; the result is checked before it is owned.
-        let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
-        if raw < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        // SAFETY: a fresh descriptor this function owns.
-        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-        let path = std::ffi::CString::new(dir.as_os_str().as_bytes())
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        // SAFETY: a valid descriptor and a NUL-terminated path.
-        let added =
-            unsafe { libc::inotify_add_watch(fd.as_raw_fd(), path.as_ptr(), libc::IN_MOVED_TO) };
-        if added < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(Self { fd })
-    }
-
-    /// Block until something was moved into the directory.
-    fn wait(&self) -> std::io::Result<()> {
-        use std::os::fd::AsRawFd as _;
-        let mut buffer = [0_u8; 4096];
-        loop {
-            // SAFETY: reading into a buffer this function owns.
-            let read = unsafe {
-                libc::read(
-                    self.fd.as_raw_fd(),
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len(),
-                )
-            };
-            if read > 0 {
-                return Ok(());
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
     }
 }

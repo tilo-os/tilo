@@ -17,6 +17,7 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+mod codecs;
 #[cfg(target_os = "linux")]
 mod prepared;
 #[cfg(not(target_os = "linux"))]
@@ -36,7 +37,7 @@ use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc};
@@ -856,7 +857,8 @@ pub struct OnboardingView {
     /// Raised by the status watcher and the install worker; the next frame
     /// re-reads the status.
     codec_changed: Arc<AtomicBool>,
-    codec_watching: bool,
+    /// The watch on the codecs status, while setup follows it.
+    codec_watching: Option<tilo_files::native::ChangeWatch>,
     /// When `sync` last looked at the background work above.
     synced_at: Instant,
 }
@@ -1182,7 +1184,7 @@ impl OnboardingView {
             codec_worker_succeeded: None,
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
-            codec_watching: false,
+            codec_watching: None,
             synced_at: Instant::now(),
         }
     }
@@ -1269,189 +1271,6 @@ impl OnboardingView {
             5
         } else {
             4
-        }
-    }
-
-    fn codec_install_requested(&self) -> bool {
-        self.codec_running.is_some()
-            || self.codec_error.is_some()
-            || self.codec_status.state != PackState::NotInstalled
-    }
-
-    fn codec_progress(&self) -> Option<f32> {
-        match self.codec_status.state {
-            PackState::Installing => Some(
-                self.codec_status
-                    .progress
-                    .as_ref()
-                    .map_or(0.0, os_actions::codec_pack::Progress::fraction),
-            ),
-            PackState::NotInstalled if self.codec_running.is_some() => Some(0.0),
-            _ => None,
-        }
-    }
-
-    /// Banner title and message for what happened to the request, if any.
-    fn codec_outcome(&self) -> Option<(String, Option<String>)> {
-        if let Some(error) = &self.codec_error {
-            return Some((t("onboarding-codecs-failed-title"), Some(error.clone())));
-        }
-        match self.codec_status.state {
-            PackState::NotInstalled if self.codec_running.is_some() => {
-                Some((t("onboarding-codecs-starting"), Some(codecs_background())))
-            }
-            PackState::NotInstalled | PackState::Removing => None,
-            PackState::Installing => Some((
-                t("onboarding-codecs-installing-title"),
-                Some(t_args(
-                    "onboarding-codecs-installing-message",
-                    &[("status", self.codec_status.summary().into())],
-                )),
-            )),
-            PackState::WaitingForNetwork => Some((
-                t("onboarding-codecs-offline-title"),
-                Some(t("onboarding-codecs-offline-message")),
-            )),
-            PackState::Installed => Some((
-                t("onboarding-codecs-installed-title"),
-                self.codec_status.when_it_applies().map(str::to_string),
-            )),
-            PackState::Failed => Some((
-                t("onboarding-codecs-failed-title"),
-                Some(if self.codec_status.last_error.is_empty() {
-                    t("onboarding-codecs-failed-message")
-                } else {
-                    t_args(
-                        "onboarding-codecs-failed-message-detail",
-                        &[("error", self.codec_status.last_error.clone().into())],
-                    )
-                }),
-            )),
-        }
-    }
-
-    /// The page's own choice while nothing runs: (id, label, key) of the
-    /// one large Install (or Try again) button, then the quiet way past it.
-    /// `None` once a request is underway or done; the footer then offers
-    /// Continue.
-    fn codec_choice(&self) -> Option<[(&'static str, String, &'static str); 2]> {
-        let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
-        if failed && self.codec_running.is_none() {
-            return Some([
-                (
-                    "onboarding.codecs.install.button",
-                    t("onboarding-codecs-retry"),
-                    KEY_CODECS_INSTALL,
-                ),
-                (
-                    "onboarding.codecs.skip.button",
-                    t("onboarding-codecs-skip"),
-                    KEY_CODECS_SKIP,
-                ),
-            ]);
-        }
-        if self.codec_install_requested() {
-            return None;
-        }
-        Some([
-            (
-                "onboarding.codecs.install.button",
-                t("onboarding-codecs-install"),
-                KEY_CODECS_INSTALL,
-            ),
-            (
-                "onboarding.codecs.skip.button",
-                t("onboarding-codecs-not-now"),
-                KEY_CODECS_SKIP,
-            ),
-        ])
-    }
-
-    fn start_codec_install(&mut self) {
-        let Some(setup) = self.codec_setup.as_ref() else {
-            return;
-        };
-        if self.codec_running.is_some() {
-            return;
-        }
-        if setup.watch_system && !self.codec_watching {
-            let changed = Arc::downgrade(&self.codec_changed);
-            self.codec_watching = os_actions::codec_pack::watch(move || {
-                changed.upgrade().is_some_and(|changed| {
-                    changed.store(true, Ordering::Release);
-                    true
-                })
-            })
-            .is_ok();
-        }
-        let runner = Arc::clone(&setup.runner);
-        let changed = Arc::clone(&self.codec_changed);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let spawned = std::thread::Builder::new()
-            .name("onboarding-codecs".into())
-            .spawn(move || {
-                // The install outlives setup if the person moves on; its
-                // result then reaches them as a notification instead.
-                let _ = tx.send(runner(CodecAction::Install));
-                changed.store(true, Ordering::Release);
-            });
-        match spawned {
-            Ok(_) => {
-                self.codec_error = None;
-                self.codec_worker_succeeded = None;
-                self.codec_running = Some(rx);
-            }
-            Err(error) => {
-                self.codec_error = Some(t_args(
-                    "onboarding-codecs-installer-failed",
-                    &[("error", error.to_string().into())],
-                ));
-            }
-        }
-        self.invalidation.structure();
-    }
-
-    /// Pick up the worker's result and status-file changes.
-    fn refresh_codec_state(&mut self) {
-        let Some(setup) = self.codec_setup.as_ref() else {
-            return;
-        };
-        let mut changed = self.codec_changed.swap(false, Ordering::AcqRel);
-        if let Some(events) = self.codec_running.as_ref() {
-            match events.try_recv() {
-                Ok(result) => {
-                    self.codec_worker_succeeded = Some(result.is_ok());
-                    self.codec_error = result.err();
-                    self.codec_running = None;
-                    changed = true;
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.codec_worker_succeeded = Some(false);
-                    self.codec_running = None;
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let status = (setup.status)();
-            if status != self.codec_status {
-                self.codec_status = status;
-            }
-            self.invalidation.structure();
-        }
-    }
-
-    /// Block until the install started from the page returns (tests).
-    #[cfg(test)]
-    fn wait_for_codec_install(&mut self) {
-        if let Some(events) = self.codec_running.as_ref()
-            && let Ok(result) = events.recv()
-        {
-            self.codec_worker_succeeded = Some(result.is_ok());
-            self.codec_error = result.err();
-            self.codec_running = None;
-            self.codec_changed.store(true, Ordering::Release);
         }
     }
 
@@ -5280,7 +5099,7 @@ impl Widget for OnboardingView {
                 .as_ref()
                 .is_some_and(crate::onboarding_browser::Pending::busy)
             || self.codec_running.is_some()
-            || self.codec_watching
+            || self.codec_watching.is_some()
             || self.nearby.is_some()
             || !self.journal_idle()
             || !self.identity_idle();

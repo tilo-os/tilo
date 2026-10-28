@@ -337,28 +337,9 @@ impl StatusWatcher {
             .spawn(move || {
                 // Change notifications only hurry the next read; without
                 // them the fallback still reads.
-                let watcher =
-                    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                        // An open is no change, and the watcher's own reads
-                        // open the files it watches.
-                        let opened = |event: &notify::Event| {
-                            matches!(
-                                event.kind,
-                                notify::EventKind::Access(notify::event::AccessKind::Open(_))
-                            )
-                        };
-                        if event.is_ok_and(|event| !opened(&event)) {
-                            let _ = changes.send(WatcherWake::Changed);
-                        }
-                    })
-                    .and_then(|mut watcher| {
-                        notify::Watcher::watch(
-                            &mut watcher,
-                            &identity_dir,
-                            notify::RecursiveMode::NonRecursive,
-                        )
-                        .map(|()| watcher)
-                    });
+                let watcher = tilo_files::native::watch_changes(&identity_dir, |_| true, move || {
+                    let _ = changes.send(WatcherWake::Changed);
+                });
                 if let Err(error) = &watcher {
                     tracing::debug!(%error, "pairing status changes are not notified; reading on a timer");
                 }

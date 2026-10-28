@@ -18,6 +18,7 @@ mod change_watch;
 ))]
 pub use change_watch::{
     ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes, watch_presence,
+    watch_tree_changes,
 };
 #[cfg(all(
     feature = "watch",

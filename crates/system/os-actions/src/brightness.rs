@@ -872,18 +872,22 @@ impl BrightnessService {
         changed
     }
 
-    /// Follow the memory file for writes from other processes, on a thread
-    /// that sleeps in `inotify` until one happens. The compositor calls this
-    /// once, so a level Settings sets reaches the screen.
+    /// Follow the memory file for writes from other processes, for the life
+    /// of the process, on a thread that sleeps in `inotify` until one
+    /// happens. The compositor calls this once, so a level Settings sets
+    /// reaches the screen.
     pub fn follow_memory(&'static self) {
-        let Some(path) = self.memory_path.clone() else {
+        static FOLLOWING: Mutex<Option<tilo_files::native::ChangeWatch>> = Mutex::new(None);
+        let Some(path) = self.memory_path.as_deref() else {
             return;
         };
-        let spawned = std::thread::Builder::new()
-            .name("tilo-brightness-memory".into())
-            .spawn(move || follow(&path, || self.reload_memory()));
-        if let Err(error) = spawned {
-            tracing::warn!(target: "tilo::display", %error, "brightness memory follower did not start");
+        match follow(path, move || {
+            self.reload_memory();
+        }) {
+            Ok(watch) => *FOLLOWING.lock_recover() = Some(watch),
+            Err(error) => {
+                tracing::warn!(target: "tilo::display", %error, "brightness memory follower did not start");
+            }
         }
     }
 
@@ -970,48 +974,23 @@ impl BrightnessService {
 
 /// Watch `path`'s directory and call `changed` whenever `path` is written
 /// there (by a rename into place, which is how [`Memory::save`] writes).
-#[cfg(not(target_os = "linux"))]
-fn follow(_path: &Path, _changed: impl Fn() -> bool) {}
-
-/// Watch `path`'s directory and call `changed` whenever `path` is written
-/// there (by a rename into place, which is how [`Memory::save`] writes).
-#[cfg(target_os = "linux")]
-fn follow(path: &Path, changed: impl Fn() -> bool) {
-    use rustix::fs::inotify;
+fn follow(
+    path: &Path,
+    changed: impl Fn() + Send + 'static,
+) -> std::io::Result<tilo_files::native::ChangeWatch> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-        return;
+        return Err(std::io::Error::other(format!(
+            "{} names no file",
+            path.display()
+        )));
     };
-    if fs::create_dir_all(dir).is_err() {
-        return;
-    }
-    let Ok(fd) = inotify::init(inotify::CreateFlags::CLOEXEC) else {
-        return;
-    };
-    if inotify::add_watch(
-        &fd,
+    fs::create_dir_all(dir)?;
+    let name = name.to_owned();
+    tilo_files::native::watch_changes(
         dir,
-        inotify::WatchFlags::CLOSE_WRITE | inotify::WatchFlags::MOVED_TO,
+        move |entry| entry.file_name() == Some(name.as_os_str()),
+        changed,
     )
-    .is_err()
-    {
-        return;
-    }
-    let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
-    let mut reader = inotify::Reader::new(&fd, &mut buffer);
-    loop {
-        match reader.next() {
-            Ok(event) => {
-                if event
-                    .file_name()
-                    .is_some_and(|file| file.to_bytes() == name.as_encoded_bytes())
-                {
-                    changed();
-                }
-            }
-            Err(rustix::io::Errno::INTR) => {}
-            Err(_) => return,
-        }
-    }
 }
 
 fn notify(generation: &AtomicU64, on_change: &Mutex<Option<OnChange>>) {

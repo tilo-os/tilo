@@ -151,8 +151,9 @@ path = "tests/it.rs"
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Held protected ancestry for root-only original-source worker custody.
-tilo-files = { path = "../../platform/tilo-files" }
+# Held protected ancestry for root-only original-source worker custody, and
+# `live_module`'s watch of the app store.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 landlock.workspace = true
 rustix = { workspace = true, features = ["event", "net", "process", "std"] }
 # `gpu.rs` asks each installed Vulkan ICD directly which render node its

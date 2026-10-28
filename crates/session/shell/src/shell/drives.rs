@@ -70,6 +70,7 @@ struct Shared {
     reveals: Mutex<Vec<PathBuf>>,
     notices: Mutex<Vec<Notification>>,
     commands: Mutex<Option<mpsc::Sender<Command>>>,
+    udev_watch: Mutex<Option<tilo_files::native::ChangeWatch>>,
 }
 
 fn shared() -> &'static Shared {
@@ -91,11 +92,10 @@ pub(crate) fn start(wake: crate::session_runtime::Wake) {
             tracing::warn!(%error, "NTFS drives are unavailable");
             return;
         }
-        let watcher = std::thread::Builder::new()
-            .name("ntfs-drives-udev".into())
-            .spawn(move || watch_udev(Path::new(UDEV_DATA), &commands));
-        if let Err(error) = watcher {
-            tracing::warn!(%error, "NTFS drives will not notice new disks");
+        match watch_udev(Path::new(UDEV_DATA), commands) {
+            // Watched for the life of the process.
+            Ok(watch) => *shared().udev_watch.lock_recover() = Some(watch),
+            Err(error) => tracing::warn!(%error, "NTFS drives will not notice new disks"),
         }
     });
 }
@@ -256,37 +256,21 @@ fn ntfs_attached(udev_data: &Path) -> bool {
 
 /// Ask for a refresh whenever a block device's record in udev's database
 /// changes. The worker settles bursts.
-fn watch_udev(udev_data: &Path, commands: &mpsc::Sender<Command>) {
-    use rustix::fs::inotify;
-    let Ok(fd) = inotify::init(inotify::CreateFlags::CLOEXEC) else {
-        return;
-    };
-    let watching = inotify::add_watch(
-        &fd,
+fn watch_udev(
+    udev_data: &Path,
+    commands: mpsc::Sender<Command>,
+) -> std::io::Result<tilo_files::native::ChangeWatch> {
+    tilo_files::native::watch_changes(
         udev_data,
-        inotify::WatchFlags::CLOSE_WRITE
-            | inotify::WatchFlags::MOVED_TO
-            | inotify::WatchFlags::DELETE,
-    );
-    if watching.is_err() {
-        return;
-    }
-    let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
-    let mut reader = inotify::Reader::new(&fd, &mut buffer);
-    loop {
-        match reader.next() {
-            Ok(event) => {
-                let block_device = event
-                    .file_name()
-                    .is_some_and(|name| name.to_bytes().first() == Some(&b'b'));
-                if block_device && commands.send(Command::Refresh).is_err() {
-                    return;
-                }
-            }
-            Err(rustix::io::Errno::INTR) => {}
-            Err(_) => return,
-        }
-    }
+        |record| {
+            record
+                .file_name()
+                .is_some_and(|name| name.as_encoded_bytes().first() == Some(&b'b'))
+        },
+        move || {
+            let _ = commands.send(Command::Refresh);
+        },
+    )
 }
 
 /// What the person sees about a drive: its label, or what it is.

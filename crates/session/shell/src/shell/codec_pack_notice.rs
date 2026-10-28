@@ -76,20 +76,24 @@ struct Monitor {
 
 fn monitor() -> Option<&'static Mutex<Monitor>> {
     static MONITOR: OnceLock<Option<Mutex<Monitor>>> = OnceLock::new();
+    /// The watch on the codecs status, for the life of the process.
+    static WATCH: Mutex<Option<tilo_files::native::ChangeWatch>> = Mutex::new(None);
     MONITOR
         .get_or_init(|| {
             if !os_actions::codec_pack::available() {
                 return None;
             }
-            let started = os_actions::codec_pack::watch(|| {
+            let watch = os_actions::codec_pack::watch(|| {
                 if let Some(monitor) = monitor() {
                     observe(monitor, CodecPackStatus::read());
                 }
-                true
-            });
-            if let Err(error) = started {
+            })
+            .map_err(|error| {
                 tracing::debug!(%error, "codec pack notifications are unavailable");
-                return None;
+            })
+            .ok()?;
+            if let Ok(mut held) = WATCH.lock() {
+                *held = Some(watch);
             }
             Some(Mutex::new(Monitor {
                 last: CodecPackStatus::read(),

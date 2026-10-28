@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use notify::{RecursiveMode, Watcher as _};
+use tilo_files::native::{ChangeWatch, watch_tree_changes};
 
 use super::SyncFolder;
 
@@ -16,7 +16,7 @@ const SETTLE: Duration = Duration::from_millis(200);
 
 /// A folder kept in step until dropped.
 pub struct Watch {
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher: Option<ChangeWatch>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -30,13 +30,13 @@ impl SyncFolder {
     /// The host's file events cannot be subscribed to.
     pub fn watch(mut self, interval: Duration) -> io::Result<Watch> {
         let (notify_change, changes) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
-            let _ = notify_change.send(());
-        })
-        .map_err(io::Error::other)?;
-        watcher
-            .watch(&self.root, RecursiveMode::Recursive)
-            .map_err(io::Error::other)?;
+        let watcher = watch_tree_changes(
+            &self.root,
+            |_| true,
+            move || {
+                let _ = notify_change.send(());
+            },
+        )?;
         let thread = std::thread::Builder::new()
             .name("tilo-sync-folder".into())
             .spawn(move || {

@@ -326,6 +326,8 @@ struct CustomWallpapers {
     state: Mutex<CustomState>,
     /// Bumped whenever the registry is reloaded or a picture lands.
     generation: std::sync::atomic::AtomicU64,
+    /// The watch on the registry's directory, for the life of the process.
+    watch: Mutex<Option<tilo_files::native::ChangeWatch>>,
 }
 
 #[derive(Default)]
@@ -366,6 +368,7 @@ impl CustomWallpapers {
             cache_dir,
             state: Mutex::new(CustomState::default()),
             generation: std::sync::atomic::AtomicU64::new(0),
+            watch: Mutex::new(None),
         };
         custom.reload();
         custom
@@ -408,51 +411,36 @@ impl CustomWallpapers {
     }
 
     /// Reload the registry whenever its directory reports a change to it,
-    /// on a service thread, and wake the compositor to draw what changed.
+    /// on the watch's thread, and wake the compositor to draw what changed.
     fn watch(&'static self) {
-        use notify::Watcher as _;
-        let Some(directory) = self.registry.parent().map(std::path::Path::to_path_buf) else {
+        let Some(directory) = self.registry.parent() else {
             return;
         };
         let Some(name) = self.registry.file_name().map(std::ffi::OsStr::to_os_string) else {
             return;
         };
         // The directory may not exist before the first wallpaper is set.
-        let _ = std::fs::create_dir_all(&directory);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let Ok(mut watcher) = notify::recommended_watcher(move |event| {
-            let _ = tx.send(event);
-        }) else {
-            tracing::warn!("wallpaper registry: no file watch; changes show after a restart");
-            return;
-        };
-        if let Err(error) = watcher.watch(&directory, notify::RecursiveMode::NonRecursive) {
-            tracing::warn!(%error, "wallpaper registry: could not watch its directory");
-            return;
-        }
-        let spawned = std::thread::Builder::new()
-            .name("wallpaper-registry".into())
-            .spawn(move || {
-                // The watcher lives as long as the thread reading its events.
-                let _watcher = watcher;
-                while let Ok(event) = rx.recv() {
-                    let touches_registry = event.as_ref().is_ok_and(|event| {
-                        event
-                            .paths
-                            .iter()
-                            .any(|path| path.file_name() == Some(name.as_os_str()))
-                    });
-                    if touches_registry || event.is_err() {
-                        let before = self.generation();
-                        self.reload();
-                        if self.generation() != before {
-                            crate::shell::wake_compositor();
-                        }
-                    }
+        let _ = std::fs::create_dir_all(directory);
+        let watch = tilo_files::native::watch_changes(
+            directory,
+            move |path| path.file_name() == Some(name.as_os_str()),
+            move || {
+                let before = self.generation();
+                self.reload();
+                if self.generation() != before {
+                    crate::shell::wake_compositor();
                 }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "wallpaper registry: could not start its watch");
+            },
+        );
+        match watch {
+            Ok(watch) => {
+                if let Ok(mut held) = self.watch.lock() {
+                    *held = Some(watch);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wallpaper registry: could not watch its directory");
+            }
         }
     }
 

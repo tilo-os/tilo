@@ -372,16 +372,16 @@ pub fn run(action: ExtensionAction, id: &ExtensionId) -> Result<(), String> {
 }
 
 /// Call `on_change` whenever the helper rewrites the status of `id`, from a
-/// background thread, until it returns `false`. Event-driven (inotify on
-/// [`STATE_DIR`]): nothing polls.
+/// background thread, until the returned watch is dropped. Event-driven
+/// (inotify on [`STATE_DIR`]): nothing polls.
 ///
 /// # Errors
 /// Returns an error when the state directory cannot be watched (not a Tilo
 /// image); callers then re-read the status after their own actions only.
 pub fn watch(
     id: &ExtensionId,
-    on_change: impl FnMut() -> bool + Send + 'static,
-) -> Result<(), String> {
+    on_change: impl Fn() + Send + 'static,
+) -> Result<tilo_files::native::ChangeWatch, String> {
     watch_dir(Path::new(STATE_DIR), id, on_change)
 }
 
@@ -393,40 +393,15 @@ pub fn watch(
 pub fn watch_dir(
     dir: &Path,
     id: &ExtensionId,
-    mut on_change: impl FnMut() -> bool + Send + 'static,
-) -> Result<(), String> {
-    use rustix::fs::inotify;
-    let fd = inotify::init(inotify::CreateFlags::CLOEXEC)
-        .map_err(|error| format!("inotify: {error}"))?;
-    inotify::add_watch(
-        &fd,
-        dir,
-        inotify::WatchFlags::CLOSE_WRITE
-            | inotify::WatchFlags::MOVED_TO
-            | inotify::WatchFlags::DELETE,
-    )
-    .map_err(|error| format!("watch {}: {error}", dir.display()))?;
+    on_change: impl Fn() + Send + 'static,
+) -> Result<tilo_files::native::ChangeWatch, String> {
     let file_name = id.status_file_name();
-    std::thread::Builder::new()
-        .name(format!("extension-watch-{id}"))
-        .spawn(move || {
-            let mut buffer = [std::mem::MaybeUninit::<u8>::uninit(); 4096];
-            let mut reader = inotify::Reader::new(&fd, &mut buffer);
-            loop {
-                let relevant = match reader.next() {
-                    Ok(event) => event
-                        .file_name()
-                        .is_some_and(|name| name.to_bytes() == file_name.as_bytes()),
-                    Err(rustix::io::Errno::INTR) => false,
-                    Err(_) => return,
-                };
-                if relevant && !on_change() {
-                    return;
-                }
-            }
-        })
-        .map(|_| ())
-        .map_err(|error| format!("extension watcher: {error}"))
+    tilo_files::native::watch_changes(
+        dir,
+        move |path| path.file_name().is_some_and(|name| *name == *file_name),
+        on_change,
+    )
+    .map_err(|error| format!("watch {}: {error}", dir.display()))
 }
 
 /// Downloaded system extensions exist only on the Tilo OS image; elsewhere
@@ -438,8 +413,8 @@ pub fn watch_dir(
 pub fn watch_dir(
     dir: &Path,
     _id: &ExtensionId,
-    _on_change: impl FnMut() -> bool + Send + 'static,
-) -> Result<(), String> {
+    _on_change: impl Fn() + Send + 'static,
+) -> Result<tilo_files::native::ChangeWatch, String> {
     Err(format!(
         "watch {}: system extensions exist only on Tilo OS",
         dir.display()
@@ -587,7 +562,10 @@ mod tests {
     fn the_watcher_reports_an_atomic_rewrite_of_its_own_status_only() {
         let dir = tempfile::tempdir().unwrap();
         let (tx, rx) = mpsc::channel();
-        watch_dir(dir.path(), &id("media-codecs"), move || tx.send(()).is_ok()).unwrap();
+        let _watch = watch_dir(dir.path(), &id("media-codecs"), move || {
+            let _ = tx.send(());
+        })
+        .unwrap();
         // Another extension's status is not this watcher's business.
         std::fs::write(dir.path().join("other.json"), "{}").unwrap();
         let temporary = dir.path().join(".media-codecs.json.tmp");
