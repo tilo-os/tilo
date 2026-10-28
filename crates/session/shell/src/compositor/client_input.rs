@@ -648,7 +648,7 @@ impl State {
             && has_focus
             && pressed
             && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
-        .then(crate::compositor::metrics::monotonic_time_ns)
+        .then(tilo_frame_metrics::monotonic_time_ns)
         .flatten();
         let modifiers_before = keyboard.modifier_state();
         let intercepted: Option<()> = keyboard.input(

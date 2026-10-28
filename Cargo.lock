@@ -15316,6 +15316,7 @@ dependencies = [
  "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-frame-metrics",
  "tilo-handoff",
  "tilo-identity-ceremony",
  "tilo-identity-host",
@@ -18444,6 +18445,20 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-frame-metrics"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -26573,6 +26588,7 @@ dependencies = [
  "tilo-files",
  "tilo-firstboot-files",
  "tilo-font-catalog",
+ "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
  "tilo-governor",

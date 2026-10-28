@@ -102,7 +102,6 @@ use crate::compositor::input_environment::InputEnvironment;
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockView, lock_outputs};
-use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
@@ -110,6 +109,7 @@ use crate::compositor::screen_dim::{Backlight, ScreenDimmer};
 use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
+use tilo_frame_metrics as metrics;
 
 /// The person's other devices showing each tab, by tab.
 type PersonalViewers =
@@ -806,7 +806,7 @@ fn park_wake_reason(
 ) -> &'static str {
     match (park, deadline) {
         (Some(timeout), Some(name)) if slept.saturating_add(WAKE_TIMER_SLACK) >= timeout => name,
-        _ => super::metrics::WAKE_IO,
+        _ => tilo_frame_metrics::WAKE_IO,
     }
 }
 
@@ -10741,7 +10741,7 @@ pub fn run() {
         }};
     }
     // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
-    // when neither is set. See `compositor::metrics`.
+    // when neither is set. See `tilo_frame_metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
     metrics.set_target_period(frame_period);
     // Bench hook: shut down cleanly after N seconds so the frame trace/summary
@@ -10879,7 +10879,7 @@ pub fn run() {
         }
         state.presentation_feedback.expire(Instant::now());
 
-        let mut input_steps = crate::compositor::metrics::SlowestStep::starting_at(iter_t0);
+        let mut input_steps = tilo_frame_metrics::SlowestStep::starting_at(iter_t0);
         if !transition_hold_sleep.is_zero() {
             frame_builder
                 .host_mut()
@@ -14430,7 +14430,7 @@ pub fn run() {
             metrics::profile::record_phase("layout/accessibility", published.elapsed(), None);
             let layout_took = t_layout_start.elapsed();
             metrics.mark_layout(layout_took);
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Layout, paint_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Layout, paint_cpu);
             let t_scene_start = Instant::now();
             let scene_cpu = metrics.cpu_snapshot();
             // When locked, paint the compositor-owned lock overlay instead of the chrome — app content is never submitted while locked.
@@ -14562,7 +14562,7 @@ pub fn run() {
                 frame_paint
             };
             metrics.mark_scene(t_scene_start.elapsed());
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Scene, scene_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Scene, scene_cpu);
             // The selector queued semantic work and closed before this clean
             // scene was built. Execute screenshots here, before ownership of
             // the scene moves to the presentation thread; this is the only
@@ -14814,8 +14814,8 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Submit, submit_cpu);
-            metrics.mark_cpu(crate::compositor::metrics::CpuPhase::Paint, paint_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Submit, submit_cpu);
+            metrics.mark_cpu(tilo_frame_metrics::CpuPhase::Paint, paint_cpu);
             metrics.mark_paint_wall(submit_done.saturating_duration_since(t_layout_start));
             if let Some(serial) = submitted_serial {
                 let presented = {
@@ -16084,7 +16084,7 @@ mod tests {
         );
         assert_eq!(
             park_wake_reason(park, name, Duration::from_millis(40)),
-            super::metrics::WAKE_IO,
+            tilo_frame_metrics::WAKE_IO,
             "a park cut short was ended by an fd, not the deadline"
         );
         assert_eq!(
@@ -16098,7 +16098,7 @@ mod tests {
         );
         assert_eq!(
             park_wake_reason(None, None, Duration::from_secs(5)),
-            super::metrics::WAKE_IO,
+            tilo_frame_metrics::WAKE_IO,
             "only an fd can end an unbounded park"
         );
         let mut tally = WakeTally::default();
@@ -16683,7 +16683,7 @@ mod tests {
     /// next unrelated event, a key's release a tenth of a second later.
     #[test]
     fn a_change_seen_on_a_tick_that_could_not_paint_is_still_owed() {
-        use crate::compositor::metrics::paint_reason as r;
+        use tilo_frame_metrics::paint_reason as r;
         let owed = NativeRedrawReasons {
             owed: true,
             ..NativeRedrawReasons::default()
@@ -16735,7 +16735,7 @@ mod tests {
 
     #[test]
     fn paint_reasons_name_exactly_what_content_changed_counts() {
-        use crate::compositor::metrics::paint_reason as r;
+        use tilo_frame_metrics::paint_reason as r;
         let quiet = NativeRedrawReasons::default();
         assert!(!quiet.content_changed(false));
         assert_eq!(quiet.paint_reason_bits(false, false), 0);
@@ -19486,7 +19486,7 @@ mod tests {
             "a locked session refuses the owner too"
         );
         assert!(
-            !crate::compositor::metrics::profile::active(),
+            !tilo_frame_metrics::profile::active(),
             "no refused request started a profile"
         );
     }

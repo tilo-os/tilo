@@ -7,7 +7,7 @@ pub(super) const ENV: &str = "TILO_FRAME_CPU_TRACE";
 const HEADER: &str = "seq,start_us,anchor_monotonic_begin_us,anchor_unix_us,anchor_monotonic_end_us,anchor_offset_us,paint_wall_us,layout_us,scene_us,submit_us,paint_thread_cpu_us,paint_process_cpu_us,layout_thread_cpu_us,layout_process_cpu_us,scene_thread_cpu_us,scene_process_cpu_us,submit_thread_cpu_us,submit_process_cpu_us,present_async";
 
 #[derive(Clone, Copy)]
-pub(crate) enum CpuPhase {
+pub enum CpuPhase {
     Paint,
     Layout,
     Scene,
@@ -15,7 +15,7 @@ pub(crate) enum CpuPhase {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct CpuSnapshot {
+pub struct CpuSnapshot {
     thread: Option<Duration>,
     process: Option<Duration>,
 }
@@ -209,7 +209,7 @@ fn posix_time(clock: libc::clockid_t) -> Option<Duration> {
     ))
 }
 
-pub(crate) fn process_cpu_time() -> Option<Duration> {
+pub fn process_cpu_time() -> Option<Duration> {
     #[cfg(unix)]
     {
         posix_time(libc::CLOCK_PROCESS_CPUTIME_ID)
@@ -235,7 +235,7 @@ fn monotonic_time() -> Option<Duration> {
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use crate::compositor::metrics::FrameRecorder;
+    use crate::FrameRecorder;
 
     fn busy_cpu(duration: Duration) {
         let start = super::super::thread_cpu_time().expect("test requires thread CPU clock");

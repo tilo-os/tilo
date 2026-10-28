@@ -2028,7 +2028,7 @@ requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_frame_loop_trace.py"
 hints = { builds = false }
-inputs = ["crates/session/shell/src/compositor/metrics.rs", "scripts/perf/frame-loop-bench.py", "tools/tests/test_frame_loop_trace.py", "tools/policy/run_unit_tests.py", "tools/policy/steps.py", "tools/policy/unit_test_inputs.py"]
+inputs = ["crates/session/frame-metrics/src/lib.rs", "scripts/perf/frame-loop-bench.py", "tools/tests/test_frame_loop_trace.py", "tools/policy/run_unit_tests.py", "tools/policy/steps.py", "tools/policy/unit_test_inputs.py"]
 
 [[check]]
 name = "policy/tests/unit/imager-enabled-platforms"

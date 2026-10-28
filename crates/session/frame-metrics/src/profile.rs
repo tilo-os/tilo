@@ -34,11 +34,11 @@ use super::FrameSample;
 use super::trace_writer::TraceWriter;
 
 /// A profile's length when the admin names none.
-pub(crate) const DEFAULT_SECONDS: u64 = 30;
+pub const DEFAULT_SECONDS: u64 = 30;
 /// The longest profile one request records. A profile is a deliberate
 /// window, not a standing trace (the session's rolling `frame-trace.csv` is
 /// that); this bounds what a forgotten profile writes.
-pub(crate) const MAX_SECONDS: u64 = 600;
+pub const MAX_SECONDS: u64 = 600;
 /// Profiles kept under the profile directory; starting one removes the
 /// oldest beyond this.
 const KEPT_PROFILES: usize = 8;
@@ -59,18 +59,18 @@ static PROFILER: Mutex<Profiler> = Mutex::new(Profiler {
 
 /// Whether a profile is recording now.
 #[inline]
-pub(crate) fn active() -> bool {
+pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
 /// The directory profiles go to: `$XDG_STATE_HOME/tilo/profiles`.
-pub(crate) fn default_root() -> Option<PathBuf> {
+pub fn default_root() -> Option<PathBuf> {
     tilo_paths::xdg::state_home().map(|state| state.join("tilo").join("profiles"))
 }
 
 /// Why a profile did not start.
 #[derive(Debug)]
-pub(crate) enum StartError {
+pub enum StartError {
     /// One is already recording; stop it first.
     AlreadyRecording(PathBuf),
     /// The profile's directory or files could not be created.
@@ -78,7 +78,7 @@ pub(crate) enum StartError {
 }
 
 /// Start recording a profile of `length` into a new directory under `root`.
-pub(crate) fn start(root: &Path, length: Duration) -> Result<serde_json::Value, StartError> {
+pub fn start(root: &Path, length: Duration) -> Result<serde_json::Value, StartError> {
     let mut profiler = lock();
     if let Some(capture) = profiler.capture.as_ref() {
         return Err(StartError::AlreadyRecording(capture.dir.clone()));
@@ -90,7 +90,7 @@ pub(crate) fn start(root: &Path, length: Duration) -> Result<serde_json::Value, 
 }
 
 /// Stop the recording profile, if any, and say where it went.
-pub(crate) fn stop() -> serde_json::Value {
+pub fn stop() -> serde_json::Value {
     let mut profiler = lock();
     profiler.finish(false);
     profiler.status(Instant::now())
@@ -98,18 +98,18 @@ pub(crate) fn stop() -> serde_json::Value {
 
 /// The session is ending: complete the recording profile before the
 /// process exits, waiting for its files.
-pub(crate) fn shutdown() {
+pub fn shutdown() {
     lock().finish(true);
 }
 
 /// What is recording, and the last profile finished.
-pub(crate) fn status() -> serde_json::Value {
+pub fn status() -> serde_json::Value {
     lock().status(Instant::now())
 }
 
 /// When the recording profile ends, for the loop's park: it wakes once to
 /// close it even when nothing else happens.
-pub(crate) fn deadline() -> Option<Instant> {
+pub fn deadline() -> Option<Instant> {
     if !active() {
         return None;
     }
@@ -117,14 +117,14 @@ pub(crate) fn deadline() -> Option<Instant> {
 }
 
 /// A tick numbered `seq` began; the phases recorded until the next carry it.
-pub(crate) fn begin_tick(seq: u64) {
+pub fn begin_tick(seq: u64) {
     if let Some(capture) = lock().capture.as_mut() {
         capture.seq = seq;
     }
 }
 
 /// One loop-timing phase or checkpoint span of the current tick.
-pub(crate) fn record_phase(name: &'static str, elapsed: Duration, items: Option<usize>) {
+pub fn record_phase(name: &'static str, elapsed: Duration, items: Option<usize>) {
     if !active() {
         return;
     }
@@ -135,7 +135,7 @@ pub(crate) fn record_phase(name: &'static str, elapsed: Duration, items: Option<
 
 /// The tick the frame recorder just closed. Ends the profile once its
 /// window is over.
-pub(crate) fn record_tick(sample: &FrameSample, target_period_us: u32) {
+pub fn record_tick(sample: &FrameSample, target_period_us: u32) {
     let mut profiler = lock();
     let Some(capture) = profiler.capture.as_mut() else {
         return;
@@ -148,7 +148,7 @@ pub(crate) fn record_tick(sample: &FrameSample, target_period_us: u32) {
 }
 
 /// Close a profile whose window ended while the loop parked.
-pub(crate) fn expire(now: Instant) {
+pub fn expire(now: Instant) {
     if !active() {
         return;
     }
