@@ -94,6 +94,13 @@ SECRETS = Secrets()
 LOG: Path | None = None
 
 
+def bootc(args: str, lines: int) -> str:
+    """A guest command running `bootc ARGS` that ends with its last `lines` of output and exits
+    with bootc's status, not tail's."""
+    return (f"bootc {args} > /run/e2e-bootc.log 2>&1; status=$?; "
+            f"tail -n {lines} /run/e2e-bootc.log; exit $status")
+
+
 def say(line: str) -> None:
     line = SECRETS.redact(f"[{time.strftime('%H:%M:%S')}] {line}")
     print(line, flush=True)
@@ -1617,7 +1624,7 @@ cryptsetup close e2e-target
         self.boot(label)
         self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
         self.connect()
-        code, text = self.guest(f"bootc switch {quote(self.old_image)} 2>&1 | tail -n 20", 1800)
+        code, text = self.guest(bootc(f"switch {quote(self.old_image)}", 20), 1800)
         evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
         if code:
             raise Failed(f"bootc switch to the old image failed: {text.strip()[-200:]}")
@@ -1630,8 +1637,10 @@ cryptsetup close e2e-target
         _, pam = self.guest("test -e /etc/pam.d/tilo-auth && echo pam_tilo || echo before", quiet=True)
         evidence["old_image_pam"] = pam.strip()
         if pam.strip() != "before":
-            raise Failed("the image given as --pre-pam-tilo-image has the tilo-auth PAM service")
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+            _, booted = self.guest("bootc status --booted 2>&1 | head -n 8", quiet=True)
+            raise Failed("the booted image has the tilo-auth PAM service, so it is not the one "
+                         f"given as --pre-pam-tilo-image: {' '.join(booted.split())[:300]}")
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
         self.power_off(label)
@@ -1647,7 +1656,7 @@ cryptsetup close e2e-target
         evidence["migrated"] = {"session": session, "record_wrappers": record.strip(),
                                 "shadow_locked": self.shadow_locked(),
                                 "kept_for": [l for l in authd.splitlines() if "keeping uid" in l]}
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the old image failed: {text.strip()[-200:]}")
         self.power_off(label)
@@ -1655,7 +1664,7 @@ cryptsetup close e2e-target
         label = "rollback-back-to-old"
         session = self.boot_to_session(label)
         evidence["old_image_sign_in"] = {"session": session}
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
         self.power_off(label)
