@@ -1531,10 +1531,22 @@ impl RecordSet {
     /// # Errors
     /// Returns record-specific persistence failures without discarding live bytes.
     pub fn try_flush(&mut self, live: &mut AutoCommit) -> Result<(), String> {
-        self.try_flush_documents(Some(live))
+        self.try_flush_documents(Some(live), Durability::Durable)
     }
 
-    fn try_flush_documents(&mut self, mut live: Option<&mut AutoCommit>) -> Result<(), String> {
+    /// [`Self::try_flush`] for a caller that must know the records are
+    /// *written*, not that the store has committed them: a store that
+    /// commits on a thread of its own (the page's worker) always answers
+    /// "not yet" ([`DocWriter::try_flush_written`]).
+    fn try_flush_written(&mut self) -> Result<(), String> {
+        self.try_flush_documents(None, Durability::Written)
+    }
+
+    fn try_flush_documents(
+        &mut self,
+        mut live: Option<&mut AutoCommit>,
+        wanted: Durability,
+    ) -> Result<(), String> {
         let mut errors = Vec::new();
         for (id, slot) in &mut self.open {
             let Some(saver) = slot.autosave.as_mut() else {
@@ -1554,7 +1566,11 @@ impl RecordSet {
             };
             slot.action_state.commit_for_save(doc);
             saver.save(doc);
-            if let Err(error) = saver.try_flush() {
+            let flushed = match wanted {
+                Durability::Durable => saver.try_flush(),
+                Durability::Written => saver.try_flush_written(),
+            };
+            if let Err(error) = flushed {
                 errors.push(format!("{id}: {error}"));
             }
         }
@@ -1572,6 +1588,14 @@ impl RecordSet {
             tracing::error!(%error, "record persistence failed");
         }
     }
+}
+
+/// How far a flush must go: to the store's commit, or to the bytes being
+/// written, where the store commits them on a thread of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Durability {
+    Durable,
+    Written,
 }
 
 /// A [`RecordSet`] several widgets share via a handle, so two tabs on the
@@ -2992,7 +3016,18 @@ impl RecordStore {
         if set.portable.is_some() {
             return set.flush_portable(None);
         }
-        set.try_flush_documents(None)
+        set.try_flush_documents(None, Durability::Durable)
+    }
+
+    /// Write out what is not stored yet, and report only what failed: the
+    /// records are the store's from then on, and the store's own thread
+    /// commits them ([`RecordSet::try_flush_written`]).
+    pub fn try_flush_written(&self) -> Result<(), String> {
+        let mut set = self.0.borrow_mut();
+        if set.portable.is_some() {
+            return set.flush_portable(None);
+        }
+        set.try_flush_written()
     }
 
     /// Share an existing set.
