@@ -1060,18 +1060,17 @@ fn a_step_nests_into_the_one_above_it_and_lifts_back_out() {
     };
     let top = program(&mut app);
     assert_eq!(top.steps.len(), 3, "three steps at the top level");
-    assert!(
-        !app.harness().targets().contains_key("step-nest-0"),
-        "the first step has nothing above it to move into"
-    );
-    assert!(
-        app.harness().targets().contains_key("step-nest-1"),
-        "the second step can move into the condition"
-    );
-    assert!(
-        !app.harness().targets().contains_key("step-lift-1"),
-        "and it is already at the top level"
-    );
+    // Every step shows both nest controls, so they keep their place in its
+    // header; one with nowhere to go is disabled.
+    app.harness()
+        .expect(&SemanticExpectation::named("step-nest-0").enabled(false))
+        .expect("the first step has nothing above it to move into");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-nest-1").enabled(true))
+        .expect("the second step can move into the condition");
+    app.harness()
+        .expect(&SemanticExpectation::named("step-lift-1").enabled(false))
+        .expect("and it is already at the top level");
 
     act(&mut app, "step-nest-1", &Action::Activate);
     let nested = program(&mut app);
@@ -1130,7 +1129,7 @@ fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
         &format!("offer-{NOTES}-{INBOX}-list"),
         &Action::Activate,
     );
-    // The list step needs to read the notes app's folder, and the summary
+    // The list step needs to read the notes app's Inbox, and the summary
     // says so without waiting for the save sheet.
     app.harness()
         .expect(&SemanticExpectation::named("grant-summary-0").within(tilo_test_env::hang_bound()))
@@ -1141,8 +1140,8 @@ fn the_grant_summary_stays_on_the_page_as_steps_are_added() {
         .and_then(|semantics| semantics.name.clone())
         .expect("the line says what the step is allowed to do");
     assert!(
-        line.contains("notes"),
-        "the summary names the app the step reaches into: {line}"
+        line.contains("Inbox"),
+        "the summary names the folder the step reads, as the save sheet does: {line}"
     );
     assert!(
         !app.harness()

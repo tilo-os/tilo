@@ -293,7 +293,7 @@ fn an_unanswered_catalogue_is_explained_plainly() {
 
 /// A step that holds steps of its own: `if true then …`.
 fn condition(steps: &serde_json::Value) -> Step {
-    step(json!({"id": "maybe", "step": "if", "cond": {"literal": true}, "then": steps}))
+    step(json!({"id": "maybe", "step": "if", "cond": {"truthy": {"literal": true}}, "then": steps}))
 }
 
 #[test]
@@ -343,7 +343,7 @@ fn a_step_has_nowhere_deeper_to_go_without_a_step_above_that_holds_steps() {
         "the step above holds no steps"
     );
     let repeated = vec![step(
-        json!({"id": "each", "step": "for-each", "items": {"literal": []}, "item": "it", "body": []}),
+        json!({"id": "each", "step": "for_each", "items": {"literal": []}, "item": "it", "body": []}),
     )];
     assert_eq!(
         nest_into(&repeated, "0"),
@@ -352,7 +352,7 @@ fn a_step_has_nowhere_deeper_to_go_without_a_step_above_that_holds_steps() {
     );
     let two = vec![
         step(
-            json!({"id": "each", "step": "for-each", "items": {"literal": []}, "item": "it", "body": []}),
+            json!({"id": "each", "step": "for_each", "items": {"literal": []}, "item": "it", "body": []}),
         ),
         list(),
     ];
