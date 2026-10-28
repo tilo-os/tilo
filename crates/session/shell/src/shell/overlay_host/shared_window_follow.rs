@@ -208,13 +208,15 @@ impl ShellOverlayHost {
             seen.at.clone_from(&at);
             seen.item.clone_from(&item);
             seen.waiting_at = None;
-            let (opening, instance) = {
-                let state = chrome.borrow();
-                let mut tree = state.tree_mut();
-                let opening = tree.shared_window_opening(tab, at.as_deref());
-                let instance = tree.local_app_window(tab).map(|(_, _, instance)| instance);
-                (opening, instance)
-            };
+            let opening = chrome
+                .borrow()
+                .tree_mut()
+                .shared_window_opening(tab, at.as_deref());
+            let instance = chrome
+                .borrow()
+                .tree_mut()
+                .local_app_window(tab)
+                .map(|(_, _, instance)| instance);
             let Some(item) = opening else {
                 continue;
             };

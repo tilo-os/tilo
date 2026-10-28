@@ -64,7 +64,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
     ) -> Option<tilo_action_broker::services::AwaitingHistory> {
         let route = context.route();
         let room = super::super::state::RoomId::parse(&route.cluster_id)?;
-        let network = self.network.as_ref()?;
+        self.network.as_ref()?;
         self.sealed_writes.as_ref()?;
         if !self.tree.read().seals_records(room)
             || self.owner_holds(room, &route.app_id, &route.record_id)
@@ -72,7 +72,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         {
             return None;
         }
-        let landed = network.await_sealed_replay(room);
+        let landed = self.network.as_ref()?.await_sealed_replay(room);
         Some(Box::pin(async move {
             // A dropped sender is a network gone: the Open decides on what
             // this device holds.
@@ -157,7 +157,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         if self.owner_holds(room, app, record)
             || self.holds_sealed_writes(&tilo_action_broker::route::CrdtRoute::record(
                 app,
-                &room.to_string(),
+                room.to_string(),
                 record,
             ))
         {
@@ -692,8 +692,7 @@ fn sealed_document(
         };
         // Automerge holds a change whose dependencies are missing until they
         // arrive, whatever order the writes were admitted in.
-        document
-            .load_incremental(bytes)
+        tilo_automerge::ApplyIncoming::load_incoming(&mut document, bytes)
             .map_err(|error| error.to_string())?;
     }
     if reassembler.pending_transfers() > 0

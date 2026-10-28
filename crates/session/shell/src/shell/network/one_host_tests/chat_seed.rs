@@ -229,7 +229,9 @@ pub(super) fn new_workspace(
         &ada,
         "Ada's laptop",
         &dir.join("laptop"),
-        ports + 1,
+        ports
+            .checked_add(1)
+            .expect("the laptop has a port after the desktop's"),
         DeviceCapabilities::member(),
         &wakes,
     );
@@ -255,7 +257,7 @@ pub(super) fn new_workspace(
     // process's, so it names the desktop only once the laptop holds the
     // workspace: Ada's devices met each other as their sessions do.
     home.env()
-        .set("TILO_IDENTITY_ROOT", &dir.join("desktop"))
+        .set("TILO_IDENTITY_ROOT", dir.join("desktop"))
         .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
     desktop.keep_identity_on_disk(
         &runtime_identity::identity_dir_from_env().expect("the identity directory"),
