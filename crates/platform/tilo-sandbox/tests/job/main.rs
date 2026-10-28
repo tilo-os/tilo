@@ -17,6 +17,8 @@
 tilo_sandbox::job_init!();
 
 #[cfg(target_os = "linux")]
+mod detached;
+#[cfg(target_os = "linux")]
 mod host_ids;
 #[cfg(target_os = "linux")]
 mod isolation;

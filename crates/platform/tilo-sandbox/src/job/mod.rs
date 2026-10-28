@@ -126,6 +126,7 @@ pub struct Launch<'a> {
     extra: Vec<(OwnedFd, RawFd)>,
     cgroup: Option<BorrowedFd<'a>>,
     setup: Option<SetupHook<'a>>,
+    status: Option<OwnedFd>,
 }
 
 impl<'a> Launch<'a> {
@@ -139,6 +140,7 @@ impl<'a> Launch<'a> {
             extra: Vec::new(),
             cgroup: None,
             setup: None,
+            status: None,
         }
     }
 
@@ -180,6 +182,23 @@ impl<'a> Launch<'a> {
         self
     }
 
+    /// Let the job outlive the thread and the process that start it. Its
+    /// init is born the caller's parent's child (`CLONE_PARENT`) with no
+    /// parent-death signal, and when the command ends it writes the raw
+    /// 4-byte wait status at offset 0 of `status` and syncs it; a job that
+    /// is killed writes nothing.
+    ///
+    /// The caller's parent reaps the init, so it must be a child subreaper
+    /// (`PR_SET_CHILD_SUBREAPER`) or the namespace's init. Nothing else
+    /// bounds the job's life but its cgroup (`cgroup.kill`) and the PID
+    /// namespace it runs in: keep its cgroup. [`Job::into_detached`] then
+    /// gives up the handle without killing the job.
+    #[must_use]
+    pub fn detached(mut self, status: OwnedFd) -> Self {
+        self.status = Some(status);
+        self
+    }
+
     /// Run `hook` after the job's namespaces exist and before any of it
     /// runs: attach its network, for instance. An error stops the job.
     #[must_use]
@@ -207,7 +226,7 @@ impl<'a> Launch<'a> {
             .setup
             .as_mut()
             .map(|h| h.as_mut() as &mut dyn FnMut(&Started) -> Result<(), String>);
-        linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook)
+        linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook, self.status)
     }
 
     /// # Errors
@@ -222,6 +241,7 @@ impl<'a> Launch<'a> {
             self.extra,
             self.cgroup,
             self.setup,
+            self.status,
         );
         Err(SpawnError::Unsupported(format!(
             "jobs run only on Linux; this is {}",

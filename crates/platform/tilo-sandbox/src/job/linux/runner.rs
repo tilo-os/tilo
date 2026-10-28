@@ -640,7 +640,14 @@ impl Child<'_> {
                     break;
                 }
             }
-            libc::write(self.control.status, (&raw const status).cast(), 4);
+            if self.control.detached {
+                // At offset 0 and synced: a later reader takes a whole status
+                // file as the job's end, whoever started it.
+                libc::pwrite(self.control.status, (&raw const status).cast(), 4, 0);
+                libc::fsync(self.control.status);
+            } else {
+                libc::write(self.control.status, (&raw const status).cast(), 4);
+            }
             let code = if libc::WIFEXITED(status) {
                 libc::WEXITSTATUS(status)
             } else {
@@ -653,9 +660,12 @@ impl Child<'_> {
     /// The job's init, from its start to `_exit`.
     fn run(&self) -> ! {
         self.await_parent();
-        // SAFETY: tie the init to the worker: if the worker dies, so does
-        // the job.
-        unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
+        if !self.control.detached {
+            // SAFETY: tie the init to the worker: if the worker dies, so
+            // does the job. It follows the thread that started the job, so a
+            // job meant to outlive that thread is detached instead.
+            unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
+        }
         Self::reset_signals();
         self.own_mounts();
         self.become_ids();
@@ -862,8 +872,9 @@ fn write_proc(pid: libc::pid_t, file: &str, content: &str) -> Result<(), SpawnEr
 pub struct Job {
     pid: libc::pid_t,
     pidfd: OwnedFd,
-    /// The init writes the command's wait status here before it exits.
-    status: std::fs::File,
+    /// The init writes the command's wait status here before it exits;
+    /// `None` for a detached job, whose status goes to the caller's file.
+    status: Option<std::fs::File>,
     exit: Option<ExitStatus>,
     unmapped: Vec<std::path::PathBuf>,
 }
@@ -910,9 +921,38 @@ impl Job {
         }
     }
 
+    /// Whether the job outlives this handle: its init is the caller's
+    /// parent's child, which reaps it.
+    fn detached(&self) -> bool {
+        self.status.is_none()
+    }
+
+    /// Give up the job without killing it: its pid and pidfd. For a detached
+    /// job, which the caller's parent reaps; the job lives on, bounded by its
+    /// cgroup.
+    pub fn into_detached(self) -> (libc::pid_t, OwnedFd) {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is never dropped, so each field is read out once and
+        // owned by exactly one place from here on.
+        let (pidfd, status, unmapped) = unsafe {
+            (
+                std::ptr::read(&raw const this.pidfd),
+                std::ptr::read(&raw const this.status),
+                std::ptr::read(&raw const this.unmapped),
+            )
+        };
+        drop((status, unmapped));
+        (this.pid, pidfd)
+    }
+
     fn reap(&mut self, flags: libc::c_int) -> io::Result<Option<ExitStatus>> {
         if let Some(e) = self.exit {
             return Ok(Some(e));
+        }
+        if self.detached() {
+            return Err(io::Error::other(
+                "a detached job is reaped by its starter's parent, not waited for here",
+            ));
         }
         loop {
             // SAFETY: a zeroed siginfo for waitid to fill.
@@ -946,7 +986,10 @@ impl Job {
     fn status_after(&self, info: &libc::siginfo_t) -> ExitStatus {
         let mut raw = [0_u8; 4];
         // The init has exited, so the pipe holds the status or is at EOF.
-        let n = (&self.status).read(&mut raw).unwrap_or(0);
+        let n = self
+            .status
+            .as_ref()
+            .map_or(0, |mut s| s.read(&mut raw).unwrap_or(0));
         if n == 4 {
             let st = i32::from_ne_bytes(raw);
             if libc::WIFEXITED(st) {
@@ -1000,7 +1043,10 @@ impl Drop for Job {
     fn drop(&mut self) {
         if self.exit.is_none() {
             self.kill();
-            let _ = self.wait();
+            // A detached init is not this process's child: its parent reaps it.
+            if !self.detached() {
+                let _ = self.wait();
+            }
         }
     }
 }
@@ -1297,7 +1343,12 @@ fn plan_layout(
 /// No new mount namespace: the init makes its own once it runs (see
 /// [`Child::own_mounts`]), so that the program and the libraries it maps
 /// come from the worker's mounts rather than from the job's copy of them.
-fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::CloneArgs {
+fn clone_args(
+    cgroup: Option<RawFd>,
+    pidfd: &mut RawFd,
+    stack: &Stack,
+    detached: bool,
+) -> sys::CloneArgs {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
     let mut flags = bits(
         libc::CLONE_VM
@@ -1310,8 +1361,16 @@ fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::C
             | libc::CLONE_NEWCGROUP
             | libc::CLONE_PIDFD,
     );
+    // The kernel refuses an exit signal with CLONE_PARENT: the child's parent
+    // is the caller's, and its exit signal theirs.
+    let exit_signal = if detached {
+        flags |= bits(libc::CLONE_PARENT);
+        0
+    } else {
+        bits(libc::SIGCHLD)
+    };
     let mut args = sys::CloneArgs {
-        exit_signal: bits(libc::SIGCHLD),
+        exit_signal,
         pidfd: std::ptr::from_mut(pidfd) as u64,
         stack: stack.base as u64,
         stack_size: STACK_SIZE as u64,
@@ -1502,23 +1561,19 @@ pub fn spawn(
     fds: Fds,
     cgroup: Option<BorrowedFd<'_>>,
     setup: Option<SetupFn<'_>>,
+    detached_status: Option<OwnedFd>,
 ) -> Result<Job, SpawnError> {
     let pipe_err = |e: io::Error| SpawnError::Setup(format!("a pipe: {e}"));
     let (sync_r, sync_w) = pipe().map_err(pipe_err)?;
-    let (status_r, status_w) = pipe().map_err(pipe_err)?;
+    let detached = detached_status.is_some();
+    let (status_r, status_w) = status_ends(detached_status).map_err(pipe_err)?;
     let (report_r, report_w) = pipe().map_err(pipe_err)?;
     let null = dev_null().map_err(|e| SpawnError::Setup(format!("/dev/null: {e}")))?;
     let raw = |fd: &Option<OwnedFd>| {
         fd.as_ref()
             .map_or_else(|| null.as_raw_fd(), AsRawFd::as_raw_fd)
     };
-    // This program, again, as the job's init.
-    let exe: OwnedFd = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH)
-        .open("/proc/self/exe")
-        .map_err(|e| SpawnError::Setup(format!("opening this program for the job's init: {e}")))?
-        .into();
+    let exe = this_program()?;
     let plan_file = memfd().map_err(|e| SpawnError::Setup(format!("the job's plan: {e}")))?;
 
     if let Some(block) = ids.block {
@@ -1547,6 +1602,7 @@ pub fn spawn(
         landlock: layout.landlock,
         trees_at: layout.trees_at,
         kept: layout.moves.iter().map(|(_, at)| *at).collect(),
+        detached,
     };
     (&plan_file)
         .write_all(&wire::encode(plan, &control))
@@ -1562,7 +1618,7 @@ pub fn spawn(
     let mut scratch = vec![-1; layout.moves.len()];
     let stack = Stack::new().map_err(|e| SpawnError::Setup(format!("the child's stack: {e}")))?;
     let mut pidfd: RawFd = -1;
-    let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, &stack);
+    let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, &stack, detached);
 
     let mut child = PreExec {
         moves: &layout.moves,
@@ -1606,13 +1662,34 @@ pub fn spawn(
     let job = Job {
         pid,
         pidfd,
-        status: status_r.into(),
+        status: status_r.map(Into::into),
         exit: None,
         unmapped: plan.unmapped.clone(),
     };
     // From here on, an error drops `job`, which kills and reaps the init.
     finish(&job, plan, ids, sync_w, report_r, setup)?;
     Ok(job)
+}
+
+/// Where the init writes the command's wait status, and where the worker
+/// reads it: a pipe, or for a detached job the caller's file, read by
+/// nobody here.
+fn status_ends(detached: Option<OwnedFd>) -> io::Result<(Option<OwnedFd>, OwnedFd)> {
+    if let Some(file) = detached {
+        return Ok((None, file));
+    }
+    let (r, w) = pipe()?;
+    Ok((Some(r), w))
+}
+
+/// This program, again, as the job's init.
+fn this_program() -> Result<OwnedFd, SpawnError> {
+    Ok(std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open("/proc/self/exe")
+        .map_err(|e| SpawnError::Setup(format!("opening this program for the job's init: {e}")))?
+        .into())
 }
 
 /// The init's arguments: its name, and where its plan and report pipe are.

@@ -19,6 +19,9 @@ pub struct Control {
     /// Every descriptor number the job keeps (its stdio and extras
     /// included), which the init closes once the command runs.
     pub kept: Vec<RawFd>,
+    /// The init outlives its starter: no parent-death signal, and the status
+    /// goes to a file at offset 0, synced, rather than to a pipe.
+    pub detached: bool,
 }
 
 #[derive(Default)]
@@ -202,6 +205,7 @@ pub fn encode(plan: &Plan, control: &Control) -> Vec<u8> {
     for fd in &control.kept {
         out.fd(*fd);
     }
+    out.u32(u32::from(control.detached));
     out.c(&plan.stage);
     out.c(&plan.stage_old);
     out.c(&plan.stage_new);
@@ -258,9 +262,11 @@ pub unsafe fn decode(bytes: &[u8]) -> Option<(Plan, Control)> {
         landlock: Some(r.fd()?).filter(|fd| *fd >= 0),
         trees_at: r.fd()?,
         kept: Vec::new(),
+        detached: false,
     };
     let kept = r.len()?;
     control.kept = (0..kept).map(|_| r.fd()).collect::<Option<_>>()?;
+    control.detached = r.u32()? != 0;
     let stage = r.c()?;
     let stage_old = r.c()?;
     let stage_new = r.c()?;
@@ -384,6 +390,7 @@ mod tests {
             landlock: None,
             trees_at: 11,
             kept: vec![0, 1, 2, 7, 8, 9],
+            detached: true,
         };
         let bytes = encode(&plan, &control);
         // SAFETY: no descriptor is taken over (no Landlock ruleset).
