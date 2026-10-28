@@ -568,6 +568,7 @@ suites = [
   "scripts/vm-acceptance/test_report.py",
   "scripts/vm-acceptance/test_clock.py",
   "scripts/vm-acceptance/test_selected_groups.py",
+  "scripts/vm-acceptance/test_budgets.py",
 ]
 
 [[group]]
@@ -715,6 +716,10 @@ suites = [
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
 reason = "its country names come from Intl.DisplayNames, which the ci-fast image's node lacks (it answers the region code); browsers ship it. Gate it once the suite's node carries full ICU"
+
+[[unrequired]]
+suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
+reason = "launches the repository's own Chrome through tools/web/chrome.mjs to mux and play back real media; every CI image is browser-free, so it runs where a Chrome is installed"
 
 [[unrequired]]
 suite = "crates/agent/agent-participant/tests/mounted_resource/accounts.test.mjs"
@@ -1114,7 +1119,7 @@ package = "greeter"
 # greeter's theme and committed as the plymouth theme's look.json, which the
 # test compares.
 inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session", "os/usr/share/plymouth/themes/tilo/look.json"]
-readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
+readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
 
 [[cargo]]
 package = "pam-tilo"

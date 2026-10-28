@@ -241,6 +241,9 @@ arriving-retry = Erneut versuchen
 content-unavailable = Keines der verbundenen Geräte hat es
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
+room-sync-unreachable = { $workspace } ist gerade nicht erreichbar
+room-sync-unreachable-unnamed = Der Host dieses Arbeitsbereichs ist gerade nicht erreichbar
+room-sync-unreachable-body = Das hier ist, was dieses Gerät hat. Deine Änderungen bleiben hier und werden synchronisiert, sobald der Host wieder da ist.
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
@@ -646,6 +649,7 @@ save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
+save-status-failed-detail = Deine letzten Änderungen sind noch nicht gespeichert.
 save-status-retry = Erneut versuchen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
@@ -1048,3 +1052,7 @@ attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+
+# Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
+screen-reader-turned-on = Bildschirmleser an
+screen-reader-turned-off = Bildschirmleser aus

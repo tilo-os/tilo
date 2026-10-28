@@ -504,6 +504,30 @@ impl SettingsSource for HostDocument {
         Ok(())
     }
 
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        let mut doc = self.doc.lock_recover();
+        let current = match doc.get(name) {
+            Some(Value::Object(section)) => section,
+            _ => &Map::new(),
+        };
+        if current != expected {
+            return Ok(ConditionalUpdate::Superseded);
+        }
+        let mut next = doc.clone();
+        merge_section(&mut next, name, values);
+        (self.persist)(&next)?;
+        *doc = next;
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(doc);
+        self.changes.ring();
+        Ok(ConditionalUpdate::Stored)
+    }
+
     fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
         let mut doc = self.doc.lock_recover();
         if !update.matches(&doc) {
@@ -563,6 +587,31 @@ mod tests {
         assert_eq!(Value::Object(doc.load()), expected);
         assert_eq!(persisted.lock().unwrap().last(), Some(&expected));
         assert_eq!(doc.revision(), before + 2);
+    }
+
+    #[test]
+    fn a_conditional_section_update_stores_only_over_what_it_read() {
+        let doc = HostDocument::new(object(json!({"a": {"x": 1}})), |_| Ok(()));
+        let read = object(json!({"x": 1}));
+        assert!(matches!(
+            doc.compare_update_section("a", &read, object(json!({"x": 2})))
+                .unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        assert!(matches!(
+            doc.compare_update_section("a", &read, object(json!({"x": 3})))
+                .unwrap(),
+            ConditionalUpdate::Superseded
+        ));
+        assert!(matches!(
+            doc.compare_update_section("new", &Map::new(), object(json!({"y": 1})))
+                .unwrap(),
+            ConditionalUpdate::Stored
+        ));
+        assert_eq!(
+            Value::Object(doc.load()),
+            json!({"a": {"x": 2}, "new": {"y": 1}})
+        );
     }
 
     #[test]

@@ -1490,7 +1490,7 @@ mod tests {
 
     /// Change the overlay as its host does between frames.
     fn with(frame: &mut FrameHarness, change: impl FnOnce(&mut PeerSyncOverlay)) {
-        change(frame.root_mut::<PeerSyncOverlay>());
+        change(&mut frame.root_mut::<PeerSyncOverlay>());
         frame.recompose().expect("the sheet lays out");
     }
 

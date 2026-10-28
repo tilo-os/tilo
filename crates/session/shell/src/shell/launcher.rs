@@ -2085,11 +2085,23 @@ fn attach_browser_continuity(package_id: &str, command: &mut LaunchCommand) {
     }
     let projection = lock(&BROWSER_CONTINUITY).clone();
     if let Some(path) = projection
-        && crate::onboarding_browser::validate_published_projection(&path)
+        && published_projection(&path)
     {
         command.args.push("--browser-continuity".into());
         command.args.push(path.display().to_string());
     }
+}
+
+/// Whether `path` is a browser projection the first-use helper published. It
+/// publishes them on Linux, from the browsers of the system Tilo replaced.
+#[cfg(target_os = "linux")]
+fn published_projection(path: &Path) -> bool {
+    crate::onboarding_browser::validate_published_projection(path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn published_projection(_path: &Path) -> bool {
+    false
 }
 
 fn attach_retained_files(
@@ -2368,6 +2380,7 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+    drop(cache);
     *lock(&APP_CACHE_STAMP) = None;
 }
 
@@ -6425,6 +6438,18 @@ fn display_name_among(
 
 /// Whether a client's wayland app-id belongs to `package_id`: either the
 /// app-id *is* the package id, or its trailing component.
+/// Whether `package_id` runs in `room` and opens further windows in its
+/// process ([`window_doors`]): asking for it again is a new window of it.
+pub(crate) fn opens_more_windows(package_id: &str, room: RoomId) -> bool {
+    #[cfg(target_os = "linux")]
+    return window_doors::opens_more_windows(package_id, room);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (package_id, room);
+        false
+    }
+}
+
 pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();

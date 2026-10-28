@@ -286,7 +286,9 @@ fn saved_shortcuts_proven(
     let held = workspace_shortcuts_of(before);
     let mut written = workspace_shortcuts_of(candidate)
         .into_iter()
-        .filter(|shortcut| shortcut.saved_by.is_some() && !held.contains(shortcut))
+        .filter(|saved| !held.contains(saved))
+        .filter_map(|saved| saved.decode().ok())
+        .filter(|shortcut| shortcut.saved_by.is_some())
         .peekable();
     if written.peek().is_none() {
         return Ok(());

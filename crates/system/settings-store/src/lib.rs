@@ -104,6 +104,8 @@ pub mod display_placement;
 pub mod display_scale;
 pub mod display_tools;
 pub mod display_tuning;
+#[cfg(any(test, feature = "test-support"))]
+pub mod faults;
 pub mod hardware;
 pub mod identity;
 pub mod index;
@@ -122,6 +124,7 @@ pub mod published;
 pub mod roaming_provenance;
 mod section_digest;
 mod session;
+pub mod sign_in_comforts;
 mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]

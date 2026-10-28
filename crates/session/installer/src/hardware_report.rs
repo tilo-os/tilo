@@ -45,7 +45,12 @@ impl HardwareReport {
     /// the probe reads sysfs and `/proc`, never mounts, opens a block device
     /// for writing or asks the firmware to change anything.
     pub(crate) fn probe() -> Self {
-        let report = SupportReport::probe();
+        Self::from_report(SupportReport::probe())
+    }
+
+    /// Hold a report read elsewhere, under the same checks the probe's own
+    /// reading passes.
+    pub(crate) fn from_report(report: SupportReport) -> Self {
         if report.validate().is_err() || report.components.is_empty() {
             return Self::Unavailable;
         }

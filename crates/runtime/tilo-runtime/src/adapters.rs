@@ -27,7 +27,7 @@
 //!
 //! Two screens match when the finer of the two grids is reduced to the
 //! coarser one, cell by cell, and the fractions of a cell's pixels a picture
-//! fills differ by no more than [`CELL_GRID`]'s tolerance — the same
+//! fills differ by no more than `CELL_GRID`'s tolerance — the same
 //! comparison at either stored size, so where a mark came from does not
 //! matter. The colours are dropped: a theme, a focus ring or a font change
 //! that leaves the dark shapes of a row where they were is the same screen,
@@ -74,7 +74,7 @@ impl AppId {
     ///
     /// # Errors
     ///
-    /// Names longer than [`MOST_NAME_CHARS`], or that cannot be part of one
+    /// Names longer than `MOST_NAME_CHARS`, or that cannot be part of one
     /// file's name.
     pub fn parse(value: &str) -> Result<Self, AdapterError> {
         if value.is_empty() || value.chars().count() > MOST_NAME_CHARS {
@@ -100,7 +100,7 @@ impl AppId {
 pub struct Screen {
     pub width: u32,
     pub height: u32,
-    /// [`CELL_GRID`]'s cells, row by row, each the fraction of the cell's
+    /// `CELL_GRID`'s cells, row by row, each the fraction of the cell's
     /// pixels the picture fills (`0`..=`255`).
     pub cells: Vec<u8>,
 }
@@ -164,7 +164,7 @@ impl Screen {
 /// Which points of a fresh recording a person is offered to mark.
 ///
 /// The screen before the first step, the screen after the last, and then
-/// every [`interest`] step the run takes until [`MOST_MARKS`] marks exist: the
+/// every `interest` step the run takes until [`MOST_MARKS`] marks exist: the
 /// most a person is asked to look at, spread over the run rather than all at
 /// its end.
 pub const MOST_MARKS: usize = 8;
@@ -803,7 +803,7 @@ fn words(task: &str) -> Vec<String> {
 /// array or as a comma-separated string of numbers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Mark {
-    /// [`CELL_GRID`]'s cells.
+    /// `CELL_GRID`'s cells.
     pub screen: Screen,
     /// The screen may only be taken from: the step leaves something else.
     #[serde(default)]
@@ -815,7 +815,7 @@ impl Mark {
     ///
     /// # Errors
     ///
-    /// Cells that are not [`CELL_GRID`]'s, or not numbers `0..=255`.
+    /// Cells that are not `CELL_GRID`'s, or not numbers `0..=255`.
     pub fn parse(cells: &Value) -> Result<Self, AdapterError> {
         let cells = match cells {
             Value::Array(values) => values
@@ -1003,7 +1003,7 @@ pub fn screen_fits(screen: &Screen) -> bool {
 }
 
 /// The `computer` actions a live run may take that leave something behind:
-/// what a recording keeps as a step, and what [`interest`] marks.
+/// what a recording keeps as a step, and what `interest` marks.
 #[must_use]
 pub fn is_step(action: &str) -> bool {
     interest(action)

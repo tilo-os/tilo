@@ -14,6 +14,16 @@ PREPARED_CONSUMERS: dict[str, int] = {}
 
 
 class CargoDownloadCacheActionTests(unittest.TestCase):
+    def test_offline_font_builds_read_the_cache_the_action_prepared(self) -> None:
+        action = (ROOT / ACTION_PATH / "action.yml").read_text(encoding="utf-8")
+        prepare = action.split("- name: Prepare source fonts for offline builds", 1)[1]
+        # The build script selects its artifacts and catalogs from
+        # TILO_FONT_ASSET_CACHE while offline, so the prewarm has to write to
+        # that same directory; rustup and the tool's default cache are not it.
+        self.assertIn('cache="$source/target/font-artifacts"', prepare)
+        self.assertIn('--scope fixtures --cache "$cache"', prepare)
+        self.assertIn("printf 'TILO_FONT_ASSET_CACHE=%s\\nTILO_FONT_ASSETS_OFFLINE=1\\n' \"$cache\"", prepare)
+
     def test_cargo_download_cache_is_one_shared_fail_open_action(self) -> None:
         with self.subTest(phase='action owns the complete fail open cache contract'):
             action = (ROOT / ACTION_PATH / "action.yml").read_text(encoding="utf-8")

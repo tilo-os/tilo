@@ -1163,7 +1163,7 @@ impl WindowGroup {
 
     /// Light up (or, with `None`, put out) the edge of this window a press
     /// would resize, once the pointer has rested there for
-    /// [`EDGE_HOVER_DWELL`]. Set by the parent row from
+    /// `EDGE_HOVER_DWELL`. Set by the parent row from
     /// [`super::edge_resize::seam_owner`]; the window itself never decides.
     pub fn set_edge_highlight(&mut self, edge: Option<WindowEdge>) {
         if self.edge_highlight.map(|(edge, _)| edge) != edge {

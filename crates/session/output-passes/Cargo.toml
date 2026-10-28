@@ -1,0 +1,43 @@
+[package]
+name = "tilo-output-passes"
+description = "The GPU passes that put a frame on an output: orientation, ICC calibration, HDR encode and composite, XRGB damage history, shader warm-up and software GPU memory return."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+# The calibrated test panels the shell's presenter tests render through.
+test-support = ["dep:pollster", "dep:tilo-test-env", "dep:ui"]
+
+[dependencies]
+# Turns an output's ICC profile into the lookup table the final pass reads.
+qcms.workspace = true
+settings-store = { path = "../../system/settings-store" }
+sysinfo.workspace = true
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-color-pipeline = { path = "../color-pipeline" }
+tracing.workspace = true
+vello.workspace = true
+workspace-hack = { version = "0.1" }
+pollster = { workspace = true, optional = true }
+tilo-test-env = { path = "../../dev/test-env", optional = true }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Raw Vulkan for returning the device memory lavapipe freed; the version
+# wgpu-hal uses, so Vulkan handles pass between them.
+ash = "0.38"
+libc.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+[lints]
+workspace = true

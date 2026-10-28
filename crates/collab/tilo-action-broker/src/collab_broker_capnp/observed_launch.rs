@@ -454,7 +454,7 @@ impl super::CapnpBrokerState {
     /// of itself through its own connection is no one else's: an open for it
     /// [`AppOpen::NeedsPress`]. An admitted open is journaled as
     /// a child of `parent`, attributed to that caller, as a launch the app
-    /// asks the broker for is ([`CapnpChannelHandle::admit_observed_launch`]).
+    /// asks the broker for is (`CapnpChannelHandle::admit_observed_launch`).
     ///
     /// # Errors
     ///

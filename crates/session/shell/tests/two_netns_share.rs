@@ -66,14 +66,14 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shell::collab::flatpak_share::SharedFlatpakSession;
-use shell::config::{EncoderChoice, FlatpakShareConfig};
 use shell::network::protocol::{PeerId, SurfaceId};
-use shell::network::streaming::{InputEvent, RemoteInputSink};
 use shell::network::surface_stream::{
     ReceiverEvent, SurfaceFrame as StreamFrame, SurfaceStreamReceiver,
 };
 use tilo_callstream::surface_decoder::{DecodedFrame, VideoDecoder};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::streaming::{InputEvent, RemoteInputSink};
 
 /// Decode one substream frame, following the codec it names.
 fn decode_frame(decoder: &mut VideoDecoder, frame: &StreamFrame) -> Option<DecodedFrame> {

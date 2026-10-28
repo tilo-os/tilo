@@ -69,8 +69,9 @@ again.
 
 The desktop release retains its complete ARM64 matrix and verifier behind the
 `TILO_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
-and explicit full-native builds use native amd64 and ARM64 runners. Weekly and default manual builds use the amd64 lane;
-PRs run preflight only. Desktop package publication requires a tag.
+and explicit full-native builds run the native amd64 and the native
+`runner-large-arm64` package lanes. Weekly and default manual builds use the
+amd64 lane; PRs run preflight only. Desktop package publication requires a tag.
 No package or artifact definition needs to change if scheduling is paused.
 
 This describes workflow selection, not accepted release support:

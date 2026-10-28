@@ -262,10 +262,14 @@ class AdmissionTests(unittest.TestCase):
                 admission.assembly_compatibility(generic, board)
 
     def test_reviewed_assembly_refuses_unavailable_objects(self):
+        # A CI runner exports its mirror as alternates and object directories,
+        # which would answer for a repository that has none of these objects.
+        # The repository under test has to stand alone, as the fixture one does.
+        clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
         with tempfile.TemporaryDirectory() as directory:
-            clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
             subprocess.run(['git', 'init', '-q', directory], env=clean, check=True)
-            with patch.object(admission, 'REPOSITORY', Path(directory)):
+            with patch.object(admission, 'REPOSITORY', Path(directory)), \
+                    patch.dict(os.environ, clean, clear=True):
                 for pair in (admission.PROFILE_FIX_PAIR, admission.SEALED_FIX_PAIR):
                     with self.subTest(pair=pair), \
                             self.assertRaises((ValueError, subprocess.CalledProcessError)):

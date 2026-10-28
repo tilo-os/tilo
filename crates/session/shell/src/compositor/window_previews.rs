@@ -93,7 +93,7 @@ struct GpuBackend {
 impl PreviewBackend for GpuBackend {
     fn render(&mut self, scene: &Scene, (width, height): (u32, u32)) -> Option<Vec<u8>> {
         if self.renderer.is_none() && !self.unavailable {
-            match OffscreenRenderer::try_new(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT) {
+            match OffscreenRenderer::try_new_live(MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT) {
                 Ok(renderer) => self.renderer = Some(renderer),
                 Err(error) => {
                     tracing::warn!(%error, "window previews unavailable: no offscreen target");

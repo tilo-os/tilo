@@ -681,7 +681,7 @@ pub fn model_with_conflict() -> (RepoModel, DiffMap) {
 /// What each side of the sample's conflicted file brings, as
 /// [`crate::repo::conflict_cost`] reads it from a real index: the lines only
 /// our side changed, and the lines only theirs did. They are the markers in
-/// [`diff_conflicted`] — ours writes two lines, theirs three.
+/// `diff_conflicted` — ours writes two lines, theirs three.
 pub fn conflict_cost(file: &str) -> Option<crate::repo::ConflictCost> {
     (file == CONFLICTED).then_some(crate::repo::ConflictCost { ours: 2, theirs: 3 })
 }

@@ -2005,6 +2005,15 @@ pub trait Widget {
         false
     }
 
+    /// Whether this widget lays one retained [`children`](Widget::children)
+    /// entry out itself (an [`Embedded`](crate::widget::Embedded) part of a
+    /// painted page) rather than through the window's layout, which then
+    /// gives it no node. The accessibility walk reaches such a child, and
+    /// every widget inside it, through this widget's node.
+    fn lays_out_child(&self, _child_index: usize) -> bool {
+        false
+    }
+
     /// What describes one retained [`children`](Widget::children) entry to
     /// assistive technology, when this widget holds the words for it: a
     /// row's secondary line is its trailing switch's description. The
@@ -2440,7 +2449,7 @@ pub trait Widget {
 
     /// Carry out a [`StructureChange::Children`] this widget or one under it
     /// reported, in the retained layout tree, through `remount` (see
-    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// [`remount`]). Returns `false` when it cannot be
     /// carried out in place: the host then rebuilds its tree, and the change
     /// is carried out by [`Self::build_layout`]. A widget reports such a
     /// change until either has carried it out. The default carries out its
@@ -3469,6 +3478,7 @@ pub use virtual_list::{
 mod activation;
 mod dismissal;
 pub(crate) mod view_choice;
+pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{

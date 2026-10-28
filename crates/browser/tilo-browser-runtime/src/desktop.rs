@@ -143,7 +143,8 @@ pub(crate) struct Inputs {
     pub author: String,
     pub permissions: SharedPermissions,
     pub models: ui::models::Models,
-    /// What a report's review calls [`Self::models`].
+    /// What a report's review calls [`Self::models`]; empty when they are
+    /// the page's own model service rather than its host's.
     pub model_name: String,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose room this desktop shows, when it has one.
@@ -253,10 +254,16 @@ impl LateFeedback {
         let custody = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
         *shared.feedback.borrow_mut() = Some(custody);
         // The model this page may use also looks over reports before they
-        // are sent; without one, the model the room's host lends its
-        // reporters does, asked through the room.
-        let lent = if self.models.is_available() {
+        // are sent: its host's, or a provider the person set up here.
+        // Without one, the model the room's host lends its reporters does,
+        // asked through the room.
+        let lent = if !self.model_name.is_empty() {
             Some((self.models.clone(), self.model_name.clone()))
+        } else if self.models.is_available() && crate::host_services::page_models_set_up() {
+            Some((
+                self.models.clone(),
+                "the model provider you set up".to_owned(),
+            ))
         } else {
             crate::feedback_code::owner_model(self.peer)
         };
@@ -1175,6 +1182,7 @@ impl Tiles {
             self.inputs.author.clone(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
+        crate::app_loans::lend(&mut context);
         // Only registered control panels receive the administration capability.
         if crate::host_services::provider_admin_app(definition.app_id()) {
             crate::host_services::provide_provider_admin(
@@ -1182,37 +1190,30 @@ impl Tiles {
                 self.inputs.provider_admin.clone(),
             )?;
         }
-        let destination = Rc::clone(&self.shared.images);
-        let first_loader = self.shared.images.borrow().len();
-        let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
-            Rc::new(move |max_dimension| {
-                let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
-                destination.borrow_mut().push(loader);
-                image
-            }),
-            || definition.instantiate(context, target, restore),
-        )
-        .map_err(|error| error.to_string())?;
+        crate::page_content::serve_window(
+            &context.wake_handle(),
+            &self.shared.images,
+            &self.shared.image_owners,
+        );
+        let mut component = definition
+            .instantiate(context, target, restore)
+            .map_err(|error| error.to_string())?;
         crate::capture_declarations::note(definition.app_id(), component.capture_protected());
-        if let Some(content) = component.content() {
-            crate::page_content::own_loaders(
-                &self.shared.image_owners,
-                first_loader..self.shared.images.borrow().len(),
-                &content,
-            );
-        }
         let woken = Arc::clone(&self.shared.woken);
         let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id();
         component
-            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
-                woken.store(true, Ordering::Release);
-                let mut wakers = wakers.lock_recover();
-                if !wakers.contains(&app_id) {
-                    wakers.push(app_id);
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |event| {
+                // A save that moved on asks for the owner's service alone;
+                // the service asks for the frame if it shows something.
+                if event.asks_for_frame() {
+                    woken.store(true, Ordering::Release);
+                    let mut wakers = wakers.lock_recover();
+                    if !wakers.contains(&app_id) {
+                        wakers.push(app_id);
+                    }
                 }
-                drop(wakers);
                 notify();
             })
             .map_err(|error| error.to_string())?;
@@ -1322,8 +1323,10 @@ impl Tiles {
         let woken = Arc::clone(&self.shared.woken);
         let notify = Arc::clone(&self.notify);
         component
-            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
-                woken.store(true, Ordering::Release);
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |event| {
+                if event.asks_for_frame() {
+                    woken.store(true, Ordering::Release);
+                }
                 notify();
             })
             .map_err(|error| error.to_string())?;

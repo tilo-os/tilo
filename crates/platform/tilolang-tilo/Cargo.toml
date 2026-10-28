@@ -26,6 +26,19 @@ tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# The collab client an instance commits to its room through, without the toolkit.
+collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
+
+[features]
+# The instance's commit path to its room through the collab client
+# (`instance::room`), without the toolkit.
+room = ["dep:collaboration"]
+# Lets `tilolang bench --engine cranelift|winch` run on wasmtime (docs/tilolang-engines.md).
+wasmtime = ["tilolang-runtime/wasmtime"]
+
+[dev-dependencies]
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+uuid.workspace = true
 
 [[test]]
 name = "it"

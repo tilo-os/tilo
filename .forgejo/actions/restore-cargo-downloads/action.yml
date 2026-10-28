@@ -48,8 +48,13 @@ runs:
       run: |
         source=$(realpath "$SOURCE")
         if python3 -c 'import pathlib,sys; sys.exit("def prepared_root(" not in pathlib.Path(sys.argv[1]).read_text())' "$source/tools/font-catalog.py"; then
-          python3 "$source/tools/font-catalog.py" root "$source/crates/sdk/ui-core/assets/fonts" --scope fixtures
-          printf 'TILO_FONT_ASSET_CACHE=%s/target/font-artifacts\nTILO_FONT_ASSETS_OFFLINE=1\n' "$source" >> "$GITHUB_ENV"
+          # Fill the cache the build script reads next, not the interpreter's
+          # default one: the offline build resolves artifacts and prepared
+          # catalogs from TILO_FONT_ASSET_CACHE, so preparing anywhere else
+          # leaves it empty and every build of the fonts crate fails.
+          cache="$source/target/font-artifacts"
+          python3 "$source/tools/font-catalog.py" root "$source/crates/sdk/ui-core/assets/fonts" --scope fixtures --cache "$cache"
+          printf 'TILO_FONT_ASSET_CACHE=%s\nTILO_FONT_ASSETS_OFFLINE=1\n' "$cache" >> "$GITHUB_ENV"
         else
           python3 "$source/tools/font-catalog.py" verify "$source/crates/sdk/ui-core/assets/fonts" --scope fixtures
         fi

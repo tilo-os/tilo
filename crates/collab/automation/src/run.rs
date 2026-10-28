@@ -172,6 +172,11 @@ pub struct RunRequest<'a> {
     pub inputs: Map<String, Value>,
     /// The bot run this run continues, recorded on every change it makes.
     pub caused_by: Option<tilo_actions::context::Cause>,
+    /// The steps an earlier run recorded, when this run continues that one.
+    /// See [`resumed`].
+    pub resume: Option<&'a RunReport>,
+    /// The step the run continues from, when it continues an earlier one.
+    pub from: Option<StepPath>,
     /// The work unit this run belongs to when something else asked for it (a
     /// task that called the shortcut), named by its own group. Every step is
     /// stamped with it instead of this run's own group, so the run reads as
@@ -182,6 +187,41 @@ pub struct RunRequest<'a> {
     /// A step that would run one of them is not run, so two shortcuts that
     /// call each other spin once and stop.
     pub chain: Vec<String>,
+}
+
+/// Which run a run goes on from, and from where: what a person or an agent
+/// asks for when they fix a step of a shortcut that failed and run it again
+/// without repeating the steps before it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Continuation {
+    /// The run that happened.
+    pub run: RunId,
+    /// The step to go on from: it runs again, and so does everything after
+    /// it. The steps before it are taken from the record as they happened.
+    pub from: StepPath,
+}
+
+/// The steps a continued run takes from the record instead of producing
+/// again: the recorded steps of the run it continues that come before
+/// `from`, and nothing else.
+///
+/// A report records its steps in the order they ran, so the steps before
+/// `from` are the prefix up to the first record at `from` or below it. Those
+/// steps' output — looked up on the host when a later step reads it — is what
+/// the host already did, under the invocations it already answered. `from`
+/// itself and everything after it are not in this set: they run again from
+/// the shortcut as it is now, which is how a fixed step takes effect.
+///
+/// A run with no origin replays nothing.
+fn resumed<'r>(origin: Option<&'r RunReport>, from: Option<&StepPath>) -> Vec<&'r StepRecord> {
+    let (Some(origin), Some(from)) = (origin, from) else {
+        return Vec::new();
+    };
+    origin
+        .steps
+        .iter()
+        .take_while(|record| &record.path != from && !record.path.is_inside(from))
+        .collect()
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -339,7 +379,7 @@ impl StepFailure {
     }
 
     /// The failure as a branch or a person matches on it: one of
-    /// [`STEP_FAILURE_CODES`](crate::STEP_FAILURE_CODES), and the action's
+    /// `STEP_FAILURE_CODES`, and the action's
     /// own code when the action is what failed.
     #[must_use]
     pub fn code(&self) -> &str {
@@ -461,6 +501,29 @@ pub struct StepRecord {
     pub degraded: StepOutcome,
     #[serde(flatten)]
     pub status: StepStatus,
+}
+
+impl StepRecord {
+    /// This step as a continued run takes it: what it did happened once, so
+    /// the invocation is the one it ran under and what it produced is what
+    /// the record shows.
+    ///
+    /// A step that answered a secret question shows nothing, so nothing is
+    /// what a later step is given from here; the invocation still holds the
+    /// value for the host to answer with (see [`Runner::replayed_value`]).
+    #[must_use]
+    fn taken(&self) -> Done {
+        Done {
+            invocation: self.invocation,
+            attempts: Vec::new(),
+            retryable: false,
+            recorded: false,
+            result: Ok(match &self.status {
+                StepStatus::Succeeded { output } => output.clone(),
+                StepStatus::Failed { .. } => None,
+            }),
+        }
+    }
 }
 
 /// How a step left the run: not at all, or short of what it promised.
@@ -637,7 +700,9 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         caused_by,
         parent,
         chain,
+        ..
     } = request;
+    let resumed = resumed(request.resume, request.from.as_ref());
     let mut report = RunReport {
         run,
         shortcut: shortcut.id.clone(),
@@ -676,6 +741,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         secret_vars: BTreeSet::new(),
         outputs: BTreeMap::new(),
         records: Vec::new(),
+        resumed,
         caused_by,
         parent,
         chain,
@@ -727,6 +793,9 @@ struct Runner<'a, H, K> {
     secret_vars: BTreeSet<String>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
+    /// The steps an earlier run recorded, when this run continues it: their
+    /// output is taken as it was instead of being produced again.
+    resumed: Vec<&'a StepRecord>,
     caused_by: Option<tilo_actions::context::Cause>,
     parent: Option<tilo_actions::context::ActionGroup>,
     /// The shortcuts running above this one (see [`RunRequest::chain`]).
@@ -990,6 +1059,141 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         })
     }
 
+    /// The step at `path` as an earlier run that already took it left it:
+    /// what it did happened once, and this run goes on from what it left.
+    /// Only a completed step is taken as it was — a failed one is the step
+    /// the person came to fix, and runs again.
+    fn continues(&self, path: &StepPath, id: &str) -> Option<Done> {
+        self.resumed
+            .iter()
+            .copied()
+            .find(|record| {
+                &record.path == path
+                    && record.step == id
+                    && matches!(record.status, StepStatus::Succeeded { .. })
+            })
+            .map(StepRecord::taken)
+    }
+
+    /// A loop an earlier run already ran: walk the iterations it recorded,
+    /// so each iteration's body is taken from the record exactly as
+    /// [`Runner::step`] reads a step, and a body the record has nothing for
+    /// runs again. `items` is evaluated only when an iteration is replayed,
+    /// to bind `item` as it was.
+    async fn replayed(
+        &mut self,
+        items: &Binding,
+        item: &str,
+        body: &'a [Step],
+        path: &StepPath,
+    ) -> Result<(), Stop> {
+        let secret = self.is_secret(items);
+        let iterations = self.replayed_iterations(path);
+        let shadowed = self.vars.get(item).cloned();
+        let shadowed_secret = self.secret_vars.contains(item);
+        for iteration in iterations {
+            // A body the record has nothing for runs again from the items as
+            // they are now; an empty body binds nothing.
+            let elements = if body.is_empty() {
+                Vec::new()
+            } else {
+                match self.evaluate(items) {
+                    Ok(Some(Value::Array(elements))) => elements,
+                    Ok(_) | Err(_) => Vec::new(),
+                }
+            };
+            if let Some(element) = elements.into_iter().nth(iteration) {
+                if secret {
+                    self.secret_vars.insert(item.to_owned());
+                } else {
+                    self.secret_vars.remove(item);
+                }
+                self.vars.insert(item.to_owned(), element);
+            }
+            self.block(body, path.each(Some(iteration))).await?;
+        }
+        if shadowed_secret {
+            self.secret_vars.insert(item.to_owned());
+        } else {
+            self.secret_vars.remove(item);
+        }
+        match shadowed {
+            Some(value) => self.vars.insert(item.to_owned(), value),
+            None => self.vars.remove(item),
+        };
+        Ok(())
+    }
+
+    /// The iterations of the loop at `path` an earlier run recorded, oldest
+    /// first.
+    fn replayed_iterations(&self, path: &StepPath) -> Vec<usize> {
+        // The record spells an iteration `1.each[0].0`: the loop's own path,
+        // then the iteration in brackets, then a step inside its body.
+        let body = path.each(None);
+        let opened = format!("{}[", body.as_str());
+        let mut seen = BTreeSet::new();
+        self.resumed
+            .iter()
+            .filter_map(|record| {
+                let rest = record.path.as_str().strip_prefix(opened.as_str())?;
+                let (digits, rest) = rest.split_once(']')?;
+                rest.starts_with('.').then_some(())?;
+                digits.parse().ok()
+            })
+            // An iteration's steps are recorded one after another: only the
+            // first of each names the iteration to walk.
+            .filter(|iteration| seen.insert(*iteration))
+            .collect()
+    }
+
+    /// Take the step at `path` from the earlier run that recorded it, and go
+    /// on from its own outcome: a loop from the iterations it made, a branch
+    /// from the one it took, and a step below either from what it produced.
+    async fn replay_step(
+        &mut self,
+        step: &'a Step,
+        path: &StepPath,
+        done: Done,
+    ) -> Result<(), Stop> {
+        // A block is taken for what it decided, and what it decided is the
+        // output its record shows.
+        let decided = match &done.result {
+            Ok(output) => output.clone(),
+            Err(_) => None,
+        };
+        match &step.kind {
+            StepKind::ForEach {
+                items, item, body, ..
+            } => {
+                self.record(step, path, done, Recovered::Stopped)?;
+                self.replayed(items, item, body, path).await
+            }
+            StepKind::If {
+                then, otherwise, ..
+            } => {
+                let branch = match &decided {
+                    Some(Value::Bool(holds)) => Some((
+                        if *holds { then } else { otherwise },
+                        if *holds {
+                            path.then_branch()
+                        } else {
+                            path.else_branch()
+                        },
+                    )),
+                    _ => None,
+                };
+                self.record(step, path, done, Recovered::Stopped)?;
+                match branch {
+                    Some((steps, at)) => self.block(steps, at).await,
+                    // An answer of some other shape names no branch: nothing
+                    // below it is taken as run.
+                    None => Ok(()),
+                }
+            }
+            _ => self.record(step, path, done, Recovered::Stopped),
+        }
+    }
+
     /// Run a step under its [`StepPolicy`]: once, more than once, or with a
     /// fallback or a declared default when it fails. The record says what
     /// happened however it went.
@@ -1220,6 +1424,18 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         path: &StepPath,
         sent: &mut Vec<InvocationId>,
     ) -> Result<Done, Stop> {
+        // A step an earlier run already took is taken as it was: this run
+        // goes on from what that step left instead of doing it again.
+        //
+        // That step's own block is walked here too (a loop's iterations, a
+        // branch's steps), so `recorded` says the record is already written
+        // and [`Runner::settled_step`] has nothing left to decide.
+        if let Some(done) = self.continues(path, &step.id) {
+            return self
+                .replay_step(step, path, done)
+                .await
+                .map(|()| Done::recorded());
+        }
         // A step that would invoke something is not begun once the run is
         // stopped: nothing it could do is left to take back. A question or an
         // assignment is only ever recorded as not taken.
@@ -1990,14 +2206,25 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                         missing(format!("variable `{name}` has no value at `{pointer}`"))
                     })
             }
-            Binding::StepOutput { step, pointer } => self
-                .outputs
-                .get(step)
-                .ok_or_else(|| missing(format!("step `{step}` produced no value")))?
-                .pointer(pointer)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| missing(format!("step `{step}` has no value at `{pointer}`"))),
+            Binding::StepOutput { step, pointer } => {
+                let produced = match self.outputs.get(step) {
+                    Some(value) => value.clone(),
+                    // A step this run took from an earlier one is read from
+                    // that run's invocation: the value that ran is the one a
+                    // later step is given, never a second run of it.
+                    None => match self.replayed_value(step) {
+                        Some(value) => value,
+                        None => {
+                            return Err(missing(format!("step `{step}` produced no value")));
+                        }
+                    },
+                };
+                produced
+                    .pointer(pointer)
+                    .cloned()
+                    .map(Some)
+                    .ok_or_else(|| missing(format!("step `{step}` has no value at `{pointer}`")))
+            }
             Binding::Template(text) => {
                 let mut rendered = String::new();
                 for piece in template::parse(text).map_err(missing)? {
@@ -2030,6 +2257,26 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 .map(|item| Ok(self.evaluate(item)?.unwrap_or(Value::Null)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|items| Some(Value::Array(items))),
+        }
+    }
+
+    /// What step `step` produced, looked up on the host at the invocation the
+    /// earlier run recorded it under.
+    fn replayed_value(&self, step: &str) -> Option<Value> {
+        let record = self
+            .records
+            .iter()
+            .rev()
+            .find(|record| record.step == step && record.invocation.is_some())?;
+        let invocation = record.invocation?;
+        let status = self
+            .host
+            .observe(&self.caller, &invocation)?
+            .receipt()
+            .status;
+        match status {
+            ReceiptStatus::Completed { output } => output.value,
+            _ => None,
         }
     }
 

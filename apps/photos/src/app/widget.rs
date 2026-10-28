@@ -60,7 +60,7 @@ impl Widget for PhotosApp {
     );
 
     /// The system's back gesture lowers or puts away an editor's sheet
-    /// before anything navigates ([`PhotosApp::sheet_back`]).
+    /// before anything navigates (`PhotosApp::sheet_back`).
     fn on_nav_gesture(
         &mut self,
         dir: ui::gesture::NavDirection,
@@ -173,11 +173,14 @@ impl Widget for PhotosApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        // An editor opened or closed since the last frame: the inspector
+        // follows it, and the layout makes room for it.
+        let inspector = self.sync_inspector();
         let viewer = self
             .viewer
             .as_mut()
             .is_some_and(Widget::take_structure_dirty);
-        std::mem::take(&mut self.structure_dirty) | viewer
+        std::mem::take(&mut self.structure_dirty) | viewer | inspector
     }
 
     fn is_layout_dirty(&self) -> bool {

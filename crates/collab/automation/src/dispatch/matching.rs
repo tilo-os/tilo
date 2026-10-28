@@ -185,6 +185,9 @@ fn matches(trigger: &TriggerSpec, armed: &Armed<'_>, event: Event<'_>) -> bool {
             matches!(armed.firer, Firer::Bot { .. })
                 && connector_matches(app_id, source, filter, fired)
         }
+        (TriggerSpec::AppEvent { app_id, kind }, Event::AppEvent(declared)) => {
+            declared.app_id == *app_id && declared.kind == *kind
+        }
         _ => false,
     }
 }

@@ -496,6 +496,7 @@ desktop-app-unavailable = Anwendung nicht verfügbar
 desktop-app-identity-unavailable = Anwendungsidentität nicht verfügbar
 desktop-app-integration-unavailable = { $app }: Anwendungsintegration oder benötigter Dienst nicht verfügbar
 desktop-app-no-adapter = Kein semantischer Anwendungsadapter; prozesslokale Pixel lassen sich nicht wiederherstellen
+desktop-search-copied = Kopiert
 desktop-view-switch-workspace = Zu { $workspace } wechseln
 desktop-view-review-activity = Arbeitsbereich-Aktivität ansehen
 desktop-view-explore-activity = Arbeitsbereich-Aktivität erkunden

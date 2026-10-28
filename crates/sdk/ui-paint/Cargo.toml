@@ -8,6 +8,8 @@ description = "The drawing layer under Tilo's components and theme: the scene, s
 
 [dependencies]
 vello.workspace = true
+# How a colour reads in OKLab, as a presence hue reads it.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 
 [lints]
 workspace = true

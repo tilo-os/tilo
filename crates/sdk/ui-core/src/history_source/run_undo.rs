@@ -148,7 +148,7 @@ pub fn refuse_run(run: &AgentRun, missing: &[&RunStep]) -> RunUndoReport {
 /// Undo one application's share of a run against the document that app owns.
 ///
 /// The record's own history does the undoing — [`revert_run`] over the
-/// step's one change, the same revert [`revert_step`] writes for an app's
+/// step's one change, the same revert `revert_step` writes for an app's
 /// own Ctrl+Z — so a run undone from an agent's report and the same work
 /// undone in the app land alike, with the same charge for what a later
 /// writer has since changed.

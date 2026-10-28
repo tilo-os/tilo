@@ -24,6 +24,11 @@ rm -rf "$cache" && mkdir -p "$cache"
 # by them, is what enforces them.
 b build --layers --timestamp 0 --file os/kernel/Containerfile --target compile-cache \
   "${args[@]}" --build-arg TILO_KERNEL_CHECKS=advisory --volume "$cache:/work/compiler-cache" .
-tar -cf "$out/compiler-cache.tar" -C "$cache" .
+# The same entries make the same archive: image-kernel is keyed by these bytes, and a cache
+# compiled again under the same key (another node, an evicted result) must not rebuild the kernel
+# for times, owners or the order the files were listed in.
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+  --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+  -cf "$out/compiler-cache.tar" -C "$cache" .
 printf 'compiler cache of the %s kernel: %s in %ss\n' "$arch" \
   "$(du -sh "$out/compiler-cache.tar" | cut -f1)" "$((SECONDS - started))"

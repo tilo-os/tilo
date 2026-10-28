@@ -160,6 +160,11 @@ impl OnboardingView {
         }
     }
 
+    /// Whether a prepared setup's import is running now.
+    pub(super) fn prepared_working(&self) -> bool {
+        self.prepared_worker.is_some()
+    }
+
     pub(crate) fn prepared_setup_status(&self) -> Option<&'static str> {
         self.prepared_pending.then_some(
             if self.prepared_worker.is_some() || self.prepared_secret_queued {

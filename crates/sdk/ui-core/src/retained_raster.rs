@@ -689,6 +689,31 @@ pub struct TargetKey {
     pub generation: u64,
 }
 
+/// What of `scene`, drawn with `parts`, repainting `damage` (target pixels)
+/// on the target `key` names takes: the scene without the parts that cannot
+/// reach the damage ([`crate::scene_parts::culled`]), or `None` when it takes
+/// all of it: no parts, every part reaching the damage, or a damage
+/// repainted as one whole frame ([`repaints_alone`]), which draws every
+/// pixel. The renderer works through every path it is given, wherever it
+/// lands, so a software GPU otherwise spends as long on a caret as on the
+/// whole page.
+pub fn culled_for_damage(
+    scene: &Scene,
+    parts: Option<&crate::scene_parts::SectionParts>,
+    key: TargetKey,
+    damage: &[Rect],
+) -> Option<Scene> {
+    if !repaints_alone(key.width, key.height, damage) {
+        return None;
+    }
+    crate::scene_parts::culled(scene, parts?, |bounds| {
+        bounds.iter().any(|rect| {
+            let rect = key.to_device.transform_rect_bbox(*rect).inflate(1.0, 1.0);
+            damage.iter().any(|region| region.overlaps(rect))
+        })
+    })
+}
+
 /// What of a frame to repaint over the one presented before.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Repaint {
@@ -976,3 +1001,7 @@ impl RasterCheck {
         Some(differing)
     }
 }
+
+#[cfg(test)]
+#[path = "retained_raster_tests.rs"]
+mod tests;

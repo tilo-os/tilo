@@ -36,7 +36,7 @@ use crate::compositor::lock_controller::{LockPrompt, refusal_line};
 mod retained;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
-use crate::shell::quick_settings::now_playing::{
+use crate::shell::now_playing_panel::{
     Transport, paint_song_at_rest, paint_transport, transport_rects,
 };
 pub(crate) use retained::{LockComposition, RetainedLockScene};

@@ -18,7 +18,15 @@ esac
 [[ $(uname -m) == "$arch" ]] || die "the $arch snapshot is built natively, not on $(uname -m)"
 cd "$repo_root"
 . os/base-snapshot.env
-packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
+# The package set rpm-package-set derived from the OS Containerfiles, where the check gave it:
+# the snapshot is keyed by that list, not by the Containerfiles, which change far more often than
+# the packages they name. Derived here otherwise (a build outside t).
+set_file=${RPM_PACKAGE_SET:-/target/publish/rpm-package-set/$arch.txt}
+if [[ -s $set_file ]]; then
+  packages=$(tr '\n' ' ' < "$set_file")
+else
+  packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
+fi
 [[ -n ${packages// /} ]] || die "no packages for $arch"
 # The newest signature among the packages of the snapshot archive $1, as seconds: the clock an OS
 # build from the unpublished snapshot takes (with its base's date), which rpm refuses a package

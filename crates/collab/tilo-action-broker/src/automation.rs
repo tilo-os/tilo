@@ -38,7 +38,7 @@ use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, Binding, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND,
-    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StopWatch, TriggerSpec,
+    SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Shortcut, StepPath, StopWatch, TriggerSpec,
     shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
@@ -71,6 +71,7 @@ const MAX_FINISHED_RUNS: usize = 64;
 /// actions, then `run` on each saved shortcut.
 #[must_use]
 pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
+    let saved = tilo_automation::decode_saved(&workspace.shortcuts);
     [
         CREATE_ACTION,
         UPDATE_ACTION,
@@ -81,7 +82,7 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
     ]
     .into_iter()
     .filter_map(library_descriptor)
-    .chain(workspace.shortcuts.iter().map(run_descriptor))
+    .chain(saved.iter().map(run_descriptor))
     .collect()
 }
 
@@ -441,7 +442,7 @@ pub fn check_triggers(
         }
     }
     let room = workspace.room().to_string();
-    let others = &workspace.shortcuts;
+    let others = &tilo_automation::decode_saved(&workspace.shortcuts);
     let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
     for trigger in &shortcut.triggers {
@@ -607,7 +608,7 @@ pub fn plan_library(
     operation: LibraryOperation,
     context: &SaveContext<'_>,
 ) -> Result<LibraryPlan, String> {
-    let saved = &workspace.shortcuts;
+    let saved = &tilo_automation::decode_saved(&workspace.shortcuts);
     let (shortcut, replacing) = match operation {
         LibraryOperation::List => {
             return Ok(LibraryPlan::Answer(ActionOutput {
@@ -693,6 +694,14 @@ pub struct RunLedger {
 /// The runs this broker has going, by the room and the shortcut each runs.
 ///
 /// A run registers itself before its first step and leaves when it ends;
+/// A run of a shortcut going on from where an earlier one got to: the run
+/// that happened, and the step of it to go on from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Continued {
+    pub report: RunReport,
+    pub from: StepPath,
+}
+
 /// stopping one marks it, and the interpreter asks before every step that
 /// would invoke something. What a stopped run already did stands, and is
 /// recorded and undone like a completed run's.
@@ -1109,16 +1118,36 @@ pub struct FinishedShortcutRun {
 #[derive(Default)]
 pub struct ShortcutRuns {
     finished: Mutex<VecDeque<FinishedShortcutRun>>,
+    /// The same runs, kept by id after they were taken, newest last.
+    kept: Mutex<VecDeque<FinishedShortcutRun>>,
 }
 
 impl ShortcutRuns {
     pub fn push(&self, run: FinishedShortcutRun) {
+        if let Ok(mut kept) = self.kept.lock() {
+            kept.push_back(run.clone());
+            while kept.len() > MAX_FINISHED_RUNS {
+                kept.pop_front();
+            }
+        }
         if let Ok(mut finished) = self.finished.lock() {
             finished.push_back(run);
             while finished.len() > MAX_FINISHED_RUNS {
                 finished.pop_front();
             }
         }
+    }
+
+    /// The run `run` produced of `shortcut`, when it is one this broker kept.
+    #[must_use]
+    pub fn report(&self, run: RunId, shortcut: &str) -> Option<RunReport> {
+        self.kept
+            .lock()
+            .ok()?
+            .iter()
+            .rev()
+            .find(|finished| finished.report.run == run && finished.shortcut.id == shortcut)
+            .map(|finished| finished.report.clone())
     }
 
     /// Whether a finished run is waiting to be taken.
@@ -1191,6 +1220,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         TriggerSpec::RecordChanged { kind, .. } if kind.trim().is_empty() => {
             Err("a record trigger names the record kind it watches".into())
         }
+        TriggerSpec::AppEvent { app_id, .. } if app_id.trim().is_empty() => {
+            Err("an app-event trigger names the application that declares the event".into())
+        }
+        TriggerSpec::AppEvent { kind, .. } if kind.trim().is_empty() => {
+            Err("an app-event trigger names the event the application declares".into())
+        }
         TriggerSpec::Connector { .. } => Err(
             "connector triggers run only bots, on the room's host; a Shortcut cannot watch one"
                 .into(),
@@ -1200,11 +1235,12 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
         | TriggerSpec::FileChanged { .. }
         | TriggerSpec::FocusMode { .. }
         | TriggerSpec::RecordChanged { .. }
-        | TriggerSpec::IncomingMessage { .. } => Ok(()),
+        | TriggerSpec::IncomingMessage { .. }
+        | TriggerSpec::AppEvent { .. } => Ok(()),
         other => Err(format!(
             "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
-             workspace-joined, file-changed, focus-mode, record-changed and \
-             incoming-message triggers can",
+             workspace-joined, file-changed, focus-mode, record-changed, \
+             incoming-message and app-event triggers can",
             other.kind()
         )),
     }
@@ -1250,6 +1286,7 @@ pub fn readable_folder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automation::SavedShortcut;
 
     fn shortcut(json: Value) -> Shortcut {
         serde_json::from_value(json).expect("shortcut JSON")
@@ -1395,13 +1432,13 @@ mod tests {
     #[test]
     fn a_workspace_publishes_its_library_and_one_run_per_shortcut() {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId(1), "Desk");
-        workspace.shortcuts.push(shortcut(serde_json::json!({
+        workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
             "id": "tidy",
             "name": "Tidy",
             "inputs": [{"name": "folder", "ty": "text", "required": true, "description": "Where"}],
             "steps": [],
             "output": {"input": "folder"}
-        })));
+        }))));
         let published = descriptors(&workspace);
         let addresses: Vec<_> = published
             .iter()
@@ -1425,7 +1462,7 @@ mod tests {
             ]
         );
         let run = published.last().expect("the shortcut's run");
-        assert_eq!(run.params, workspace.shortcuts[0].inputs);
+        assert_eq!(run.params, workspace.shortcuts[0].decode().unwrap().inputs);
         assert!(matches!(run.contract.result, ResultSpec::Json { .. }));
         assert_eq!(run_target(&run.address), Some("tidy"));
     }
@@ -1493,6 +1530,33 @@ mod tests {
             run_descriptor(&silent).contract.result,
             ResultSpec::None,
             "a shortcut that binds no output answers none"
+        );
+    }
+
+    #[test]
+    fn an_app_event_trigger_names_the_app_and_the_event() {
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: "mail.message".into(),
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: " ".into(),
+                kind: "mail.message".into(),
+            })
+            .unwrap_err()
+            .contains("names the application")
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::AppEvent {
+                app_id: "so.tilo.mail".into(),
+                kind: " ".into(),
+            })
+            .unwrap_err()
+            .contains("names the event")
         );
     }
 

@@ -20,9 +20,9 @@
 
 use media::StreamCodec;
 use media::realtime::{CodecFamily, local_capabilities};
-use shell::collab::encoder::{EncoderInit, FrameInput, build};
-use shell::config::EncoderChoice;
 use tilo_callstream::surface_decoder::{DecodedPixels, VideoDecoder};
+use tilo_window_share::config::EncoderChoice;
+use tilo_window_share::encoder::{EncoderInit, FrameInput, build};
 
 const W: u32 = 640;
 const H: u32 = 360;
@@ -95,7 +95,7 @@ fn every_listed_hardware_encoder_round_trips_through_the_shell() {
         );
         let mut dec = VideoDecoder::new(codec, false);
         dec.set_display_size(Some((W, H)));
-        dec.set_stream_colorimetry(Some(shell::collab::colorimetry::Colorimetry::sdr_bt709()));
+        dec.set_stream_colorimetry(Some(neighbour_wire::colorimetry::Colorimetry::sdr_bt709()));
         let mut last = None;
         for n in 0..10 {
             let input = gradient(W, H, n);
@@ -154,7 +154,7 @@ fn hdr_ten_bit_hardware_encode_survives_decode() {
         eprintln!("no 10-bit hardware encoder listed here; not run");
         return;
     }
-    let hdr = shell::collab::hdr_metadata::HdrConfig::pq_reference();
+    let hdr = tilo_window_share::hdr_metadata::HdrConfig::pq_reference();
     for codec in codecs {
         let mut enc = build(
             EncoderInit::hdr10(codec, W, H, 30, 8000, 0, hdr),
@@ -261,7 +261,7 @@ fn a_gpu_dmabuf_reaches_the_va_encoder_without_a_copy() {
         .expect("RGBA fallback on the dmabuf pipeline");
     let mut dec = VideoDecoder::new(codec, false);
     dec.set_display_size(Some((W, H)));
-    dec.set_stream_colorimetry(Some(shell::collab::colorimetry::Colorimetry::sdr_bt709()));
+    dec.set_stream_colorimetry(Some(neighbour_wire::colorimetry::Colorimetry::sdr_bt709()));
     let frame = dec.decode(&unit).expect("decode");
     let DecodedPixels::Rgba8(rgba) = frame.pixels else {
         panic!("SDR decodes to RGBA");

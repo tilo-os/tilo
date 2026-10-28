@@ -474,10 +474,7 @@ impl ShellOverlayHost {
                 let result = self.qs_actions.disconnect_bluetooth(&accessory.address);
                 match result {
                     Ok(()) => {
-                        crate::shell::quick_settings::actions::log_qs_result(
-                            "disconnect_bluetooth",
-                            Ok(()),
-                        );
+                        tilo_quick_settings::actions::log_qs_result("disconnect_bluetooth", Ok(()));
                         let mut state = chrome.borrow_mut();
                         if let Some(device) =
                             state.quick_settings.bt_devices.iter_mut().find(|device| {
@@ -490,7 +487,7 @@ impl ShellOverlayHost {
                         state.bump();
                     }
                     Err(error) => {
-                        crate::shell::quick_settings::actions::log_qs_result(
+                        tilo_quick_settings::actions::log_qs_result(
                             "disconnect_bluetooth",
                             Err(error.clone()),
                         );
@@ -587,7 +584,7 @@ impl ShellOverlayHost {
             return;
         };
         let row = self.qs_clipboard_row_rect(index);
-        let (pin, remove) = crate::shell::quick_settings::hosted::pair_rects(row);
+        let (pin, remove) = tilo_quick_settings::hosted::pair_rects(row);
         if point.is_some_and(|point| pin.contains(point)) {
             self.qs_selected_clipboard = Some(item.id);
             let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
@@ -675,7 +672,7 @@ impl ShellOverlayHost {
     /// Read what the open Devices or Clipboard section lists into chrome
     /// state, for the root page to lay out and paint.
     pub(super) fn refresh_qs_hosted_rows(&mut self) {
-        use crate::shell::quick_settings::QsSection;
+        use tilo_quick_settings::QsSection;
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -723,8 +720,8 @@ impl ShellOverlayHost {
     /// The Devices section's rows, from the device fabric.
     pub(super) fn qs_device_section_rows(
         &mut self,
-    ) -> Option<Vec<crate::shell::quick_settings::hosted::HostedRow>> {
-        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
+    ) -> Option<Vec<tilo_quick_settings::hosted::HostedRow>> {
+        use tilo_quick_settings::hosted::{HostedActions, HostedRow};
         let view = self
             .device_fabric_call(DeviceFabricUiAction::Snapshot)
             .ok()?;
@@ -806,8 +803,8 @@ impl ShellOverlayHost {
     /// The clipboard history as Quick Settings shows it, from one snapshot:
     /// the row's count is that snapshot's length and the section's copies
     /// are its latest entries (or its matches while searching).
-    pub(super) fn qs_clipboard_view(&mut self) -> crate::shell::quick_settings::ClipboardView {
-        use crate::shell::quick_settings::hosted::{HostedActions, HostedRow};
+    pub(super) fn qs_clipboard_view(&mut self) -> tilo_quick_settings::ClipboardView {
+        use tilo_quick_settings::hosted::{HostedActions, HostedRow};
         let snapshot = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
         let total = snapshot.len();
         let history = self.filter_clipboard_history(snapshot);
@@ -876,7 +873,7 @@ impl ShellOverlayHost {
                 }
             })
             .collect();
-        crate::shell::quick_settings::ClipboardView {
+        tilo_quick_settings::ClipboardView {
             total,
             caption,
             rows,

@@ -311,8 +311,11 @@ pub enum WidthClass {
 }
 
 /// Where the class boundaries lie, in `rem`.
+// ratchet-allow(pixel_const): a class boundary in rem, which the text size scales, not pixels
 pub const COMPACT_BELOW: f32 = 30.0;
+// ratchet-allow(pixel_const): a class boundary in rem, which the text size scales, not pixels
 pub const MEDIUM_BELOW: f32 = 52.0;
+// ratchet-allow(pixel_const): a class boundary in rem, which the text size scales, not pixels
 pub const EXPANDED_BELOW: f32 = 75.0;
 /// Half the width of the band around a boundary inside which a class holds, in `rem`.
 pub const HYSTERESIS: f32 = 0.5;

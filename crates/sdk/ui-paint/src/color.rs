@@ -342,10 +342,10 @@ impl Oklch {
     /// is meaningless and comes back as 0.
     #[must_use]
     pub fn from_color(color: Color) -> Self {
-        let (l, a, b) = linear_to_oklab(
-            decode_srgb(color.r()),
-            decode_srgb(color.g()),
-            decode_srgb(color.b()),
+        let (l, a, b) = tilo_face::linear_to_oklab(
+            tilo_face::decode_srgb(color.r()),
+            tilo_face::decode_srgb(color.g()),
+            tilo_face::decode_srgb(color.b()),
         );
         let c = a.hypot(b);
         let h = if c < 1e-6 {
@@ -369,15 +369,6 @@ impl Oklch {
 #[must_use]
 pub fn oklch(l: f32, c: f32, h: f32) -> Color {
     Oklch::new(l, c, h).to_color()
-}
-
-fn decode_srgb(v: u8) -> f64 {
-    let s = f64::from(v) / 255.0;
-    if s <= 0.04045 {
-        s / 12.92
-    } else {
-        ((s + 0.055) / 1.055).powf(2.4)
-    }
 }
 
 fn encode_srgb(v: f64) -> u8 {
@@ -410,21 +401,6 @@ fn oklch_to_linear(l: f64, c: f64, h: f64) -> (f64, f64, f64) {
         4.076_741_662_1 * l3 - 3.307_711_591_3 * m3 + 0.230_969_929_2 * s3,
         -1.268_438_004_6 * l3 + 2.609_757_401_1 * m3 - 0.341_319_396_5 * s3,
         -0.004_196_086_3 * l3 - 0.703_418_614_7 * m3 + 1.707_614_701_0 * s3,
-    )
-}
-
-#[allow(
-    clippy::many_single_char_names,
-    reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
-)]
-fn linear_to_oklab(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
-    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
-    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
-    (
-        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
-        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
-        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
     )
 }
 
@@ -469,7 +445,11 @@ pub fn dominant_hue(pixels: &[u8]) -> Option<f32> {
             continue;
         }
         sampled += 1;
-        let (_, oa, ob) = linear_to_oklab(decode_srgb(r), decode_srgb(g), decode_srgb(b));
+        let (_, oa, ob) = tilo_face::linear_to_oklab(
+            tilo_face::decode_srgb(r),
+            tilo_face::decode_srgb(g),
+            tilo_face::decode_srgb(b),
+        );
         let chroma = oa.hypot(ob);
         if chroma < 0.02 {
             continue;

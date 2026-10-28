@@ -67,7 +67,7 @@ pub struct RowFade {
 /// The arrival timing of a widget's pending rows, by row key.
 ///
 /// The key is all that differs from one widget's rows to another's: it
-/// names a row's slot in [`RowArrivals`], which holds every row's timing,
+/// names a row's slot in `RowArrivals`, which holds every row's timing,
 /// fading and painting once, in the toolkit, for every list, table and
 /// tree of every app.
 #[derive(Clone, Debug)]

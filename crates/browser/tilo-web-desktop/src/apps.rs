@@ -56,6 +56,8 @@ mod activity_split {
 
     use crate::split::Callback;
 
+    const APP: &str = "so.tilo.activity";
+
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
     unsafe extern "C" {
@@ -72,11 +74,11 @@ mod activity_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.activity", "Activity", open);
+        registry::defer(APP, "Activity", open);
     }
 }
 
@@ -87,6 +89,8 @@ mod api_tester_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.api-tester";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -104,11 +108,11 @@ mod api_tester_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.api-tester", "API Tester", open);
+        registry::defer(APP, "API Tester", open);
     }
 }
 
@@ -119,6 +123,8 @@ mod calculator_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.calculator";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -136,11 +142,11 @@ mod calculator_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.calculator", "Calculator", open);
+        registry::defer(APP, "Calculator", open);
     }
 }
 
@@ -151,6 +157,8 @@ mod calendar_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.calendar";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -168,11 +176,11 @@ mod calendar_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.calendar", "Calendar", open);
+        registry::defer(APP, "Calendar", open);
     }
 }
 
@@ -183,6 +191,8 @@ mod camera_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.camera";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -200,11 +210,11 @@ mod camera_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.camera", "Camera", open);
+        registry::defer(APP, "Camera", open);
     }
 }
 
@@ -215,6 +225,8 @@ mod canvas_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.canvas";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -232,11 +244,11 @@ mod canvas_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.canvas", "Canvas", open);
+        registry::defer(APP, "Canvas", open);
     }
 }
 
@@ -247,6 +259,8 @@ mod chat_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.chat";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -264,11 +278,11 @@ mod chat_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.chat", "Chat", open);
+        registry::defer(APP, "Chat", open);
     }
 }
 
@@ -279,6 +293,8 @@ mod chip_design_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.chip-design";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -296,11 +312,11 @@ mod chip_design_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.chip-design", "Chip Design", open);
+        registry::defer(APP, "Chip Design", open);
     }
 }
 
@@ -311,6 +327,8 @@ mod clocks_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.clocks";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -328,11 +346,11 @@ mod clocks_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.clocks", "Clocks", open);
+        registry::defer(APP, "Clocks", open);
     }
 }
 
@@ -343,6 +361,8 @@ mod contacts_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.contacts";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -360,11 +380,11 @@ mod contacts_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.contacts", "Contacts", open);
+        registry::defer(APP, "Contacts", open);
     }
 }
 
@@ -375,6 +395,8 @@ mod diffmerge_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.diffmerge";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -392,11 +414,11 @@ mod diffmerge_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.diffmerge", "Diff & Merge", open);
+        registry::defer(APP, "Diff & Merge", open);
     }
 }
 
@@ -407,6 +429,8 @@ mod ebook_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.ebook";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -424,11 +448,11 @@ mod ebook_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.ebook", "E-Book Reader", open);
+        registry::defer(APP, "E-Book Reader", open);
     }
 }
 
@@ -439,6 +463,8 @@ mod feeds_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.feeds";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -456,11 +482,11 @@ mod feeds_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.feeds", "Feeds", open);
+        registry::defer(APP, "Feeds", open);
     }
 }
 
@@ -471,6 +497,8 @@ mod hex_editor_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.hex-editor";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -488,11 +516,11 @@ mod hex_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.hex-editor", "Hex Editor", open);
+        registry::defer(APP, "Hex Editor", open);
     }
 }
 
@@ -503,6 +531,8 @@ mod maps_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.maps";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -520,11 +550,11 @@ mod maps_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.maps", "Maps", open);
+        registry::defer(APP, "Maps", open);
     }
 }
 
@@ -535,6 +565,8 @@ mod messages_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.messages";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -552,11 +584,11 @@ mod messages_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.messages", "Messages", open);
+        registry::defer(APP, "Messages", open);
     }
 }
 
@@ -567,6 +599,8 @@ mod model_providers_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.model-providers";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -584,11 +618,11 @@ mod model_providers_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.model-providers", "Model Providers", open);
+        registry::defer(APP, "Model Providers", open);
     }
 }
 
@@ -599,6 +633,8 @@ mod music_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.music";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -616,11 +652,11 @@ mod music_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.music", "Music", open);
+        registry::defer(APP, "Music", open);
     }
 }
 
@@ -631,6 +667,8 @@ mod notes_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.notes";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -648,11 +686,11 @@ mod notes_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.notes", "Notes", open);
+        registry::defer(APP, "Notes", open);
     }
 }
 
@@ -663,6 +701,8 @@ mod passwords_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.passwords";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -680,11 +720,11 @@ mod passwords_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.passwords", "Passwords", open);
+        registry::defer(APP, "Passwords", open);
     }
 }
 
@@ -695,6 +735,8 @@ mod pdf_viewer_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.pdf-viewer";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -712,11 +754,11 @@ mod pdf_viewer_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.pdf-viewer", "PDF Viewer", open);
+        registry::defer(APP, "PDF Viewer", open);
     }
 }
 
@@ -727,6 +769,8 @@ mod photos_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.photos";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -744,11 +788,11 @@ mod photos_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.photos", "Photos", open);
+        registry::defer(APP, "Photos", open);
     }
 }
 
@@ -759,6 +803,8 @@ mod poker_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.poker";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -776,11 +822,11 @@ mod poker_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.poker", "Poker", open);
+        registry::defer(APP, "Poker", open);
     }
 }
 
@@ -791,6 +837,8 @@ mod scratchpad_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.scratchpad";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -808,11 +856,11 @@ mod scratchpad_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.scratchpad", "Scratchpad", open);
+        registry::defer(APP, "Scratchpad", open);
     }
 }
 
@@ -823,6 +871,8 @@ mod sheets_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.sheets";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -840,11 +890,11 @@ mod sheets_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.sheets", "Sheets", open);
+        registry::defer(APP, "Sheets", open);
     }
 }
 
@@ -855,6 +905,8 @@ mod shortcuts_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.shortcuts";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -872,11 +924,11 @@ mod shortcuts_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.shortcuts", "Shortcuts", open);
+        registry::defer(APP, "Shortcuts", open);
     }
 }
 
@@ -887,6 +939,8 @@ mod slides_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.slides";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -904,11 +958,11 @@ mod slides_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.slides", "Slides", open);
+        registry::defer(APP, "Slides", open);
     }
 }
 
@@ -919,6 +973,8 @@ mod snippets_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.snippets";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -936,11 +992,11 @@ mod snippets_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.snippets", "Snippets", open);
+        registry::defer(APP, "Snippets", open);
     }
 }
 
@@ -951,6 +1007,8 @@ mod speed_test_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.speed-test";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -968,11 +1026,11 @@ mod speed_test_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.speed-test", "Speed Test", open);
+        registry::defer(APP, "Speed Test", open);
     }
 }
 
@@ -983,6 +1041,8 @@ mod tasks_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.tasks";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1000,11 +1060,11 @@ mod tasks_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.tasks", "Tasks", open);
+        registry::defer(APP, "Tasks", open);
     }
 }
 
@@ -1015,6 +1075,8 @@ mod themes_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.themes";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1032,11 +1094,11 @@ mod themes_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.themes", "Theme Studio", open);
+        registry::defer(APP, "Theme Studio", open);
     }
 }
 
@@ -1047,6 +1109,8 @@ mod totp_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.totp";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1064,11 +1128,11 @@ mod totp_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.totp", "Authenticator", open);
+        registry::defer(APP, "Authenticator", open);
     }
 }
 
@@ -1079,6 +1143,8 @@ mod tube_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.tube";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1096,11 +1162,11 @@ mod tube_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.tube", "Tube", open);
+        registry::defer(APP, "Tube", open);
     }
 }
 
@@ -1111,6 +1177,8 @@ mod typst_editor_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.typst-editor";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1128,11 +1196,11 @@ mod typst_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.typst-editor", "Typst Editor", open);
+        registry::defer(APP, "Typst Editor", open);
     }
 }
 
@@ -1143,6 +1211,8 @@ mod video_editor_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.video-editor";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1160,11 +1230,11 @@ mod video_editor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.video-editor", "Video Editor", open);
+        registry::defer(APP, "Video Editor", open);
     }
 }
 
@@ -1175,6 +1245,8 @@ mod video_player_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.video-player";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1192,11 +1264,11 @@ mod video_player_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.video-player", "Video Player", open);
+        registry::defer(APP, "Video Player", open);
     }
 }
 
@@ -1207,6 +1279,8 @@ mod weather_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.weather";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1224,11 +1298,11 @@ mod weather_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.weather", "Weather", open);
+        registry::defer(APP, "Weather", open);
     }
 }
 
@@ -1239,6 +1313,8 @@ mod word_processor_split {
     use ui::application::registry::{self, Loading};
 
     use crate::split::Callback;
+
+    const APP: &str = "so.tilo.word-processor";
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1256,10 +1332,10 @@ mod word_processor_split {
     }
 
     fn open() -> Loading {
-        Box::pin(crate::split::definition(load, definition))
+        Box::pin(crate::split::definition(APP, load, definition))
     }
 
     pub(super) fn register() {
-        registry::defer("so.tilo.word-processor", "Word Processor", open);
+        registry::defer(APP, "Word Processor", open);
     }
 }

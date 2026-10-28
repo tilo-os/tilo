@@ -253,6 +253,7 @@ async fn main() {
             host_cert,
             revocations: RevocationList::new(),
             watching: false,
+            background: false,
         },
         Arc::new(key),
         Arc::new(MemoryPeerStore::default()),

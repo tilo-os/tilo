@@ -96,10 +96,6 @@ const SEARCH_DROP: f64 = 24.0;
 /// How far inside the desktop's edge the edge the view moves toward lights.
 const EDGE_INSET: f64 = 3.0;
 
-/// How often a host reads the record again for what the person's other
-/// devices learned meanwhile.
-const REREAD_EVERY: Duration = Duration::from_secs(60);
-
 /// What a host's frame shows the hints, in the coordinates it draws in.
 #[derive(Clone, Debug, Default)]
 pub struct HintFrame {
@@ -135,9 +131,6 @@ pub struct ControlHints {
     motion: EffectiveMotion,
     /// The person typed until then: no hint begins meanwhile.
     typing_until: Option<Instant>,
-    /// When the host next reads the record again for what the person's
-    /// other devices learned.
-    reread_at: Option<Instant>,
 }
 
 impl ControlHints {
@@ -149,7 +142,6 @@ impl ControlHints {
             said: Rc::default(),
             motion: EffectiveMotion::default(),
             typing_until: None,
-            reread_at: None,
         }
     }
 
@@ -164,20 +156,11 @@ impl ControlHints {
         self.layer.coach_mut().set_enabled(enabled, now);
     }
 
-    /// Fold in the record as another of the person's devices left it.
+    /// Fold in the record as the person's settings now hold it: what their
+    /// other devices learned, or the switch turned in Settings. Hosts call
+    /// this when the record's settings change, never on a schedule.
     pub fn merge(&mut self, other: &Learned, now: Instant) {
         self.layer.coach_mut().merge(other, now);
-    }
-
-    /// Whether the host should read the person's kept record again now and
-    /// [`Self::merge`] it, for what their other devices learned: once a
-    /// minute.
-    pub fn reread_due(&mut self, now: Instant) -> bool {
-        if self.reread_at.is_some_and(|at| now < at) {
-            return false;
-        }
-        self.reread_at = now.checked_add(REREAD_EVERY);
-        true
     }
 
     /// The record, when it changed: the host keeps it.
@@ -637,6 +620,58 @@ mod tests {
         assert!(hints.is_showing());
         let learned = hints.take_changed().expect("shown");
         assert_eq!(learned.showings("move-window"), 1);
+    }
+
+    /// A hint asks for frames only while it moves: as it arrives and plays
+    /// its gesture, then not while it rests, and not at all once it went.
+    /// An idle desktop with a hint on it comes to rest; a hint still asking
+    /// for frames would repaint its corner of the page sixty times a second.
+    #[test]
+    fn a_hint_asks_for_frames_only_while_it_moves() {
+        use ui::control_hints::coach::{IGNORED_AFTER, MIN_GAP};
+        use ui::motion::Beckon;
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        let frame = frame();
+        performed::note(Performed::OpenedWindow);
+        hints.update(&frame, start);
+        assert!(hints.is_showing());
+        let loops = Beckon::GESTURE_PERIOD
+            .mul_f64(f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
+        let gone = IGNORED_AFTER + Beckon::leaving_time(EffectiveMotion::default());
+        // A host that draws a frame whenever one is asked for, or a wake
+        // comes due, as the page does.
+        let mut now = start;
+        let mut last_asked = None;
+        while now < start + Duration::from_secs(40) {
+            let due = hints.next_wake_deadline(now).is_some_and(|at| at <= now);
+            if hints.needs_animation_frame(now) || due {
+                hints.update(&frame, now);
+                if hints.needs_animation_frame(now) {
+                    last_asked = Some(now.saturating_duration_since(start));
+                    assert!(
+                        now < start + loops + Duration::from_millis(20)
+                            || (now + Duration::from_millis(20) >= start + IGNORED_AFTER
+                                && now < start + gone + Duration::from_millis(40)),
+                        "a hint at rest, or gone, asked for a frame {:?} after it came",
+                        now.saturating_duration_since(start)
+                    );
+                }
+            }
+            now += Duration::from_millis(16);
+        }
+        assert!(!hints.is_showing(), "an unanswered hint goes");
+        assert!(
+            last_asked.is_some_and(|at| at + Duration::from_millis(20) >= IGNORED_AFTER),
+            "it faded out"
+        );
+        assert!(!hints.needs_animation_frame(now));
+        assert!(
+            hints
+                .next_wake_deadline(now)
+                .is_none_or(|at| at >= start + MIN_GAP),
+            "nothing wakes the desktop before another hint may begin"
+        );
     }
 
     /// A hint coming onto the page repaints where it painted, a part of the

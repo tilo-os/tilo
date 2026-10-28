@@ -96,6 +96,7 @@ async fn watching_page(root: &SigningKey, host: &DeviceCert, paths: Arc<Paths>) 
             host_cert: host.clone(),
             revocations: RevocationList::new(),
             watching: true,
+            background: false,
         },
         Arc::new(key),
         Arc::new(MemoryPeerStore::default()),

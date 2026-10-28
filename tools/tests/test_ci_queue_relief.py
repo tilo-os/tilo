@@ -39,12 +39,14 @@ def section(text, key, indent=0):
 
 class QueueReliefTests(unittest.TestCase):
     def test_pr_gates_stay_light_while_contract_coverage_is_kept(self):
-        with self.subTest(phase='desktop prs keep preflight without packaging'):
+        with self.subTest(phase='desktop promotion pushes keep the preflight without packaging'):
             text = workflow("release-desktop")
-            self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
+            # Main never reaches these workflows, so no pull-request trigger
+            # exists to keep light: a promotion validates, and a tag or a
+            # dispatch packages.
+            self.assertNotRegex(section(text, "on"), r"(?m)^  pull_request(?:_target)?:")
             self.assertIn("steps:", section(text, "validate", 2))
-            self.assertRegex(section(text, "package", 2),
-                             r"if: .*github.event_name != 'pull_request'")
+            self.assertNotIn("if:", section(text, "package", 2).split("steps:", 1)[0])
         with self.subTest(phase='app prs start no release jobs and never package'):
             text = workflow("release-apps")
             self.assertNotRegex(section(text, "on"), r"(?m)^  pull_request(?:_target)?:")
@@ -74,10 +76,8 @@ class QueueReliefTests(unittest.TestCase):
                     events = section(workflow(name), "on")
                     push = section(events, "push", 2)
                     self.assertIn("tags: " + tags, push)
-                    if name == "release-apps":
-                        self.assertRegex(push, r"(?m)^    branches: \[main\]$")
-                    else:
-                        self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
+                    # A promotion is the only branch event a release sees.
+                    self.assertRegex(push, r"(?m)^    branches: \[stable\]$")
                     self.assertRegex(events, r"(?m)^  workflow_dispatch:")
 
 

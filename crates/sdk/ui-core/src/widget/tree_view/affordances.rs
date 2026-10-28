@@ -28,7 +28,7 @@ pub struct TreeRowAction {
     /// Spoken before the row's label.
     pub accessible_name: String,
     /// Open the tree's context menu for the row, anchored under the action,
-    /// instead of reporting [`TreeView::on_row_action`].
+    /// instead of reporting `TreeView::on_row_action`.
     pub opens_context_menu: bool,
 }
 

@@ -14,9 +14,11 @@
 //!   libpam's `pam_get_authtok` reads them.
 //!
 //! When the daemon cannot be reached the module answers
-//! `PAM_AUTHINFO_UNAVAIL` without prompting, so the stack's old password
-//! check still works for people not yet moved off it; theirs is the only
-//! password hash left to check.
+//! `PAM_AUTHINFO_UNAVAIL` without prompting, and the image's stack ends
+//! there: the daemon is the only check of a secret, and checks the old
+//! password itself for people not yet moved off it. A migrated person's old
+//! hash may still be in `/etc/shadow` for an older image that can boot, so
+//! nothing on this one may check it.
 
 mod ffi;
 
@@ -170,11 +172,13 @@ fn change_authtok(pamh: &Handle, args: &Args, flags: c_int) -> Status {
         return Status::UserUnknown;
     };
     let Ok(mut client) = Client::connect(&args.socket) else {
-        return Status::Ignore;
+        return Status::AuthinfoUnavail;
     };
     // Someone still on the old password changes it there.
-    if enrolled(&mut client, &user) != Some(true) {
-        return Status::Ignore;
+    match enrolled(&mut client, &user) {
+        Some(true) => {}
+        Some(false) => return Status::Ignore,
+        None => return Status::AuthinfoUnavail,
     }
     if flags & ffi::PAM_PRELIM_CHECK != 0 {
         return match pamh.authtok(ffi::PAM_OLDAUTHTOK, None) {

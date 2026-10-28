@@ -110,7 +110,10 @@ build_llama() {
   case $id in
     llama-cpp-cuda-*)
       fetch_cmake "$context"
+      cp "$runtimes/fixed-clock.c" "$context/"
+      # The build turns address randomization off for nvcc, which the seccomp filter refuses.
       bash tools/ci/publish/oci-build.sh "$context" "$runtimes/llama-cpp-cuda.Containerfile" "$out" "${common[@]}" \
+        --security-opt seccomp=unconfined \
         --build-arg "BUILD_BASE=$cuda_devel" --build-arg "RUN_BASE=$cuda_runtime"
       ;;
     *)

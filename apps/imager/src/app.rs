@@ -53,9 +53,8 @@ use ui::text_render::{ParagraphAlign, TextRenderer};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, DropZone, EmptyState, Field, ListRow,
-    ProgressRing, ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text, TextInput,
-    Tone, Widget,
+    Banner, Button, ButtonRole, Column, ControlSize, DropZone, EmptyState, ListRow, ProgressRing,
+    ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text, Tone, Widget,
 };
 
 use crate::export_dialog::ExportDialog;
@@ -100,14 +99,11 @@ pub(crate) enum Command {
     /// Go back to the step at this station of the stepper.
     Station(usize),
     Next,
-    StartWrite,
     PrepareOriginalFiles,
     CancelWrite,
     WriteAnother,
     /// Let go of the drive just written, so it can be taken out.
     Eject,
-    /// The typed device-name confirmation changed.
-    Confirm(String),
     /// The owner SSH key on Confirm changed: kept on this machine as typed.
     SshKey(String),
     PrepareMedium,
@@ -163,9 +159,6 @@ pub struct ImagerApp {
     original_source: Option<std::sync::Arc<crate::setup::journey::portable_source::OriginalSource>>,
     offline_media_review:
         Option<std::sync::Arc<crate::setup::journey::prepared_media::offline::OfflineMediaReview>>,
-    /// Peer-local destructive-write arming text. This must never replicate:
-    /// a collaborator may review the plan, but cannot type consent for us.
-    confirm_text: String,
     /// The latest outcome the person should know about, and whether it is a
     /// problem they have to act on (only those are shown on the page).
     status: String,
@@ -249,7 +242,6 @@ impl ImagerApp {
             preparation_navigation: None,
             original_source: None,
             offline_media_review: None,
-            confirm_text: String::new(),
             status: String::new(),
             status_is_error: false,
             step: Step::Source,
@@ -397,7 +389,6 @@ impl ImagerApp {
             // Confirm advances into the (destructive) write only once armed.
             Step::Confirm => {
                 self.startup_write_state_reconciled
-                    && self.confirm_matches()
                     && self.image_fits()
                     && writer_available
                     && self.original_files_ready()
@@ -707,12 +698,6 @@ impl ImagerApp {
         }
     }
 
-    fn confirm_matches(&self) -> bool {
-        let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        let confirm = self.confirm_text.as_str();
-        !confirm.is_empty() && (confirm == want || confirm == format!("/dev/{want}"))
-    }
-
     fn required_capacity(&self) -> Option<u64> {
         let source = self.source.as_ref()?;
         if source.size == 0 {
@@ -806,7 +791,7 @@ impl ImagerApp {
             .and_then(|progress| progress.completed.zip(progress.total))
             .map(|(done, total)| done.saturating_mul(100).checked_div(total).unwrap_or(0));
         format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:.0}|{:?}|{}|{}|{}|{}|{}|{}|{}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:.0}|{:?}|{}|{}|{}|{}|{}|{}",
             self.step,
             self.source.as_ref().map(|s| (&s.name, &s.path)),
             self.recent.iter().map(|s| &s.path).collect::<Vec<_>>(),
@@ -834,7 +819,6 @@ impl ImagerApp {
             self.job_control.as_ref().map(JobControl::is_cancelled),
             self.status,
             self.status_is_error,
-            self.confirm_matches(),
             self.customizable(),
             self.writer().is_available() || self.shot_confirmation_ready,
             self.shot_timezone_open,
@@ -961,14 +945,23 @@ impl ImagerApp {
             Step::Customize => self
                 .button("imager.next", "Continue", Command::Next)
                 .role(ButtonRole::Primary),
-            Step::Confirm => self
-                .button("imager.write", "Erase and write", Command::StartWrite)
-                .role(ButtonRole::Destructive)
-                .with_accessible_name(&self.target().map_or_else(
-                    || "Erase and write the selected drive".to_string(),
-                    |drive| format!("Erase and write {}", drive.dev_path()),
-                ))
-                .with_enabled(self.can_advance(Step::Confirm) || self.shot_confirmation_ready),
+            Step::Confirm => {
+                let write = Button::new("imager.write", "Erase and write")
+                    .role(ButtonRole::Destructive)
+                    .with_accessible_name(&self.target().map_or_else(
+                        || "Erase and write the selected drive".to_string(),
+                        |drive| format!("Erase and write {}", drive.dev_path()),
+                    ));
+                // The button presses the drive's own published write, so the
+                // host asks for the drive's name before anything is erased,
+                // as it asks an agent's or a script's write.
+                match self.target_write_binding() {
+                    Some(binding) => write.on_action(binding).with_enabled(
+                        self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
+                    ),
+                    None => write.with_enabled(false),
+                }
+            }
             Step::Write => {
                 let stopping = self
                     .job_control
@@ -1329,16 +1322,10 @@ impl ImagerApp {
         (title, message)
     }
 
-    /// The help under the confirmation field. Shot mode poses the field as
-    /// ready for documentation, but never enables the backend.
-    fn confirm_help(&self) -> &'static str {
-        if !(self.writer().is_available() || self.shot_confirmation_ready) {
-            "This computer can't write drives yet."
-        } else if self.confirm_matches() {
-            "The name matches. Erase and write when you are ready."
-        } else {
-            "Type the device name exactly as it is shown in the review."
-        }
+    /// The selected drive's published write, for the Erase and write button.
+    fn target_write_binding(&self) -> Option<tilo_actions::ActionBinding<()>> {
+        let row = self.target_row(self.target()?).into_resource();
+        tilo_actions::ActionBinding::static_json_for(&row, "write", serde_json::Map::new()).ok()
     }
 
     fn confirm_body(&self) -> Column {
@@ -1382,25 +1369,16 @@ impl ImagerApp {
                 &self.commands,
             )));
         }
-        let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
         let (warning, consequence) = self.confirm_warning();
-        let sink = Rc::clone(&self.commands);
-        let input = TextInput::local()
-            .with_id("imager.confirm")
-            .with_kind(ui::widget::TextInputKind::Path)
-            .with_initial_value(&self.confirm_text)
-            .with_placeholder(&want)
-            .on_change(move |value| sink.borrow_mut().push(Command::Confirm(value.to_string())));
-        let field = Field::new(format!("Type {want} to confirm"), input);
-        let field = if !self.confirm_text.is_empty() && !self.confirm_matches() {
-            field.with_error(format!("This is not {want}."))
+        // Shot mode poses the page as ready for documentation, but never
+        // enables the backend.
+        let consequence = if self.writer().is_available() || self.shot_confirmation_ready {
+            consequence
         } else {
-            field.with_help(self.confirm_help())
+            "This computer can't write drives yet."
         };
         body.push(Box::new(
-            page::related()
-                .push(Box::new(Banner::error(warning).with_message(consequence)))
-                .push(Box::new(field)),
+            page::related().push(Box::new(Banner::error(warning).with_message(consequence))),
         ))
     }
 
@@ -1815,7 +1793,6 @@ impl ImagerApp {
             return;
         }
         self.selected = Some(idx);
-        self.confirm_text.clear();
         self.dirty = true;
     }
     fn set_status(&mut self, s: &str) {
@@ -1924,9 +1901,8 @@ impl ImagerApp {
                 Ok(()) => self.goto(Step::Confirm),
                 Err(message) => self.set_status(&message),
             },
-            // Confirm advances into the write only when the typed-name gate is
-            // armed; that same gesture kicks off the (external) job.
-            Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(),
+            // The write itself is the drive's published action, which the
+            // host confirms; Continue never starts it.
             _ => {}
         }
     }
@@ -1937,20 +1913,6 @@ impl ImagerApp {
             Step::Drive => self.goto(Step::Source),
             // No going back from the source, an in-flight write, or the outcome.
             Step::Source | Step::Write | Step::Done => {}
-        }
-    }
-    fn start_write(&mut self) {
-        let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
-        if let Err(reason) = self.write_refusal(&device) {
-            self.set_status(&reason);
-            self.dirty = true;
-            return;
-        }
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect(&ImagerEffect::Write {
-                device,
-                confirmation: self.confirm_text.clone(),
-            });
         }
     }
     fn writer_refusal(&self) -> Result<(), (&'static str, String)> {
@@ -2513,17 +2475,15 @@ impl ImagerApp {
     fn write_another(&mut self) {
         if self.progress.phase == JobPhase::Failed {
             // Preserve the reviewed source, target, and customized setup. A
-            // retry still requires a fresh peer-local destructive confirmation
-            // and passes every target/source validation again in the helper.
+            // retry asks for the drive's name again and passes every
+            // target/source validation again in the helper.
             self.progress = Progress::default();
-            self.confirm_text.clear();
             self.goto(Step::Confirm);
             self.set_status("Review the image and drive, then confirm the target again to retry.");
             return;
         }
         self.progress = Progress::default();
         self.ejected = false;
-        self.confirm_text.clear();
         self.goto(Step::Source);
         self.set_status("");
     }
@@ -2566,9 +2526,6 @@ impl ImagerApp {
                 .iter()
                 .position(|actual| Self::same_rescanned_target(expected, actual))
         });
-        if self.selected.is_none() {
-            self.confirm_text.clear();
-        }
     }
     fn same_rescanned_target(expected: &TargetDrive, actual: &TargetDrive) -> bool {
         // Slot names, model strings and capacities are not physical identity.
@@ -3070,9 +3027,6 @@ impl ImagerApp {
                 crate::setup::strings::t("installer-original-grant-required"),
             ));
         }
-        if let Err((code, reason)) = self.writer_refusal() {
-            statuses.push(EffectStatus::unavailable(ImagerEffect::WRITE, code, reason));
-        }
         if self.release_download.is_none() {
             statuses.push(EffectStatus::unavailable(
                 ImagerEffect::CANCEL_DOWNLOAD,
@@ -3224,17 +3178,11 @@ impl ImagerApp {
             Command::Station(index) => self.go_to_station(index),
             Command::Next => self.advance(),
             Command::PrepareOriginalFiles => self.prepare_original_files(),
-            Command::StartWrite => self.start_write(),
             Command::CancelWrite => {
                 let _ = self.cancel_write();
             }
             Command::WriteAnother => self.write_another(),
             Command::Eject => self.eject_written_drive(),
-            Command::Confirm(value) => {
-                if self.step == Step::Confirm {
-                    self.confirm_text = value
-                }
-            }
         }
     }
     fn fail(&mut self, message: &str) {
@@ -3802,18 +3750,18 @@ mod tests {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.startup_write_state_reconciled = false;
-            app.confirm_text = String::from("sdb");
 
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             let error = app
                 .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
+            let row = app.target_row(app.target().unwrap()).into_resource();
             assert!(
-                app.effect_statuses()
+                row.actions
                     .iter()
-                    .any(|status| format!("{status:?}").contains("id: \"write\"")),
-                "the write effect is unavailable"
+                    .any(|spec| spec.id == "write" && !spec.contract.availability.is_available()),
+                "the drive's write is unavailable"
             );
         }
 
@@ -3954,15 +3902,12 @@ mod tests {
         ] {
             assert!(order.iter().any(|n| n == name), "{name}: {order:?}");
         }
+        // The review asks for no name of its own: the host asks for it when
+        // the drive's write is pressed.
         let mut host =
             ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("confirm")).unwrap();
-        host.harness()
-            .perform_named("imager.confirm", &AccessAction::SetValue("sdb".into()))
-            .unwrap();
-        assert!(
-            host.with_widget::<ImagerApp, _>(|app| app.confirm_matches())
-                .unwrap()
-        );
+        assert!(!host.harness().targets().contains_key("imager.confirm"));
+        assert!(host.harness().targets().contains_key("imager.write"));
         let mut host =
             ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("progress"))
                 .unwrap();
@@ -4479,7 +4424,6 @@ mod tests {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.goto(Step::Confirm);
-            app.confirm_text = String::from("sdb");
 
             assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
             assert!(app.can_advance_with_writer(
@@ -4505,7 +4449,6 @@ mod tests {
             // Actual request formation repeats profile validation independently
             // of an unavailable backend masking the error during UI preflight.
             app.goto(Step::Confirm);
-            app.confirm_text = String::from("sdb");
             let error = app
                 .write_request(
                     app.source.clone().unwrap(),
@@ -4563,7 +4506,6 @@ mod tests {
             );
             app.select_target(0);
             app.goto(Step::Confirm);
-            app.confirm_text = String::from("sdb");
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
@@ -4585,7 +4527,6 @@ mod tests {
             let (mut app, _doc) = seeded_app();
             app.select_target(0); // sdb
             app.goto(Step::Confirm);
-            app.confirm_text = String::from("wrong");
             let request = app
                 .write_request(
                     app.source.clone().unwrap(),
@@ -4609,7 +4550,6 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(0);
         app.goto(Step::Confirm);
-        app.confirm_text = "sdb".into();
         Imager::paths()
             .profile
             .wifi_ssid
@@ -4652,7 +4592,6 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(0);
         app.goto(Step::Confirm);
-        app.confirm_text = "sdb".into();
         Imager::paths()
             .profile
             .wifi_ssid
@@ -4681,7 +4620,6 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(0);
         app.goto(Step::Confirm);
-        app.confirm_text = "sdb".into();
         assert!(app.profile.wifi_ssid.is_empty());
         Imager::paths()
             .profile
@@ -4801,7 +4739,7 @@ mod tests {
                 1,
                 "only the active release remains enabled during its download"
             );
-            let app = view.root_mut::<ImagerApp>();
+            let mut app = view.root_mut::<ImagerApp>();
             assert!(
                 app.published_rows()
                     .iter()
@@ -4916,23 +4854,6 @@ mod tests {
             host.with_widget::<ImagerApp, _>(|a| a.step).unwrap(),
             Step::Confirm
         );
-        host.harness()
-            .perform_named("imager.confirm", &ui::a11y::Action::SetValue("sdb".into()))
-            .unwrap();
-        assert!(
-            host.with_widget::<ImagerApp, _>(|a| a.confirm_matches())
-                .unwrap()
-        );
-        use automerge::ReadDoc as _;
-        assert!(
-            host.harness()
-                .state()
-                .doc
-                .get(automerge::ROOT, "confirm")
-                .unwrap()
-                .is_none(),
-            "destructive consent never enters the shared document"
-        );
         host.harness().click_named("imager.write").unwrap();
         host.with_widget::<ImagerApp, _>(|a| {
             assert_eq!(a.step, Step::Confirm);
@@ -4942,21 +4863,39 @@ mod tests {
         .unwrap();
     }
 
+    /// Erase and write presses the chosen drive's published write, which
+    /// asks for the drive's name: the host's question, the same an agent's
+    /// or a script's write gets. Continue never starts a write.
     #[test]
-    #[cfg(not(feature = "host-media-writer"))]
-    fn matching_confirmation_does_not_simulate_a_disabled_write() {
-        if crate::write::allow_write() {
-            return;
-        }
+    fn erase_and_write_presses_the_drives_name_confirmed_write() {
         let (mut app, _doc) = seeded_app();
         app.select_target(0); // sdb
         app.goto(Step::Confirm);
-        app.confirm_text = String::from("sdb");
-        app.start_write();
-        assert_eq!(app.progress.phase, JobPhase::Idle);
+        let binding = app.target_write_binding().expect("the drive's write");
+        let identity = app
+            .target()
+            .and_then(|drive| drive.stable_id.clone())
+            .unwrap();
+        assert_eq!(
+            binding.address(),
+            &ImagerEffect::Write {
+                device: app.target().unwrap().dev_path(),
+                confirmation: "sdb".into(),
+            }
+            .address_on(format!("imager.target:{identity}"))
+        );
+        let row = app.target_row(app.target().unwrap()).into_resource();
+        let write = row.actions.iter().find(|spec| spec.id == "write").unwrap();
+        assert_eq!(
+            write.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Phrase {
+                phrase: "sdb".into()
+            }
+        );
+        app.advance();
         assert_eq!(app.step, Step::Confirm);
+        assert_eq!(app.progress.phase, JobPhase::Idle);
         assert!(app.job_control.is_none());
-        assert!(app.status.contains("disabled"));
     }
 
     /// Portal sources, external drives, rescans and forbidden disks.
@@ -4986,19 +4925,16 @@ mod tests {
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
-            app.confirm_text = String::from("sdb");
 
             app.apply_drive_inventory(Vec::new());
 
             assert!(app.targets.is_empty());
             assert_eq!(app.selected, None);
-            assert!(app.confirm_text.is_empty());
         }
 
         {
             let (mut app, _doc) = seeded_app();
             app.select_target(0);
-            app.confirm_text = String::from("sdb");
             let selected = app.target().unwrap().clone();
             let mut reordered = crate::model::sample_targets();
             reordered.swap(0, 1);
@@ -5010,7 +4946,6 @@ mod tests {
                 app.target().and_then(|drive| drive.stable_id.as_deref()),
                 selected.stable_id.as_deref()
             );
-            assert_eq!(app.confirm_text.as_str(), "sdb");
 
             let mut replacement = selected;
             replacement.stable_id = Some("different-usb-stick".into());
@@ -5020,22 +4955,16 @@ mod tests {
                 app.selected, None,
                 "a reused OS device slot is not the reviewed drive"
             );
-            assert!(
-                app.confirm_text.is_empty(),
-                "consent never carries to replacement hardware"
-            );
 
             let mut unidentified_before = crate::model::sample_targets()[0].clone();
             unidentified_before.stable_id = None;
             app.targets = vec![unidentified_before.clone()];
             app.selected = Some(0);
-            app.confirm_text = String::from(&unidentified_before.name);
             app.apply_drive_inventory(vec![unidentified_before]);
             assert_eq!(
                 app.selected, None,
                 "a drive without stable identity must be chosen again after rescan"
             );
-            assert!(app.confirm_text.is_empty());
         }
 
         {
@@ -5317,19 +5246,27 @@ mod tests {
         // preparation, and the public write effect must refuse this fixture.
         {
             let app = host.surface_mut::<ImagerApp>();
-            app.confirm_text = confirmation.clone();
-            assert!(app.confirm_matches());
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             assert_eq!(
                 app.begin_write(&device, &confirmation),
                 Err(crate::setup::strings::t("installer-original-not-prepared"))
             );
         }
+        let row = format!(
+            "imager.target:{}",
+            host.surface_mut::<ImagerApp>()
+                .target()
+                .and_then(|drive| drive.stable_id.clone())
+                .unwrap()
+        );
         assert!(
-            host.effect(&ImagerEffect::Write {
-                device: device.clone(),
-                confirmation
-            })
+            host.effect_on_confirmed(
+                &row,
+                &ImagerEffect::Write {
+                    device: device.clone(),
+                    confirmation
+                }
+            )
             .is_err()
         );
         assert!(

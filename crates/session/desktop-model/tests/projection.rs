@@ -134,9 +134,11 @@ fn a_window_added_in_someone_elses_name_is_an_attribution() {
     assert!(acts(&doc, &after, "alice").is_empty());
 }
 
-fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {
-    serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
-        .expect("a shortcut with no steps")
+fn shortcut(id: &str, name: &str) -> tilo_automation::SavedShortcut {
+    tilo_automation::SavedShortcut::encode(
+        &serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
+            .expect("a shortcut with no steps"),
+    )
 }
 
 /// Two collaborators saving different shortcuts at once both keep theirs,
@@ -161,7 +163,7 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
 
     let kept: Vec<_> = workspace_shortcuts_of(&alice)
         .into_iter()
-        .filter(|shortcut| shortcut.id != "tidy")
+        .filter(|shortcut| shortcut.id() != "tidy")
         .collect();
     project_workspace_shortcuts(&mut alice, &kept).unwrap();
     bob.merge_incoming(&mut alice).unwrap();

@@ -90,7 +90,7 @@ impl BluezClient {
     }
 
     /// Follow what a Bluetooth page shows: a device or an adapter changing
-    /// a property a person sees ([`SHOWN_DEVICE`], [`SHOWN_ADAPTER`], a
+    /// a property a person sees (`SHOWN_DEVICE`, `SHOWN_ADAPTER`, a
     /// battery's level), a device appearing or going, and `BlueZ` leaving or
     /// joining the bus. The returned watch counts them; a reader reads the
     /// adapter again when the count moves. Nothing polls.

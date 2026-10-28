@@ -284,6 +284,13 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         missing+=("$app ($id): no binary at $built")
         continue
     fi
+    # An image built without the browser (TILO_WITH_BROWSER=0) ships no Chromium engine
+    # runtime, and an app that pins it, even as an optional runtime, would install as an
+    # app whose runtime is missing: it is left out like the Browser itself.
+    if [ "${TILO_WITH_BROWSER:-1}" = 0 ] && grep -Eq '^(optional-)?runtimes *=.*-chromium"' "$manifest"; then
+        missing+=("$app ($id): pins the Chromium engine runtime this image is built without")
+        continue
+    fi
 
     payload="$STAGE/payload/$id"
     rm -rf "$payload"

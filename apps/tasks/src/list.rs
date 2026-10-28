@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use crate::model::money;
 use crate::model::{Issue, Tracker, tracker};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
@@ -24,6 +25,9 @@ struct Row {
     number: u64,
     status: crate::model::Status,
     progress: (usize, usize),
+    /// What the issue and its sub-issues spent, in millionths of their run
+    /// currency, and that currency: the task list's totals.
+    spend: Option<(u64, String)>,
 }
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
@@ -73,6 +77,16 @@ fn node(
                 number: issue.number,
                 status: issue.status,
                 progress: tracker.progress(id),
+                spend: issue.spend.and_then(|spent| {
+                    let currency = tracker
+                        .issues
+                        .get(id)
+                        .and_then(|issue| issue.run.as_ref())
+                        .and_then(|run| run.spend.as_ref())
+                        .map(|spend| spend.currency.clone())
+                        .unwrap_or_default();
+                    (spent > 0).then_some((spent, currency))
+                }),
             });
             let children = node(tracker, Some(id), ids, filter, me);
             if children.is_empty() {
@@ -188,6 +202,16 @@ fn decorate(
         return TreeRowDecoration::new();
     };
     let mut status = tr(data.status.label_key());
+    if let Some((spent, currency)) = &data.spend {
+        status = ui::i18n::I18nManager::format(
+            "tasks-list-spend",
+            &[
+                ("status", status.into()),
+                ("cost", money(*spent).into()),
+                ("currency", currency.clone().into()),
+            ],
+        );
+    }
     if data.progress.1 > 0 {
         status = ui::i18n::I18nManager::format(
             "tasks-status-with-progress",

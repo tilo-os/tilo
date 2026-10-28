@@ -130,6 +130,16 @@ pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDest
         .send()
 }
 
+/// Ask where an export rendered without a path (a browser page's) will be
+/// saved; its bytes are written there when the render finishes.
+pub fn request_export_save(suggested_name: &str, ext: &str) -> ui::portal::DestinationChannel {
+    PickRequest::save("Export video", "Export", suggested_name)
+        .thread_name("video-editor-export-save")
+        .filter(container_filter(ext))
+        .all_files()
+        .send_save_destination()
+}
+
 // ---------------------------------------------------------------------------
 // Project files
 // ---------------------------------------------------------------------------

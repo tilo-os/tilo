@@ -127,7 +127,7 @@ impl WakeScope {
             )
         };
         if pending {
-            self.handle().send_wake(requires_sync);
+            self.handle().send_wake(requires_sync, false);
         }
         Ok(())
     }
@@ -215,12 +215,30 @@ impl Drop for WakeScopeGuard {
 pub struct WakeEvent {
     route: Weak<Route>,
     requires_sync: bool,
+    save_progress: bool,
 }
 
 impl WakeEvent {
     #[doc(hidden)]
     pub const fn requires_sync(&self) -> bool {
         self.requires_sync
+    }
+
+    /// The wake says only that a record's save moved on
+    /// ([`WakeHandle::wake_save_progress`]): an owner that takes wakes
+    /// apart may show the new save status without running its model.
+    #[doc(hidden)]
+    pub const fn save_progress(&self) -> bool {
+        self.save_progress
+    }
+
+    /// Whether the wake asks its host for a frame as well as for its
+    /// owner's service. One that says only that a save moved on does not:
+    /// a save that lands in time shows nothing, and the owner's service
+    /// says when it does show something new (the window's bar), so a
+    /// keystroke's write landing draws no second frame after the key's.
+    pub const fn asks_for_frame(&self) -> bool {
+        !self.save_progress
     }
 }
 
@@ -312,14 +330,23 @@ impl WakeHandle {
     }
 
     pub fn wake(&self) {
-        self.send_wake(true);
+        self.send_wake(true, false);
+    }
+
+    /// Wake the owner because a record's save moved on (a write landed or
+    /// failed), and for nothing else. An owner that cannot tell wakes apart
+    /// takes it as [`Self::wake`]; one that can shows the save status
+    /// alone, without running its model again for a write that changed
+    /// nothing it holds.
+    pub fn wake_save_progress(&self) {
+        self.send_wake(true, true);
     }
 
     /// Wake the owner to drain an event queue. The queue consumer determines
     /// whether the model changed; receiving a notification alone does not.
     #[doc(hidden)]
     pub fn notify_events(&self) {
-        self.send_wake(false);
+        self.send_wake(false, false);
     }
 
     /// Owe the owner a reply: work it asked for off its thread whose answer
@@ -427,7 +454,7 @@ impl WakeHandle {
         }
     }
 
-    fn send_wake(&self, requires_sync: bool) {
+    fn send_wake(&self, requires_sync: bool, save_progress: bool) {
         if !self.authorize_publication() {
             return;
         }
@@ -452,6 +479,7 @@ impl WakeHandle {
             sink(WakeEvent {
                 route: weak.clone(),
                 requires_sync,
+                save_progress,
             });
         }
     }

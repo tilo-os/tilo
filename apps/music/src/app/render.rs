@@ -557,10 +557,10 @@ impl Widget for MusicApp {
         children
     }
 
-    /// The page parts are represented in the page's own accessibility tree
-    /// ([`PagePart::access_nodes`]), where they are operable.
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        let before = self
+    /// The track lists, card grids and page parts are laid out by the page
+    /// where it paints them; the source buttons by the window.
+    fn lays_out_child(&self, child_index: usize) -> bool {
+        let painted = self
             .track_tables
             .iter()
             .filter(|slot| slot.table.host.visible().is_some())
@@ -569,13 +569,13 @@ impl Widget for MusicApp {
                 .media_grids
                 .iter()
                 .filter(|grid| grid.host.visible().is_some())
+                .count()
+            + self
+                .page_parts
+                .iter()
+                .filter(|part| part.child().is_some())
                 .count();
-        let parts = self
-            .page_parts
-            .iter()
-            .filter(|part| part.child().is_some())
-            .count();
-        (before..before + parts).contains(&child_index)
+        child_index < painted
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1193,7 +1193,6 @@ impl Widget for MusicApp {
                     .with_children(list_items),
             );
         }
-        page_content.extend(self.page_parts.iter().flat_map(PagePart::access_nodes));
         let page = AccessNode::new(Role::TabPanel)
             .with_hashed_key(format!("page:{page_name}"))
             .with_name(page_name)
@@ -1219,22 +1218,6 @@ impl Widget for MusicApp {
         state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        if let Some(id) = target.strip_prefix("music.page-widget.") {
-            let handled = self
-                .page_parts
-                .iter_mut()
-                .any(|part| part.perform(id, action, state));
-            let asked = self
-                .page_parts
-                .iter()
-                .flat_map(PagePart::take_asked)
-                .collect::<Vec<_>>();
-            for action in asked {
-                self.dispatch(action, state);
-            }
-            self.dirty |= handled;
-            return handled;
-        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -3496,8 +3479,7 @@ impl MusicApp {
         let index = self.page_parts_drawn;
         self.page_parts_drawn += 1;
         if self.page_parts.len() <= index {
-            self.page_parts
-                .push(super::page_part::PagePart::new("music.page-widget."));
+            self.page_parts.push(super::page_part::PagePart::new());
         }
         let clip = self.body_rect;
         let Some(part) = self.page_parts.get_mut(index) else {

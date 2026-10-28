@@ -226,6 +226,7 @@ pub fn edit(shared: &Shared<'_>, before: &Shortcut, text: &str) -> Result<Edit, 
             // document's: only the steps and what the text states change.
             id: before.id.clone(),
             saved_by: before.saved_by.clone(),
+            saved_proof: before.saved_proof.clone(),
             steps,
             ..parsed.shortcut
         },
@@ -1317,6 +1318,7 @@ impl Reader<'_> {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: None,
+            saved_proof: None,
         };
         let mut named = false;
         let mut index = 0;

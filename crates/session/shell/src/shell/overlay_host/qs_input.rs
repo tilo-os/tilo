@@ -23,7 +23,7 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.overlays.quick_settings = false;
                 // Next open starts at root, not the last drill-in.
-                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
                 st.bump();
             }
             *handled = true;
@@ -32,10 +32,10 @@ impl ShellOverlayHost {
         let current_level = self
             .chrome
             .as_ref()
-            .map_or(crate::shell::quick_settings::QsLevel::Root, |c| {
+            .map_or(tilo_quick_settings::QsLevel::Root, |c| {
                 c.borrow().quick_settings.current_level().clone()
             });
-        if matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
+        if matches!(current_level, tilo_quick_settings::QsLevel::Root) {
             self.handle_shell_quick_settings_root_click(p);
         } else {
             self.handle_shell_quick_settings_drill_in_click(p, &current_level);
@@ -51,27 +51,24 @@ impl ShellOverlayHost {
     pub(super) fn handle_shell_quick_settings_drill_in_click(
         &mut self,
         p: Point,
-        current_level: &crate::shell::quick_settings::QsLevel,
+        current_level: &tilo_quick_settings::QsLevel,
     ) {
-        let back = if matches!(
-            current_level,
-            crate::shell::quick_settings::QsLevel::Notifications
-        ) {
+        let back = if matches!(current_level, tilo_quick_settings::QsLevel::Notifications) {
             self.qs_notification_back_rect()
         } else {
             self.qs_back_chevron_rect()
         };
         match current_level {
-            crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
+            tilo_quick_settings::QsLevel::BluetoothDetails(address) => {
                 self.handle_qs_bluetooth_details_click(p, address);
             }
-            crate::shell::quick_settings::QsLevel::Notifications => {
+            tilo_quick_settings::QsLevel::Notifications => {
                 self.handle_qs_notifications_click(p);
             }
-            crate::shell::quick_settings::QsLevel::Root if back.contains(p) => {
+            tilo_quick_settings::QsLevel::Root if back.contains(p) => {
                 self.pop_quick_settings_level();
             }
-            crate::shell::quick_settings::QsLevel::Root => {}
+            tilo_quick_settings::QsLevel::Root => {}
         }
     }
 
@@ -106,9 +103,9 @@ impl ShellOverlayHost {
         let (address, connect) = match intent {
             BluetoothIntent::Details(address) => {
                 let mut state = chrome.borrow_mut();
-                state.quick_settings.push_level(
-                    crate::shell::quick_settings::QsLevel::BluetoothDetails(address),
-                );
+                state
+                    .quick_settings
+                    .push_level(tilo_quick_settings::QsLevel::BluetoothDetails(address));
                 self.qs_device_fabric_start = 0;
                 self.qs_device_fabric_wheel_remainder = 0.0;
                 state.bump();
@@ -218,10 +215,8 @@ impl ShellOverlayHost {
         let wanted = {
             let state = chrome.borrow();
             state.overlays.quick_settings
-                && state.quick_settings.current_level()
-                    == &crate::shell::quick_settings::QsLevel::Root
-                && state.quick_settings.section
-                    == Some(crate::shell::quick_settings::QsSection::Wifi)
+                && state.quick_settings.current_level() == &tilo_quick_settings::QsLevel::Root
+                && state.quick_settings.section == Some(tilo_quick_settings::QsSection::Wifi)
                 && state.quick_settings.wifi
                 && !state.quick_settings.radio_change_pending
         };
@@ -314,7 +309,7 @@ impl ShellOverlayHost {
         };
         if matches!(
             history_level,
-            Some(crate::shell::quick_settings::QsLevel::Notifications)
+            Some(tilo_quick_settings::QsLevel::Notifications)
         ) {
             let consumed = self.handle_qs_notification_keyboard_with_shift(logical_key, backwards);
             *handled = consumed;
@@ -327,7 +322,7 @@ impl ShellOverlayHost {
         }
         if matches!(
             history_level,
-            Some(crate::shell::quick_settings::QsLevel::BluetoothDetails(_))
+            Some(tilo_quick_settings::QsLevel::BluetoothDetails(_))
         ) {
             let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
             *handled = consumed;
@@ -338,7 +333,7 @@ impl ShellOverlayHost {
             state.overlays.quick_settings
                 && matches!(
                     state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
+                    tilo_quick_settings::QsLevel::Root
                 )
         };
         if !at_root {
@@ -591,35 +586,29 @@ impl ShellOverlayHost {
 
     /// A section opened in place on the root page: what it lists is read as
     /// it opens.
-    fn open_qs_section(
-        &mut self,
-        section: crate::shell::quick_settings::QsSection,
-        chrome: &Chrome,
-    ) {
+    fn open_qs_section(&mut self, section: tilo_quick_settings::QsSection, chrome: &Chrome) {
         match section {
-            crate::shell::quick_settings::QsSection::Wifi => {
+            tilo_quick_settings::QsSection::Wifi => {
                 // The first scan starts now; the section keeps
                 // scanning while it is open.
                 self.qs_wifi_scanned_at = None;
                 self.rescan_open_wifi_section(Instant::now());
             }
-            crate::shell::quick_settings::QsSection::Bluetooth => {
+            tilo_quick_settings::QsSection::Bluetooth => {
                 self.qs_refresh.kick_bt_devices();
             }
-            crate::shell::quick_settings::QsSection::Vpn => {
+            tilo_quick_settings::QsSection::Vpn => {
                 self.qs_refresh.kick_field(QsField::Vpn);
             }
-            crate::shell::quick_settings::QsSection::Battery
-            | crate::shell::quick_settings::QsSection::PowerMode => {
+            tilo_quick_settings::QsSection::Battery | tilo_quick_settings::QsSection::PowerMode => {
                 self.qs_refresh.kick_field(QsField::Power);
             }
-            crate::shell::quick_settings::QsSection::Sound => {
+            tilo_quick_settings::QsSection::Sound => {
                 if let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) {
                     chrome.borrow_mut().quick_settings.sound_outputs = sound_outputs_of(&view);
                 }
             }
-            crate::shell::quick_settings::QsSection::Clipboard
-            | crate::shell::quick_settings::QsSection::Devices => {
+            tilo_quick_settings::QsSection::Clipboard | tilo_quick_settings::QsSection::Devices => {
                 self.refresh_qs_hosted_rows();
             }
         }
@@ -643,10 +632,10 @@ impl ShellOverlayHost {
                 index,
                 point,
             } => match section {
-                crate::shell::quick_settings::QsSection::Devices => {
+                tilo_quick_settings::QsSection::Devices => {
                     self.press_qs_device_row(index, point);
                 }
-                crate::shell::quick_settings::QsSection::Clipboard => {
+                tilo_quick_settings::QsSection::Clipboard => {
                     self.press_qs_clipboard_row(index, point);
                 }
                 _ => {}
@@ -694,7 +683,7 @@ impl ShellOverlayHost {
                 {
                     let mut st = chrome.borrow_mut();
                     st.overlays.quick_settings = false;
-                    st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                    st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
                     st.bump();
                 }
                 self.execute_session_action(os_actions::SessionAction::Lock);
@@ -704,7 +693,7 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 self.layers.power_menu.open();
                 st.overlays.quick_settings = false;
-                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
                 st.bump();
             }
         }
@@ -723,7 +712,7 @@ impl ShellOverlayHost {
     /// Do-not-disturb and rotation lock are applied by the caller.
     pub(super) fn dispatch_quick_settings_toggle_actions(
         &mut self,
-        pending: crate::shell::quick_settings::root::PendingRootActions,
+        pending: tilo_quick_settings::root::PendingRootActions,
     ) {
         if let Some(v) = pending.wifi {
             self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(v));
@@ -786,8 +775,8 @@ impl ShellOverlayHost {
             }
         }
         if let Some(p) = pending.power {
-            use crate::shell::quick_settings::PowerProfile as UiPP;
-            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+            use tilo_quick_settings::PowerProfile as UiPP;
+            use tilo_quick_settings::actions::PowerProfile as ActPP;
             let mapped = match p {
                 UiPP::Saver => ActPP::Saver,
                 UiPP::Balanced => ActPP::Balanced,
@@ -848,7 +837,7 @@ impl ShellOverlayHost {
             return false;
         };
         if let Some(chrome) = &self.chrome {
-            job.apply(chrome);
+            crate::shell::chrome_state::ChromeState::apply_radio_ticket(chrome, &job);
         }
         if job.result().is_some_and(|result| result.is_ok()) {
             self.reconcile_quick_settings_radio(job.change);

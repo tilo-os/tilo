@@ -219,7 +219,16 @@ version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
 dependencies = [
- "gimli",
+ "gimli 0.32.3",
+]
+
+[[package]]
+name = "addr2line"
+version = "0.26.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59317f77929f0e679d39364702289274de2f0f0b22cbf50b2b8cff2169a0b27a"
+dependencies = [
+ "gimli 0.33.0",
 ]
 
 [[package]]
@@ -324,6 +333,7 @@ dependencies = [
  "tilo-automation",
  "tilo-identity-client",
  "tilo-model-client",
+ "tilo-paths",
  "tilo-selector",
  "tilo-test-env",
  "tilo-user-identity",
@@ -672,6 +682,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arbitrary"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+
+[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -915,7 +931,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1067,7 +1083,7 @@ version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
 dependencies = [
- "addr2line",
+ "addr2line 0.25.1",
  "cfg-if",
  "libc",
  "miniz_oxide",
@@ -1383,7 +1399,7 @@ dependencies = [
  "prettyplease 0.3.0",
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1630,6 +1646,9 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+dependencies = [
+ "allocator-api2",
+]
 
 [[package]]
 name = "by_address"
@@ -1831,7 +1850,7 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "io-lifetimes 2.0.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1848,7 +1867,7 @@ dependencies = [
  "maybe-owned",
  "rustix 1.1.4",
  "rustix-linux-procfs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
  "winx",
 ]
 
@@ -2062,6 +2081,7 @@ dependencies = [
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "durable-store",
  "emoji",
  "fnv",
@@ -2071,6 +2091,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -2089,6 +2110,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "tokio",
  "uuid",
  "workspace-hack",
 ]
@@ -2473,6 +2495,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "hex",
+ "iai-callgrind",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2589,6 +2612,56 @@ dependencies = [
  "tracing",
  "uuid",
  "web-time",
+]
+
+[[package]]
+name = "collaboration"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "capnp",
+ "capnp-rpc",
+ "channel-crypto",
+ "collab-types",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "fnv",
+ "fs-protocol",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "registry-types",
+ "runtime-collab",
+ "runtime-identity",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-content",
+ "tilo-files",
+ "tilo-identity-client",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-process",
+ "tilo-rt",
+ "tilo-sort",
+ "tilo-startup-metrics",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -2944,6 +3017,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpp_demangle"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2977,6 +3059,153 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[package]]
+name = "cranelift-assembler-x64"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3307701abcb90554ee72fdb0db36ee0334a4abe380c4d87a5b04a6942613c3a"
+dependencies = [
+ "cranelift-assembler-x64-meta",
+]
+
+[[package]]
+name = "cranelift-assembler-x64-meta"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e62d0e19f9f5fa0c4243236df1ffdf139d207600b4402ac41ceba8dbe7ca0f3d"
+dependencies = [
+ "cranelift-srcgen",
+]
+
+[[package]]
+name = "cranelift-bforest"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47784bc3c4b57c0182bb8ff04aae5d5f5fc6bae8ba26b1212c9a659b90dab84e"
+dependencies = [
+ "cranelift-entity",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "cranelift-bitset"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13d120406f713dbce1940751e77bbb14daad1261379b7200c19285953e79a1d"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "cranelift-codegen"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a53dbec33ff86909e44be6f0ec2d17841aa38b931013707c9fc7279f1f0e5760"
+dependencies = [
+ "bumpalo",
+ "cranelift-assembler-x64",
+ "cranelift-bforest",
+ "cranelift-bitset",
+ "cranelift-codegen-meta",
+ "cranelift-codegen-shared",
+ "cranelift-control",
+ "cranelift-entity",
+ "cranelift-isle",
+ "gimli 0.33.0",
+ "hashbrown 0.17.1",
+ "libm",
+ "log",
+ "postcard",
+ "pulley-interpreter",
+ "regalloc2",
+ "rustc-hash 2.1.3",
+ "serde",
+ "serde_derive",
+ "sha2 0.10.9",
+ "smallvec",
+ "target-lexicon",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "cranelift-codegen-meta"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42295b38e9182954cb32a71812e3d64d66a90efc0a2ababb73e465ad4a1efccf"
+dependencies = [
+ "cranelift-assembler-x64-meta",
+ "cranelift-codegen-shared",
+ "cranelift-srcgen",
+ "heck",
+ "pulley-interpreter",
+]
+
+[[package]]
+name = "cranelift-codegen-shared"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5200fa877fb64cd30cabe0603f394333f88f69adf63e4db8d48a111d0c9d0dd"
+
+[[package]]
+name = "cranelift-control"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b86250e480795fbb4425ea703bca7b75282998458ce74f5360843a31949f2bbc"
+dependencies = [
+ "arbitrary",
+]
+
+[[package]]
+name = "cranelift-entity"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "903c6592c7d600c251d20929f143543b7303ac70b072ad3394d65b29caf56f69"
+dependencies = [
+ "cranelift-bitset",
+ "serde",
+ "serde_derive",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "cranelift-frontend"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b929f09b82a270e2aae062945cf86cd9db39c59ad9bead6986ea6b09fcf8a969"
+dependencies = [
+ "cranelift-codegen",
+ "hashbrown 0.17.1",
+ "log",
+ "smallvec",
+ "target-lexicon",
+]
+
+[[package]]
+name = "cranelift-isle"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c5809e8636a37e5a25ecc35242d33d6e7391c49b67488b83446e2898af2a2f"
+
+[[package]]
+name = "cranelift-native"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "815c559daf605a5b4ea35530604643c1e87504353c0d1a14763f9c2b9d518493"
+dependencies = [
+ "cranelift-codegen",
+ "libc",
+ "mach2",
+ "target-lexicon",
+]
+
+[[package]]
+name = "cranelift-srcgen"
+version = "0.137.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d633ff621e7f31a943431da0d7dd37c4376766c60bd7171216de1c7ccabfb370"
 
 [[package]]
 name = "crc32fast"
@@ -3271,7 +3500,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -3304,7 +3533,7 @@ checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
 dependencies = [
  "darling_core 0.24.1",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -3628,6 +3857,7 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
@@ -3896,6 +4126,12 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.6.5",
 ]
+
+[[package]]
+name = "dtoa"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dunce"
@@ -5122,7 +5358,7 @@ checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
 dependencies = [
  "io-lifetimes 2.0.4",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5524,6 +5760,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
+name = "gimli"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+dependencies = [
+ "fnv",
+ "hashbrown 0.16.1",
+ "indexmap",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "gio-sys"
 version = "0.21.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5838,13 +6086,16 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
+ "tilo-boot-signin",
  "tilo-face",
  "tilo-lock",
  "tilo-paths",
  "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-tts",
  "tilo-ui",
+ "tilo-ui-kms",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -6104,6 +6355,8 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -6834,6 +7087,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e9d4a992a9fe83130f41ceacceac3bb116a4355dfc9c8d6ecea4f1e4b4c6caf"
 
 [[package]]
+name = "iai-callgrind"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b1e4910d3a9137442723dfb772c32dc10674c4181ca078d2fd227cd5dce9db0"
+dependencies = [
+ "bincode",
+ "derive_more",
+ "iai-callgrind-macros",
+ "iai-callgrind-runner",
+]
+
+[[package]]
+name = "iai-callgrind-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d03775318d3f9f01b39ac6612b01464006dc397a654a89dd57df2fd34fb68c3"
+dependencies = [
+ "derive_more",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "iai-callgrind-runner"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c9743c00c3bca4aaffc69c87cae56837796cd362438daf354a3f785788c68"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7511,7 +7800,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2285ddfe3054097ef4b2fe909ef8c3bcd1ea52a8f0d274416caebeef39f04a65"
 dependencies = [
  "io-lifetimes 2.0.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9173,6 +9462,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 
 [[package]]
+name = "mach2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
+
+[[package]]
 name = "mail"
 version = "0.1.0"
 dependencies = [
@@ -9341,6 +9636,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "memfd"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57804b2c9b69967f1536a56f86297e367a33b19e98852ed624b84551cdbc0d90"
+dependencies = [
+ "rustix 1.1.4",
+]
 
 [[package]]
 name = "memmap2"
@@ -10143,6 +10447,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-bigint 0.4.6",
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10231,6 +10549,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
 dependencies = [
+ "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
 ]
@@ -10803,6 +11122,18 @@ version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
 dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "crc32fast",
+ "hashbrown 0.17.1",
+ "indexmap",
  "memchr",
 ]
 
@@ -12092,6 +12423,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
+name = "pprof-alloc"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "369923102862bdc5493697885f78575fae27b20103f301e9390e21adfe48f0cd"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "backtrace",
+ "dashmap",
+ "errno",
+ "flate2",
+ "itertools 0.15.0",
+ "lazy_static",
+ "libc",
+ "num",
+ "once_cell",
+ "paste",
+ "prometheus-client",
+ "prost",
+ "quick-xml 0.41.0",
+ "regex",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "ppv-lite86"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12140,7 +12499,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
 dependencies = [
  "proc-macro2",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -12286,6 +12645,29 @@ checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
 dependencies = [
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "prometheus-client"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1784dc11a05f5a8f57c4a62915686be140f24f70301290b997e317241fa9ffc2"
+dependencies = [
+ "dtoa",
+ "itoa",
+ "parking_lot",
+ "prometheus-client-derive-encode",
+]
+
+[[package]]
+name = "prometheus-client-derive-encode"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01e34894696ff94f64a20c2c373a6440903e9c2789a303d68ec6e6f953f890e4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -12452,6 +12834,29 @@ dependencies = [
  "bitflags 2.11.0",
  "memchr",
  "unicase",
+]
+
+[[package]]
+name = "pulley-interpreter"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6af498fa3ca312fe5a07178757781059b75a331f24d53aeb3706e51ad73317bd"
+dependencies = [
+ "cranelift-bitset",
+ "log",
+ "pulley-macros",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "pulley-macros"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0ba9959a3a286b7a2fb16466b7d1a804a117f81a98b7ac6d86cabd5ba037f3d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -12886,6 +13291,21 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "regalloc2"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "757712e8e61590d6d4f5d563483755538b5aa13467837a3b41cd9832509a7f85"
+dependencies = [
+ "allocator-api2",
+ "bumpalo",
+ "hashbrown 0.17.1",
+ "log",
+ "rustc-hash 2.1.3",
+ "serde",
+ "smallvec",
 ]
 
 [[package]]
@@ -13854,7 +14274,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -14125,7 +14545,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde_derive_internals",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -14292,6 +14712,10 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "send_wrapper"
@@ -14374,7 +14798,7 @@ checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -14931,11 +15355,10 @@ dependencies = [
  "accesskit_unix",
  "account-custody",
  "accounts",
+ "activity",
  "agent-provider-config",
  "app-catalogue",
  "app-cli",
- "ash",
- "backtrace",
  "base64 0.22.1",
  "blake3",
  "bounded-command",
@@ -14957,6 +15380,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
+ "flate2",
  "fnv",
  "fs-protocol",
  "futures-util",
@@ -14989,6 +15413,8 @@ dependencies = [
  "pipewire",
  "pollster",
  "postcard",
+ "pprof-alloc",
+ "prost",
  "qcms",
  "quick-xml 0.41.0",
  "rand_chacha 0.10.0",
@@ -15014,7 +15440,6 @@ dependencies = [
  "smithay",
  "smithay-client-toolkit",
  "store",
- "sysinfo",
  "taffy",
  "tar",
  "tasks",
@@ -15032,6 +15457,7 @@ dependencies = [
  "tilo-app",
  "tilo-app-package",
  "tilo-app-state",
+ "tilo-auth",
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -15041,6 +15467,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-cli-kit",
  "tilo-clock",
+ "tilo-color-pipeline",
  "tilo-contact-directory",
  "tilo-content",
  "tilo-control",
@@ -15058,12 +15485,14 @@ dependencies = [
  "tilo-documents",
  "tilo-endpoint-reachability",
  "tilo-files",
+ "tilo-frame-metrics",
  "tilo-handoff",
  "tilo-identity-ceremony",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
  "tilo-lan-discovery",
+ "tilo-liveness",
  "tilo-location",
  "tilo-lock",
  "tilo-lockdown-policy",
@@ -15077,12 +15506,14 @@ dependencies = [
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-ntfs-mount",
+ "tilo-output-passes",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-polkit-agent",
  "tilo-power-mgmt",
  "tilo-projector",
+ "tilo-quick-settings",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
@@ -15111,6 +15542,8 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wallpapers",
+ "tilo-wayland-ext",
+ "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
  "tokio",
@@ -16011,9 +16444,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.4"
+version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -16468,7 +16901,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -17070,6 +17503,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tempfile",
  "tilo-files",
@@ -17193,6 +17627,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "hmac 0.13.0",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -17257,6 +17692,7 @@ dependencies = [
  "hyper-util",
  "iroh",
  "iroh-base",
+ "messages",
  "n0-future",
  "neighbour-wire",
  "postcard",
@@ -17275,11 +17711,13 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-contact-directory",
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-joined-room",
  "tilo-lock",
  "tilo-media",
+ "tilo-messaging",
  "tilo-moq",
  "tilo-net",
  "tilo-paint-stream",
@@ -17296,6 +17734,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
+ "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -17510,6 +17949,19 @@ dependencies = [
  "serde_json",
  "tilo-fs-client",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-color-pipeline"
+version = "0.1.0"
+dependencies = [
+ "neighbour-wire",
+ "os-actions",
+ "settings-store",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-wayland-ext",
  "workspace-hack",
 ]
 
@@ -18187,6 +18639,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-frame-metrics"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-fs"
 version = "0.1.0"
 dependencies = [
@@ -18392,7 +18858,6 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "ashpd",
- "hex",
  "image",
  "jni 0.21.1",
  "ndk-context",
@@ -18406,13 +18871,13 @@ dependencies = [
  "tilo-model-client",
  "tilo-net",
  "tilo-notify",
+ "tilo-process",
  "tilo-rt",
  "tilo-secrets",
  "tilo-tts",
  "tilo-winit",
  "tokio",
  "tracing",
- "unic-langid",
  "workspace-hack",
  "zbus",
 ]
@@ -18714,6 +19179,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-liveness"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "calloop",
+ "durable-store",
+ "libc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-locale"
 version = "0.1.0"
 dependencies = [
@@ -18810,7 +19290,9 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "tilo-contact-directory",
+ "tilo-relay-protocol",
  "tilo-resource",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]
@@ -18865,6 +19347,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-net",
@@ -19205,6 +19688,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-output-passes"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "libc",
+ "pollster",
+ "qcms",
+ "rustix 1.1.4",
+ "settings-store",
+ "sysinfo",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-color-pipeline",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-vello",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-owner-commit"
 version = "0.1.0"
 dependencies = [
@@ -19408,6 +19912,7 @@ name = "tilo-process"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "hex",
  "libc",
  "runtime-portal",
  "rustix 1.1.4",
@@ -19416,6 +19921,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-platform-caps",
  "tilo-test-env",
+ "unic-langid",
  "workspace-hack",
 ]
 
@@ -19467,6 +19973,23 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-quick-settings"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "parking_lot",
+ "settings-store",
+ "tilo-cpu-raster",
+ "tilo-desktop",
+ "tilo-power-mgmt",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -20515,6 +21038,7 @@ dependencies = [
  "channel-crypto",
  "chrono",
  "collab-types",
+ "collaboration",
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
@@ -20661,6 +21185,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-kms"
+version = "0.1.0"
+dependencies = [
+ "drm",
+ "drm-ffi",
+ "input",
+ "rustix 1.1.4",
+ "settings-store",
+ "tilo-cpu-raster",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "workspace-hack",
+ "xkbcommon",
+]
+
+[[package]]
 name = "tilo-ui-macros"
 version = "0.1.0"
 dependencies = [
@@ -20674,6 +21216,7 @@ dependencies = [
 name = "tilo-ui-paint"
 version = "0.1.0"
 dependencies = [
+ "tilo-face",
  "tilo-vello",
  "workspace-hack",
 ]
@@ -20917,9 +21460,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-wayland-ext"
+version = "0.1.0"
+dependencies = [
+ "neighbour-wire",
+ "settings-store",
+ "smithay",
+ "wayland-protocols",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-web-desktop"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "activity",
  "api-tester",
  "calculator",
@@ -20933,6 +21488,7 @@ dependencies = [
  "diffmerge",
  "ebook",
  "feeds",
+ "hex",
  "hex-editor",
  "maps",
  "messages",
@@ -20952,10 +21508,14 @@ dependencies = [
  "tasks",
  "themes",
  "tilo-app",
+ "tilo-browser-peer",
  "tilo-browser-runtime",
  "tilo-desktop",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-lock",
+ "tilo-messaging",
+ "tilo-relay-protocol",
  "tilo-search",
  "tilo-spellcheck",
  "tilo-ui",
@@ -20996,6 +21556,24 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny-skia",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-window-share"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "neighbour-wire",
+ "serde",
+ "serde_json",
+ "smithay",
+ "thiserror 2.0.21",
+ "tilo-callstream",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-paint-stream",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -21117,7 +21695,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-ui-graph",
- "wasm-encoder",
+ "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
  "workspace-hack",
 ]
@@ -21152,6 +21730,7 @@ dependencies = [
  "launcher",
  "notify",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -21177,6 +21756,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilolang",
  "wasmi",
+ "wasmtime",
  "wat",
  "workspace-hack",
 ]
@@ -21186,6 +21766,8 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "collab-types",
+ "collaboration",
  "crc32fast",
  "redb",
  "serde",
@@ -21200,6 +21782,7 @@ dependencies = [
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -21924,7 +22507,7 @@ checksum = "f153acc4e99a5f2a5aefa09fb078be54e26271b2813f6041200b224c098d8328"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -22972,7 +23555,7 @@ checksum = "53cba66b01df4bef777c3d131af434dea0f3c8a7da2e42d7fb74e11fd65fb094"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -23172,6 +23755,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-encoder"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2608e8bb6d67fd68f5a8d0eb1363d6e7bcbc1f8ded5a0bd3a1e382462b876b22"
+dependencies = [
+ "leb128fmt",
+ "wasmparser 0.261.0",
+]
+
+[[package]]
 name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23246,6 +23839,217 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmparser"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
+dependencies = [
+ "bitflags 2.11.0",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "semver",
+ "serde",
+]
+
+[[package]]
+name = "wasmprinter"
+version = "0.261.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a21c9e3325655ba02de3e645bc8357a8b3651a2e3ada25b6dbc37560deb9b7"
+dependencies = [
+ "anyhow",
+ "termcolor",
+ "wasmparser 0.261.0",
+]
+
+[[package]]
+name = "wasmtime"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d93539aae382faee7b19650fd966f1f8185599b9cc4adc0a5a8b8f768c11ba9"
+dependencies = [
+ "addr2line 0.26.1",
+ "async-trait",
+ "bitflags 2.11.0",
+ "bumpalo",
+ "cc",
+ "futures",
+ "libc",
+ "log",
+ "mach2",
+ "memfd",
+ "object 0.40.0",
+ "once_cell",
+ "postcard",
+ "pulley-interpreter",
+ "rayon",
+ "rustix 1.1.4",
+ "serde",
+ "serde_derive",
+ "smallvec",
+ "target-lexicon",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-core",
+ "wasmtime-internal-cranelift",
+ "wasmtime-internal-fiber",
+ "wasmtime-internal-jit-debug",
+ "wasmtime-internal-jit-icache-coherence",
+ "wasmtime-internal-unwinder",
+ "wasmtime-internal-versioned-export-macros",
+ "wasmtime-internal-winch",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wasmtime-environ"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34fd44c205ef29cc3c254253dceb916be586887602e0e380361ed022776cfc10"
+dependencies = [
+ "anyhow",
+ "cpp_demangle",
+ "cranelift-bforest",
+ "cranelift-bitset",
+ "cranelift-entity",
+ "gimli 0.33.0",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "log",
+ "object 0.40.0",
+ "postcard",
+ "rustc-demangle",
+ "semver",
+ "serde",
+ "serde_derive",
+ "smallvec",
+ "target-lexicon",
+ "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
+ "wasmprinter",
+ "wasmtime-internal-component-util",
+ "wasmtime-internal-core",
+]
+
+[[package]]
+name = "wasmtime-internal-component-util"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2626398b21bf4b1547fdbadc68afd5cbe69c89ca2a1d6c45fd56fd3b28177b93"
+
+[[package]]
+name = "wasmtime-internal-core"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d4ac46034b149aed44335595402503094a04e3b70d0cff8c169d83437318b8"
+dependencies = [
+ "hashbrown 0.17.1",
+ "libm",
+ "serde",
+]
+
+[[package]]
+name = "wasmtime-internal-cranelift"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f496bf29d3f2a1d060e0a497a20bfba2a36befe80bdf3e640ba8d3dcab7df35"
+dependencies = [
+ "cranelift-codegen",
+ "cranelift-control",
+ "cranelift-entity",
+ "cranelift-frontend",
+ "cranelift-native",
+ "gimli 0.33.0",
+ "itertools 0.14.0",
+ "log",
+ "object 0.40.0",
+ "pulley-interpreter",
+ "smallvec",
+ "target-lexicon",
+ "thiserror 2.0.21",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-core",
+ "wasmtime-internal-unwinder",
+ "wasmtime-internal-versioned-export-macros",
+]
+
+[[package]]
+name = "wasmtime-internal-fiber"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2074dc297d5ec7f0cfff65c248798dfe4bbee4d760fc2956cc0eaf49d2eadef1"
+dependencies = [
+ "cc",
+ "libc",
+ "rustix 1.1.4",
+ "wasmtime-environ",
+ "wasmtime-internal-versioned-export-macros",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wasmtime-internal-jit-debug"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e990e2fb7710dd73af071ecf60908072935be7a5c689b4a07e9a2adc7995151"
+dependencies = [
+ "cc",
+ "wasmtime-internal-versioned-export-macros",
+]
+
+[[package]]
+name = "wasmtime-internal-jit-icache-coherence"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf25a1b3b925915f845927967554400554db9cebd3a7038a6fca0cf6e9bbaf6a"
+dependencies = [
+ "libc",
+ "wasmtime-internal-core",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wasmtime-internal-unwinder"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e69eb39fe5baf9e181269e6ced40f407d31afc8e514864e228ef0e087f4f5348"
+dependencies = [
+ "cranelift-codegen",
+ "log",
+ "object 0.40.0",
+ "wasmtime-environ",
+]
+
+[[package]]
+name = "wasmtime-internal-versioned-export-macros"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a805a26effdf564820580b7c4ce1c00fdee3f4a9465a5aeef944f9e0c254ec2e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "wasmtime-internal-winch"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8c3b9eb2826056500123a0dc518d23025b5a215e799b5024d93690436a0c2c"
+dependencies = [
+ "cranelift-codegen",
+ "gimli 0.33.0",
+ "log",
+ "object 0.40.0",
+ "target-lexicon",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-cranelift",
+ "winch-codegen",
+]
+
+[[package]]
 name = "wasmtimer"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23268,7 +24072,7 @@ dependencies = [
  "leb128fmt",
  "memchr",
  "unicode-width",
- "wasm-encoder",
+ "wasm-encoder 0.252.0",
 ]
 
 [[package]]
@@ -23833,6 +24637,25 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "winch-codegen"
+version = "50.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c403fcd33ae61b2aa7756fdd5c0fffae260f95c476b3dc874a2aabd3c1a283"
+dependencies = [
+ "cranelift-assembler-x64",
+ "cranelift-codegen",
+ "gimli 0.33.0",
+ "regalloc2",
+ "smallvec",
+ "target-lexicon",
+ "thiserror 2.0.21",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-core",
+ "wasmtime-internal-cranelift",
+]
 
 [[package]]
 name = "windows"
@@ -24499,7 +25322,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags 2.11.0",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -24719,6 +25542,7 @@ dependencies = [
  "nom 7.1.3",
  "num-bigint 0.4.6",
  "num-integer",
+ "num-iter",
  "num-traits",
  "object 0.39.1",
  "once_cell",
@@ -24742,7 +25566,6 @@ dependencies = [
  "potential_utf",
  "ppv-lite86",
  "proc-macro2",
- "profiling",
  "quick-xml 0.41.0",
  "quote",
  "rand 0.10.1",
@@ -24796,7 +25619,7 @@ dependencies = [
  "strict-num",
  "subtle",
  "syn 2.0.117",
- "syn 3.0.4",
+ "syn 3.0.9",
  "syntect",
  "sysinfo",
  "tantivy",
@@ -24827,7 +25650,7 @@ dependencies = [
  "url",
  "usvg",
  "uuid",
- "wasm-encoder",
+ "wasm-encoder 0.252.0",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
@@ -24865,7 +25688,7 @@ dependencies = [
  "activity",
  "adblock",
  "addr",
- "addr2line",
+ "addr2line 0.25.1",
  "adler2",
  "aead 0.5.2",
  "aead 0.6.1",
@@ -25043,6 +25866,7 @@ dependencies = [
  "codex",
  "collab-fixtures",
  "collab-types",
+ "collaboration",
  "color",
  "color_quant",
  "colorchoice",
@@ -25144,6 +25968,7 @@ dependencies = [
  "drm-ffi",
  "drm-fourcc",
  "drm-sys",
+ "dtoa",
  "durable-store",
  "dyn-clone",
  "ebook",
@@ -25276,7 +26101,7 @@ dependencies = [
  "ghash 0.5.1",
  "ghash 0.6.0",
  "gif",
- "gimli",
+ "gimli 0.32.3",
  "gio-sys",
  "git-client",
  "git2",
@@ -25371,6 +26196,9 @@ dependencies = [
  "i_overlay",
  "i_shape",
  "i_tree",
+ "iai-callgrind",
+ "iai-callgrind-macros",
+ "iai-callgrind-runner",
  "iana-time-zone",
  "icu_collator",
  "icu_collator_data",
@@ -25574,6 +26402,7 @@ dependencies = [
  "notify",
  "notify-types",
  "nu-ansi-term",
+ "num",
  "num-bigint 0.4.6",
  "num-bigint 0.5.1",
  "num-bigint-dig",
@@ -25691,6 +26520,7 @@ dependencies = [
  "postgres-types",
  "potential_utf",
  "powerfmt",
+ "pprof-alloc",
  "ppv-lite86",
  "precomputed-hash",
  "prefix-trie",
@@ -25704,10 +26534,14 @@ dependencies = [
  "print-centre",
  "priority-queue",
  "proc-macro-crate",
+ "proc-macro-error-attr2",
+ "proc-macro-error2",
  "proc-macro-hack",
  "proc-macro2",
  "profiling",
  "profiling-procmacros",
+ "prometheus-client",
+ "prometheus-client-derive-encode",
  "proptest",
  "prost",
  "prost-derive",
@@ -25974,7 +26808,7 @@ dependencies = [
  "symphonia-metadata",
  "symphonia-utils-xiph",
  "syn 2.0.117",
- "syn 3.0.4",
+ "syn 3.0.9",
  "sync_wrapper",
  "synstructure",
  "syntect",
@@ -26048,6 +26882,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-clock",
  "tilo-cloud-files",
+ "tilo-color-pipeline",
  "tilo-connector",
  "tilo-contact-directory",
  "tilo-content",
@@ -26087,6 +26922,7 @@ dependencies = [
  "tilo-files",
  "tilo-firstboot-files",
  "tilo-font-catalog",
+ "tilo-frame-metrics",
  "tilo-fs",
  "tilo-fs-client",
  "tilo-governor",
@@ -26111,6 +26947,7 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-lan-discovery",
  "tilo-libvirt-domain",
+ "tilo-liveness",
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
@@ -26136,6 +26973,7 @@ dependencies = [
  "tilo-oci-images",
  "tilo-ocr",
  "tilo-os-search",
+ "tilo-output-passes",
  "tilo-owner-commit",
  "tilo-page-raster",
  "tilo-paint-stream",
@@ -26150,6 +26988,7 @@ dependencies = [
  "tilo-process",
  "tilo-projector",
  "tilo-pycompat",
+ "tilo-quick-settings",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
@@ -26194,6 +27033,8 @@ dependencies = [
  "tilo-typst-fonts",
  "tilo-ui",
  "tilo-ui-graph",
+ "tilo-ui-host",
+ "tilo-ui-kms",
  "tilo-ui-macros",
  "tilo-ui-paint",
  "tilo-unicode-emoji",
@@ -26209,9 +27050,11 @@ dependencies = [
  "tilo-vmd",
  "tilo-wake",
  "tilo-wallpapers",
+ "tilo-wayland-ext",
  "tilo-web-desktop",
  "tilo-web-search",
  "tilo-wet-media",
+ "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
  "tilo-workspace-emoji",
@@ -26354,7 +27197,7 @@ dependencies = [
  "walkdir",
  "want",
  "waproto",
- "wasm-encoder",
+ "wasm-encoder 0.252.0",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
@@ -26931,7 +27774,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.4",
+ "syn 3.0.9",
 ]
 
 [[package]]

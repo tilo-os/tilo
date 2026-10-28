@@ -40,9 +40,12 @@ fn create_parent(path: &Path) -> io::Result<()> {
 }
 
 fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    let (tmp, mut file) = create_temp(path, mode)?;
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
+    let (tmp, file) = create_temp(path, mode)?;
+    // Closed at the end of the block, before the rename.
+    let written = {
+        let mut file = file;
+        file.write_all(bytes).and_then(|()| file.sync_all())
+    };
     if let Err(error) = written {
         let _ = fs::remove_file(&tmp);
         return Err(error);

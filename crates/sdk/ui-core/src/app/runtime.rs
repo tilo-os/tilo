@@ -509,6 +509,24 @@ impl ActionRuntime {
 pub(super) struct AccessibilityRuntime {
     pub(super) screen_reader: Option<crate::screen_reader::ScreenReader>,
     pub(super) screen_reader_modifier_down: bool,
+    /// Ctrl+Super+Enter and the two-volume-key hold, which turn the screen
+    /// reader on and off (`App::handle_screen_reader_chord`).
+    pub(super) screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord,
+    /// Told the new state after the chord toggled the screen reader; when
+    /// set, it keeps the state instead of the person's settings file.
+    pub(super) on_screen_reader_chord: Option<Box<dyn FnMut(bool)>>,
+    /// The narrator the chord turned off, kept until the reader is turned on
+    /// again: its speech backends cut an utterance off when dropped, and it
+    /// is still saying that the screen reader is off.
+    pub(super) parting_screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// What a finger means while the screen reader is on
+    /// (`App::explore_by_touch`).
+    pub(super) touch_explorer: crate::screen_reader_touch::TouchExplorer,
+    /// The order the screen reader walks, read from
+    /// [`Self::semantic_tree`] at the revision it is keyed by.
+    pub(super) reading_order: Option<(u64, Vec<crate::screen_reader::ReadingItem>)>,
+    /// Counts the refreshes that changed [`Self::semantic_tree`].
+    pub(super) semantic_tree_revision: u64,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
     pub(super) focus_before_trap: Option<NodeId>,
@@ -549,6 +567,12 @@ impl AccessibilityRuntime {
         Self {
             screen_reader,
             screen_reader_modifier_down: false,
+            screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord::new(),
+            on_screen_reader_chord: None,
+            parting_screen_reader: None,
+            touch_explorer: crate::screen_reader_touch::TouchExplorer::new(),
+            reading_order: None,
+            semantic_tree_revision: 0,
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,

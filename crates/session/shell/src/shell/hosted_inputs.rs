@@ -493,6 +493,26 @@ impl HostedTileInputs {
         ))
     }
 
+    /// Mount Activity for tab `tab` of `room`: the workspace's history, as
+    /// the session serves it under its provider. `None` for a host that
+    /// mounts no apps in-process.
+    pub fn mount_activity(
+        &self,
+        room: &str,
+        tab: TabId,
+        scenario: Option<&str>,
+    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+        let apps = self.in_process.as_ref()?;
+        let capture = ui::application::Capture::new(scenario.map(str::to_owned));
+        Some(apps.borrow_mut().mount(
+            activity::definition(),
+            room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |context| context.provide_capture(capture),
+        ))
+    }
+
     /// Where Files starts when the shell names no place for a tab: a
     /// fixture's own directory.
     #[must_use]

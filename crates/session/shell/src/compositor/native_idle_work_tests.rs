@@ -167,10 +167,84 @@ impl Desktop {
     }
 }
 
+/// Each count runs on [`REPETITIONS`] fresh fixture desktops, every one with
+/// its own hash seeds and widget ids. Building a desktop takes seconds in a
+/// debug build, so the repetitions are split into [`SPLITS`] tests that run
+/// side by side instead of one that holds a test slot for minutes.
+const REPETITIONS: usize = 64;
+const SPLITS: usize = 16;
+
+/// The repetitions of split `part` of [`SPLITS`].
+fn repetitions(part: usize) -> std::ops::Range<usize> {
+    let each = REPETITIONS.checked_div(SPLITS).expect("SPLITS is not zero");
+    let at = |part: usize| part.checked_mul(each).expect("repetition overflow");
+    at(part)..at(plus(part, 1))
+}
+
+/// `count + more`, failing on overflow instead of wrapping.
+fn plus(count: usize, more: usize) -> usize {
+    count.checked_add(more).expect("count overflow")
+}
+
+/// One test per split of each count, numbered from 1.
+macro_rules! split_tests {
+    ($count:ident: $($name:ident = $part:expr),+ $(,)?) => {
+        $(#[test]
+        fn $name() {
+            $count(repetitions($part));
+        })+
+    };
+}
+
 #[test]
-fn a_future_app_deadline_wakes_once_then_parks_without_drawing() {
-    let due = Instant::now() + Duration::from_secs(1);
-    for repetition in 0..64 {
+fn the_splits_cover_every_repetition_once() {
+    let covered: Vec<usize> = (0..SPLITS).flat_map(repetitions).collect();
+    assert_eq!(covered, (0..REPETITIONS).collect::<Vec<_>>());
+}
+
+split_tests!(future_deadline_wakes_once:
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_1 = 0,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_2 = 1,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_3 = 2,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_4 = 3,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_5 = 4,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_6 = 5,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_7 = 6,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_8 = 7,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_9 = 8,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_10 = 9,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_11 = 10,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_12 = 11,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_13 = 12,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_14 = 13,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_15 = 14,
+    a_future_app_deadline_wakes_once_then_parks_without_drawing_16 = 15,
+);
+
+split_tests!(answered_deadline_does_one_pump:
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_1 = 0,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_2 = 1,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_3 = 2,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_4 = 3,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_5 = 4,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_6 = 5,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_7 = 6,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_8 = 7,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_9 = 8,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_10 = 9,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_11 = 10,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_12 = 11,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_13 = 12,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_14 = 13,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_15 = 14,
+    an_answered_app_deadline_does_one_pump_and_no_layout_or_draw_16 = 15,
+);
+
+fn future_deadline_wakes_once(repetitions: std::ops::Range<usize>) {
+    let due = Instant::now()
+        .checked_add(Duration::from_secs(1))
+        .expect("instant overflow");
+    for repetition in repetitions {
         let apps = [Work::default(), Work::default()];
         let mut desktop = Desktop::new(due, &apps);
         let built = apps.each_ref().map(Work::counts);
@@ -178,7 +252,7 @@ fn a_future_app_deadline_wakes_once_then_parks_without_drawing() {
         desktop.run_until_parked();
         assert_eq!(desktop.now, due, "the scheduler delivered the future poll");
         for (app, built) in apps.iter().zip(built) {
-            assert_eq!(app.counts(), (built.0 + 2, built.1, built.2));
+            assert_eq!(app.counts(), (plus(built.0, 2), built.1, built.2));
         }
         drop(desktop);
         println!(
@@ -187,10 +261,9 @@ fn a_future_app_deadline_wakes_once_then_parks_without_drawing() {
     }
 }
 
-#[test]
-fn an_answered_app_deadline_does_one_pump_and_no_layout_or_draw() {
+fn answered_deadline_does_one_pump(repetitions: std::ops::Range<usize>) {
     let now = Instant::now();
-    for repetition in 0..64 {
+    for repetition in repetitions {
         let apps = [Work::default(), Work::default()];
         let work = &apps[0];
         let mut desktop = Desktop::new(now, &apps);
@@ -199,7 +272,7 @@ fn an_answered_app_deadline_does_one_pump_and_no_layout_or_draw() {
         for (app, built) in apps.iter().zip(built) {
             assert_eq!(
                 app.counts(),
-                (built.0 + 1, built.1, built.2),
+                (plus(built.0, 1), built.1, built.2),
                 "repetition {repetition}: each unchanged app must be polled once, not spin or paint"
             );
         }
@@ -212,10 +285,16 @@ fn an_answered_app_deadline_does_one_pump_and_no_layout_or_draw() {
         // A later real app change still reaches layout/draw; parking the
         // deadline must not freeze the app or discard its pending work.
         work.changed.set(true);
-        desktop.now += Duration::from_secs(1);
+        desktop.now = desktop
+            .now
+            .checked_add(Duration::from_secs(1))
+            .expect("instant overflow");
         desktop.run_until_parked();
         for (app, built) in apps.iter().zip(built) {
-            assert_eq!(app.counts(), (built.0 + 2, built.1 + 1, built.2 + 1));
+            assert_eq!(
+                app.counts(),
+                (plus(built.0, 2), plus(built.1, 1), plus(built.2, 1))
+            );
         }
         assert_eq!(
             desktop.frame.next_wake_deadline(),

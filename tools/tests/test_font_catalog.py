@@ -112,8 +112,15 @@ class CatalogBuildTest(unittest.TestCase):
     def test_installed_python_prepares_the_real_verified_catalog_offline(self):
         source = ROOT / "crates/sdk/ui-core/assets/fonts"
         fc.prepared_root(source, "fixtures")
-        out = Path(self.directory.name) / "out"
-        out.mkdir()
+        # Cargo's own layout: the catalog is this build's OUT_DIR/fonts, and the
+        # crate names it from the profile directory up, so the build directory's
+        # path is not compiled into the crate. A shallow OUT_DIR names it from
+        # wherever it happens to sit, which is what the build directory must not
+        # depend on, so the fixture puts it where cargo does.
+        profile = Path(os.path.abspath(self.directory.name)) / "target/debug"
+        out = profile / "build/font-catalog-test/out"
+        out.mkdir(parents=True)
+        named = out.relative_to(profile) / "fonts"
         environment = dict(os.environ, PYTHON=sys.executable, TILO_FONT_ASSETS_OFFLINE="1",
                            OUT_DIR=str(out))
         prefix = "cargo::rustc-env=TILO_CHECKOUT_FONT_ROOT="
@@ -123,8 +130,8 @@ class CatalogBuildTest(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             roots = [line[len(prefix):] for line in result.stdout.splitlines() if line.startswith(prefix)]
-            self.assertEqual(roots, [str(out / "fonts")], result.stdout)
-            self.assertEqual(fc.verify(Path(roots[0]), "fixtures"), (37, 55771564))
+            self.assertEqual(roots, [named.as_posix()], result.stdout)
+            self.assertEqual(fc.verify(profile / named, "fixtures"), (37, 55771564))
 
 
 if __name__ == "__main__":

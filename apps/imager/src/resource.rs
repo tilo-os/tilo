@@ -144,8 +144,9 @@ pub enum ImagerEffect {
         #[param(secret, "Password chosen while preparing this Tilo installation")]
         password: String,
     },
-    /// Erase drive and write image.
-    #[effect(job, cancellable)]
+    /// Erase drive and write image. Offered on each drive it may write,
+    /// where the host asks for the drive's name before it runs.
+    #[effect(job, cancellable, row)]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -669,7 +670,6 @@ mod tests {
             "select-source",
             "clear-source",
             "field-edit",
-            "write",
             "status",
             "export-config",
             "set-wifi-psk",
@@ -682,14 +682,9 @@ mod tests {
         ] {
             assert!(root_ids.contains(&id), "{id} in {root_ids:?}");
         }
-        let write = root
-            .actions
-            .iter()
-            .find(|action| action.id == "write")
-            .unwrap();
         assert!(
-            !write.contract.availability.is_available(),
-            "no privileged writer in tests"
+            !root_ids.contains(&"write"),
+            "a write is offered only on the drive it erases, behind its name"
         );
 
         let drive = find(&resources, "imager.target:demo-sandisk-ultra").expect("the USB stick");
@@ -761,10 +756,13 @@ mod tests {
         })
         .unwrap();
         assert!(
-            app.effect(&ImagerEffect::Write {
-                device: "/dev/sdb".into(),
-                confirmation: "sdb".into(),
-            })
+            app.effect_on_confirmed(
+                "imager.target:demo-sandisk-ultra",
+                &ImagerEffect::Write {
+                    device: "/dev/sdb".into(),
+                    confirmation: "sdb".into(),
+                }
+            )
             .is_err(),
             "the write is refused without the privileged writer"
         );
@@ -1048,18 +1046,9 @@ mod tests {
             .iter()
             .find(|action| action.id == "write")
             .unwrap();
-        assert_eq!(
-            write.contract.availability.is_available(),
-            find(&resources, Imager::KIND)
-                .unwrap()
-                .actions
-                .iter()
-                .find(|action| action.id == "write")
-                .unwrap()
-                .contract
-                .availability
-                .is_available(),
-            "a row's write is unavailable only when every write is"
+        assert!(
+            !write.contract.availability.is_available(),
+            "no privileged writer in tests"
         );
         assert!(matches!(
             app.call_on(

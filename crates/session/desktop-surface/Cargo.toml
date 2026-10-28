@@ -12,6 +12,12 @@ homepage.workspace = true
 # on the portable `tilo-ui` build, so a browser page and the native shell can
 # present the same model. Hosts supply tab contents through `TileSource`.
 
+[features]
+# Leave the notification centre's code out of what the program starts
+# with: it fetches it the first time the centre opens
+# (`NOTIFICATION_CENTRE`).
+lazy-notification-centre = []
+
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.

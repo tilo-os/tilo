@@ -385,6 +385,7 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
 
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.service_cx = Some(cx.clone());
         // A picture of the page is content: the store keeps its bytes, and the
         // answer names them, so the reader who can see it does. It is the
         // store the host lent this window (`SurfaceCx::content`), not the one

@@ -1,5 +1,6 @@
 //! A person's face before any picture: their initials and the presence hue
-//! their identity derives. Every surface that draws a person (the toolkit's
+//! their identity derives, and how a colour reads as a presence hue
+//! ([`decode_srgb`], [`linear_to_oklab`]). Every surface that draws a person (the toolkit's
 //! avatars, the login screen, the boot sign-in screen before the system
 //! volume is open) takes both from here, so one person looks the same on
 //! each.
@@ -48,6 +49,36 @@ pub fn presence_slot(identity: &str) -> usize {
             usize::try_from(slot).unwrap_or(0)
         }
     }
+}
+
+/// An sRGB channel as linear light.
+#[must_use]
+pub fn decode_srgb(v: u8) -> f64 {
+    let s = f64::from(v) / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Linear sRGB in `OKLab` (Björn Ottosson's matrices): how a colour reads as
+/// a presence hue, the same on every surface (the toolkit's
+/// `ui::color::Oklch::from_color` and `PresenceHue::nearest_to_srgb`).
+#[must_use]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "l/a/b and l/m/s are the names the OKLab paper gives these axes"
+)]
+pub fn linear_to_oklab(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
+    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
+    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
+    (
+        0.210_454_255_3 * l + 0.793_617_785_0 * m - 0.004_072_046_8 * s,
+        1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s,
+        0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s,
+    )
 }
 
 #[cfg(test)]

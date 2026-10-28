@@ -1118,16 +1118,18 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
         nonce,
         room_key
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|error| io_err(format!("creating {}", temp.display()), error))?;
-    file.write_all(format!("{room_key}\n").as_bytes())
-        .map_err(|error| io_err(format!("writing {}", temp.display()), error))?;
-    file.sync_all()
-        .map_err(|error| io_err(format!("syncing {}", temp.display()), error))?;
-    drop(file);
+    // Closed at the end of the block, before the marker is linked.
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|error| io_err(format!("creating {}", temp.display()), error))?;
+        file.write_all(format!("{room_key}\n").as_bytes())
+            .map_err(|error| io_err(format!("writing {}", temp.display()), error))?;
+        file.sync_all()
+            .map_err(|error| io_err(format!("syncing {}", temp.display()), error))?;
+    }
     match fs::hard_link(&temp, marker) {
         Ok(()) => {
             let _ = fs::remove_file(&temp);

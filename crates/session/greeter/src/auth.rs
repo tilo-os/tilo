@@ -16,6 +16,7 @@
 
 use crate::greetd_client::{AuthError, Denial};
 
+pub mod boot;
 mod conversation;
 pub use conversation::{AuthSession, Challenge, spawn_auth, spawn_handoff};
 #[cfg(test)]

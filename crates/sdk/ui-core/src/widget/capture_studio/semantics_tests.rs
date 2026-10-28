@@ -103,7 +103,7 @@ fn a_shutter_with_nothing_to_capture_is_disabled_and_refuses_activation() {
 fn a_receipt_action_from_the_tree_leaves_no_send_menu_behind() {
     let mut h = harness();
     {
-        let studio = h.root_mut::<CaptureStudio>();
+        let mut studio = h.root_mut::<CaptureStudio>();
         studio.set_screenshot_finished(
             ScreenshotKept::SAVED,
             800,
@@ -135,7 +135,7 @@ fn a_receipt_action_from_the_tree_leaves_no_send_menu_behind() {
 
     // Nor does a menu left over from an earlier receipt reach the next
     // capture, where it would take Enter and send the last screenshot.
-    let studio_mut = h.root_mut::<CaptureStudio>();
+    let mut studio_mut = h.root_mut::<CaptureStudio>();
     studio_mut.set_screenshot_finished(
         ScreenshotKept::SAVED,
         800,
@@ -147,6 +147,7 @@ fn a_receipt_action_from_the_tree_leaves_no_send_menu_behind() {
         },
     );
     studio_mut.set_screenshot_transition_progress(1_000);
+    drop(studio_mut);
     h.relayout_at((1600, 1000)).expect("layout");
     activate(&mut h, "Send\u{2026}");
     h.root_mut::<CaptureStudio>().open();

@@ -1,9 +1,2 @@
-[ratchets.closure_action_button]
-"apps/word-processor/src/file_menu.rs" = 5
-"apps/word-processor/src/style_menu.rs" = 2
-"apps/word-processor/src/template_picker.rs" = 1
-"apps/word-processor/src/widget/controls.rs" = 6
-"apps/word-processor/src/widget/review.rs" = 6
-
 [ratchets.closure_control]
 "apps/word-processor/src/widget.rs" = 2

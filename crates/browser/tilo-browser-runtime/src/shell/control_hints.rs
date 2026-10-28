@@ -63,7 +63,12 @@ impl BrowserShell {
     /// Advance the hints to now, and keep what the person learned.
     pub(super) fn update_hints(&mut self) {
         let now = ui::time::now();
-        if self.hints.reread_due(now) {
+        // The page's settings document moves its revision with every change
+        // (Settings, or this page's own writes): the record is taken again
+        // then, never on a schedule.
+        let settings = settings_store::stamp();
+        if settings != self.hints_settings {
+            self.hints_settings = settings;
             self.hints.merge(&LEARNED.get(), now);
         }
         let frame = self.hint_frame();

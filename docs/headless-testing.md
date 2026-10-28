@@ -686,6 +686,19 @@ vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
 test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
 pages per mapping, which CI's kernel has.
 
+Over budget, or with `TILO_IDLE_HEAP_PROFILE` set, it then starts a second
+idle desktop with `PPROF_ALLOC_SAMPLE_RATE` set and prints where that
+compositor's live Rust heap was allocated: per crate that asked for it and the
+largest stacks, from `raw '{"op":"heap_profile"}'`. Builds with
+`hosted-test-control` (the default features, not production) install
+`pprof-alloc` as the global allocator; it passes calls straight to glibc
+unless the variable is set at startup, then samples one allocation per that
+many bytes (`shell::heap_profile`). A `TILO_IDLE_HEAP_PROFILE` other than `1`
+is a path for the gzipped pprof profile (`"path"` in the request does the
+same), so two builds compare with `pprof -top -diff_base old.pb.gz
+new.pb.gz`. Memory C libraries (lavapipe, LLVM, GStreamer) allocate with
+`malloc` is not in it: glibc's in-use total minus the profile's is theirs.
+
 ### Correlating app startup attempts
 
 The compositor's `tilo::launch_latency` events carry `launch_id` and

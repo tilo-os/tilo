@@ -51,8 +51,8 @@ fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     host.qs_refresh.kick_fast_with(move || {
         let _ = release_rx.recv();
-        crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
-            crate::shell::quick_settings::refresh::FastReading::empty(),
+        crate::shell::quick_settings_refresh::QsReading::Fast(Box::new(
+            crate::shell::quick_settings_refresh::FastReading::empty(),
         ))
     });
     assert!(host.qs_refresh.is_in_flight());
@@ -71,8 +71,8 @@ fn a_reading_with_no_audio_device_leaves_no_volume_slider() {
     let mut host =
         ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome.clone());
     host.qs_refresh.kick_fast_with(|| {
-        crate::shell::quick_settings::refresh::QsReading::Fast(Box::new(
-            crate::shell::quick_settings::refresh::FastReading::empty(),
+        crate::shell::quick_settings_refresh::QsReading::Fast(Box::new(
+            crate::shell::quick_settings_refresh::FastReading::empty(),
         ))
     });
     let deadline = tilo_test_env::hang_deadline();
@@ -181,7 +181,7 @@ fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
 
 #[test]
 fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
-    use crate::shell::quick_settings::radio::fixture::Fixture;
+    use tilo_quick_settings::radio::fixture::Fixture;
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -194,12 +194,10 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    host.dispatch_quick_settings_toggle_actions(
-        crate::shell::quick_settings::root::PendingRootActions {
-            wifi: Some(true),
-            ..Default::default()
-        },
-    );
+    host.dispatch_quick_settings_toggle_actions(tilo_quick_settings::root::PendingRootActions {
+        wifi: Some(true),
+        ..Default::default()
+    });
     // The dispatch returned while the radio operation is still held.
     assert_eq!(
         tilo_test_env::recv("the native radio operation to start", &fixture.entered),
@@ -232,7 +230,7 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
 
 #[test]
 fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
-    use crate::shell::quick_settings::radio::fixture::Fixture;
+    use tilo_quick_settings::radio::fixture::Fixture;
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -242,7 +240,7 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
         state.overlays.quick_settings = true;
         state.quick_settings.wifi = false;
         state.quick_settings.radios.wifi_available = true;
-        state.quick_settings.section = Some(crate::shell::quick_settings::QsSection::Wifi);
+        state.quick_settings.section = Some(tilo_quick_settings::QsSection::Wifi);
     }
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
@@ -300,7 +298,7 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
 
 #[test]
 fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
-    use crate::shell::quick_settings::radio::fixture::Fixture;
+    use tilo_quick_settings::radio::fixture::Fixture;
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -321,11 +319,11 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
     tilo_test_env::recv("the native radio operation to start", &fixture.entered);
     host.qs_action_slot.replace(
         std::rc::Rc::new(fixture.dispatcher),
-        crate::shell::quick_settings::actions::QsActionAvailability::all(),
+        tilo_quick_settings::actions::QsActionAvailability::all(),
     );
     assert!(job.result().unwrap().is_err());
     assert!(!job.finished());
-    job.apply(&chrome);
+    crate::shell::chrome_state::ChromeState::apply_radio_ticket(&chrome, &job);
     let doc = automerge::AutoCommit::new();
     host.update(&doc, &automerge::ROOT);
     assert!(
@@ -356,9 +354,9 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
 
 #[test]
 fn successful_radio_reading_refreshes_the_recovered_public_action_availability() {
-    use crate::shell::quick_settings::radio::fixture::Fixture;
-    use crate::shell::quick_settings::refresh::{FastReading, QsReading};
+    use crate::shell::quick_settings_refresh::{FastReading, QsReading};
     use crate::shell::search::{SearchContext, SearchProvider};
+    use tilo_quick_settings::radio::fixture::Fixture;
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -367,7 +365,7 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
         ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome.clone());
     host.qs_action_slot.replace(
         std::rc::Rc::new(fixture.dispatcher),
-        crate::shell::quick_settings::actions::QsActionAvailability::default(),
+        tilo_quick_settings::actions::QsActionAvailability::default(),
     );
     let provider =
         crate::shell::search::providers::actions::ActionsProvider::with_shared_qs_actions(

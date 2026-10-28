@@ -512,9 +512,8 @@ fn the_shells_secret_prompts_are_never_captured() {
         let mut fb = FrameBuilder::new((W, H));
         fb.with_chrome(|chrome| {
             chrome.overlays.quick_settings = true;
-            chrome.quick_settings.wifi_password = Some(
-                shell::shell::quick_settings::WifiPasswordPrompt::new("Cafe"),
-            );
+            chrome.quick_settings.wifi_password =
+                Some(tilo_quick_settings::WifiPasswordPrompt::new("Cafe"));
             chrome.bump();
         });
         fb.host_mut().force_quick_settings_settled();

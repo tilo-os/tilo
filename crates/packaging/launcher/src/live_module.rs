@@ -27,9 +27,7 @@ use std::path::{Path, PathBuf};
 use crate::manifest::ManifestView;
 use crate::run::{RunError, RunOptions};
 
-/// Turns live modules on for the launches of this launcher (`1`). A developer override: a
-/// shipped launcher ignores it.
-pub const LIVE_MODULES_ENV: &str = "TILO_LAUNCHER_LIVE_MODULES";
+pub use crate::dev_env::LIVE_MODULES_ENV;
 /// The variable that names [`UPDATES_MOUNT`] to the app.
 pub const UPDATES_ENV: &str = "TILO_APP_MODULE_UPDATES";
 /// Where the app sees the later builds of its package.

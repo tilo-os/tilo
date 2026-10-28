@@ -19,9 +19,15 @@ crate-type = ["cdylib", "rlib"]
 # The Activity pane (src/activity.rs) and the Feedback composer
 # (src/feedback.rs) load as their own modules.
 tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-feedback", "deferred-people-overlay"] }
-tilo-desktop-surface = { path = "../../session/desktop-surface" }
+# The notification centre loads the first time it opens.
+tilo-desktop-surface = { path = "../../session/desktop-surface", features = ["lazy-notification-centre"] }
 # The profile card loads the first time a card opens.
 tilo-desktop = { path = "../../session/desktop", features = ["lazy-profile-card"] }
+# Desktop search loads as the desktop first lays out.
+tilo-desktop-search = { path = "../../session/desktop-search", features = ["lazy-search"] }
+# Stewarding the person's own room loads the first time the page takes up
+# one of its channels.
+tilo-browser-peer = { path = "../tilo-browser-peer", default-features = false, features = ["toolkit", "lazy-stewards"] }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # Search loads as its own module the first time something searches
 # (src/lazy.rs).
@@ -30,9 +36,15 @@ tilo-search = { path = "../../sdk/search", features = ["lazy-engine"] }
 tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionaries"] }
 # Hyphenation patterns load the first time text hyphenates, the emoji
 # catalogue the first time something names or picks an emoji.
-tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-emoji", "lazy-history"] }
+tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-emoji", "lazy-history", "lazy-palettes"] }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
+# Messages' messaging service in the page (src/messaging.rs): Tilo messages
+# through the room's private conversations, and the Tilo account's sign-up.
+tilo-messaging = { path = "../../platform/tilo-messaging", features = ["room"] }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+accounts = { path = "../../system/accounts", features = ["person"] }
+hex.workspace = true
 # generated apps: begin (tools/web/generate_web_desktop.py)
 activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
