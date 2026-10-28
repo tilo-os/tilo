@@ -105,8 +105,11 @@ Each adapter reads what a benchmark already prints and emits records through
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
-  frame interval and frame's runtime CPU is a sample, and each round's idle
-  frame rate one; the demo's two only when the run had the demo. The report must name the env's renderer, commit and profile,
+  frame interval and frame's runtime CPU is a sample, each round's idle
+  frame rate one, and each round's first load one transfer-bytes and one
+  request-count sample (every resource that started before the desktop's
+  first presented frame); the demo's two only when the run had the demo. The
+  report must name the env's renderer, commit and profile,
   and an unthrottled page.
 - `native-stream REPORT_JSON`: the native stream qualification's report
   (`scripts/perf/native_stream_qualification.mjs`): a session's window
@@ -645,6 +648,8 @@ def room_degraded(runs: list[dict[str, Any]], env: dict[str, Any]) -> list[recor
 # and the KPI each becomes, with its unit.
 BROWSER_KPIS = {
     "load_ms": ("browser.load.desktop_presented", "ms"),
+    "transfer_bytes": ("browser.load.transfer_bytes", "bytes"),
+    "request_count": ("browser.load.request_count", "count"),
     "open_ms": ("browser.open.first_frame", "ms"),
     "open_ready_ms": ("browser.open.ready", "ms"),
     "activate_ms": ("browser.activate.first_frame", "ms"),
