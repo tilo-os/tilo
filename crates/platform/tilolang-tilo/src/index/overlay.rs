@@ -55,6 +55,22 @@ impl Overlay {
         }
     }
 
+    /// Whether the writes touched `resource`: wrote a field, its type or order key, or removed
+    /// it (or one holding it).
+    pub fn touched(&self, resource: &str) -> bool {
+        self.removed(resource)
+            || self.fields.keys().any(|(path, _)| path == resource)
+            || self.texts.keys().any(|(path, _)| path == resource)
+    }
+
+    /// The resources the writes gave a type: made, or made again.
+    pub fn typed(&self) -> impl Iterator<Item = &str> {
+        self.texts
+            .keys()
+            .filter(|(_, key)| key == super::TYPE)
+            .map(|(path, _)| path.as_str())
+    }
+
     /// The value written of `field` of `resource`: `Some(None)` when it was removed.
     pub fn field(&self, resource: &str, field: &str) -> Option<Option<FieldValue>> {
         if let Some(value) = self.fields.get(&(resource.to_owned(), field.to_owned())) {
@@ -318,10 +334,6 @@ impl Sink for OverlaySink<'_> {
     fn drop_lists(&mut self, _prefix: &str) -> Result<(), IndexError> {
         // Filter columns are the index's: the store reads the open writes' items against them.
         Ok(())
-    }
-
-    fn text_changed(&mut self, _resource: &str) {
-        // Search reads the index once the record holds the writes.
     }
 
     fn keeps_columns(&self) -> bool {
