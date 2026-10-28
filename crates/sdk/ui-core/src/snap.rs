@@ -1,8 +1,8 @@
-//! Snapping: what is dragged lands on the edges and centres of the other
-//! marks and of the artwork, and a guide shows what it lined up with.
+//! Snapping: what is dragged lands on the edges and centres of other
+//! boxes, and a guide shows what it lined up with.
 #![allow(clippy::arithmetic_side_effects, reason = "kurbo's float geometry")]
 
-use ui::vello::kurbo::{Point, Rect, Vec2};
+use vello::kurbo::{Point, Rect, Vec2};
 
 /// A line something snapped to: `x = at` from `y = from` to `to` when
 /// `vertical`, else `y = at` from `x = from` to `to`.

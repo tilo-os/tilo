@@ -38,13 +38,13 @@ use crate::gesture::brush::BrushDraft;
 use crate::gesture::outline::{Part, PenDraft, PointRef, constrain_45};
 use crate::gesture::points::Editable;
 use crate::gesture::read::{Sampled, Sampling};
-use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
 use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
 use crate::resource::ViewOp;
 use crate::view_ops;
+use ui::snap::{Guide, Snap, snap_point, snap_rect};
 
 pub mod peers;
 mod views;
