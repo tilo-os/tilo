@@ -52,6 +52,13 @@ struct Writer {
     /// Another instance of the app that comes up with it, which nobody
     /// asked for (another session's open).
     bystander: Option<u64>,
+    /// Whether the document hangs under the app's own row, as a browser's
+    /// page hangs under the browser's, rather than sitting at the top level.
+    nested: bool,
+    /// Whether the document publishes no container row at all, only actions
+    /// that hang under its own id, as a browser's page does: it is then at no
+    /// level a listing shows, and only a search across the tree reaches it.
+    floating: bool,
 }
 
 struct DirectoryFailure {
@@ -82,6 +89,8 @@ impl Writer {
             log: Arc::default(),
             started: 1,
             bystander: None,
+            nested: false,
+            floating: false,
         }
     }
 
@@ -92,6 +101,18 @@ impl Writer {
 
     fn taking_path(mut self, action: &'static str) -> Self {
         self.takes_path = Some(action);
+        self
+    }
+
+    /// The document hangs under the app's own row, as a browser's page does.
+    const fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
+
+    /// The document publishes no container row, as a browser's page does.
+    const fn floating(mut self) -> Self {
+        self.floating = true;
         self
     }
 
@@ -159,28 +180,59 @@ impl Writer {
         })
     }
 
+    /// What the document's row hangs from: the app's own row when the
+    /// directory is nested, else the top level.
+    fn document_parent(&self) -> String {
+        if self.nested {
+            APP.into()
+        } else {
+            String::new()
+        }
+    }
+
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
         if provider == WORKSPACE {
             return workspace_rows();
         }
         let path = || ActionParam::optional("path", ParamType::Text, "Direct filesystem path");
         let mut rows =
-            vec![
-                row(
-                    "",
-                    RICH,
-                    "tilo.rich-text",
-                    "apply",
-                    vec![
-                        ActionParam::required("action", ParamType::Object, "An edit")
-                            .with_schema(json!({"oneOf": []})),
-                    ],
-                ),
-                CatalogueRow {
-                    action: None,
-                    has_children: true,
-                    ..row("", DOC, "word_processor.document", "", Vec::new())
-                },
+            vec![CatalogueRow {
+                action: None,
+                has_children: true,
+                ..row("", APP, "applications.app", "", Vec::new())
+            }]
+            .into_iter()
+            .filter(|_| self.nested)
+            .chain(
+                vec![
+                    row(
+                        "",
+                        RICH,
+                        "tilo.rich-text",
+                        "apply",
+                        vec![
+                            ActionParam::required("action", ParamType::Object, "An edit")
+                                .with_schema(json!({"oneOf": []})),
+                        ],
+                    ),
+                    // The row naming the document. A browser publishes none: its
+                    // page is one resource whose actions hang under its own id.
+                    CatalogueRow {
+                        action: None,
+                        has_children: true,
+                        ..row(
+                            &self.document_parent(),
+                            DOC,
+                            "word_processor.document",
+                            "",
+                            Vec::new(),
+                        )
+                    },
+                ]
+                .into_iter()
+                .filter(|row| !self.floating || row.resource.id != DOC),
+            )
+            .chain(vec![
                 row(
                     DOC,
                     DOC,
@@ -223,7 +275,8 @@ impl Writer {
                     "toggle-bold",
                     Vec::new(),
                 ),
-            ];
+            ])
+            .collect::<Vec<_>>();
         if self.document.is_some() {
             rows.extend(text_edit_rows());
         }
@@ -375,12 +428,25 @@ fn row(
 
 /// The host's own needle: a substring of an id, label or parameter name,
 /// anywhere below the provider's root.
+fn kind_words(kind: &str) -> String {
+    kind.rsplit('.').next().unwrap_or(kind).replace('_', " ")
+}
+
 fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
     let needle = needle.to_lowercase();
-    let mut fields = vec![row.resource.id.clone(), row.resource.label.clone()];
+    // A resource's kind is what a caller names it by, so a search finds it by
+    // that too: a live app's ids are hex, and a needle never matches them.
+    let mut fields = vec![
+        row.resource.id.clone(),
+        // A live host writes a kind's words, not its dotted form, so the
+        // `document` in `word_processor.document` is what a search reaches.
+        kind_words(&row.resource.kind),
+        row.resource.label.clone(),
+    ];
     if let Some(action) = &row.action {
         fields.push(action.address.action.clone());
         fields.push(action.action_label.clone());
+        fields.push(kind_words(&action.resource_kind));
         fields.extend(action.params.iter().map(|param| param.name.to_string()));
     }
     fields
@@ -1989,6 +2055,95 @@ fn a_resource_named_by_kind_right_after_a_write_is_found_however_far_its_listing
     let invoked = host.invoked();
     assert_eq!(invoked.len(), 3, "{invoked:?}");
     assert!(invoked.iter().all(|call| call.1 == DOC), "{invoked:?}");
+}
+
+#[test]
+fn a_resource_that_hangs_under_its_app_is_named_by_its_kind_without_browsing() {
+    // A browser's page is a child of the browser's own row, and a caller
+    // names it `browser.page` before it has browsed anything: the name is
+    // what an app's directory answers for, however deep the resource sits.
+    let host = Writer::new(Some("open")).nested();
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
+        let ran = call(&server, "tilo_invoke", by_kind).await;
+        assert!(ran.is_ok(), "a nested resource by kind: {ran:?}");
+        // A handle stands for the resource by kind, whatever level it sits at.
+        let resolved = call(
+            &server,
+            "tilo_resolve",
+            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved["row"]["resource_kind"], "word_processor.document",
+            "{resolved}"
+        );
+        // The handle names the very resource the kind did.
+        let read = call(
+            &server,
+            "tilo_invoke",
+            json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
+        )
+        .await;
+        assert!(
+            read.is_ok(),
+            "the handle resolves to the same row: {read:?}"
+        );
+    });
+    let invoked = host.invoked();
+    assert_eq!(invoked.len(), 2, "{invoked:?}");
+    assert!(
+        invoked.iter().all(|call| call.1 == DOC),
+        "both went to the nested document: {invoked:?}"
+    );
+}
+
+#[test]
+fn a_page_no_listing_shows_is_still_named_by_its_kind() {
+    // A browser publishes no row for its page: the page is one resource whose
+    // actions hang under its own id, so it is at no level a listing shows and
+    // no container lists it. A caller that names `browser.page` before
+    // browsing anything is answered for all the same; a caller descending
+    // listings alone leaves the page unfound and is told no resource of that
+    // kind is here.
+    let host = Writer::new(Some("open")).nested().floating();
+    *host.running.lock().unwrap() = true;
+    let server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let by_kind = json!({"app_id": APP, "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
+        let ran = call(&server, "tilo_invoke", by_kind).await;
+        assert!(ran.is_ok(), "a resource two levels down, by kind: {ran:?}");
+        let resolved = call(
+            &server,
+            "tilo_resolve",
+            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolved["row"]["resource_kind"], "word_processor.document",
+            "{resolved}"
+        );
+        let read = call(
+            &server,
+            "tilo_invoke",
+            json!({"app_id": APP, "resource": resolved["row"]["resource"], "action": "read-text", "arguments": {"pageSize": 1}}),
+        )
+        .await;
+        assert!(
+            read.is_ok(),
+            "the handle resolves to the same row: {read:?}"
+        );
+    });
+    let invoked = host.invoked();
+    assert_eq!(invoked.len(), 2, "{invoked:?}");
+    assert!(
+        invoked.iter().all(|call| call.1 == DOC),
+        "both went to the bound document: {invoked:?}"
+    );
 }
 
 #[test]
