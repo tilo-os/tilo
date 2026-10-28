@@ -688,6 +688,12 @@ impl AgentQuickComposer {
         find_editor_mut(&mut self.popover)
     }
 
+    /// What is in the field: the instruction the person is completing.
+    #[cfg(test)]
+    pub(crate) fn draft_text(&self) -> String {
+        self.draft.get()
+    }
+
     /// Offer to insert a text answer at the selection the composer was
     /// opened about, or keep it as a note.
     #[cfg_attr(

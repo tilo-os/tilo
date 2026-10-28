@@ -701,6 +701,41 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert_eq!(h.tab_ids(0), h.tabs, "no window was touched");
     }
 
+    /// Choosing to instruct the menu's thing opens the composer on it with
+    /// the instruction already in the field, and the field says what the
+    /// instruction is about.
+    fn instructing_a_thing_the_desktop_draws_starts_the_composer_on_it() {
+        let mut h = harness(1);
+        let seed = crate::shell::selection_agent::SelectionSeed::new(
+            tilo_desktop_model::commands::APP_ID,
+            "Desktop",
+            Some(
+                ui::shared_selection::SharedSelection::of_text("Research")
+                    .at(tilo_actions::SelectionPlace::item("strip:4"))
+                    .in_resource(tilo_actions::ActionResource {
+                        id: "strip:4".into(),
+                        kind: "desktop.strip".into(),
+                        label: "Research".into(),
+                    }),
+            ),
+        );
+        assert!(h.host.open_thing_menu(seed, Point::new(200.0, 200.0)));
+        assert!(h.host.perform_semantic_action(
+            "tabmenu:instruct-agent",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut h.doc),
+            &automerge::ROOT,
+        ));
+        assert!(!h.host.tab_context_menu_is_open());
+        let composer = h.host.agent_quick_composer_mut();
+        assert!(composer.is_open(), "the composer opened on the thing");
+        assert_eq!(
+            composer.draft_text(),
+            "In Desktop, Research: ",
+            "the person finishes the instruction in their own words"
+        );
+    }
+
     /// The menu paints through the shared widget with the live theme and
     /// an `e4` shadow following its outline, and never paints when closed.
     fn the_open_menu_paints_and_the_closed_one_does_not() {
@@ -754,6 +789,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
     a_single_tab_group_is_offered_close_only();
     telling_an_agent_closes_the_menu();
     a_thing_the_desktop_draws_gets_a_menu_that_tells_an_agent();
+    instructing_a_thing_the_desktop_draws_starts_the_composer_on_it();
     the_open_menu_paints_and_the_closed_one_does_not();
 }
 
