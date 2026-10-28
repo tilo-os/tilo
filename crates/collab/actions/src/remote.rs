@@ -47,6 +47,7 @@ mod nodes;
 pub mod own_device;
 mod pending;
 mod providers;
+mod search;
 mod wait;
 mod within;
 pub mod workspace_activity;
@@ -69,6 +70,7 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
+pub use search::stem_word;
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
 
 use crate::context::ActionContext;
