@@ -496,38 +496,56 @@ impl NativeLoader {
     }
 }
 
+/// How a host builds one window's image stores: a store whose loading the
+/// host drives, for the decoded-image bound the store asked for.
+pub type HostImageFactory = std::rc::Rc<dyn Fn(u32) -> ImageStore>;
+
 thread_local! {
-    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>> = const { std::cell::RefCell::new(None) };
+    /// The factories hosts keep for their windows, by each window's wake
+    /// scope ([`ImageStore::serve_window`]).
+    static HOST_FACTORIES: std::cell::RefCell<Vec<(WakeHandle, HostImageFactory)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The factory serving the window whose code is running, if its host keeps
+/// one. Windows that closed since are let go.
+fn host_factory() -> Option<HostImageFactory> {
+    let current = WakeHandle::new();
+    HOST_FACTORIES.with_borrow_mut(|kept| {
+        kept.retain(|(window, _)| window.same_open_scope(window));
+        kept.iter()
+            .find(|(window, _)| window.same_open_scope(&current))
+            .map(|(_, factory)| std::rc::Rc::clone(factory))
+    })
 }
 
 impl ImageStore {
-    /// Construct app caches under a host's asynchronous service while retaining
-    /// the requested decoded-image bound and component wake custody.
-    pub fn with_host_factory_with_max_dimension<R>(
-        factory: std::rc::Rc<dyn Fn(u32) -> Self>,
-        construct: impl FnOnce() -> R,
-    ) -> R {
-        struct Restore(Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                HOST_FACTORY.with_borrow_mut(|slot| *slot = self.0.take());
-            }
-        }
-        let _restore = Restore(HOST_FACTORY.with_borrow_mut(|slot| slot.replace(factory)));
-        construct()
+    /// Serve the image stores `window` builds through `factory` for as long
+    /// as its wake scope is open: every store built while that scope is
+    /// entered comes from the host, whether the window builds it as it is
+    /// constructed or later (a view part built once the window's room
+    /// arrived, a part built again). A store the window built on its own
+    /// would load through the toolkit's decoders on its background, which
+    /// a browser page leaves to the host: its pictures would never show.
+    pub fn serve_window(window: &WakeHandle, factory: HostImageFactory) {
+        HOST_FACTORIES.with_borrow_mut(|kept| {
+            kept.retain(|(kept, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
+            kept.push((window.clone(), factory));
+        });
     }
 
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
-        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
-            return factory(THUMBNAIL_MAX_DIMENSION);
-        }
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
     /// Build a store that runs at most `workers` fetch/decode jobs at once,
     /// clamped to 1..=4 so one store cannot monopolise the background pool.
+    /// A window its host serves ([`Self::serve_window`]) gets the host's.
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
+        if let Some(factory) = host_factory() {
+            return factory(THUMBNAIL_MAX_DIMENSION);
+        }
         Self::with_decode_options(fetch, workers, THUMBNAIL_MAX_DIMENSION)
     }
 
@@ -537,7 +555,7 @@ impl ImageStore {
     /// total cache memory limits remain the same as for the thumbnail store.
     pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
         let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
-        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
+        if let Some(factory) = host_factory() {
             return factory(max_dimension);
         }
         Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
