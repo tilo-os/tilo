@@ -294,8 +294,10 @@ as search's:
   whole document.
 - **Text search is the system's, now.** The shell already keeps a persistent index of what
   apps hold (`app_content_index`), which apps publish into over their broker route and which
-  answers even when an app is closed. An app's own search box and an agent program's `find` are
-  scoped queries against it. No app keeps a text-search index of its own.
+  answers even when an app is closed. Apps have no search box: their search button opens system
+  search scoped to the app or resource. System search answers from its own index only, and apps
+  only publish entries into it. No app holds a text-search index or answers search queries. An
+  agent program's `find` asks system search through the door, like any other system caller.
 - **Where the list index lives, for now.** The typed list index (columns, filters, pages) should
   belong to the platform's storage service, since apps
   own no storage and search must read it without a second copy. Today that service holds the
