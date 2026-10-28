@@ -435,7 +435,10 @@ case "$TILO_RUST_LTO" in \
     && build_phase rust-cleanup \
     && if [ "$TILO_CARGO_FRESHNESS" = clean ]; then \
          find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
-       fi
+       fi \
+    || exit
+# errexit ignores a failure anywhere in the list above but in its last command,
+# so `|| exit` is what stops the build at a phase that fails.
 
 build_phase elf-hardening
 os/scripts/verify-elf-hardening.sh "$out" \
