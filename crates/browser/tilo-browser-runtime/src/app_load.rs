@@ -4,10 +4,19 @@
 
 use std::collections::HashMap;
 
-/// How long a window waits for its application's code. A slow connection
-/// fetches a few megabytes well within it; a fetch still pending after it is
-/// stalled, and opening the window again starts a fresh one.
-pub(crate) const LOAD_BOUND_MS: u32 = 45_000;
+/// How long a window waits for its application's code. A fetch still pending
+/// after it is stalled, and opening the window again starts a fresh one.
+///
+/// Sized to the bytes an app's code actually is, not to "a few megabytes":
+/// `pkg/split.json` of a release desktop bundle measures 38.3 MB for the
+/// largest split app (typst_editor: 24.6 MB of its own plus 11 shared
+/// chunks), 13.0 MB for chat and 11.4 MB for notes. Over a 3 Mbps mobile
+/// link those are 102 s, 35 s and 30 s, so a 45 s bound declared a healthy
+/// download dead: the window said "could not be loaded" while the bytes
+/// were still arriving, and the person saw a window that never filled.
+/// 240 s covers the largest app down to about 1.3 Mbps, and still leaves a
+/// genuinely stalled fetch bounded.
+pub(crate) const LOAD_BOUND_MS: u32 = 240_000;
 
 /// The fetches in flight, each with the attempt that started it.
 #[derive(Debug, Default)]
@@ -45,6 +54,23 @@ impl Loads {
 mod tests {
     use super::*;
 
+    /// The worst case the bound has to outlast: the largest split app of a
+    /// release desktop bundle (`typst_editor`, 24.6 MB of its own plus 11
+    /// shared chunks) over a slow mobile link. Measured from
+    /// `pkg/split.json`; kept here so shrinking the bound below what an app
+    /// can actually be fails a test rather than a person's window.
+    #[test]
+    fn the_bound_outlasts_the_largest_app_on_a_slow_link() {
+        const LARGEST_APP_BYTES: u64 = 38_250_409;
+        const SLOW_LINK_BYTES_PER_SECOND: u64 = 2_000_000 / 8;
+        let needed = LARGEST_APP_BYTES * 1000 / SLOW_LINK_BYTES_PER_SECOND;
+        assert!(
+            u64::from(LOAD_BOUND_MS) > needed,
+            "{LOAD_BOUND_MS} ms must outlast {needed} ms, the largest app's \
+             code over a 2 Mbps link"
+        );
+    }
+
     #[test]
     fn a_stalled_fetch_settles_at_its_bound_and_a_reopen_fetches_again() {
         let mut loads = Loads::default();
@@ -76,5 +102,21 @@ mod tests {
             !loads.settle("so.tilo.notes", attempt),
             "its bound passing later changes nothing"
         );
+    }
+
+    /// The loader keeps no failure of its own: an app whose fetch ended is
+    /// startable again at once, for the window that was told it could not be
+    /// loaded and for any window opened after.
+    #[test]
+    fn an_app_whose_fetch_failed_is_still_fetchable() {
+        let mut loads = Loads::default();
+        let failed = loads.start("so.tilo.typst-editor").unwrap();
+        assert!(loads.settle("so.tilo.typst-editor", failed));
+        for _ in 0..3 {
+            let retry = loads
+                .start("so.tilo.typst-editor")
+                .expect("a window that gave up may fetch again");
+            assert!(loads.settle("so.tilo.typst-editor", retry));
+        }
     }
 }

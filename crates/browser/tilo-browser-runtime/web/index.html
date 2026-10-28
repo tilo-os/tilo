@@ -15,6 +15,12 @@
   <!-- The live plane's library, which joining a room imports once the
        runtime is in: fetched now, it is not a round trip on that path. -->
   <link rel="modulepreload" href="./media-moq-library.mjs">
+  <!-- The entry page's own module, for the same reason. Without this it is
+       asked for only after the runtime wasm's preload is under way, and its
+       imports then arrive in waves, each waiting on the module that imports
+       it: with it, the entry page's graph loads beside the runtime rather
+       than after it. -->
+  <link rel="modulepreload" href="./entry-page.mjs">
 <script>
 (()=>{
 // The entry pages' first script, inlined verbatim into each so it runs
