@@ -48,6 +48,23 @@ pub trait RoomTxn {
         now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
     ) -> Result<(), JoinError>;
+
+    /// [`Self::commit_governance`] of a change that only admits people
+    /// through their invitations ([`admit`]), each perhaps named as they
+    /// chose, and changes nothing else. A store may publish it as an
+    /// addition to earlier admissions rather than starting the room over;
+    /// by default it is committed like any other change.
+    ///
+    /// # Errors
+    /// As [`Self::commit_governance`].
+    fn commit_admission(
+        &mut self,
+        peer: StatePeer,
+        now: u64,
+        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+    ) -> Result<(), JoinError> {
+        self.commit_governance(peer, now, ledger)
+    }
 }
 
 /// Where a governor's rooms live: the one thing a relay and a device
@@ -138,7 +155,7 @@ pub fn admit(
     }
     let mut delivered = Vec::new();
     let ledger = room.ledger().clone();
-    room.commit_governance(candidate, now, &mut |governed| {
+    room.commit_admission(candidate, now, &mut |governed| {
         let mut completed = ledger.clone();
         delivered = completed.complete(governed, joins, &refusals)?;
         Ok(completed)

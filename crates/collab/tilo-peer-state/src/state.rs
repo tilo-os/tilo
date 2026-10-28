@@ -908,6 +908,13 @@ impl StatePeer {
         self.core.room_doc.as_deref()
     }
 
+    /// The heads of the committed room document, `None` without one. Equal
+    /// heads at two moments mean nothing was committed to the room between
+    /// them.
+    pub fn room_heads(&self) -> Option<Vec<automerge::ChangeHash>> {
+        Some(self.core.room_doc.as_deref()?.committed_heads())
+    }
+
     /// Start the room's document over from a base ([`room::base`]), as its
     /// authority does when the room admits someone new. Returns whether it
     /// did: a document holding nothing past its base stays as it is.

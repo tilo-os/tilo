@@ -1266,6 +1266,21 @@ impl RoomTxn for HeldRoom<'_> {
         self.committed = true;
         Ok(())
     }
+
+    fn commit_admission(
+        &mut self,
+        peer: tilo_peer_state::StatePeer,
+        now: u64,
+        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+    ) -> Result<(), CollaborationError> {
+        self.room
+            .commit_admission(peer, self.key, system_time(now), |record, peer| {
+                ledger(&governed(record, peer)).map_err(|error| error.to_string())
+            })?;
+        self.staged = false;
+        self.committed = true;
+        Ok(())
+    }
 }
 
 /// This relay's rooms, to the governor that answers their workspace-join

@@ -2720,3 +2720,84 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     );
     relay.shutdown().await;
 }
+
+/// Whether `room`'s publication was just started over (every entry a
+/// checkpoint) rather than added to (its last entry a change), and how
+/// many entries it holds.
+async fn publication_shape(rooms: &Rooms, room: &str) -> (bool, usize) {
+    let governed = rooms.room(room).await.unwrap();
+    let governed = governed.lock().await;
+    let outgoing = &governed.record.outgoing;
+    (
+        outgoing.iter().all(|publication| publication.checkpoint),
+        outgoing.len(),
+    )
+}
+
+/// A crowd arriving through the door costs the room one change each, added
+/// to what it publishes, not the whole room rebuilt, written and sent to
+/// every member once per arrival. Anything other than an arrival in between
+/// starts the room over at the next one, as before: a newcomer is never
+/// given what was taken back before they came.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays held through the assertions; Relay::shutdown consumes it"
+)]
+#[tokio::test]
+async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let room = created.room.clone();
+
+    // The first arrival starts the room over: nothing says yet that what it
+    // published since its last start holds only arrivals.
+    let (first, first_cert) = guest_device();
+    door_join(&rooms, &cert, &room, (&first, &first_cert), 1).await;
+    let (started_over, mut entries) = publication_shape(&rooms, &room).await;
+    assert!(started_over, "the first arrival starts the room over");
+
+    for seed in 2..=8 {
+        let (guest, guest_cert) = guest_device();
+        door_join(&rooms, &cert, &room, (&guest, &guest_cert), seed).await;
+        let (started_over, now) = publication_shape(&rooms, &room).await;
+        assert!(
+            !started_over,
+            "arrival {seed} after only arrivals adds to the publication"
+        );
+        assert!(now > entries, "arrival {seed} added its change");
+        entries = now;
+    }
+
+    // A change that is not an arrival: the next arrival starts over.
+    rooms
+        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .await
+        .unwrap();
+    let (late, late_cert) = guest_device();
+    door_join(&rooms, &cert, &room, (&late, &late_cert), 30).await;
+    assert!(
+        publication_shape(&rooms, &room).await.0,
+        "an arrival after another kind of change starts the room over"
+    );
+
+    // And arrivals after that start add to it again.
+    let (next, next_cert) = guest_device();
+    door_join(&rooms, &cert, &room, (&next, &next_cert), 31).await;
+    assert!(!publication_shape(&rooms, &room).await.0);
+
+    // Every arrival is a member.
+    let members = rooms.summary(&room).await.unwrap().members;
+    for device in [&first_cert, &late_cert, &next_cert] {
+        assert!(
+            members
+                .iter()
+                .any(|member| member.user_public_key == device.user_public_key),
+            "an arrival is a member of the room"
+        );
+    }
+    drop(rooms);
+    relay.shutdown().await;
+}

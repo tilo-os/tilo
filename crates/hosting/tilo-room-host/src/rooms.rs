@@ -165,6 +165,16 @@ struct RoomRecord {
     collaboration: collaboration::CollaborationState,
 }
 
+/// What a governance change of a room is, as far as starting the room's
+/// document over for newcomers goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    /// It only admits people ([`GovernedRoom::commit_admission`]).
+    Admission,
+    /// Anything else.
+    Other,
+}
+
 /// The devices governance lets read a room's channels: the room's governed
 /// member devices (`access`, as `peer` derived it at `now`), each record's
 /// channel less the devices a Read Deny on that record, its app or a pattern
@@ -260,6 +270,19 @@ struct GovernedRoom {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Rooms::settle`]).
     rebased: bool,
+    /// Every change published since the room's document last started over
+    /// at an admission was itself an admission ([`Self::commit_admission`]):
+    /// a person let in, perhaps named by their own choice, and nothing
+    /// changed or taken back. A newcomer may then be given that tail as it
+    /// is, since it shows nothing withdrawn before they joined, and the
+    /// room need not start over for them. Only kept in memory: a room read
+    /// back from its file starts over at its next admission, as before.
+    ///
+    /// Held as the room document's heads when that was last true, so a
+    /// write that reached the document any other way (a member's write the
+    /// governor took in) leaves them behind, and the next admission starts
+    /// over.
+    admissions_since_base: Option<Vec<automerge::ChangeHash>>,
     /// The session each of those hosts last opened here that this host
     /// answered ([`Rooms::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
@@ -368,6 +391,7 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
+            admissions_since_base: None,
             answered: HashMap::new(),
         };
         this.persist()?;
@@ -424,6 +448,7 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
+            admissions_since_base: None,
             answered: HashMap::new(),
         })
     }
@@ -588,9 +613,36 @@ impl GovernedRoom {
     /// one write before anything is answered.
     fn commit(
         &mut self,
-        mut candidate: StatePeer,
+        candidate: StatePeer,
         key: &SigningKey,
         now: SystemTime,
+        state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
+    ) -> Result<u64, String> {
+        self.commit_as(candidate, (key, now), Change::Other, state)
+    }
+
+    /// [`Self::commit`] of a change that only admits people: members added
+    /// through their invitations, each perhaps named as they chose, and
+    /// nothing else changed. While every change since the room's document
+    /// last started over was such an admission, the newcomers' change is
+    /// appended to the publication rather than starting the room over: a
+    /// crowd arriving together cost the room its whole state, rebuilt,
+    /// written and sent to every member, once per arrival.
+    pub(crate) fn commit_admission(
+        &mut self,
+        candidate: StatePeer,
+        key: &SigningKey,
+        now: SystemTime,
+        state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
+    ) -> Result<u64, String> {
+        self.commit_as(candidate, (key, now), Change::Admission, state)
+    }
+
+    fn commit_as(
+        &mut self,
+        mut candidate: StatePeer,
+        (key, now): (&SigningKey, SystemTime),
+        change: Change,
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
@@ -626,7 +678,19 @@ impl GovernedRoom {
             .take_while(|publication| !publication.checkpoint)
             .count();
         let mut rebased = false;
-        if tail >= MAX_PUBLICATION_TAIL || joined {
+        // Newcomers whose arrival only adds to a tail of earlier arrivals
+        // see nothing in it that was withdrawn before them: the room's
+        // document need not start over for them. Anything else since the
+        // last start, or a long tail, starts it over as before.
+        let appended_admission = joined
+            && change == Change::Admission
+            && tail < MAX_PUBLICATION_TAIL
+            && self
+                .admissions_since_base
+                .as_ref()
+                .is_some_and(|clean| self.peer.room_heads().as_ref() == Some(clean));
+        let started_over = (tail >= MAX_PUBLICATION_TAIL || joined) && !appended_admission;
+        if started_over {
             // Keep unchanged record checkpoints on their own channels; replacing
             // those baselines could discard member writes. A record changed by
             // this commit must still publish at the governance rollover.
@@ -684,6 +748,14 @@ impl GovernedRoom {
         }
         self.peer = candidate;
         self.rebased |= rebased;
+        // Clean from a start made at an admission; kept clean only by
+        // admissions appended to it; anything else spoils it until the next.
+        let clean = if started_over {
+            joined
+        } else {
+            appended_admission
+        };
+        self.admissions_since_base = clean.then(|| self.peer.room_heads()).flatten();
         crate::timing::event(
             "room.governance_commit",
             committing,
