@@ -73,7 +73,9 @@ pub mod model;
 pub mod oauth;
 pub mod reader;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod search;
 pub mod shortcuts_overlay;
 pub mod sidebar;

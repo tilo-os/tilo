@@ -484,6 +484,7 @@ impl GitClientApp {
 
     /// The app over the bundled sample repository: a populated, deterministic
     /// state with no repository on disk (screenshots and demos).
+    #[cfg(feature = "samples")]
     pub fn sample() -> Self {
         let (model, diffs) = crate::sample::model();
         Self::from_model(model, diffs)
@@ -1369,13 +1370,9 @@ impl GitClientApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
         mode: RunMode,
-        sample: Option<&crate::resource::SampleRepository>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.mode = mode;
-        if let Some(sample) = sample {
-            self.show_model(sample.model.clone(), sample.diffs.clone());
-        }
     }
 }
 
@@ -1778,7 +1775,7 @@ impl GitClientApp {
 }
 
 impl GitClientApp {
-    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
+    pub(crate) fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
         self.model = model;
         self.diffs = diffs;
         self.graph_layout = graph::layout(&mut self.model.commits);

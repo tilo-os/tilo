@@ -15,8 +15,10 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, LiveRow, ResourceApp,
+    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
@@ -1004,21 +1006,25 @@ impl ResourceApp for FileExplorerShell {
         // the person's home.
         let lent = cx.take_lent::<crate::StartupInputs>();
         let services = cx.take_lent::<crate::files_app::HostedFileServices>();
-        let widget = match (cx.fixture::<crate::scenarios::Scene>(), lent) {
-            (Some(scene), _) => FileExplorerWidget::for_scene(&scene),
-            (None, Some(inputs)) => match services {
-                Some(services) => {
-                    FileExplorerWidget::with_startup_inputs_and_services(inputs, services)
-                }
-                None => FileExplorerWidget::with_startup_inputs(inputs),
-            },
-            (None, None) => FileExplorerWidget::new(),
+        #[cfg(feature = "samples")]
+        if let Some(scene) = cx.fixture::<crate::scenarios::Scene>() {
+            let widget = FileExplorerWidget::for_scene(&scene);
+            cx.on_open(widget.opener());
+            return cx.surface(widget);
+        }
+        let widget = match (lent, services) {
+            (Some(inputs), Some(services)) => {
+                FileExplorerWidget::with_startup_inputs_and_services(inputs, services)
+            }
+            (Some(inputs), None) => FileExplorerWidget::with_startup_inputs(inputs),
+            (None, _) => FileExplorerWidget::new(),
         };
         // A search hit, or an agent's `open`, shows the row it names.
         cx.on_open(widget.opener());
         cx.surface(widget)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::scenarios()
     }
@@ -1028,6 +1034,7 @@ impl ResourceApp for FileExplorerShell {
     }
 
     /// A capture browses folders written for it, never the machine's own.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<FileExplorer>) {
         crate::scenarios::prepare(fixture);
     }

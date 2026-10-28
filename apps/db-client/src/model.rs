@@ -91,6 +91,8 @@ pub struct ConnectionProfile {
 }
 
 impl ConnectionProfile {
+    /// The connection that opens the sample database.
+    #[cfg(feature = "samples")]
     pub fn sqlite_sample() -> Self {
         Self {
             id: Uuid::new_v4(),

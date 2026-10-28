@@ -11,9 +11,9 @@
 //! exists only on the bundled offline basemap (captures and tests), never on
 //! the live map.
 
+use crate::basemap::{Basemap, RoadClass};
 use crate::failure;
 use crate::model::LatLon;
-use crate::sample::{Basemap, RoadClass};
 
 /// Congestion on a road segment, from free flow to a standstill. This is the
 /// signal a live report (or a routing provider's current-vs-typical speed

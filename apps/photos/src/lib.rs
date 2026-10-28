@@ -75,6 +75,7 @@ pub mod pixels;
 pub mod places;
 pub mod reference;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
 pub mod search;
 pub mod strings;
@@ -123,6 +124,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 
 pub use model::PhotoLibrary;
 pub use resource::PhotosShell;
+#[cfg(feature = "samples")]
 pub use sample::{shots_pattern, shots_pattern_variant};
 
 #[cfg(test)]

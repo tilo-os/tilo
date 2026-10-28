@@ -313,6 +313,7 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
     if cx.mode().is_live() {
         core.borrow_mut().refresh(None);
     }
+    #[cfg(feature = "samples")]
     crate::samples::stage(cx, &ui.door, &ui.selected, &ui.pane, &ui.sheet, &ui.picker);
 
     let follow = Rc::new(RefCell::new(follow(cx.live().clone(), &ui)));

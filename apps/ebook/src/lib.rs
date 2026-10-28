@@ -50,7 +50,9 @@ mod reader_keys;
 pub mod reader_theme;
 mod reading_settings;
 pub mod resource;
+#[cfg(feature = "samples")]
 mod scenarios;
+
 pub mod search_provider;
 mod store;
 #[cfg(test)]

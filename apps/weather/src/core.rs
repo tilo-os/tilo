@@ -378,6 +378,7 @@ impl Core {
 
     /// Show `forecasts` for the places a capture stages, in place of fetched
     /// ones.
+    #[cfg(feature = "samples")]
     pub(crate) fn show_fixture_forecasts(&mut self, forecasts: std::rc::Rc<WeatherModel>) {
         self.fixture_forecasts = Some(forecasts);
     }

@@ -39,6 +39,7 @@
 )]
 
 pub mod app;
+pub mod basemap;
 pub mod canvas;
 pub mod draw;
 mod endpoint_editor;
@@ -54,8 +55,11 @@ mod offline_panel;
 pub mod place_search;
 pub mod rank;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+#[cfg(feature = "samples")]
 mod scenario;
+
 pub mod tiles;
 pub mod traffic;
 pub mod workspace;

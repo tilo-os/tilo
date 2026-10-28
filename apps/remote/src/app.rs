@@ -80,10 +80,12 @@ enum LiveSession {
     Preview(SessionStatus),
     /// A connected session staged with a sample surface and no transport,
     /// for `--shots`. Never on the live path.
+    #[cfg(feature = "samples")]
     Sample(SampleSurface),
 }
 
 /// What a staged connected session shows.
+#[cfg(feature = "samples")]
 enum SampleSurface {
     /// A terminal grid, as an SSH session fills it.
     Terminal(Box<crate::vt::VtGrid>),
@@ -102,6 +104,7 @@ impl LiveSession {
                 SessionStatus::Unavailable(readiness.detail(*kind).into())
             }
             LiveSession::Preview(s) => s.clone(),
+            #[cfg(feature = "samples")]
             LiveSession::Sample(_) => SessionStatus::Connected,
         }
     }
@@ -798,7 +801,9 @@ impl RemoteApp {
                     self.apply(Action::EditConnection(id));
                 }
             }
+            #[cfg(feature = "samples")]
             "session-ssh" => self.sample_session(ConnectionKind::Ssh),
+            #[cfg(feature = "samples")]
             "session-vnc" => self.sample_session(ConnectionKind::Vnc),
             "session-rdp" => {
                 if let Some(id) = self.first_of_kind(ConnectionKind::Rdp) {
@@ -871,6 +876,7 @@ impl RemoteApp {
 
     /// Stage a connected session of `kind` showing its sample surface, with
     /// no transport (shots and tests only).
+    #[cfg(feature = "samples")]
     fn sample_session(&mut self, kind: ConnectionKind) {
         let Some(id) = self.first_of_kind(kind) else {
             return;
@@ -1293,8 +1299,10 @@ impl RemoteApp {
             cx.storage().settings::<crate::ssh::KnownHostsSetting>(),
         );
         self.capture = cx.mode() == ui::framework::RunMode::Capture;
+        #[cfg(feature = "samples")]
         if let Some(sample) = cx.fixture::<Sample>() {
             self.workspace.presence.clone_from(&sample.presence);
+
             self.tilo_devices.clone_from(&sample.devices);
             self.now_override = Some(sample.now_ms);
         }
@@ -1940,10 +1948,12 @@ mod effects;
 mod keys;
 mod live_session;
 mod secrets;
+#[cfg(feature = "samples")]
 mod seeds;
 mod session_pane;
 mod window_bar;
 
+#[cfg(feature = "samples")]
 pub(crate) use seeds::{Sample, sample_connections, sample_legacy_rdp};
 pub(crate) use session_pane::SessionPane;
 

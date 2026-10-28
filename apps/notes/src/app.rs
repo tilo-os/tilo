@@ -1528,6 +1528,7 @@ impl NotesApp {
 
     /// Stage a screenshot scenario: open the note it shows, with the notes
     /// above it expanded, and the save state it shows.
+    #[cfg(feature = "samples")]
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         let shown = crate::scenario::shown_note(scenario).and_then(|title| {
             self.workspace
@@ -1561,6 +1562,7 @@ impl NotesApp {
     /// Decode every image the notebook holds before a capture is drawn: a
     /// screenshot is one frame, which an image still decoding would show as
     /// its placeholder.
+    #[cfg(feature = "samples")]
     fn load_images_for_capture(&mut self) {
         let Some(store) = self.main.image_store().cloned() else {
             return;

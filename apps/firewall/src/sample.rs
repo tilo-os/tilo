@@ -1,5 +1,6 @@
-//! A realistic offline ruleset used solely to populate the `--shots`
-//! screenshot / demo build. The live app never uses this — it reads the
+//! A realistic offline ruleset the screenshot scenarios and tests show.
+//! The live app never uses this — it reads the
+
 //! real firewall via `firewall-cmd` (see [`crate::backend::import`]) and
 //! shows an honest unavailable state when firewalld can't be read. Models a
 //! typical laptop/workstation firewalld configuration with `public` active.

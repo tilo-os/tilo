@@ -16,6 +16,9 @@ name = "file-explorer"
 path = "src/main.rs"
 
 [features]
+# The folders the screenshot scenarios browse: development runs, captures and
+# tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 # Reach the PDF and archive engines through their engine libraries in the
 # runtime bundle (libtilo_pdf_engine.so, libtilo_archive_engine.so under
@@ -95,6 +98,7 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+file-explorer = { path = ".", features = ["samples"] }
 tar.workspace = true
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

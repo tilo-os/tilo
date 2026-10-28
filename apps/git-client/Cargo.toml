@@ -15,6 +15,9 @@ name = "git-client"
 path = "src/main.rs"
 
 [features]
+# The sample repository the screenshot scenarios show: development runs,
+# captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -49,6 +52,7 @@ shlex = "1.3"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+git-client = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 futures-util.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "macros"] }

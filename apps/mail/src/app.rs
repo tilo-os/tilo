@@ -628,6 +628,7 @@ impl MailApp {
 
     /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
     /// a pinned clock and nothing written outside the document.
+    #[cfg(feature = "samples")]
     pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
         let shared = MailState::shared(MailState::from_fixture(
             fixture,

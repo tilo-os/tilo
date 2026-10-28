@@ -449,12 +449,14 @@ impl RemoteApp {
             _ => return,
         };
         // A preview has no machine behind it to observe.
-        if matches!(
-            self.session.borrow().live,
-            Some(LiveSession::Preview(_) | LiveSession::Sample(_))
-        ) {
+        if matches!(self.session.borrow().live, Some(LiveSession::Preview(_))) {
             return;
         }
+        #[cfg(feature = "samples")]
+        if matches!(self.session.borrow().live, Some(LiveSession::Sample(_))) {
+            return;
+        }
+
         if self.workspace.presence_of(id) != presence {
             self.workspace.presence.insert(id, presence);
             self.dirty = true;

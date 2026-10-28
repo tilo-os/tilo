@@ -846,6 +846,7 @@ pub struct BooksApp {
     /// folders, imports and reads the device's own grants.
     live: bool,
     /// The books a screenshot reads in place of files.
+    #[cfg(feature = "samples")]
     sample: Option<std::rc::Rc<crate::scenarios::SampleShelf>>,
     /// Shelf rows whose bytes were looked for, found or not, so a row this
     /// device cannot read is not looked for again on every change.
@@ -1238,6 +1239,7 @@ impl BooksApp {
             content: None,
             bundled_library: false,
             live: true,
+            #[cfg(feature = "samples")]
             sample: None,
             hydrated: std::collections::HashSet::new(),
             shelving: std::collections::HashSet::new(),
@@ -1384,6 +1386,7 @@ impl BooksApp {
 
     /// Screenshot-only: say the reading position in the window's bar, as a
     /// page change does. Never armed at runtime.
+    #[cfg(feature = "samples")]
     fn arm_reader_bubble_for_shots(&mut self) {
         self.page_notice.show(self.page_line());
     }
@@ -1819,15 +1822,8 @@ impl BooksApp {
     ) {
         self.hydrated
             .extend(entries.iter().map(|entry| entry.id.clone()));
-        let loaded: Vec<content::LoadedBook> = if let Some(sample) = &self.sample {
-            entries
-                .iter()
-                .filter_map(|entry| sample.book(&entry.id))
-                .map(|(book, path)| content::LoadedBook {
-                    book: book.clone(),
-                    path: path.clone(),
-                })
-                .collect()
+        let loaded: Vec<content::LoadedBook> = if let Some(loaded) = self.sample_books(entries) {
+            loaded
         } else {
             let mut paths = self.local_library.books.clone();
             for (id, path) in found {
@@ -1844,6 +1840,35 @@ impl BooksApp {
             Arc::make_mut(&mut self.library).push(Arc::new(loaded.book));
         }
         self.dirty = true;
+    }
+
+    /// The books of `entries` a screenshot's sample shelf holds, in place
+    /// of files; `None` outside a capture.
+    #[cfg(feature = "samples")]
+    fn sample_books(
+        &self,
+        entries: &[crate::model::LibraryEntry],
+    ) -> Option<Vec<content::LoadedBook>> {
+        let sample = self.sample.as_ref()?;
+        Some(
+            entries
+                .iter()
+                .filter_map(|entry| sample.book(&entry.id))
+                .map(|(book, path)| content::LoadedBook {
+                    book: book.clone(),
+                    path: path.clone(),
+                })
+                .collect(),
+        )
+    }
+
+    #[cfg(not(feature = "samples"))]
+    #[expect(clippy::unused_self, reason = "the sample shelf's stand-in")]
+    fn sample_books(
+        &self,
+        _entries: &[crate::model::LibraryEntry],
+    ) -> Option<Vec<content::LoadedBook>> {
+        None
     }
 
     /// Open the book a launch, an effect or a bundled start asked for, once
@@ -3597,7 +3622,10 @@ impl BooksApp {
     pub(crate) fn attach_host(&mut self, cx: &ui::framework::SurfaceCx<crate::resource::Ebook>) {
         self.live = cx.mode().is_live();
         self.content = cx.content();
-        self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
+        #[cfg(feature = "samples")]
+        {
+            self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
+        }
         self.catalogue_setting = Some(cx.settings());
         if self.live {
             let catalogue = crate::catalogue::DeviceCatalogue::on_this_device();
@@ -8909,7 +8937,9 @@ mod query_view;
 mod search_worker;
 mod settings_page;
 use settings_page::{SettingsColumn, SettingsRow};
+#[cfg(feature = "samples")]
 mod stage;
+
 use search_worker::SearchWorker;
 
 pub(crate) use query_view::PASSAGE;

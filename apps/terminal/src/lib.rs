@@ -31,7 +31,9 @@ pub mod parse;
 pub mod preferences;
 pub mod resource;
 pub mod runs;
+#[cfg(feature = "samples")]
 mod scenarios;
+
 pub mod screen;
 pub mod target;
 pub mod undoability;

@@ -19,7 +19,9 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Invoke, Refusal, resource};
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Refusal, resource};
 use ui::widget::Element;
 
 use crate::app::FeedsApp;
@@ -304,6 +306,7 @@ impl ResourceApp for FeedsShell {
         Some(&CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "sidebar-open",
@@ -329,6 +332,7 @@ impl ResourceApp for FeedsShell {
 
     /// The bundled sample library, subscribed and fetched, under every
     /// scenario but the first-run `empty` one.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
         if name == Some("empty") {
             return Vec::new();
@@ -438,6 +442,7 @@ impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
 
 /// The field edits that put every folder, subscription and article of
 /// `library` into an empty one, under their ids.
+#[cfg(feature = "samples")]
 pub(crate) fn whole(library: &Library) -> Vec<tilo_resource::Edit<Library>> {
     let paths = Library::paths();
     let folders = library

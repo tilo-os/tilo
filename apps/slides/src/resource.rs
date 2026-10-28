@@ -3,9 +3,9 @@
 
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, ViewCx,
-};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
+use ui::framework::{EffectAnswer, EffectCx, LaunchInput, ResourceApp, ResourceSurface, ViewCx};
 
 use crate::effects::SlidesEffect;
 use ui::record::RecordId;
@@ -14,6 +14,7 @@ use ui::widget::Element;
 
 use crate::app::SlidesApp;
 use crate::deck::Deck;
+#[cfg(feature = "samples")]
 use crate::model::seed_deck;
 
 /// The media type of an ODF presentation (`.odp`).
@@ -93,6 +94,7 @@ impl ResourceApp for SlidesShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             // The sample deck in the editor, as it opens.
@@ -139,6 +141,7 @@ impl ResourceApp for SlidesShell {
     }
 
     /// The `image` scenario's picture is in the capture's content store.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Deck>) {
         if fixture.scenario() == Some("image") {
             let _ = crate::assets::store_asset(fixture.content(), &crate::sample::photo_png());
@@ -147,6 +150,7 @@ impl ResourceApp for SlidesShell {
 
     /// Every scenario but `empty` opens the sample deck; the long and
     /// picture scenarios a variant of it.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Deck>> {
         let deck = match name {
             Some("empty") => return Vec::new(),

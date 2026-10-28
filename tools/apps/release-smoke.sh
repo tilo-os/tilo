@@ -146,9 +146,11 @@ typst() (
   runtime=$(mktemp -d)
   chmod 700 "$runtime"
   shot="$runtime/typst-editor.png"
+  # A release build carries no sample documents: the shot opens one of its own.
+  printf '= Release smoke\n\nTypeset by the engine library.\n' >"$runtime/smoke.typ"
   status=0
   XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
-    timeout 300 $target/thin-app/typst-editor --shots="$shot" \
+    timeout 300 $target/thin-app/typst-editor --shots="$shot" "$runtime/smoke.typ" \
     >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
   if (( status != 0 )) || [[ ! -s $shot ]]; then
     grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true

@@ -24,6 +24,7 @@ pub mod editor;
 pub mod locales;
 pub mod model;
 pub mod proposal;
+#[cfg(feature = "samples")]
 mod samples;
 mod view;
 
@@ -141,10 +142,12 @@ impl ResourceApp for App {
         view::root(cx)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         samples::SCENARIOS
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Workbench>> {
         samples::drafts(name)
     }

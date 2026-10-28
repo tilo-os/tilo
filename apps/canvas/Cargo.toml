@@ -14,6 +14,9 @@ name = "canvas"
 path = "src/main.rs"
 
 [features]
+# The sample artworks the screenshot scenarios paint: development runs,
+# captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 # Paint and find subjects through the painting engines' library in the runtime
 # bundle (libtilo_paint_engine.so, crates/runtime/engines/paint) instead of
@@ -65,6 +68,7 @@ zip.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+canvas = { path = ".", features = ["samples"] }
 # Saving to and opening from a file in Files, in a directory of the test's.
 tempfile.workspace = true
 # A fresh content store, for opening a saved artwork where its pictures

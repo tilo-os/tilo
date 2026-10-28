@@ -44,7 +44,9 @@ pub mod pptx;
 mod presentation;
 pub mod render;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod search;
 pub mod strings;
 

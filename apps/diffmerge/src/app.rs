@@ -463,8 +463,10 @@ impl DiffMergeApp {
                 self.show(Mode::Merge);
                 self.arm_status_bubble_for_shots();
             }
+            #[cfg(feature = "samples")]
             Some("folders") => {
                 self.folders = Some(crate::samples::folder_comparison());
+
                 self.showing_folders = true;
                 self.folder_selection = 3;
             }

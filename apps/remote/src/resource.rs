@@ -5,13 +5,16 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{self, ActionCx, Id, Invoke, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, Id, Refusal, resource};
 use ui::widget::Element;
 
 use crate::actions::RemoteEffect;
@@ -103,6 +106,7 @@ impl Remote {
 pub struct RemoteShell;
 
 /// The screenshot scenarios; a plain `--shots` is the saved-connection list.
+#[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "empty",
     "pinned",
@@ -141,6 +145,7 @@ impl ResourceApp for RemoteShell {
         cx.surface(app)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -154,6 +159,7 @@ impl ResourceApp for RemoteShell {
     /// What a capture shows that the document does not hold: the time "last
     /// used" is read against, which machines answered, the Tilo devices
     /// nearby.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Remote>) {
         fixture.provide(crate::app::Sample::new());
     }
@@ -161,6 +167,7 @@ impl ResourceApp for RemoteShell {
     /// Every scenario but `empty` shows a lived-in list of saved machines,
     /// written through the same actions the form, the pin control and an
     /// opened session use.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Remote>> {
         if name == Some("empty") {
             return Vec::new();

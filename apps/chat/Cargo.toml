@@ -20,6 +20,9 @@ path = "src/main.rs"
 web-features = []
 
 [features]
+# The screenshot scenarios and the messages they stage: development runs,
+# captures and tests only, never a release.
+samples = []
 default = ["video"]
 thin = ["dep:runtime-dylib"]
 # Reach the emoji catalogue (emoji, with its names and keywords in every
@@ -78,6 +81,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
+chat = { path = ".", features = ["samples"] }
 # The page's own model service, set up and asked as a browser page does.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 agent-provider-config = { path = "../../crates/agent/provider-config" }

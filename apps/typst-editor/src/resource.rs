@@ -10,15 +10,16 @@
 
 use std::rc::Rc;
 
-use ui::framework::{
-    Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
+use ui::framework::{LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::record::RecordId;
 use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
 use crate::app::TypstApp;
+#[cfg(feature = "samples")]
 use crate::samples::{DEFAULT_INDEX, SAMPLES};
 
 ui::embedded_catalog!(static CATALOG, ["en-US"]);
@@ -146,6 +147,7 @@ pub(crate) fn new_file(name: &str, path: Option<&str>, source: &str) -> Invoke<W
 
 /// The bundled example a capture shows, with a fixed id so every capture of
 /// a scenario is the same.
+#[cfg(feature = "samples")]
 pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<(Id, TypstFile)> {
     SAMPLES
         .iter()
@@ -168,6 +170,7 @@ pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<(Id, TypstFile)> {
 }
 
 /// The id of the bundled example at `index` in a capture.
+#[cfg(feature = "samples")]
 pub(crate) fn sample_id(index: usize) -> Id {
     Id::from_raw(format!("sample-{index}"))
 }
@@ -219,6 +222,7 @@ impl ResourceApp for TypstEditorShell {
         vec![file]
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "preview",
@@ -240,11 +244,13 @@ impl ResourceApp for TypstEditorShell {
         Some(&CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workspace>) {
         fixture.provide(CaptureFile(sample_id(DEFAULT_INDEX)));
     }
 
     /// Every capture shows the bundled examples.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
         sample_files(name)
             .iter()
@@ -257,6 +263,7 @@ impl ResourceApp for TypstEditorShell {
 }
 
 /// The file a capture shows first.
+#[cfg(feature = "samples")]
 pub(crate) struct CaptureFile(pub(crate) Id);
 
 impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {

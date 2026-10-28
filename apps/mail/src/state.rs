@@ -415,6 +415,7 @@ impl MailState {
 
     /// What a screenshot shows: the fixture's mailbox, accounts and clock,
     /// with a conversation selected so the reader is populated.
+    #[cfg(feature = "samples")]
     pub fn from_fixture(
         fixture: &crate::sample::MailFixture,
         avatars: crate::avatars::Avatars,

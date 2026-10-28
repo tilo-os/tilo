@@ -15,6 +15,9 @@ name = "code-editor"
 path = "src/main.rs"
 
 [features]
+# The sample project the screenshot scenarios open: development runs, captures
+# and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 benchmarks = ["ui/test-support"]
 
@@ -56,6 +59,7 @@ sha2.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+code-editor = { path = ".", features = ["samples"] }
 iai-callgrind = "=0.16.1"
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

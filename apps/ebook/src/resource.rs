@@ -14,9 +14,11 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
-    SeedCx, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, Effected, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SeedCx,
+    SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::Effect;
@@ -926,14 +928,17 @@ impl ResourceApp for EbookShell {
         bundled_seed(bundled_library())
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::SCENARIOS
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Ebook>) {
         crate::scenarios::fixture(fixture);
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Ebook>> {
         crate::scenarios::actions(name)
     }
@@ -1140,6 +1145,7 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("read"));
     }

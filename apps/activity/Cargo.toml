@@ -15,6 +15,9 @@ name = "activity"
 path = "src/main.rs"
 
 [features]
+# The sample activity and the screenshot scenarios that show it: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -25,6 +28,7 @@ serde_json.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
+activity = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

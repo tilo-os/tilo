@@ -14,10 +14,10 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::tokens::colors::PresenceHue;
 
+use crate::basemap::{Area, AreaKind, Basemap, RoadClass};
 use crate::draw;
 use crate::geo::Projection;
 use crate::model::{Category, MapModel, Poi, TransitJourney, TransitMode};
-use crate::sample::{Area, AreaKind, Basemap, RoadClass};
 use crate::tiles::{self, TileLayer};
 
 /// Slippy-map zoom at and above which POI markers upgrade from small category

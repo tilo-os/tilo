@@ -15,6 +15,9 @@ name = "photos"
 path = "src/main.rs"
 
 [features]
+# The test-pattern photographs the screenshot scenarios show: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -45,6 +48,7 @@ tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
 
 [dev-dependencies]
+photos = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 vello_encoding.workspace = true

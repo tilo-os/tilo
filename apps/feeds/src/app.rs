@@ -48,10 +48,12 @@ use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
     Article, Filter, Id, Library, ReadFont, ReadSettings, ReadTheme, Row, normalize_tags,
 };
+use crate::opml;
 use crate::reader_pane::{ReaderPane, ReaderState};
 use crate::resource::library;
+#[cfg(feature = "samples")]
+use crate::sample;
 use crate::sidebar::SidebarNav;
-use crate::{opml, sample};
 
 fn opml_import_request() -> PickRequest {
     PickRequest::open("Import OPML", "Import")
@@ -479,8 +481,8 @@ pub(crate) struct Core {
     refresh_reply: Option<ui::framework::EffectReply>,
     /// The document heads the mirrored store was last reconciled against.
 
-    /// The hermetic `--shots`/demo build seeds the bundled sample library;
-    /// the live app starts empty on the person's document.
+    /// The live app starts empty on the person's document; tests and the
+    /// screenshot scenarios hand it the sample library.
     /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
@@ -497,14 +499,9 @@ fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
 }
 
 impl Core {
-    fn new(demo: bool) -> Self {
-        let store = Rc::new(if demo {
-            sample::store()
-        } else {
-            Library::new()
-        });
-        let mut core = Self {
-            store,
+    fn new(store: Library) -> Self {
+        Self {
+            store: Rc::new(store),
             filter: Filter::All,
             selected: None,
             settings: ReadSettings::default(),
@@ -535,11 +532,7 @@ impl Core {
             window: Rect::ZERO,
             show_pane: None,
             first_feed_row: None,
-        };
-        if demo {
-            core.select_featured();
         }
-        core
     }
 
     /// Open the richest unread article so a capture lands on a full body.
@@ -1635,16 +1628,20 @@ impl FeedsApp {
     /// The live app: starts empty on the person's subscriptions and never
     /// fabricates feeds.
     pub fn new() -> Self {
-        Self::build(false)
+        Self::build(Library::new())
     }
 
-    /// The populated build used only by the hermetic `--shots`/test path.
+    /// The sample library, on its richest unread article, for tests.
+    #[cfg(feature = "samples")]
     pub fn new_demo() -> Self {
-        Self::build(true)
+        let app = Self::build(sample::store());
+        app.core.borrow_mut().select_featured();
+        app
     }
 
-    fn build(demo: bool) -> Self {
-        let core: Shared = Rc::new(RefCell::new(Core::new(demo)));
+    fn build(store: Library) -> Self {
+        let core: Shared = Rc::new(RefCell::new(Core::new(store)));
+
         let requests: Requests = Rc::default();
         // The reader's commands are the window bar's slots
         // ([`Self::declare_window_toolbar`]): the shell draws no header row.

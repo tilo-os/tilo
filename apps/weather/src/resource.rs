@@ -12,7 +12,9 @@ use ui::tilo_resource::{Atom, JsonSchema, Refusal, SearchEntry};
 use crate::actions::WeatherEffect;
 use crate::app::WeatherApp;
 pub use crate::model::Weather;
-use crate::model::{Place, SavedLocation, WeatherModel};
+#[cfg(feature = "samples")]
+use crate::model::WeatherModel;
+use crate::model::{Place, SavedLocation};
 
 /// A place to save, as found by the search or named by an agent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -156,6 +158,7 @@ impl Weather {
 
 /// What a capture shows in place of the network: the bundled forecasts of
 /// the sample places, and the units they are shown in.
+#[cfg(feature = "samples")]
 pub struct SampleForecasts(pub Rc<WeatherModel>);
 
 /// Framework app: the weather widget is the surface over [`Weather`].
@@ -176,6 +179,7 @@ impl ResourceApp for WeatherShell {
         cx.surface(WeatherApp::new())
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "onboarding",
@@ -199,12 +203,14 @@ impl ResourceApp for WeatherShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Weather>) {
         fixture.provide(SampleForecasts(Rc::new(crate::sample::sample_model())));
     }
 
     /// Every scenario but the first-run onboarding shows the sample places,
     /// the first of them the default.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Weather>> {
         if name == Some("onboarding") {
             return Vec::new();

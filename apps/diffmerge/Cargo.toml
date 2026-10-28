@@ -14,6 +14,9 @@ name = "diffmerge"
 path = "src/main.rs"
 
 [features]
+# The folder comparison a screenshot scenario shows: development runs,
+# captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -37,6 +40,7 @@ similar = "2.6"
 # never draws its own file picker (HIG §5).
 
 [dev-dependencies]
+diffmerge = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The bound a test waits on work it started by.
 tilo-test-env = { path = "../../crates/dev/test-env" }

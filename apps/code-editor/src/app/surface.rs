@@ -419,6 +419,7 @@ impl CodeApp {
     }
 
     /// Open the sample project a capture's fixture wrote, on its main file.
+    #[cfg(feature = "samples")]
     pub(crate) fn open_sample(&mut self, root: &Path) {
         if matches!(self.open_project_dir(root), Some(Ok(()))) {
             let main = crate::disk::canonical(&root.join("src").join("main.rs"));
@@ -439,6 +440,7 @@ impl CodeApp {
         self.staging = Some(Staging {
             scenario: scenario.map(str::to_owned),
         });
+        #[cfg(feature = "samples")]
         if scenario == Some("hardware")
             && let Some(root) = self.project_root()
         {

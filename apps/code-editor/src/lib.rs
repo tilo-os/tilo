@@ -51,7 +51,9 @@ pub mod native_fixture;
 pub mod project;
 pub mod resource;
 mod row_viewport;
+#[cfg(feature = "samples")]
 mod sample_project;
+
 mod search;
 pub mod search_entries;
 pub mod settings;

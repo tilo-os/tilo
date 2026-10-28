@@ -8,6 +8,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, LaunchInput, ResourceApp, ResourceSurface, SeedCx,
     SurfaceCx, ViewCx,
 };
+#[cfg(feature = "samples")]
 use ui::headless::FrameHarness;
 use ui::permissions::UserId;
 use ui::tilo_resource::Invoke;
@@ -101,10 +102,12 @@ impl ResourceApp for NotesShell {
         Some(&crate::metadata::CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenario::SCENARIOS
     }
 
+    #[cfg(feature = "samples")]
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             // The drawer only exists below the narrow breakpoint.
@@ -113,6 +116,7 @@ impl ResourceApp for NotesShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Notebook>> {
         crate::scenario::actions(name)
             .iter()
@@ -121,6 +125,7 @@ impl ResourceApp for NotesShell {
             .collect()
     }
 
+    #[cfg(feature = "samples")]
     fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
         crate::scenario::input(name, input)
     }
@@ -160,6 +165,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
         self.attach_people(cx.people());
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
     }

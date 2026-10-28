@@ -8,13 +8,16 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{self, ActionCx, Effect, Id, Invoke, Refusal, SearchEntry, resource};
+use ui::tilo_resource::{self, ActionCx, Effect, Id, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 use uuid::Uuid;
 
@@ -210,18 +213,23 @@ pub enum DbEffect {
 
 /// What a capture shows in place of a database server: the bundled sample
 /// catalog, opened for the connection with this id.
+#[cfg(feature = "samples")]
 pub(crate) struct SampleDatabase {
     pub(crate) connection: Uuid,
 }
 
 /// The connection a capture opens on the bundled sample catalog.
+#[cfg(feature = "samples")]
 const SAMPLE_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0001);
 /// Two example remotes, listed disconnected beside the sample.
+#[cfg(feature = "samples")]
 const ANALYTICS_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0002);
+#[cfg(feature = "samples")]
 const SHOP_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0003);
 
 /// The connections a populated capture lists: the bundled sample, then two
 /// remotes that are not reachable from a screenshot.
+#[cfg(feature = "samples")]
 fn sample_connections() -> Vec<ConnectionProfile> {
     let mut sample = ConnectionProfile::sqlite_sample();
     sample.id = SAMPLE_CONNECTION;
@@ -275,6 +283,7 @@ impl ResourceApp for DbClientShell {
     /// `empty` is the first run; every other scenario shows the bundled
     /// sample catalog with a query run against it, on the tab or dialog it
     /// names (see `DbClientApp::stage_scenario`).
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "data",
@@ -287,6 +296,7 @@ impl ResourceApp for DbClientShell {
         ]
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workspace>) {
         if fixture.scenario() != Some("empty") {
             fixture.provide(SampleDatabase {
@@ -295,6 +305,7 @@ impl ResourceApp for DbClientShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
         if name == Some("empty") {
             return Vec::new();

@@ -34,6 +34,7 @@ pub mod model;
 mod note;
 mod project;
 mod runs;
+#[cfg(feature = "samples")]
 mod sample;
 mod task_chip;
 mod thread;
@@ -154,18 +155,18 @@ impl ResourceApp for App {
         (1240, 780)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         sample::SCENARIOS
     }
 
     /// A capture cannot make six issues and label them: the scenario stages
     /// the tracker it reached as the record's start, and its views after.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Tracker>) {
-        let Some(scenario) = fixture.scenario() else {
-            return;
-        };
-        let _ = scenario;
-        fixture.start(sample::tracker(fixture.person()));
+        if fixture.scenario().is_some() {
+            fixture.start(sample::tracker(fixture.person()));
+        }
     }
 
     fn view(cx: &mut ViewCx<Tracker>) -> Element {
@@ -377,9 +378,12 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
         opener.open(issue);
         Ok::<(), Refusal>(())
     });
-    let stage = nav.clone();
-    let staged_for_stage = staged.clone();
-    cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged_for_stage.get()));
+    #[cfg(feature = "samples")]
+    {
+        let stage = nav.clone();
+        let staged_for_stage = staged.clone();
+        cx.on_stage(move |scenario| sample::stage(scenario, &stage, &staged_for_stage.get()));
+    }
     let asking = nav.asking.clone();
     let open = nav.clone();
     cx.effects(move |effect: TasksEffect, cx: &mut EffectCx<Tracker>| {

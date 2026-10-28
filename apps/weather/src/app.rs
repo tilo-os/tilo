@@ -46,7 +46,9 @@ use crate::core::{Core, ForecastNotice, NavIntent};
 use crate::model::LocationId;
 use crate::net::WeatherService;
 use crate::panes::{DetailPane, OverviewPane};
-use crate::resource::{SampleForecasts, Weather};
+#[cfg(feature = "samples")]
+use crate::resource::SampleForecasts;
+use crate::resource::Weather;
 
 /// The overview rail's places (id, name, condition glyph) and the selected one.
 type RailPlaces = (Vec<(String, String, Icon)>, Option<String>);
@@ -127,7 +129,9 @@ impl WeatherApp {
                 self.live = true;
                 self.core.borrow_mut().units = crate::region::load_units();
             }
-            RunMode::Capture => {
+            RunMode::Capture =>
+            {
+                #[cfg(feature = "samples")]
                 if let Some(sample) = cx.fixture::<SampleForecasts>() {
                     let mut core = self.core.borrow_mut();
                     core.units = sample.0.units;
@@ -476,10 +480,12 @@ impl WeatherApp {
                 self.nav.snap();
                 self.core.borrow_mut().seed_scrolled();
             }
+            #[cfg(feature = "samples")]
             "search" => self
                 .core
                 .borrow_mut()
                 .seed_search_highlighted("Par", crate::sample::sample_geocode_results()),
+
             "search_loading" => self.core.borrow_mut().seed_search_loading("Reykjav"),
             "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
             "offline" => self

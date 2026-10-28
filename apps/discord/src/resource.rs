@@ -400,10 +400,12 @@ impl ResourceApp for Discord {
 
     /// A bridged server cannot be staged by a capture: the bridge observes
     /// it from Discord, so the scene is written as the record's start.
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::sample::SCENARIOS
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Guild>) {
         let Some(scenario) = fixture.scenario() else {
             return;

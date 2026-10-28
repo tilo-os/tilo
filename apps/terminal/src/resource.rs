@@ -734,6 +734,7 @@ impl ResourceApp for TerminalShell {
         cx.surface(crate::TerminalView::new(widget))
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenarios::SCENARIOS
     }
@@ -780,6 +781,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(name) = scenario {
             self.stage_scenario(name);
@@ -860,6 +862,7 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
             );
         }
     }
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(name) = scenario {
             self.stage_scenario(name);

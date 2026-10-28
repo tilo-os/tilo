@@ -59,7 +59,9 @@ pub mod app;
 pub mod model;
 pub mod resource;
 pub mod rfb;
+#[cfg(feature = "samples")]
 mod sample;
+
 pub mod session;
 pub mod ssh;
 mod view;

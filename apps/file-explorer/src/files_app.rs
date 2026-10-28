@@ -1871,6 +1871,7 @@ impl FileExplorerWidget {
     /// The window a screenshot shows: the scene's made-up home and folders,
     /// previews cached in the scene, and nothing read from the machine the
     /// capture is taken on.
+    #[cfg(feature = "samples")]
     pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
         enable_pdf_previews();
         let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)

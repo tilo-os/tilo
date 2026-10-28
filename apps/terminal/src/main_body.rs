@@ -2827,6 +2827,7 @@ impl TerminalWidget {
 
     /// Stage screenshot scenario `name`: the output its process printed,
     /// parsed as PTY output, and the view state shown over it.
+    #[cfg(feature = "samples")]
     pub(crate) fn stage_scenario(&mut self, name: &str) {
         // The staged output is an open session's: a capture has no process
         // behind it, but only the ended scenario shows the session closed.
@@ -2843,6 +2844,7 @@ impl TerminalWidget {
     }
 
     /// The view state scenario `name` shows over its output.
+    #[cfg(feature = "samples")]
     fn stage_view(&mut self, name: &str) {
         match name {
             "scrollback" => self.scroll_up(20),

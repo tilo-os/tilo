@@ -67,7 +67,9 @@ pub mod notion;
 pub mod ods;
 pub mod records;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod settings;
 pub mod workbook;
 pub mod xlsx;

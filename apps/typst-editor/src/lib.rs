@@ -35,7 +35,9 @@ pub mod page_text;
 pub mod pages;
 pub mod preview;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod samples;
+
 pub mod worker;
 
 /// The app as every host mounts it.

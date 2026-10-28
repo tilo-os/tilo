@@ -66,6 +66,7 @@ impl CallChromeMotion {
         }
     }
 
+    #[cfg(feature = "samples")]
     pub(crate) fn pin_for_visual_review(&mut self, value: f32) {
         self.pinned = Some(value.clamp(0.0, 1.0));
         self.sampled = self.pinned.unwrap_or(0.0);

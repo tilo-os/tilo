@@ -77,6 +77,7 @@ impl BarMotion {
     }
 
     /// Show the bar at rest, for a deterministic shot.
+    #[cfg(feature = "samples")]
     pub(crate) fn settle_for_visual_review(&mut self) {
         self.settled = true;
     }

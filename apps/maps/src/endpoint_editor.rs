@@ -203,6 +203,7 @@ impl EndpointEditor {
         }
     }
 
+    #[cfg(feature = "samples")]
     pub(super) fn begin_edit(&mut self, endpoint: Endpoint) {
         self.focus(endpoint);
     }

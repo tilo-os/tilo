@@ -42,7 +42,11 @@ pub mod resource;
 #[cfg(test)]
 mod surface_volume;
 pub use ui::num;
+mod peer_edit;
+pub use peer_edit::{PeerEdit, peer_edit_changes};
+#[cfg(feature = "samples")]
 pub mod scenario;
+
 pub mod search;
 pub mod shortcuts_overlay;
 pub mod sidebar;

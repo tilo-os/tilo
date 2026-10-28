@@ -54,6 +54,7 @@ pub mod model;
 pub mod panels;
 pub mod repo;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
 pub mod settings;
 pub mod shared;
@@ -67,4 +68,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(GitClientShell)
 }
 
-pub use resource::{GitClient, GitClientShell, SCENARIOS};
+#[cfg(feature = "samples")]
+pub use resource::SCENARIOS;
+pub use resource::{GitClient, GitClientShell};

@@ -47,7 +47,9 @@ pub mod opml;
 mod reader_pane;
 pub mod reader_theme;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod search;
 mod sidebar;
 

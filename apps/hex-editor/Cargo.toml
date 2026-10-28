@@ -15,6 +15,9 @@ name = "hex-editor"
 path = "src/main.rs"
 
 [features]
+# The buffer the screenshot scenarios open: development runs, captures and
+# tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -30,6 +33,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+hex-editor = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

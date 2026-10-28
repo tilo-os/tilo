@@ -25,7 +25,9 @@ mod file;
 pub mod inspector;
 pub mod model;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod search;
 pub mod view;
 

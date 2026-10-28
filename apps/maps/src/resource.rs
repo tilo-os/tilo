@@ -4,14 +4,19 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, RunMode,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{self, Effect, Invoke, SearchEntry};
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{self, Effect, SearchEntry};
 use ui::widget::Element;
 
 use crate::app::MapsApp;
+#[cfg(feature = "samples")]
 use crate::scenario::Sample;
 use crate::workspace::Workspace;
 
@@ -79,6 +84,7 @@ impl ResourceApp for MapsShell {
     /// A launch may name a search (`geo:0,0?q=cafe`).
     const ARGUMENTS: usize = 1;
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::scenario::SCENARIOS
     }
@@ -87,15 +93,18 @@ impl ResourceApp for MapsShell {
         Some(&crate::CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         crate::scenario::viewport(scenario)
     }
 
     /// A capture shows the bundled sample city instead of live imagery.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workspace>) {
         crate::scenario::prepare(fixture);
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
         crate::scenario::actions(name)
     }
@@ -109,10 +118,14 @@ impl ResourceApp for MapsShell {
                 Ok(cache) => MapsApp::new_with_cache_dir(cache.join("tiles")),
                 Err(_) => MapsApp::new(),
             },
+            #[cfg(feature = "samples")]
             RunMode::Capture => MapsApp::sample(
                 cx.fixture::<Sample>()
                     .map_or(Sample::City, |sample| *sample),
             ),
+            // Without the sample city a capture is the empty map.
+            #[cfg(not(feature = "samples"))]
+            RunMode::Capture => MapsApp::offline_empty(),
             RunMode::Past => MapsApp::past(),
         };
         // A live window launched to search ("Search Maps for cafe" in
@@ -150,6 +163,7 @@ impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
         self.attach_framework(cx.dispatcher(), offline_areas);
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
     }

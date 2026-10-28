@@ -15,8 +15,10 @@
 //! out and records what the server confirmed.
 
 use tilo_document::{RichText, RichTextAction};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{
@@ -31,6 +33,7 @@ use crate::actions::{
 };
 use crate::app::MailApp;
 use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
+#[cfg(feature = "samples")]
 use crate::sample::MailFixture;
 
 /// The most messages one verb acts on at once.
@@ -1242,6 +1245,7 @@ pub struct MailShell;
 /// Every screenshot scenario. Each shows the sample mailbox and accounts
 /// (`firstrun` none, `empty` an account with no mail yet) with the view state
 /// its name says, staged by the surface.
+#[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "wide",
     "narrow",
@@ -1330,18 +1334,24 @@ impl ResourceApp for MailShell {
         let app = match cx.mode() {
             RunMode::Live => MailApp::for_window(cx.storage(), cx.content()),
             RunMode::Past => MailApp::for_past_version(),
+            #[cfg(feature = "samples")]
             RunMode::Capture => {
                 let fixture = cx
                     .fixture::<MailFixture>()
                     .unwrap_or_else(|| std::rc::Rc::new(MailFixture::without_accounts()));
                 MailApp::for_capture(&fixture)
             }
+            // Without the sample mailboxes a capture is an empty window
+            // that reaches no server.
+            #[cfg(not(feature = "samples"))]
+            RunMode::Capture => MailApp::for_past_version(),
         };
         // A search hit, or an agent's `open`, shows the folder or message.
         cx.on_open(app.opener());
         cx.surface(app)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -1364,6 +1374,7 @@ impl ResourceApp for MailShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Mail>) {
         let mail = match fixture.scenario() {
             Some("firstrun") => MailFixture::without_accounts(),

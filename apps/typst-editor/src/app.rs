@@ -118,6 +118,7 @@ enum CompactPane {
 /// capture to show the source editor scrolled sideways with the caret kept in
 /// view at the end of the line. The long line is last (no trailing newline)
 /// so placing the caret at the document end lands it there.
+#[cfg(feature = "samples")]
 pub(crate) const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This is a single very long line of source text that runs well past the right edge of the editor pane, so the view must scroll sideways to keep the caret in view as you type toward the end.\"";
 
 /// The sizes of the window's own chrome, measured in the theme at paint: the
@@ -356,6 +357,7 @@ impl TypstApp {
         self.actions = Some(cx.dispatcher());
         self.saves = cx.saves();
         self.editor.attach(cx.dispatcher());
+        #[cfg(feature = "samples")]
         if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
             self.current = Some(file.0.clone());
         }

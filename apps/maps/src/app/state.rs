@@ -1,10 +1,12 @@
 //! The map's life: what it is built from, the tile cache it reads, the menus and panels it opens, and the durable resource it attaches to and adopts.
 
+#[cfg(feature = "samples")]
+use super::sample;
 use super::{
     Basemap, ContextMenu, EndpointEditor, MapControlAction, MapControls, MapInfoSheet, MapMenu,
     MapModel, MapsApp, MenuItem, Metrics, NetSender, OfflinePanel, Place, PlaceSearch, Point, Rect,
     SegmentedTouch, Spacing, Theme, TileFault, TileLayer, TrafficData, TravelMode, Workspace,
-    navigation_card_size, sample,
+    navigation_card_size,
 };
 use crate::failure;
 
@@ -29,6 +31,7 @@ impl MapsApp {
     /// A capture of `sample`: no worker thread, no network, the bundled
     /// sample's basemap standing in for raster imagery. The scenario's
     /// places and plans arrive as the resource's state.
+    #[cfg(feature = "samples")]
     pub(crate) fn sample(sample: crate::scenario::Sample) -> Self {
         match sample {
             crate::scenario::Sample::City => Self::offline(),
@@ -53,6 +56,7 @@ impl MapsApp {
     /// options) and the stylised vector basemap so the screenshot is fully
     /// populated without ever touching the wire. The overlay drawer starts
     /// open so narrow screenshots show the panel content.
+    #[cfg(feature = "samples")]
     pub(crate) fn offline() -> Self {
         Self::build(
             sample::default_model(),

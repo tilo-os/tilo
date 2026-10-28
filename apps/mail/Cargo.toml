@@ -86,6 +86,9 @@ futures-util = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [features]
+# The sample mailboxes the screenshot scenarios and tests show: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 # Reach account custody with the IMAP client, and the contact directory,
 # through their engine libraries in the runtime bundle
@@ -104,6 +107,7 @@ default = ["live"]
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 
 [dev-dependencies]
+mail = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true

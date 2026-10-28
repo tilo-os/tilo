@@ -11,9 +11,11 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
+#[cfg(feature = "samples")]
+use ui::framework::{Fixture, RunMode};
 use ui::record::RecordId;
 use ui::tilo_resource::{ActionRef, Invoke, ResourceKind, SearchEntry};
 use ui::widget::Element;
@@ -32,6 +34,7 @@ pub const TERMINAL_RESOURCE_ID: &str = "code_editor.project/derived/terminal";
 pub struct CodeEditorShell;
 
 /// Every screenshot scenario, over the sample project the fixture writes.
+#[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "hardware",
     "terminal",
@@ -55,6 +58,7 @@ const OPEN_FILE: ActionRef<Project, Option<String>> =
 
 /// The project a capture shows: the bundled sample written to a scratch
 /// folder, opened the way `code-editor FOLDER` opens one.
+#[cfg(feature = "samples")]
 pub(crate) struct SampleProject(pub(crate) PathBuf);
 
 /// The absolute form of a launch argument, resolved against the directory the
@@ -136,6 +140,7 @@ impl ResourceApp for CodeEditorShell {
         vec![open.with(Some(path.display().to_string()))]
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -148,6 +153,7 @@ impl ResourceApp for CodeEditorShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Project>) {
         match fixture.directory() {
             Ok(directory) => {
@@ -177,6 +183,7 @@ impl ResourceSurface<Project, CodeEditorEffect> for CodeApp {
             cx.settings(),
             cx.live(),
         );
+        #[cfg(feature = "samples")]
         if cx.mode() == RunMode::Capture
             && let Some(sample) = cx.fixture::<SampleProject>()
         {

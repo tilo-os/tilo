@@ -32,8 +32,10 @@ pub(crate) struct SessionPane {
     wheel_line: f64,
 }
 
+#[cfg(feature = "samples")]
+use super::SampleSurface;
 use super::keys::{ssh_key_bytes, vnc_keysym};
-use super::{LiveSession, SampleSurface, SessionCore, SharedSession};
+use super::{LiveSession, SessionCore, SharedSession};
 
 impl SessionPane {
     pub(super) fn new(session: SharedSession) -> Self {
@@ -101,7 +103,9 @@ impl SessionPane {
     pub(super) fn terminal_grid(core: &SessionCore) -> Option<&crate::vt::VtGrid> {
         match &core.live {
             Some(LiveSession::Ssh(s)) => Some(s.grid()),
+            #[cfg(feature = "samples")]
             Some(LiveSession::Sample(SampleSurface::Terminal(grid))) => Some(grid),
+
             _ => None,
         }
     }

@@ -27,7 +27,9 @@ pub mod blocked;
 pub mod locales;
 pub mod model;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 mod view;
 
 pub use app::FirewallApp;

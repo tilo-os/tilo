@@ -13,13 +13,14 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{
-    EffectAnswer, EffectCx, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Derived, Id, Invoke, JsonSchema, Refusal, SearchEntry,
-    resource,
+    self, ActionCx, ActionDecl, Atom, Derived, Id, JsonSchema, Refusal, SearchEntry, resource,
 };
 use ui::widget::Element;
 
@@ -1299,6 +1300,7 @@ pub struct SheetsShell;
 
 /// Every screenshot scenario: the sample workbook with one surface of the app
 /// in view.
+#[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "docsettings",
     "editing",
@@ -1325,9 +1327,11 @@ const SCENARIOS: &[&str] = &[
 ];
 
 /// When the sample workbook of the annotated scenarios was written.
+#[cfg(feature = "samples")]
 const SAMPLE_WRITTEN_MS: i64 = 1_767_225_600_000;
 
 /// Whether `scenario` shows the sample's charts and comments.
+#[cfg(feature = "samples")]
 fn annotated(scenario: Option<&str>) -> bool {
     matches!(scenario, Some("charts" | "comments"))
 }
@@ -1340,6 +1344,7 @@ impl ResourceApp for SheetsShell {
     const TITLE: &'static str = "Sheets";
     const ICON: Option<&'static str> = Some("sheets");
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -1358,6 +1363,7 @@ impl ResourceApp for SheetsShell {
 
     /// The annotated scenarios show a workbook other people wrote: Alex
     /// shared the budget and commented on it, Sam replied.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Workbook>) {
         if !annotated(fixture.scenario()) {
             return;
@@ -1371,6 +1377,7 @@ impl ResourceApp for SheetsShell {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Workbook>> {
         if annotated(name) {
             let mut invokes = crate::sample::charts();
@@ -1388,6 +1395,7 @@ impl ResourceApp for SheetsShell {
     /// it, driving the sheet's matches. The grid draws no find of its own.
     /// Replace opens the search on its replacement, and steps to a match the
     /// sheet shows beside the options it covers the top of the grid with.
+    #[cfg(feature = "samples")]
     fn scenario_input(
         name: Option<&str>,
         input: &mut ui::headless::FrameHarness,

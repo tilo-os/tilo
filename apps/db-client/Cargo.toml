@@ -14,6 +14,9 @@ name = "db-client"
 path = "src/main.rs"
 
 [features]
+# The sample database the screenshot scenarios open: development runs,
+# captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -40,6 +43,7 @@ mysql = { version = "28", default-features = false, features = ["minimal-rust"] 
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+db-client = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true

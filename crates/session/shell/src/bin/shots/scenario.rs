@@ -1339,19 +1339,19 @@ fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
     let edits = [
-        notes::scenario::PeerEdit {
+        notes::PeerEdit {
             actor: b"Ada",
             purpose: "Added the open questions",
             paragraph: "Open questions: who owns the capture budget, and when do we review it?",
             at: now.saturating_sub(3 * 3600),
         },
-        notes::scenario::PeerEdit {
+        notes::PeerEdit {
             actor: b"Ada",
             purpose: "Added the next steps",
             paragraph: "Next steps: draft the review, then share it with the team on Thursday.",
             at: now.saturating_sub(3 * 3600 - 240),
         },
-        notes::scenario::PeerEdit {
+        notes::PeerEdit {
             actor: &agent_device,
             purpose: "Summarised the note",
             paragraph: "Summary: the capture continues past the display; two questions remain open.",

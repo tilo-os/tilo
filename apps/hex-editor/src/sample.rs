@@ -1,5 +1,6 @@
-//! A bundled sample buffer so the editor opens onto real, recognisable
+//! The buffer the screenshot scenarios and tests open: real, recognisable
 //! structured data instead of an empty canvas.
+
 //!
 //! The sample is a complete, valid PNG: the 8-byte signature, an `IHDR`
 //! chunk describing a 16 × 16 truecolour image, a `tEXt` chunk, one `IDAT`

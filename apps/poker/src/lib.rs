@@ -20,6 +20,7 @@ pub mod card;
 pub mod cards;
 pub mod game;
 pub mod locales;
+#[cfg(feature = "samples")]
 mod sample;
 pub mod view;
 
@@ -46,12 +47,14 @@ impl ResourceApp for App {
         view::location(table)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         sample::SCENARIOS
     }
 
     /// A capture cannot play twelve seconds into a turn, so the scenario
     /// stages the table it reached as the record's start.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Table>) {
         let Some(scenario) = fixture.scenario() else {
             return;

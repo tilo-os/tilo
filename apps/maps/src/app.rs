@@ -42,6 +42,7 @@ use ui::widget::{
 };
 use ui::widget::{FloatingSurfaceProvider, Widget};
 
+use crate::basemap::Basemap;
 use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
 use crate::endpoint_editor::GEOCODER;
@@ -54,7 +55,8 @@ use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode,
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel, areas_refused};
 use crate::place_search::PlaceSearch;
-use crate::sample::{self, Basemap};
+#[cfg(feature = "samples")]
+use crate::sample;
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 use crate::workspace::{Workspace, workspace};
@@ -73,7 +75,9 @@ mod resource_surface;
 mod results;
 mod route;
 mod sheets;
+#[cfg(feature = "samples")]
 mod stage;
+
 mod state;
 
 // Geometry comes from the theme: the window margin is `s4`, the gap between

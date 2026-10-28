@@ -148,6 +148,7 @@ impl HexEditor {
 pub struct HexEditorShell;
 
 /// The bundled sample a capture shows.
+#[cfg(feature = "samples")]
 const SAMPLE_NAME: &str = "sample.png";
 
 impl ResourceApp for HexEditorShell {
@@ -196,6 +197,7 @@ impl ResourceApp for HexEditorShell {
             .collect()
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "empty",
@@ -215,6 +217,7 @@ impl ResourceApp for HexEditorShell {
     }
 
     /// Every capture but the empty state shows the bundled sample.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<HexEditor>> {
         if name == Some("empty") {
             return Vec::new();

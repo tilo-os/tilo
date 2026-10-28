@@ -530,7 +530,7 @@ impl HostedTileInputs {
         &self,
         room: &str,
         tab: TabId,
-        edits: &[notes::scenario::PeerEdit<'_>],
+        edits: &[notes::PeerEdit<'_>],
     ) -> Result<usize, String> {
         let apps = self
             .in_process
@@ -551,7 +551,7 @@ impl HostedTileInputs {
         let notebook = store
             .read(&checkout.id, automerge::AutoCommit::clone)
             .ok_or("the notebook is not open")?;
-        let changes = notes::scenario::peer_edit_changes(&notebook, edits);
+        let changes = notes::peer_edit_changes(&notebook, edits);
         let mut merged = 0_usize;
         for change in changes {
             store.merge_peer_changes(&checkout, change)?;

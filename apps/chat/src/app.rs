@@ -460,6 +460,7 @@ pub struct ChatApp {
         ui::tilo_resource::Invoke<crate::parts::ChatPart>,
     )>,
     /// The scenario those messages are of.
+    #[cfg(feature = "samples")]
     pub(crate) staged_scenario: Option<String>,
     /// The chat record as the window last read it: what a test's detached
     /// chain reads where its actions are invoked.
@@ -799,6 +800,7 @@ impl ChatApp {
             kept_names: std::collections::BTreeMap::new(),
             staged_start: None,
             staged_parts: std::collections::VecDeque::new(),
+            #[cfg(feature = "samples")]
             staged_scenario: None,
             #[cfg(test)]
             last_read: std::rc::Rc::default(),
@@ -925,6 +927,7 @@ impl ChatApp {
     /// parts, once: the first part as the scenario starts it, then what is
     /// done with its messages, each by its author. A chain that holds
     /// messages already is left as it is.
+    #[cfg(feature = "samples")]
     pub(crate) fn stage_parts(&mut self, scenario: Option<&str>) {
         let Some(chain) = &self.chain else {
             return;
@@ -965,6 +968,7 @@ impl ChatApp {
             self.reselect();
             // The view state the scenario stages names its messages: staged
             // again over them once they are all there.
+            #[cfg(feature = "samples")]
             if self.staged_parts.is_empty()
                 && let Some(scenario) = self.staged_scenario.take()
             {
@@ -2679,6 +2683,7 @@ pub(crate) mod message_bar;
 mod own_delete;
 mod people;
 mod room;
+#[cfg(feature = "samples")]
 mod scenarios;
 mod submission;
 pub(crate) use call_chrome_motion::CallChromeMotion;

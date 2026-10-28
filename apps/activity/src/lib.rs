@@ -29,6 +29,7 @@ mod filter;
 mod history;
 pub mod locales;
 mod replay;
+#[cfg(feature = "samples")]
 mod sample;
 mod whats_new;
 
@@ -228,10 +229,12 @@ impl ResourceApp for App {
         (1240, 780)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         sample::SCENARIOS
     }
 
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Filter>) {
         sample::fixture(fixture);
     }
@@ -250,8 +253,11 @@ impl ResourceApp for App {
             replay_playing: cx.local(false),
             shown_focus: cx.local(0),
         };
-        let stage = nav.clone();
-        cx.on_stage(move |scenario| sample::stage(scenario, &stage));
+        #[cfg(feature = "samples")]
+        {
+            let stage = nav.clone();
+            cx.on_stage(move |scenario| sample::stage(scenario, &stage));
+        }
 
         // What the person asked to be shown from outside the app (the
         // glance in the top bar, a file's own history) lands here once.

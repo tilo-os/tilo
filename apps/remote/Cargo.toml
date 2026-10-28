@@ -15,6 +15,9 @@ name = "remote"
 path = "src/main.rs"
 
 [features]
+# The sessions the screenshot scenarios stage: development runs, captures and
+# tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -48,6 +51,7 @@ des = "0.9"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+remote = { path = ".", features = ["samples"] }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }

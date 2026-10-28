@@ -74,7 +74,9 @@ pub mod panes;
 mod presentation;
 pub mod region;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod units;
 pub mod wxcode;
 

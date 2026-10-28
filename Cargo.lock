@@ -169,6 +169,7 @@ dependencies = [
 name = "activity"
 version = "0.1.0"
 dependencies = [
+ "activity",
  "chrono",
  "runtime-dylib",
  "serde",
@@ -1803,6 +1804,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "canvas",
  "i_overlay",
  "image",
  "png",
@@ -2067,6 +2069,7 @@ name = "chat"
 version = "0.1.0"
 dependencies = [
  "agent-provider-config",
+ "chat",
  "durable-store",
  "emoji",
  "fnv",
@@ -2486,6 +2489,7 @@ name = "code-editor"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "code-editor",
  "hex",
  "iai-callgrind",
  "runtime-dylib",
@@ -3607,6 +3611,7 @@ name = "db-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "db-client",
  "hex",
  "mysql",
  "postgres",
@@ -3837,6 +3842,7 @@ name = "diffmerge"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "diffmerge",
  "fnv",
  "runtime-dylib",
  "serde",
@@ -3903,6 +3909,7 @@ version = "0.1.0"
 dependencies = [
  "chat",
  "data-encoding",
+ "discord",
  "discord-wire",
  "rand 0.10.1",
  "runtime-dylib",
@@ -4149,6 +4156,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bounded-zip",
+ "ebook",
  "flate2",
  "image",
  "roxmltree 0.21.1",
@@ -4852,6 +4860,7 @@ dependencies = [
  "blake3",
  "chrono",
  "feed-rs",
+ "feeds",
  "fnv",
  "quick-xml 0.41.0",
  "runtime-dylib",
@@ -4915,6 +4924,7 @@ dependencies = [
  "chrono",
  "cloud-source",
  "ed25519-dalek 3.0.0",
+ "file-explorer",
  "fs-protocol",
  "fuser",
  "hex",
@@ -4993,6 +5003,7 @@ name = "firewall"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "firewall",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -5748,6 +5759,7 @@ dependencies = [
  "bounded-command",
  "chrono",
  "futures-util",
+ "git-client",
  "git2",
  "hex",
  "rcgen",
@@ -6591,6 +6603,7 @@ name = "hex-editor"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "hex-editor",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9447,6 +9460,7 @@ dependencies = [
  "hex",
  "html5ever",
  "lettre",
+ "mail",
  "mail-builder",
  "mail-parser",
  "markup5ever_rcdom",
@@ -9511,6 +9525,7 @@ dependencies = [
  "chrono",
  "fnv",
  "lru 0.18.3",
+ "maps",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -10368,6 +10383,7 @@ dependencies = [
  "chrono",
  "collab-types",
  "image",
+ "notes",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -11982,6 +11998,7 @@ dependencies = [
  "agent-provider-config",
  "image",
  "kamadak-exif",
+ "photos",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -12207,6 +12224,7 @@ dependencies = [
 name = "poker"
 version = "0.1.0"
 dependencies = [
+ "poker",
  "runtime-dylib",
  "tilo-app",
  "workspace-hack",
@@ -13508,6 +13526,7 @@ dependencies = [
  "anyhow",
  "des",
  "iroh-base",
+ "remote",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -15297,6 +15316,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sheets",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -15557,6 +15577,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "shortcuts",
  "tilo-action-policy",
  "tilo-app",
  "tilo-automation",
@@ -15702,6 +15723,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "slides",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -16760,6 +16782,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tasks",
  "tilo-agent-models",
  "tilo-app",
  "tilo-rich-text",
@@ -16815,6 +16838,7 @@ dependencies = [
  "serial_test",
  "taffy",
  "tempfile",
+ "terminal",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-content",
@@ -22660,6 +22684,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "typst",
+ "typst-editor",
  "typst-layout",
  "typst-pdf",
  "typst-render",
@@ -24374,6 +24399,7 @@ dependencies = [
  "tilo-winit",
  "tracing-subscriber",
  "uuid",
+ "weather",
  "workspace-hack",
 ]
 
@@ -26309,6 +26335,7 @@ dependencies = [
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
+ "html5ever",
  "htmlescape",
  "http",
  "http-body",
@@ -26473,6 +26500,8 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "maps",
+ "markup5ever",
+ "markup5ever_rcdom",
  "matchers",
  "maybe-owned",
  "mcf",
@@ -26520,6 +26549,7 @@ dependencies = [
  "netlink-proto",
  "netlink-sys",
  "netwatch",
+ "new_debug_unreachable",
  "nix 0.28.0",
  "nix 0.31.3",
  "nom 7.1.3",
@@ -26604,6 +26634,7 @@ dependencies = [
  "phf 0.12.1",
  "phf 0.13.1",
  "phf 0.14.0",
+ "phf_codegen",
  "phf_generator 0.13.1",
  "phf_generator 0.14.0",
  "phf_macros 0.13.1",
@@ -26754,6 +26785,7 @@ dependencies = [
  "rquickjs",
  "rquickjs-core",
  "rquickjs-sys",
+ "rrule",
  "rsa 0.10.0-rc.18",
  "rsa 0.9.10",
  "rten",
@@ -26916,6 +26948,8 @@ dependencies = [
  "store",
  "strength_reduce",
  "strict-num",
+ "string_cache",
+ "string_cache_codegen",
  "stringprep",
  "strsim",
  "strum 0.26.3",
@@ -26962,6 +26996,7 @@ dependencies = [
  "target-lexicon",
  "tasks",
  "tempfile",
+ "tendril",
  "terminal",
  "test-http",
  "themes",
@@ -27358,6 +27393,7 @@ dependencies = [
  "web-transport-proto",
  "web-transport-quinn",
  "web-transport-trait",
+ "web_atoms",
  "webpki-roots",
  "weezl",
  "wgpu",
@@ -27394,6 +27430,7 @@ dependencies = [
  "xkbcommon-dl",
  "xkeysym",
  "xml-rs",
+ "xml5ever",
  "xmltree",
  "xmlwriter",
  "xmp-writer",

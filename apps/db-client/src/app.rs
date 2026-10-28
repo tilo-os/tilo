@@ -685,6 +685,7 @@ impl DbClientApp {
         if cx.mode().is_live() {
             self.secrets = Some(cx.secrets());
         }
+        #[cfg(feature = "samples")]
         if let Some(sample) = cx.fixture::<crate::resource::SampleDatabase>() {
             self.session.open_sample_as(sample.connection);
         }

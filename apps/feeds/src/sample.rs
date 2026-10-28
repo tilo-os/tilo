@@ -1,7 +1,8 @@
 //! Bundled sample feeds + articles.
 //!
-//! `--shots` has no event loop and can't hit the network, so the offline
-//! screenshot is driven entirely by this fixture: a realistic multi-folder
+//! A screenshot can't hit the network, so the screenshot scenarios and
+//! tests are driven entirely by this fixture: a realistic multi-folder
+
 //! subscription set with read/unread/starred articles and fully-rendered
 //! bodies (including a gemtext capsule to exercise the Gemini path). The
 //! live app never seeds this — it starts empty on the user's persisted

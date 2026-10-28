@@ -14,6 +14,9 @@ name = "shortcuts"
 path = "src/main.rs"
 
 [features]
+# The sample shortcuts and catalogue the screenshot scenarios show:
+# development runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -26,6 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+shortcuts = { path = ".", features = ["samples"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

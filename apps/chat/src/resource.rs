@@ -19,7 +19,9 @@ use ui::widget::Element;
 use crate::app::{ChatApp, ChatRuntime};
 use crate::effects::ChatEffect;
 use crate::identity::LocalIdentity;
+#[cfg(feature = "samples")]
 use crate::messages::chat_part;
+#[cfg(feature = "samples")]
 use crate::parts::ChatPart;
 pub use crate::record::Chat;
 use crate::record::chat;
@@ -101,6 +103,7 @@ impl Chat {
 pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
+#[cfg(feature = "samples")]
 pub(crate) const SCENARIOS: &[&str] = &[
     "agent-streaming",
     "agent-failed",
@@ -146,6 +149,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
 ];
 
 /// The draft the `composer` scenario shows mid-compose.
+#[cfg(feature = "samples")]
 const COMPOSER_DRAFT: &str = "Shipping the composer on the shared TextInput — real caret, \
      selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line.\nPlease check teh adress";
 
@@ -224,6 +228,7 @@ impl ResourceApp for ChatShell {
         Some(&crate::i18n::CATALOG)
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -231,6 +236,7 @@ impl ResourceApp for ChatShell {
     /// `composer`: a multi-line draft typed in the composer, the person's
     /// own until sent. `mention`: someone typing `@a` in the composer, the
     /// editor's `@` list open under it.
+    #[cfg(feature = "samples")]
     fn scenario_input(
         name: Option<&str>,
         input: &mut ui::headless::FrameHarness,
@@ -277,6 +283,7 @@ impl ResourceApp for ChatShell {
     /// make, minting their own. `agent-work` adds the agent introducing
     /// itself and being named, each change written by whoever made it.
     /// Their messages are staged in the chat's parts (`part_scenario`).
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
         if fixture.scenario() == Some("starter") {
             return;
@@ -291,6 +298,7 @@ impl ResourceApp for ChatShell {
 
     /// The first-run workspace for `starter`, read by the capture's own
     /// person; every other scenario starts from its [`Self::fixture`].
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
         if name != Some("starter") {
             return Vec::new();
@@ -326,6 +334,7 @@ impl ResourceApp for ChatShell {
 /// part's messages as it starts, by several people under the fixed ids the
 /// scenario names, which no one person's post makes; then what is done
 /// with them, each by who did it. The first-run workspace has none.
+#[cfg(feature = "samples")]
 pub(crate) fn part_scenario(
     scenario: Option<&str>,
 ) -> (Option<ChatPart>, Vec<(&'static str, Invoke<ChatPart>)>) {
@@ -377,6 +386,7 @@ pub(crate) fn part_scenario(
 
 /// `long-thread`: three days of messages in the design crit, from the room's
 /// people, before the conversation the demo shows.
+#[cfg(feature = "samples")]
 fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
     let people = ["u_aria", "u_milo", "u_sora", "u_devon"];
     let count = 240_usize;
@@ -420,6 +430,7 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::record::Message)> {
 }
 
 /// Provider output fixtures use the same durable action as a live host stream.
+#[cfg(feature = "samples")]
 pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> {
     use crate::agent_stream::{AgentFinish, AgentOutput, AgentStreamEvent};
     let mut events = vec![
@@ -466,6 +477,7 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
 
 /// `channels`: a message elsewhere that mentions the reader, which the
 /// sidebar badges on its channel.
+#[cfg(feature = "samples")]
 fn mention_post() -> (Id, crate::record::Message) {
     let text = "@You could you check the hover states on the new sidebar before standup?";
     let post = crate::record::Message {
@@ -485,10 +497,12 @@ fn mention_post() -> (Id, crate::record::Message) {
 }
 
 /// The bridge the `bridged` scenario's post is by.
+#[cfg(feature = "samples")]
 pub(crate) const DEMO_BRIDGE: &str = "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
 
 /// `bridged`: a bridge's post of a line someone wrote on Discord, shown
 /// under their name and picture while it stays the bridge's.
+#[cfg(feature = "samples")]
 fn bridged_post() -> (Id, crate::record::Message) {
     let post = crate::record::Message {
         channel: Id::from_raw("c_crit"),
@@ -510,12 +524,15 @@ fn bridged_post() -> (Id, crate::record::Message) {
 }
 
 /// The agent the `agent-work` scenario summons.
+#[cfg(feature = "samples")]
 pub(crate) const DEMO_AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
 /// The message summoning it.
+#[cfg(feature = "samples")]
 pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
 
 /// On the demo workspace: the agent introducing itself and being named,
 /// each by its author.
+#[cfg(feature = "samples")]
 pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
     let me = crate::model::ME;
     vec![
@@ -539,6 +556,7 @@ pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
 
 /// In the demo conversation: the reader summoning the agent, under the id
 /// [`DEMO_SUMMONS`] the agent's record of its work names.
+#[cfg(feature = "samples")]
 pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
     let summons = crate::record::Message {
         channel: Id::from_raw("c_crit"),
@@ -558,11 +576,13 @@ pub(crate) fn agent_summons() -> (Id, crate::record::Message) {
 
 /// On the demo conversation holding [`agent_summons`]: the agent's record
 /// of the work it took on, by the agent.
+#[cfg(feature = "samples")]
 pub(crate) fn agent_work_part_steps() -> Vec<(&'static str, Invoke<ChatPart>)> {
     vec![(DEMO_AGENT, agent_work(&Id::from_raw(DEMO_SUMMONS)))]
 }
 
 /// The demo agent's record of the work `summons` asked of it.
+#[cfg(feature = "samples")]
 pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
     ChatPart::RECORD_WORK.with(chat_part::RecordWork {
         message: summons.clone(),
@@ -605,6 +625,7 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         }
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_parts(scenario);
         self.stage_scenario(scenario.unwrap_or_default());

@@ -45,7 +45,9 @@ pub mod received_shares;
 pub mod recent;
 pub mod remote_accounts;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod scenarios;
+
 pub mod search_provider;
 pub mod sharing;
 pub mod shortcut_menu;

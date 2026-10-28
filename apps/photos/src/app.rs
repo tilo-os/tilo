@@ -1234,7 +1234,10 @@ impl PhotosApp {
         if let Some(bar) = &self.chrome.bar {
             bar.stage_pane(ui::widget::NavPane::Content);
         }
-        self.open_photo = crate::sample::opened(&scenario);
+        #[cfg(feature = "samples")]
+        {
+            self.open_photo = crate::sample::opened(&scenario);
+        }
         // A scenario that names a photograph shows it; the library views
         // below switch back to the library themselves.
         if self.open_photo.is_some() {
@@ -1250,6 +1253,7 @@ impl PhotosApp {
             "album-manage" => self.show_album_editor_for_shot(),
             "metadata-edit" => self.show_metadata_editor_for_shot(),
             "metadata-batch" => self.show_batch_metadata_editor_for_shot(),
+            #[cfg(feature = "samples")]
             "people" | "people-detail" => {
                 // A manual, explicitly labelled suggestion exercises the
                 // review layout without pretending that a face model
@@ -1269,7 +1273,9 @@ impl PhotosApp {
             "analysis" => self.show_library_analysis(),
             "import-progress" => self.show_directory_import_progress_for_shot(),
             "import-errors" => self.show_directory_import_errors_for_shot(),
+            #[cfg(feature = "samples")]
             scenario if crate::sample::shows_library(scenario) => self.show_library(),
+
             _ => {}
         }
     }

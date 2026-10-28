@@ -14,6 +14,9 @@ name = "ebook"
 path = "src/main.rs"
 
 [features]
+# The sample shelf and the screenshot scenarios that read it: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -61,6 +64,7 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
 
 [dev-dependencies]
+ebook = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Encodes cover fixtures.

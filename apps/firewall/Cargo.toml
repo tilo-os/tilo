@@ -14,6 +14,9 @@ name = "firewall"
 path = "src/main.rs"
 
 [features]
+# The sample ruleset the screenshot scenarios show: development runs, captures
+# and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -35,6 +38,7 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+firewall = { path = ".", features = ["samples"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

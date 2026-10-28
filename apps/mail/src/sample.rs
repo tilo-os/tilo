@@ -1,5 +1,6 @@
-//! A representative sample mailbox used when the app runs headless
-//! (`--shots`) and by tests. Three messages (one with a PDF attachment, one
+//! A representative sample mailbox the screenshot scenarios and tests
+//! show. Three messages (one with a PDF attachment, one
+
 //! with an HTML part) are authored as raw RFC 5322 `.eml` blobs and hydrated
 //! through [`crate::transport::parse_eml`]; the rest are constructed directly
 //! for breadth across folders, threads, read and unread, and starred state.

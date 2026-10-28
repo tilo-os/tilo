@@ -29,6 +29,9 @@ name = "notes-latency"
 path = "examples/notes-latency.rs"
 
 [features]
+# The sample notebook and the screenshot scenarios that show it: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 android = []
 # Reach the emoji catalogue a page's reactions pick from through its engine
@@ -80,6 +83,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+notes = { path = ".", features = ["samples"] }
 # Builds the export archives the Notion importer is tested against.
 zip.workspace = true
 # Decides the changes Notes makes against its committed surface, as receivers do.

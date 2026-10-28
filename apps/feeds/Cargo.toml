@@ -14,6 +14,9 @@ name = "feeds"
 path = "src/main.rs"
 
 [features]
+# The sample library the screenshot scenarios and tests show: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -43,6 +46,7 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "socke
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 
 [dev-dependencies]
+feeds = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 

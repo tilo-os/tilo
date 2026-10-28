@@ -1,5 +1,6 @@
-//! Bundled sample inputs for the first-run demo and headless screenshot
-//! renderer, including a three-way conflict to resolve.
+//! Bundled sample inputs for the first-run demo (Load sample), including a
+//! three-way conflict to resolve, and the folder comparison a screenshot
+//! scenario shows.
 
 /// A named text input with a short display label (shown in headers / pickers).
 #[derive(Clone, Debug)]
@@ -161,9 +162,9 @@ format = \"json\"
     (base, ours, theirs)
 }
 
-/// A folder comparison for the sample and the screenshots: what a
-/// working tree looks like after a morning's edits, in the shape the walk
-/// reports.
+/// A folder comparison for the screenshots: what a working tree looks like
+/// after a morning's edits, in the shape the walk reports.
+#[cfg(feature = "samples")]
 pub fn folder_comparison() -> crate::folder::FolderComparison {
     use crate::folder::{FolderComparison, FolderEntry, FolderKind};
     let entry = |path: &str, kind, left_len, right_len, by_length| FolderEntry {

@@ -37,6 +37,7 @@ pub mod preview;
 pub mod region;
 pub mod render;
 pub mod resource;
+#[cfg(feature = "samples")]
 pub mod sample;
 pub mod selection;
 pub mod settle;
@@ -219,6 +220,7 @@ impl ResourceApp for App {
         vec![open]
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
             "landscape",
@@ -234,6 +236,7 @@ impl ResourceApp for App {
     /// The screenshots paint their samples through the same actions an
     /// agent would; a plain `--shots` shows the empty sheet a new artwork
     /// is.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Artwork>> {
         match name {
             Some("landscape" | "close-up" | "history" | "inspector-narrow") => sample::landscape(),

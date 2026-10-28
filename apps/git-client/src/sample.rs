@@ -1,7 +1,8 @@
 //! A bundled, realistic repository fixture.
 //!
-//! Used when no on-disk repository is available — chiefly the headless
-//! `--shots` renderer — so the screenshot shows a populated, believable
+//! The screenshot scenarios and tests show it in place of an on-disk
+//! repository, so the screenshot shows a populated, believable
+
 //! state: a handful of staged / unstaged / untracked changes, several
 //! files with real diffs (including a rename and a new file), and a commit
 //! history with two side branches and a merge so the graph exercises

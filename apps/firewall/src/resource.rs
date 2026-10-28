@@ -273,6 +273,7 @@ pub struct FirewallShell;
 
 /// Every screenshot scenario. All but `service-error` show the sample
 /// ruleset; the rest is view state the surface stages.
+#[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "empty",
     "add-rule",
@@ -307,6 +308,7 @@ impl ResourceApp for FirewallShell {
         cx.surface(FirewallApp::new())
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -324,6 +326,7 @@ impl ResourceApp for FirewallShell {
     /// The bundled sample ruleset, never the capturing machine's; the
     /// active-change scenario has just made `home` the active zone, and
     /// the panic and stopped scenarios have turned those switches.
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<Firewall>> {
         if name == Some("service-error") {
             return Vec::new();

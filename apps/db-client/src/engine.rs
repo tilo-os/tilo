@@ -31,6 +31,7 @@ pub const MAX_QUERY_RESULT_BYTES: usize = 8 * 1024 * 1024;
 /// Caps vector metadata as well as payload: NULL-heavy, extremely-wide output
 /// should not allocate an arbitrary number of [`Cell`] entries either.
 pub const MAX_QUERY_RESULT_CELLS: usize = 100_000;
+#[cfg(feature = "samples")]
 use crate::sample;
 
 /// A private, in-memory capability for interrupting exactly the query that is
@@ -110,6 +111,7 @@ impl SqliteEngine {
     /// # Errors
     /// Returns the driver's error string if the in-memory connection can't
     /// be opened, or if seeding the bundled sample schema/data fails.
+    #[cfg(feature = "samples")]
     pub fn open_sample() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         sample::seed(&conn).map_err(|e| e.to_string())?;
@@ -456,9 +458,11 @@ impl LiveEngine {
 /// `PostgreSQL` and `MySQL`. This is the single seam the [`crate::worker`] thread
 /// calls; it never runs on the UI thread because each variant blocks.
 pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
+    #[cfg(feature = "samples")]
     if profile.is_sample {
         return SqliteEngine::open_sample().map(LiveEngine::Sqlite);
     }
+
     match profile.engine {
         Engine::Sqlite if profile.file_path.is_empty() => {
             Err("SQLite connection has no file path".to_string())

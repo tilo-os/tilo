@@ -2,7 +2,7 @@
 
 use super::{
     Endpoint, EndpointEffect, LatLon, MapsApp, NetMsg, Panel, Place, Point, Projection, Rect,
-    TravelMode, Workspace, failure, geo, location, net, sample, spawn_net, workspace,
+    TravelMode, Workspace, failure, geo, location, net, spawn_net, workspace,
 };
 
 impl MapsApp {
@@ -155,7 +155,7 @@ impl MapsApp {
         self.nav_open = true;
         let mode = self.model.mode;
         // Immediate offline fallback so the panel is never empty.
-        self.model.route = Some(sample::fallback_route(origin, dest, mode));
+        self.model.route = Some(crate::basemap::fallback_route(origin, dest, mode));
         self.fit_route();
 
         // Live OSRM request.

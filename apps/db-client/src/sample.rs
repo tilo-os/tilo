@@ -1,23 +1,25 @@
-//! The bundled sample database — a compact music-catalog schema in the
-//! spirit of the well-known "chinook" example. It ships with the app so the
-//! sidebar, SQL editor and results table all work with zero external
-//! setup, both in the live window and in headless `--shots` rendering.
+//! The sample database — a compact music-catalog schema in the spirit of
+//! the well-known "chinook" example — that the screenshot scenarios and
+//! tests open, and the starter queries the editor's snippets menu offers.
 //!
 //! The schema deliberately exercises every feature of the UI: primary keys,
 //! foreign keys, secondary indexes, `NULLable` columns, a view, and a mix of
 //! integer / text / real / datetime types so the type icons and NULL styling
 //! have something to show.
 
+#[cfg(feature = "samples")]
 use rusqlite::Connection;
 
 /// Create the sample schema and populate it. Idempotent enough for an
 /// in-memory handle (it assumes a fresh, empty database).
+#[cfg(feature = "samples")]
 pub fn seed(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(DATA_SQL)?;
     Ok(())
 }
 
+#[cfg(feature = "samples")]
 const SCHEMA_SQL: &str = r"
 CREATE TABLE artists (
     artist_id   INTEGER PRIMARY KEY,
@@ -86,6 +88,7 @@ LEFT JOIN artists ar ON ar.artist_id = al.artist_id
 LEFT JOIN genres g ON g.genre_id = t.genre_id;
 ";
 
+#[cfg(feature = "samples")]
 const DATA_SQL: &str = r"
 INSERT INTO genres (genre_id, name) VALUES
  (1,'Rock'),(2,'Jazz'),(3,'Electronic'),(4,'Classical'),(5,'Hip-Hop'),(6,'Ambient');

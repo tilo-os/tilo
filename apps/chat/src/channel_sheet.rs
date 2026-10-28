@@ -154,6 +154,7 @@ impl ChannelSheet {
     }
 
     /// Type `name` and `topic` in, as the person would.
+    #[cfg(feature = "samples")]
     pub(crate) fn fill(&mut self, name: &str, topic: &str) {
         self.name.set_text(name);
         self.name.set_cursor_pos(name.len());

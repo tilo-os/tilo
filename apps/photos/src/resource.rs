@@ -13,8 +13,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use tilo_content::ContentStore;
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    EffectAnswer, EffectCx, Effected, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
@@ -532,16 +534,19 @@ impl ResourceApp for PhotosShell {
         vec![import(&LibraryPhoto::from_image(open))]
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         crate::sample::SCENARIOS
     }
 
     /// The photographs a scenario shows live in the content store, not the
     /// document: their bytes are put there before the view is built.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<PhotoLibrary>) {
         crate::sample::put_content(fixture.content());
     }
 
+    #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
         crate::sample::scenario(name)
     }

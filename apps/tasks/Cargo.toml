@@ -16,6 +16,9 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# The sample tracker and the screenshot scenarios that show it: development
+# runs, captures and tests only, never a release.
+samples = []
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -26,6 +29,7 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
+tasks = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../crates/dev/test-env" }
 

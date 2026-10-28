@@ -6,8 +6,10 @@
 
 use std::rc::Rc;
 
+#[cfg(feature = "samples")]
+use ui::framework::Fixture;
 use ui::framework::{
-    Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    Command, EffectAnswer, EffectCx, EffectStatus, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::headless::FrameHarness;
@@ -19,6 +21,7 @@ use ui::widget::Element;
 
 use crate::actions::GitClientEffect;
 use crate::app::GitClientApp;
+#[cfg(feature = "samples")]
 use crate::model::{DiffMap, RepoModel};
 use crate::shared::SharedRepo;
 
@@ -63,6 +66,7 @@ impl GitClient {
 
 /// The bundled repository a screenshot shows instead of whatever repository
 /// the machine taking it has.
+#[cfg(feature = "samples")]
 pub struct SampleRepository {
     pub model: RepoModel,
     pub diffs: DiffMap,
@@ -71,6 +75,7 @@ pub struct SampleRepository {
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
+#[cfg(feature = "samples")]
 pub const SCENARIOS: &[&str] = &[
     "changes", "split", "history", "branches", "commit", "conflict", "switch", "discard", "empty",
     "narrow",
@@ -121,6 +126,7 @@ impl ResourceApp for GitClientShell {
             .collect()
     }
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -135,6 +141,7 @@ impl ResourceApp for GitClientShell {
 
     /// Every scenario but the first-run `empty` one shows the bundled
     /// repository.
+    #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<GitClient>) {
         if fixture.scenario() == Some("empty") {
             return;
@@ -183,9 +190,13 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<GitClient>) {
-        let sample = cx.fixture::<SampleRepository>();
         self.attach_control_actions(cx.actions());
-        self.attach_dispatcher(cx.dispatcher(), cx.mode(), sample.as_deref());
+        self.attach_dispatcher(cx.dispatcher(), cx.mode());
+        #[cfg(feature = "samples")]
+        if let Some(sample) = cx.fixture::<SampleRepository>() {
+            self.show_model(sample.model.clone(), sample.diffs.clone());
+        }
+
         self.follow_preferences(cx.settings::<crate::settings::Settings>());
     }
 

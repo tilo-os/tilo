@@ -223,7 +223,10 @@ impl GitClientApp {
         }
         let cost = match &self.repo_path {
             Some(path) => crate::repo::conflict_cost(path, file).ok(),
+            #[cfg(feature = "samples")]
             None => crate::sample::conflict_cost(file),
+            #[cfg(not(feature = "samples"))]
+            None => None,
         };
         self.conflict_cost = Some((file.to_owned(), cost));
         cost

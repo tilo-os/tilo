@@ -19,7 +19,9 @@ pub mod outbound;
 pub mod record;
 pub mod resource;
 pub mod roles;
+#[cfg(feature = "samples")]
 pub mod sample;
+
 pub mod setup;
 pub mod slug;
 pub mod tilo;

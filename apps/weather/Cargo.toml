@@ -14,6 +14,9 @@ name = "weather"
 path = "src/main.rs"
 
 [features]
+# The sample places and forecasts the screenshot scenarios show: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
@@ -36,6 +39,7 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 chrono = { workspace = true, features = ["std", "clock"] }
 
 [dev-dependencies]
+weather = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }

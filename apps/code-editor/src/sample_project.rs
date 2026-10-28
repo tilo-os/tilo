@@ -1,4 +1,5 @@
-//! A bundled sample project. `--shots` writes it to a scratch folder and opens
+//! The sample project. A screenshot scenario writes it to a scratch folder and opens
+
 //! it the way `code-editor FOLDER` opens a real one, so every capture shows
 //! multi-file, syntax-highlighted content.
 //!
