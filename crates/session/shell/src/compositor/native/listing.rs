@@ -175,6 +175,10 @@ impl FrameBuilderControlState<'_> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder lives for the whole scenario by design"
+)]
 mod tests {
     use automerge::AutoCommit;
 

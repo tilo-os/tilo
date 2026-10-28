@@ -1,5 +1,9 @@
 //! A connection's listing of every action stays whole while searches come
 //! and go: kept apart from search pages, for as long as the connection.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures own long-lived broker handles and lock guards by design"
+)]
 use std::rc::Rc;
 
 use automerge::AutoCommit;
@@ -24,11 +28,15 @@ fn repeated_mixed_searches_keep_every_connections_listing_complete() {
     });
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario: the fixture, the listing and the searches between its reads"
+)]
 fn assert_listings_survive_searches() {
     use crate::shell::chrome_state::SearchScope;
     use crate::shell::search::action_api::{ActionCatalog, AllVisible};
     use crate::shell::search::{QueryArgs, SearchRegistry};
-    const CONNECTIONS: u64 = 20;
+    const CONNECTIONS: usize = 20;
     const SEARCHES: usize = 10;
     let chrome = chrome();
     let directory =
@@ -43,16 +51,15 @@ fn assert_listings_survive_searches() {
         .next()
         .expect("the fixture's directory root");
     broker.replace_action_directory_roots_for_test(
-        (1..=CONNECTIONS)
+        (1_u64..)
+            .take(CONNECTIONS)
             .map(|peer| ActionDirectoryRoot {
                 peer_id: peer,
                 ..template.clone()
             })
             .collect(),
     );
-    let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(
-        broker.clone(),
-    ));
+    let provider = Rc::new(LiveAppActionsProvider::new_with_fixture_identity(broker));
     let mut registry = SearchRegistry::new();
     registry.register(provider.clone());
     let doc = AutoCommit::new();
@@ -66,7 +73,7 @@ fn assert_listings_survive_searches() {
             resource: CatalogueResource {
                 id: descriptor.address.resource.clone(),
                 kind: "fixture".into(),
-                label: label.clone(),
+                label,
                 presentation: None,
             },
             action: Some(descriptor),
@@ -132,7 +139,7 @@ fn assert_listings_survive_searches() {
         "the listing's pages are on their way"
     );
     let whole = settle("", &listing_label);
-    assert_eq!(listed(&whole), CONNECTIONS as usize);
+    assert_eq!(listed(&whole), CONNECTIONS);
 
     for search in 0..SEARCHES {
         let needle = format!("needle{search}");
@@ -151,7 +158,7 @@ fn assert_listings_survive_searches() {
         );
         assert_eq!(
             listed(&again),
-            CONNECTIONS as usize,
+            CONNECTIONS,
             "after search {search} every connection's listing keeps its rows"
         );
         assert!(

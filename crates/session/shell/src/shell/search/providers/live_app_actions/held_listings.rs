@@ -139,14 +139,12 @@ impl LiveAppActionsProvider {
         }
         self.prepare_auxiliary_snapshot(ctx, needle, revision, root_limit, resume);
         let projection = self.auxiliary_snapshot.borrow().clone()?;
-        if let Some(listing) = self
-            .held
-            .borrow_mut()
-            .iter_mut()
-            .find(|listing| listing.revision == revision)
-        {
+        let mut held = self.held.borrow_mut();
+        let listing = held.iter_mut().find(|listing| listing.revision == revision);
+        if let Some(listing) = listing {
             listing.projections.push(Rc::clone(&projection));
         }
+        drop(held);
         Some(projection)
     }
 

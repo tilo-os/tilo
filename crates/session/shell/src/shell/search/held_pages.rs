@@ -33,13 +33,13 @@ fn page_end(rows: &[SearchResult], offset: usize, budget: SearchBudget) -> usize
     while let Some(row) = rows.get(end) {
         let size = super::estimated_result_bytes(row);
         if end > offset
-            && (end - offset >= budget.max_results.max(1)
+            && (end.saturating_sub(offset) >= budget.max_results.max(1)
                 || bytes.saturating_add(size) > budget.max_bytes)
         {
             break;
         }
         bytes = bytes.saturating_add(size);
-        end += 1;
+        end = end.saturating_add(1);
     }
     end
 }
@@ -139,36 +139,38 @@ impl HeldSnapshots {
                 }) else {
                     return SearchPage::stale(provider.search_revision(&ctx));
                 };
-                let held = self.held.borrow();
-                let Some(found) = held
+                let found = self
+                    .held
+                    .borrow()
                     .iter()
-                    .find(|held| held.id == id && held.provider == provider.id())
-                    .filter(|held| offset <= held.rows.len())
-                else {
-                    drop(held);
+                    .find(|snapshot| snapshot.id == id && snapshot.provider == provider.id())
+                    .filter(|snapshot| offset <= snapshot.rows.len())
+                    .map(|snapshot| (snapshot.revision.clone(), Rc::clone(&snapshot.rows)));
+                let Some((revision, rows)) = found else {
                     return SearchPage::stale(provider.search_revision(&ctx));
                 };
-                (id, found.revision.clone(), Rc::clone(&found.rows), offset)
+                (id, revision, rows, offset)
             }
         };
         let end = page_end(&rows, offset, budget);
         let page = rows.get(offset..end).unwrap_or_default().to_vec();
-        let mut held = self.held.borrow_mut();
+        let mut snapshots = self.held.borrow_mut();
         if end >= rows.len() {
-            held.retain(|held| held.id != id);
+            snapshots.retain(|snapshot| snapshot.id != id);
             return SearchPage::exhausted(revision, page);
         }
-        if !held.iter().any(|held| held.id == id) {
-            if held.len() >= HELD_SNAPSHOTS {
-                held.pop_front();
+        if !snapshots.iter().any(|snapshot| snapshot.id == id) {
+            if snapshots.len() >= HELD_SNAPSHOTS {
+                snapshots.pop_front();
             }
-            held.push_back(Held {
+            snapshots.push_back(Held {
                 id,
                 provider: provider.id().to_owned(),
                 revision: revision.clone(),
                 rows,
             });
         }
+        drop(snapshots);
         SearchPage::continuing(revision, page, Some(format!("{HELD}{id}:{end}")))
     }
 }
