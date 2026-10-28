@@ -65,16 +65,20 @@ tools/ci/builder-vm.sh clean        # this worktree's run containers and run scr
   builder: `store` (the image build's podman store), `out/<worktree>` (the OS build's
   output and caches), `images/<digest>` (the image's OCI layout), `disks/<digest>` (its
   disk, with its install log), `base/<tag>` (the published disk the worker boots),
-  `worker` (the worker's work disk) and `runs/<run>` (each run's reports).
+  `worker-vm` (the worker's work disk) and `runs/<run>` (each run's reports).
 - **What makes a re-run warm.** The image build runs in a container of its own (rcargo
   stops idle worktree containers and prunes its shared store, which a long build does not
   survive), with a podman store and the OS build's cargo and sccache caches that outlive
   it. The base is rebuilt only when a file its build reads changed
   (`os/dev/base-input-paths.py`), so a change to the harness, a CI script or a doc reuses it.
   A disk is kept per image digest, and the VM host image per package list. The worker's work
-  disk keeps the last disk's image in its podman stores and local registry, and the last disk
+  disk keeps the last disk's image in its podman store and local registry, and the last disk
   itself as the seed of the next (`disk-image.sh --seed-raw`): a new image moves and installs
-  only the layers the last one lacked. One disk step uses it at a time.
+  only the layers the last one lacked. The worker VM (container `bvm-worker`) stays up between
+  disks and shuts down after 45 minutes without one, so a disk starts without a boot; one disk
+  step uses it at a time. The disk leaves it raw, through a virtual disk of its own, and
+  stays raw on the builder (`disk.raw`), with `disk.qcow2` a qcow2 over it: copy the two
+  together.
 - **The VM host containers.** They come from Fedora plus `tools/ci/packages/
   vm-acceptance.txt`, with `/dev/kvm` passed through. Each shard runs
   `tools/ci/vm-acceptance.sh` in a container of its own (`builder-vm-guest.sh`), with its

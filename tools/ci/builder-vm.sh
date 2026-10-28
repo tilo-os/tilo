@@ -213,16 +213,33 @@ cmd_disk() {
   base=$(base_disk)
   image=$(host_image)
   note "installing $digest onto a disk in a VM booted from main's dev disk ($(basename "$base"))"
-  # The worker's work disk is the builder's, not the worktree's: it keeps the layers of the
-  # last image installed, which the next worktree's image mostly shares. One disk step uses
-  # it at a time; another waits for the lock.
+  # The worker is the builder's, not the worktree's: one VM, booted from main's dev disk,
+  # that stays up between disks (builder-vm-guest.sh worker), so a disk starts without a boot;
+  # its work disk keeps the layers of the last image installed, which the next worktree's
+  # image mostly shares. One disk is made in it at a time; another waits for the lock. A
+  # worker of another base, VM host image or builder-vm-guest.sh is replaced.
   builder_job disk <<<"set -e; rm -rf $disks.part
-    mkdir -p $disks.part $scratch/worker
-    flock $scratch/worker/lock podman run --rm --name bvm-disk-$key --label $label=disk --label $label.tree=$key \
-      --device /dev/kvm -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
-      -v $base:/base:ro -v $disks.part:/out -v $scratch/worker:/work \
-      -v $(image_dir "${digest#sha256:}"):/layout:ro -v $bin:/usr/local/bin/tilo-vm:ro \
-      -v $src:/src:ro $image bash /src/tools/ci/builder-vm-guest.sh disk
+    mkdir -p $disks.part $scratch/worker-vm
+    # (The lock is this job's alone: the worker it starts does not inherit it.)
+    exec 9>$scratch/worker-vm/lock; flock 9
+    want=\"$base $image \$(sha256sum < $src/tools/ci/builder-vm-guest.sh | cut -c1-16)\"
+    if ! podman exec bvm-worker test -e /work/ready 2>/dev/null \
+       || [ \"\$(cat $scratch/worker-vm/booted-from 2>/dev/null)\" != \"\$want\" ]; then
+      echo 'builder-vm: starting the worker'
+      podman rm -f -t 120 bvm-worker >/dev/null 2>&1 || true
+      printf '%s\\n' \"\$want\" > $scratch/worker-vm/booted-from
+      cp $src/tools/ci/builder-vm-guest.sh $scratch/worker-vm/guest.sh
+      podman run -d --name bvm-worker --label $label=worker --device /dev/kvm --stop-timeout 120 \
+        -v $base:/base:ro -v $scratch/worker-vm:/work -v $scratch:$scratch -v $bin:/usr/local/bin/tilo-vm:ro \
+        $image bash /work/guest.sh worker >/dev/null 9>&-
+      until podman exec bvm-worker test -e /work/ready 2>/dev/null; do
+        [ \"\$(podman inspect --format '{{.State.Running}}' bvm-worker)\" = true ] \
+          || { podman logs bvm-worker | tail -n 40; exit 1; }
+        sleep 2
+      done
+    fi
+    podman exec -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) bvm-worker \
+      bash $src/tools/ci/builder-vm-guest.sh disk $(image_dir "${digest#sha256:}") $disks.part $src
     rm -rf $disks; mv $disks.part $disks"
   note "dev disk of $digest in $(( $(stamp) - t0 )) s"
 }
