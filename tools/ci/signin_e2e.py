@@ -54,6 +54,56 @@ RECOVERY_SHAPE = re.compile(r"\b[cbdefghijklnrtuv]{8}(?:-[cbdefghijklnrtuv]{8}){
 _spec = importlib.util.spec_from_file_location("installer_console", REPO / "os/dev/installer-console.py")
 console = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(console)
+_spec = importlib.util.spec_from_file_location("greeter_acceptance", REPO / "os/dev/greeter-acceptance.py")
+frames = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(frames)
+
+# QEMU sendkey names for the characters that are not their own key name (os/dev/vm.sh char_key).
+KEY_NAMES = {" ": "spc", "-": "minus", ".": "dot", "/": "slash", "_": "shift-minus",
+             ":": "shift-semicolon", ";": "semicolon", "@": "shift-2", "=": "equal",
+             "+": "shift-equal", "|": "shift-backslash", "\\": "backslash", ">": "shift-dot",
+             "<": "shift-comma", ",": "comma", "~": "shift-grave_accent", "`": "grave_accent",
+             "#": "shift-3", "*": "shift-8", "&": "shift-7", "(": "shift-9", ")": "shift-0",
+             "!": "shift-1", '"': "shift-apostrophe", "'": "apostrophe", "?": "shift-slash"}
+
+
+def key_name(char: str) -> str:
+    if char in KEY_NAMES:
+        return KEY_NAMES[char]
+    return f"shift-{char.lower()}" if char.isupper() else char
+
+
+class Monitor:
+    """QEMU's human monitor on the boot's socket, over one connection. vm.sh's keys, type and
+    shot start a shell and a socat for every key or frame, and socat lingers half a second after
+    each, which made typing a password take seconds and each look at the screen longer still."""
+
+    PROMPT = b"(qemu) "
+
+    def __init__(self, path: Path) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(30)
+        self.sock.connect(str(path))
+        self.buffer = b""
+        self._until_prompt()
+
+    def _until_prompt(self) -> str:
+        while self.PROMPT not in self.buffer:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise OSError("the QEMU monitor closed")
+            self.buffer += chunk
+        reply, _, self.buffer = self.buffer.partition(self.PROMPT)
+        return reply.decode("utf-8", "replace")
+
+    def command(self, line: str) -> str:
+        self.sock.sendall(line.encode() + b"\n")
+        reply = self._until_prompt()
+        # The monitor echoes the command line first.
+        return reply.split("\n", 1)[1] if "\n" in reply else ""
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 class Secrets:
@@ -114,9 +164,13 @@ class Cycle:
                         TILO_SMP=os.environ.get("TILO_SMP", "4"), TILO_TARGET_SIZE="40G")
         self.shell_socket = self.run / "test-shell.sock"
         self.boots = 0
+        self.monitor: Monitor | None = None
 
     def vm(self, *args: str, stdin: str | None = None, check: bool = True,
            timeout: float = 300) -> subprocess.CompletedProcess:
+        if args[0] in ("boot-installer", "boot-target", "stop", "init-cycle") and self.monitor:
+            self.monitor.close()
+            self.monitor = None
         result = subprocess.run(["bash", str(VM_SH), *args], env=self.env, input=stdin,
                                 capture_output=True, text=True, timeout=timeout, cwd=REPO)
         if check and result.returncode != 0:
@@ -145,20 +199,52 @@ class Cycle:
     def stop(self) -> None:
         self.vm("stop", check=False)
 
+    def hmp(self, command: str) -> str:
+        """One monitor command, on this boot's connection (opened again if it dropped)."""
+        for attempt in (1, 2):
+            try:
+                if self.monitor is None:
+                    self.monitor = Monitor(self.run / "mon.sock")
+                return self.monitor.command(command)
+            except OSError as error:
+                if self.monitor:
+                    self.monitor.close()
+                self.monitor = None
+                if attempt == 2:
+                    raise Failed(f"the QEMU monitor did not answer {command.split()[0]}: {error}") from error
+        raise AssertionError("unreachable")
+
     def keys(self, *names: str) -> None:
-        self.vm("keys", *names)
+        for name in names:
+            self.hmp(f"sendkey {name}")
+            time.sleep(0.12)
 
     def type(self, text: str) -> None:
-        """Typed with QEMU key events; the text travels on stdin, never argv."""
-        self.vm("type", "-", stdin=text + "\n", timeout=600)
-
-    def hmp(self, command: str) -> str:
-        return self.vm("cmd", command).stdout
+        """Typed with QEMU key events, as vm.sh types: a 20 ms hold and an 80 ms gap per key,
+        which the software-rendered greeter and installer keep up with under load. The text
+        goes to the monitor socket only, never into argv or a log."""
+        for char in text:
+            self.hmp(f"sendkey {key_name(char)} 20")
+            time.sleep(0.08)
 
     def shot(self, name: str) -> Path | None:
-        result = self.vm("shot", name, check=False)
-        path = Path(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else None
-        return path if result.returncode == 0 and path and path.is_file() else None
+        """The framebuffer as a PPM, read once QEMU has written all of it."""
+        path = self.run / f"{name}.ppm"
+        path.unlink(missing_ok=True)
+        try:
+            reply = self.hmp(f"screendump {path}")
+        except Failed:
+            return None
+        if "no surface" in reply.lower():
+            return None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                frames.Image.read_ppm(path)
+                return path
+            except (OSError, ValueError, IndexError, frames.Failed):
+                time.sleep(0.05)
+        return None
 
     def screen(self, name: str = "observe") -> tuple[Path | None, str]:
         path = self.shot(name)
@@ -170,7 +256,7 @@ class Cycle:
     def keep_screen(self, name: str, path: Path | None, text: str) -> None:
         """A screenshot and its text as check outputs. Never called for a screen showing a secret."""
         if path and path.is_file():
-            shutil.copy(path, self.out / f"{name}.png")
+            frames.Image.read_ppm(path).write_png(self.out / f"{name}.png")
             (self.out / f"{name}.txt").write_text(text, encoding="utf-8")
 
     def greeter_state(self, timeout: float = 3) -> dict | None:

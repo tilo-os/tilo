@@ -4673,7 +4673,7 @@ lifetime = "3600"
 name = "signin-e2e-x86_64"
 run = "bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 /target/signin-e2e"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt"] }
-inputs = ["tools/ci/signin-e2e.sh", "tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/probe-kvm.py"]
+inputs = ["tools/ci/signin-e2e.sh", "tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/greeter-acceptance.py", "os/dev/probe-kvm.py"]
 shards = ["one-secret", "separate-disk-secret"]
 needs = ["dev-installer-medium-x86_64"]
 outputs = ["/target/signin-e2e/{shard}/**"]
