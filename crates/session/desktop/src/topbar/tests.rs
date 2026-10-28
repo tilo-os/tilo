@@ -2271,7 +2271,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     let bar = TopBarChrome::from_tree(&joined);
     assert_eq!(
         bar.collaborator_initials(),
-        &['X'],
+        &['B'],
         "the bar must show somebody present in this workspace",
     );
     assert_eq!(
@@ -2281,7 +2281,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
     );
 
     // Invited but not redeemed: an avatar here would falsely claim
-    // he's in the workspace.
+    // they are in the workspace.
     let mut asked = empty.clone();
     asked.workspaces[0].collaborators = vec![
         tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Bob").as_invited(),

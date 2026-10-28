@@ -944,17 +944,17 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
             .with_invoker(invoker);
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     };
-    step(&mut doc, "mine", ActionInvoker::actor("ada"));
+    step(&mut doc, "mine", ActionInvoker::actor("kai"));
     step(&mut doc, "theirs", ActionInvoker::actor("ada"));
     step(
         &mut doc,
         "agents",
         ActionInvoker::actor("agent:claude")
             .with_kind(ActorKind::Agent)
-            .acting_for("ada"),
+            .acting_for("kai"),
     );
     let mut authors = AuthorDirectory::new();
-    authors.set_reader("ada");
+    authors.set_reader("kai");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let rows: Vec<(String, AuthorRelation)> = entries
         .iter()
@@ -998,7 +998,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let mut authors = AuthorDirectory::new();
-    authors.set_reader("ada");
+    authors.set_reader("kai");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let author = &entries.last().unwrap().author;
     assert_eq!(author.name, "claude · Software, for ada");
@@ -1023,7 +1023,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     doc.put(ROOT, "title", "y").unwrap();
     doc.commit();
     let mut authors = AuthorDirectory::new();
-    authors.set_reader("ada");
+    authors.set_reader("kai");
     authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
     authors.register_agent(
         &hex::encode(device),
@@ -1082,7 +1082,7 @@ fn a_change_taken_in_a_task_is_named_by_the_task() {
         );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let mut authors = AuthorDirectory::new();
-    authors.set_reader("ada");
+    authors.set_reader("kai");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let entry = entries.last().expect("the change");
     assert_eq!(entry.author.name, "ada via task ‘Prepare Q3 financials’");
