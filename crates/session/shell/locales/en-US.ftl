@@ -3099,6 +3099,7 @@ agent-quick-mode-task = Run as a task
 agent-quick-mode-answer-line = Answer in place
 agent-quick-mode-task-line = Run this as a task
 agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
+agent-quick-about-resource = About { $resource } in { $app }
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer
 agent-quick-shots-context = About your selection in Notes: “[tilo OS](search for the tilo homepage)”
