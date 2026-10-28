@@ -165,10 +165,10 @@ fn a_published_action_builds_the_planned_dyn_action() {
 }
 
 /// A parameter of another app's record type (`list: todo.TodoList` in a package that uses the
-/// todo app) is a resource id, as one of the package's own records is: the door takes text for
-/// it and says what kind of resource it names. Published as an array, no caller could pass one.
+/// todo app) picks a resource of that kind, as one of the package's own records does: the door
+/// takes the catalogue's reference to it. Published as an array, no caller could pass one.
 #[test]
-fn a_parameter_of_another_apps_record_is_a_resource_id() {
+fn a_parameter_of_another_apps_record_picks_a_resource_of_its_kind() {
     const BOARD: &str = r#"app so.tilo.board "Board"
 
 use so.tilo.todo as todo
@@ -206,10 +206,12 @@ action attach(b: Board, list: todo.TodoList) {
         .iter()
         .find(|param| &*param.name == "list")
         .unwrap();
-    assert_eq!(list.ty, tilo_actions::ParamType::Text);
-    let schema = list.schema.as_deref().unwrap();
-    assert_eq!(schema["type"], "string");
-    assert_eq!(schema["resource_kind"], "tl.so.tilo.todo.TodoList");
+    assert_eq!(
+        list.pick(),
+        Some(tilo_actions::Pick::Resource {
+            kind: "tl.so.tilo.todo.TodoList".to_owned()
+        })
+    );
 }
 
 #[test]
