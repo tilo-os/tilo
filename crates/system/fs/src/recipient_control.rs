@@ -17,7 +17,7 @@ use fs_protocol::{
 };
 use serde::Serialize;
 use thiserror::Error;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWrite;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 
@@ -320,19 +320,13 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize + Sync,
 {
-    canonical_frame::write(RECIPIENT_CONTROL_FRAMING, writer, value)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::Encode(error) => std::io::Error::other(error),
-            CanonicalFrameError::TooLarge(len) => std::io::Error::other(format!(
-                "recipient control frame of {len} bytes exceeds its bound"
-            )),
-            CanonicalFrameError::Empty | CanonicalFrameError::Decode(_) => {
-                std::io::Error::other("recipient control frame exceeds its bound")
-            }
-        })?;
-    writer.flush().await
+    canonical_frame::write_flushed(
+        RECIPIENT_CONTROL_FRAMING,
+        writer,
+        value,
+        "recipient control",
+    )
+    .await
 }
 
 /// Write one bounded recipient-control request frame.
@@ -347,20 +341,7 @@ pub async fn write_recipient_control_request(
 pub async fn read_recipient_control_response(
     stream: &mut UnixStream,
 ) -> std::io::Result<RecipientControlResponseV1> {
-    canonical_frame::read(RECIPIENT_CONTROL_FRAMING, stream)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::TooLarge(len) => std::io::Error::other(format!(
-                "recipient control response of {len} bytes is over its bound"
-            )),
-            CanonicalFrameError::Empty
-            | CanonicalFrameError::Decode(_)
-            | CanonicalFrameError::Encode(_) => {
-                std::io::Error::other("invalid recipient control response")
-            }
-        })?
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+    canonical_frame::read_response(RECIPIENT_CONTROL_FRAMING, stream, "recipient control").await
 }
 
 /// One-shot client helper. Secret-bearing requests are never formatted by this
@@ -388,6 +369,7 @@ mod tests {
         MAX_RECIPIENT_CONTROL_FRAME_BYTES, mint_bearer_file_invite,
     };
     use rand::{SeedableRng, rngs::StdRng};
+    use tokio::io::AsyncWriteExt;
     use uuid::Uuid;
 
     fn uri(seed: u8, workspace_id: Uuid, record_id: FileRecordId) -> String {

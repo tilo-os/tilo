@@ -22,7 +22,7 @@ use iroh_base::EndpointAddr;
 use serde::Serialize;
 use thiserror::Error;
 use tilo_clock::Clock;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWrite;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -356,18 +356,7 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize + Sync,
 {
-    canonical_frame::write(SHARE_CONTROL_FRAMING, writer, value)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::Encode(error) => std::io::Error::other(error),
-            CanonicalFrameError::Empty
-            | CanonicalFrameError::TooLarge(_)
-            | CanonicalFrameError::Decode(_) => {
-                std::io::Error::other("share control response too large")
-            }
-        })?;
-    writer.flush().await
+    canonical_frame::write_flushed(SHARE_CONTROL_FRAMING, writer, value, "share control").await
 }
 
 /// Write one bounded canonical request frame.
@@ -382,21 +371,7 @@ pub async fn write_share_control_request(
 pub async fn read_share_control_response(
     stream: &mut UnixStream,
 ) -> std::io::Result<ShareControlResponseV1> {
-    canonical_frame::read(SHARE_CONTROL_FRAMING, stream)
-        .await
-        .map_err(|error| match error {
-            CanonicalFrameError::Io(error) => error,
-            CanonicalFrameError::TooLarge(bytes) => {
-                std::io::Error::other(format!("share control response too large: {bytes} bytes"))
-            }
-            CanonicalFrameError::Empty => {
-                std::io::Error::other("invalid share control response: zero-length frame")
-            }
-            CanonicalFrameError::Decode(error) | CanonicalFrameError::Encode(error) => {
-                std::io::Error::other(format!("invalid share control response: {error}"))
-            }
-        })?
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+    canonical_frame::read_response(SHARE_CONTROL_FRAMING, stream, "share control").await
 }
 
 #[derive(Debug, Error)]
@@ -410,6 +385,7 @@ mod tests {
     use collab_types::generate_keypair;
     use fs_protocol::{ContentHash, FileActor, FileMetadataV1, IndexStatus};
     use iroh::SecretKey;
+    use tokio::io::AsyncWriteExt;
 
     use tilo_clock::FixedClock;
 

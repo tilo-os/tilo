@@ -5,9 +5,8 @@
 //! may create one. Only the shell's prompt does, through the service.
 
 use std::fs;
-use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -66,22 +65,8 @@ impl GrantStore {
             grants: grants.to_vec(),
         })
         .map_err(io::Error::other)?;
-        let staged = self.dir.join(format!(".{uid}.json.new"));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&staged)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&staged, &path)?;
-        sync_dir(&self.dir)
+        tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
     }
-}
-
-fn sync_dir(dir: &Path) -> io::Result<()> {
-    fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]

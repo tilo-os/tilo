@@ -29,6 +29,7 @@ rystic-tests = ["filesystem", "dep:tilo-cloud-files"]
 # The document-media capability over the content store, without the mount.
 document-media = ["dep:runtime-fs", "dep:tilo-net", "dep:serde_json", "dep:fs-protocol", "dep:thiserror"]
 filesystem = [
+    "tilo-files/watch",
     "dep:clap",
     "dep:iroh",
     "dep:iroh-base",

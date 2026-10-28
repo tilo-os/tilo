@@ -25,6 +25,7 @@ service = ["dep:tilo-sandbox-core", "dep:tilo-seat-peer"]
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-seat-peer = { path = "../seat-peer", optional = true }
 tilo-sandbox-core = { path = "../sandbox-core", optional = true }
 workspace-hack = { version = "0.1" }
