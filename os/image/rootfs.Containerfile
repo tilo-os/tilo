@@ -12,6 +12,10 @@ FROM binaries AS rootfs
 ARG SOURCE_DATE_EPOCH=0
 ARG TILO_HARDWARE_PROFILE=generic
 ARG TILO_TARGET_IMGREF=
+# A greeter linked without LTO (local builds' default, os/dev/build-image.sh) is about a
+# quarter larger than a release's, so its initramfs budget is reported there, as each app's
+# size budget is, and enforced only where the binaries are linked as releases are.
+ARG TILO_RUST_LTO=thin
 
 # The board's hardware profile (its firmware and hashed device tree) and the
 # initramfs, now that the rollback and unlock helpers and the public trust it
@@ -34,7 +38,8 @@ RUN --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},targe
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
-    bash /run/tilo-build-initramfs.sh "$kver"
+    TILO_GREETER_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
+        bash /run/tilo-build-initramfs.sh "$kver"
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
 # state it once did: offering `tilo-install --encrypt` while carrying no
