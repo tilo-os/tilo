@@ -888,7 +888,7 @@ impl MonitorSink for NullSink {
 /// CI runner is one — so it plays silently rather than refusing to play.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
-    if let Some(s) = SystemSink::open() {
+    if let Some(s) = media::pcm::Playback::open() {
         Box::new(s)
     } else {
         tracing::info!("no audio output available; monitoring silently");
@@ -1037,94 +1037,16 @@ impl Drop for AudioMonitor {
     }
 }
 
-/// A [`MonitorSink`] that plays through the system's audio output.
-///
-/// `autoaudiosink` picks whatever the host offers (`PipeWire` here). A machine
-/// with no output at all yields `None`, and the editor falls back to
-/// [`NullSink`] — silent playback rather than no playback.
-#[cfg(any(feature = "gst", feature = "decode"))]
-pub struct SystemSink {
-    pipeline: media::gst::Pipeline,
-    src: gstreamer_app::AppSrc,
-    pushed: u64,
-}
+// The host's output takes the mix as it is made, with no conversion.
+const _: () = assert!(
+    SAMPLE_RATE == media::audio_output::RATE && CHANNELS == media::audio_output::CHANNELS as usize
+);
 
+/// A [`MonitorSink`] that plays through the host's audio output.
 #[cfg(any(feature = "gst", feature = "decode"))]
-impl SystemSink {
-    pub fn open() -> Option<Self> {
-        use media::gst;
-        use media::gst::prelude::*;
-
-        gst::init().ok()?;
-        let pipeline = gst::Pipeline::new();
-        let src = gstreamer_app::AppSrc::builder()
-            .caps(
-                &gst::Caps::builder("audio/x-raw")
-                    .field("format", "F32LE")
-                    .field("channels", CHANNELS as i32)
-                    .field("rate", SAMPLE_RATE as i32)
-                    .field("layout", "interleaved")
-                    .build(),
-            )
-            // The sink's own clock paces playback; the monitor pushes ahead
-            // of it and blocks when the queue is full, which is what keeps
-            // the mixing thread in step without a timer of its own.
-            .is_live(true)
-            .format(gst::Format::Time)
-            .build();
-        src.set_property("block", true);
-        let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
-        let resample = gst::ElementFactory::make("audioresample").build().ok()?;
-        let out = gst::ElementFactory::make("autoaudiosink").build().ok()?;
-        pipeline
-            .add_many([src.upcast_ref(), &convert, &resample, &out])
-            .ok()?;
-        gst::Element::link_many([src.upcast_ref(), &convert, &resample, &out]).ok()?;
-        pipeline.set_state(gst::State::Playing).ok()?;
-        Some(Self {
-            pipeline,
-            src,
-            pushed: 0,
-        })
-    }
-}
-
-#[cfg(any(feature = "gst", feature = "decode"))]
-impl MonitorSink for SystemSink {
+impl MonitorSink for media::pcm::Playback {
     fn push(&mut self, block: &[f32]) -> bool {
-        use media::gst;
-
-        let mut bytes = Vec::with_capacity(block.len() * 4);
-        for s in block {
-            bytes.extend_from_slice(&s.to_le_bytes());
-        }
-        let Ok(mut buffer) = gst::Buffer::with_size(bytes.len()) else {
-            return false;
-        };
-        {
-            let Some(bref) = buffer.get_mut() else {
-                return false;
-            };
-            let frames = (block.len() / CHANNELS) as u64;
-            let ns = |f: u64| f * 1_000_000_000 / u64::from(SAMPLE_RATE);
-            bref.set_pts(gst::ClockTime::from_nseconds(ns(self.pushed)));
-            bref.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
-            let Ok(mut map) = bref.map_writable() else {
-                return false;
-            };
-            map.copy_from_slice(&bytes);
-            self.pushed += frames;
-        }
-        self.src.push_buffer(buffer).is_ok()
-    }
-}
-
-#[cfg(any(feature = "gst", feature = "decode"))]
-impl Drop for SystemSink {
-    fn drop(&mut self) {
-        use media::gst;
-        use media::gst::prelude::*;
-        let _ = self.pipeline.set_state(gst::State::Null);
+        media::pcm::Playback::push(self, block)
     }
 }
 

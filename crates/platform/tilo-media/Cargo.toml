@@ -27,13 +27,13 @@ voice = ["dep:gstreamer", "dep:gstreamer-app"]
 # default so hermetic builds, `--shots`, and CI do not require GStreamer.
 # Enable on a host that has the gstreamer stack: `--features decode`.
 decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
-# Lets `encode` consult the GStreamer registry when picking an encoder.
-# The preference order and the bitrate-unit table in `encode` are pure and
-# always compiled; this feature is only what allows the crate to *look* at
-# which elements are installed, rather than assume. A consumer that encodes
-# (the video editor's export) turns it on; one that only decodes does not need
-# it, and `decode` already links gstreamer so both together add nothing.
-encode = ["dep:gstreamer"]
+# Lets `encode` consult the GStreamer registry when picking an encoder, and
+# feed an encode graph (`encode::graph`). The preference order and the
+# bitrate-unit table in `encode` are pure and always compiled; this feature
+# is what allows the crate to *look* at which elements are installed, rather
+# than assume, and to run the graph. A consumer that encodes (the video
+# editor's export) turns it on; one that only decodes does not need it.
+encode = ["dep:gstreamer", "dep:gstreamer-app"]
 # The real-time encoder and decoder (`realtime`): screen sharing, calls and
 # recording. Links the same GStreamer stack as `decode`; without it the
 # real-time constructors report `RealtimeError::NotCompiled`, so a consumer

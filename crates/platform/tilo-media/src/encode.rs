@@ -29,6 +29,10 @@
 //! | `off` | software encoders only |
 //! | `va` / `nvcodec` / `qsv` / `v4l2` | try that family first, then software |
 
+/// Feeding an encode graph and finishing its file.
+#[cfg(gst_encode)]
+pub mod graph;
+
 /// Which encoder family an element belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EncoderKind {
