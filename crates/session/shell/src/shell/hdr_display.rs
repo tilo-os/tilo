@@ -11,7 +11,7 @@
 //! an SDR panel and clips to black. Every uncertain path therefore returns
 //! [`DisplayCapabilities::sdr_default`].
 
-use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
 use tilo_wayland_ext::edid::HdrDisplayInfo;
 
 /// What the compositor can deliver to one output. Consumed by

@@ -610,8 +610,8 @@ fn a_click_on_another_window_reaches_it_while_the_asking_window_has_the_keys() {
 #[test]
 fn a_click_from_another_device_reaches_another_window_while_a_chooser_waits() {
     use crate::network::input_firewall::{Denial, RemoteInputFirewall, ShellView};
-    use crate::network::streaming::InputEvent;
     use crate::shell::input_policy::{foreign_tiles, input_capture};
+    use tilo_window_share::streaming::InputEvent;
 
     const PEER: crate::network::protocol::PeerId = 9;
     let (desk, _folder, _answer, _window, other) = chooser_beside_another_window();

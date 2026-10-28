@@ -19,8 +19,8 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::Color;
 
-use crate::collab::encoder::{Encoder, EncoderInit, FrameInput, build};
-use crate::config::EncoderChoice;
+use tilo_window_share::config::EncoderChoice;
+use tilo_window_share::encoder::{Encoder, EncoderInit, FrameInput, build};
 
 const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 

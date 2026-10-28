@@ -14,7 +14,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use shell::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
+use neighbour_wire::colorimetry::{ColorPrimaries, TransferCharacteristics};
 use shell::compositor::state::{ClientState, State};
 use tilo_wayland_ext::color_management::{ColorManagementSurfaceData, surface_current_colorimetry};
 

@@ -414,6 +414,7 @@ members = [
     "crates/session/tilo-unlock-helper",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
+    "crates/session/window-share",
 
     # System
     "crates/system/account-custody",

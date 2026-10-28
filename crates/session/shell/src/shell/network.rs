@@ -2481,7 +2481,7 @@ impl ShellNetwork {
     pub fn publish_workspace_control_input(
         &self,
         session: &crate::network::WorkspaceControlSession,
-        event: &crate::network::InputEvent,
+        event: &tilo_window_share::streaming::InputEvent,
     ) -> Result<(), String> {
         let msg = session.input_message(event).map_err(str::to_owned)?;
         self.cmd_tx
@@ -10678,7 +10678,7 @@ mod tests {
             });
             net.publish_workspace_control_input(
                 &direct,
-                &crate::network::InputEvent::PointerMotion { x: 2.0, y: 3.0 },
+                &tilo_window_share::streaming::InputEvent::PointerMotion { x: 2.0, y: 3.0 },
             )
             .expect("direct input");
             assert!(matches!(

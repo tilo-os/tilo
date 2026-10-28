@@ -15370,6 +15370,7 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-wallpapers",
  "tilo-wayland-ext",
+ "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
  "tokio",
@@ -21227,6 +21228,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-window-share"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "neighbour-wire",
+ "serde",
+ "serde_json",
+ "smithay",
+ "thiserror 2.0.21",
+ "tilo-callstream",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-paint-stream",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-winit"
 version = "0.30.13"
 dependencies = [
@@ -26681,6 +26700,7 @@ dependencies = [
  "tilo-web-desktop",
  "tilo-web-search",
  "tilo-wet-media",
+ "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
  "tilo-workspace-emoji",

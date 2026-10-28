@@ -12,12 +12,12 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
 
-use crate::collab::flatpak_share::SharedFlatpakSession;
-use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::frame::FrameBuilder;
 use crate::shell::peer_view::PeerStreamStart;
 use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, next_id};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
 /// The host member's device key, as the room's document names it.
 const HOST: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";

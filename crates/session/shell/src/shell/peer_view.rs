@@ -1,5 +1,5 @@
 //! Peer-side foreign-surface view — the receive-side counterpart to the
-//! owner's encode loop in [`crate::network::streaming`]. Owns one
+//! owner's encode loop in [`tilo_window_share::streaming`]. Owns one
 //! [`tilo_callstream::surface_decoder::VideoDecoder`] for the stream's codec
 //! and paints the most recently decoded frame as a vello image draw.
 //!
@@ -27,12 +27,12 @@ use ui::text_render::TextRenderer;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
-use crate::collab::colorimetry::Colorimetry;
-use crate::diagnostics::PeerSurfaceMetrics;
 use crate::network::protocol::{PeerId, SurfaceId};
-use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
+use neighbour_wire::colorimetry::Colorimetry;
+use tilo_window_share::diagnostics::PeerSurfaceMetrics;
+use tilo_window_share::streaming::InputEvent;
 
 /// Ceiling on the receive-side decode queue depth; once undrawn frames
 /// exceed this, further pushes drop the oldest. Two is the minimum
@@ -160,7 +160,7 @@ pub struct PeerStreamStart {
     pub codec: String,
     /// The size the sender announced; decoded pictures are cropped to it.
     pub display_size: Option<(u32, u32)>,
-    pub hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+    pub hdr_static_metadata: Option<tilo_window_share::hdr_metadata::Hdr10Metadata>,
     pub input_sink: Arc<dyn Fn(InputEvent) + Send + Sync>,
     /// Asks the sender for a keyframe, naming the unit the view could not
     /// decode; see [`PeerView::set_keyframe_sink`].
@@ -296,7 +296,7 @@ impl PeerView {
         codec: &str,
         metrics: PeerSurfaceMetrics,
         display_caps: &crate::shell::hdr_display::DisplayCapabilities,
-        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
+        hdr_static_metadata: Option<tilo_window_share::hdr_metadata::Hdr10Metadata>,
     ) -> Self {
         // HDR streams announce their static metadata; they decode to 10-bit.
         let bit_depth = if hdr_static_metadata.is_some() { 10 } else { 0 };
@@ -408,7 +408,7 @@ impl PeerView {
         }
         self.decoder
             .last_colorimetry()
-            .is_some_and(super::super::collab::colorimetry::Colorimetry::is_hdr)
+            .is_some_and(neighbour_wire::colorimetry::Colorimetry::is_hdr)
     }
 
     pub fn metrics(&self) -> &PeerSurfaceMetrics {

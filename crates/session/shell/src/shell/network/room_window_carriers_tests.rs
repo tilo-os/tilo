@@ -8,14 +8,14 @@
 )]
 
 use super::{Inbound, Outbound, carrier_capabilities, carrier_peer, windows_channel};
-use crate::collab::flatpak_share::SharedFlatpakSession;
-use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::RoomId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
 use tilo_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
 const TAB: u64 = 0x5EED_0000_0000_0007;
 const SURFACE: u64 = 31;

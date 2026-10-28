@@ -485,7 +485,6 @@ use smithay::{
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
-use crate::collab::flatpak_share::SharedFlatpakSession;
 use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
@@ -494,8 +493,9 @@ use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::input_firewall::{Denial, RemoteInputFirewall};
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
-use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use tilo_wayland_ext::color_management::ColorManagerState;
+use tilo_window_share::flatpak_share::SharedFlatpakSession;
+use tilo_window_share::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
@@ -1083,7 +1083,7 @@ pub struct State {
     /// commit — when the surface is in the map, `encode_next_frame` is
     /// pumped the same tick a fresh buffer lands, avoiding a per-frame
     /// stall waiting on the next damage pass. Held as `Arc` since
-    /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
+    /// [`tilo_window_share::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
     /// Apps that can stream their window's page as a display list, by app
     /// id (`shell-ui`'s `PaintCapable`). Their windows reach web members as
@@ -3516,7 +3516,7 @@ impl State {
         &mut self,
         host_peer: MsgPeerId,
         desired: &HashMap<SurfaceId, LegacyShare>,
-        config: &crate::config::FlatpakShareConfig,
+        config: &tilo_window_share::config::FlatpakShareConfig,
     ) {
         let stale = self
             .active_sessions
@@ -3584,7 +3584,7 @@ impl State {
             // The window is still shared: its stream is replaced, not ended,
             // unless the new one cannot start.
             let replaced = self.active_sessions.remove(&surface);
-            let config = &crate::config::FlatpakShareConfig {
+            let config = &tilo_window_share::config::FlatpakShareConfig {
                 target_fps: self.share_rate_hz(surface).unwrap_or(config.target_fps),
                 ..config.clone()
             };
@@ -4825,13 +4825,13 @@ fn log_share_failure(
     surface: SurfaceId,
     app_id: &str,
     (width, height): (u32, u32),
-    error: &crate::collab::flatpak_share::ShareError,
+    error: &tilo_window_share::flatpak_share::ShareError,
     receivers: &[media::realtime::CodecCapabilities],
 ) {
     use media::realtime::CodecCapabilities;
     if !matches!(
         error,
-        crate::collab::flatpak_share::ShareError::EncoderUnavailable { .. }
+        tilo_window_share::flatpak_share::ShareError::EncoderUnavailable { .. }
     ) {
         tracing::warn!(surface, app_id, width, height, %error, "legacy share encoder failed to start");
         return;
@@ -8760,11 +8760,11 @@ mod tick_hook_tests {
         state.drop_paint_connection(5);
         assert!(state.paint_apps.is_empty());
     }
-    use crate::collab::flatpak_share::SharedFlatpakSession;
-    use crate::config::{EncoderChoice, FlatpakShareConfig};
     use crate::network::protocol::{PeerId, SurfaceId};
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
+    use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+    use tilo_window_share::flatpak_share::SharedFlatpakSession;
 
     fn make_state() -> State {
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
@@ -9403,7 +9403,7 @@ mod tick_hook_tests {
     #[test]
     fn delayed_blur_of_previous_stream_preserves_current_remote_focus() {
         use crate::network::input_firewall::ShellView;
-        use crate::network::streaming::StreamingShare;
+        use tilo_window_share::streaming::StreamingShare;
         use vello::kurbo::Rect;
 
         const PEER: PeerId = 9;

@@ -7713,7 +7713,7 @@ mod tests {
         const SURFACE: u64 = 9_900_702;
         let _env_lock = tilo_test_env::lock();
         let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
-            crate::collab::colorimetry::Colorimetry::hdr10(),
+            neighbour_wire::colorimetry::Colorimetry::hdr10(),
             crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
         )
         .expect("PQ");

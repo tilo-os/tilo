@@ -2536,16 +2536,16 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                         return published;
                     }
                     runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                        crate::network::InputEvent::PointerMotion { x, y }
+                        tilo_window_share::streaming::InputEvent::PointerMotion { x, y }
                     }
                     runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                        crate::network::InputEvent::PointerButton { button, pressed }
+                        tilo_window_share::streaming::InputEvent::PointerButton { button, pressed }
                     }
                     runtime_collab::WorkspaceControlInput::Key {
                         keycode,
                         pressed,
                         modifiers,
-                    } => crate::network::InputEvent::Key {
+                    } => tilo_window_share::streaming::InputEvent::Key {
                         keysym: keycode,
                         pressed,
                         modifiers,
@@ -2561,7 +2561,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                                 ));
                             }
                         };
-                        crate::network::InputEvent::KeyboardFocus { surface, focused }
+                        tilo_window_share::streaming::InputEvent::KeyboardFocus { surface, focused }
                     }
                 };
                 let published = this
