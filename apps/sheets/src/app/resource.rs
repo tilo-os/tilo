@@ -12,7 +12,7 @@ impl SheetsApp {
         let command_slot = CommandSlot::default();
         Self {
             command_slot,
-            bar_commands: Vec::new(),
+            bar_commands: ui::framework::BarCommands::new(),
             chrome_theme: Theme::dark(),
             grid: Grid::new(),
             text_scale: 1.0,

@@ -2283,9 +2283,13 @@ fn accessibility_exposes_cells_busy_state_and_live_controls() {
         app.relayout();
         let root = automerge::ROOT;
         app.settle(&mut Edits::lend(&mut doc), &root);
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-            id: "formulas".into(),
-        });
+        let formulas = app
+            .window_bar()
+            .actions
+            .into_iter()
+            .find(|action| action.name == "Show formulas")
+            .expect("the formula view's toggle");
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: formulas.id });
         app.settle(&mut Edits::lend(&mut doc), &root);
         assert!(app.grid.formula_view());
         assert!(app.perform_semantic_action(

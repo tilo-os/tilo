@@ -1048,6 +1048,8 @@ pub struct VideoEditorApp {
     /// answer, so a control drawn from it can never offer an undo that
     /// Ctrl+Z would decline.
     undo: ui::UndoAccess,
+    /// The window bar's entries, each carrying what it runs.
+    bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
     /// The preview's frame source, held for the app's lifetime.
     ///
     /// It owns the decode sessions and one YUV converter per layer slot, so
@@ -1455,6 +1457,7 @@ impl VideoEditorApp {
             import_notice: ui::widget::toast::Transient::new(),
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
+            bar_entries: ui::framework::BarCommands::new(),
             frame_source: None,
             frame_source_sig: 0,
             prune_countdown: 0,

@@ -39,23 +39,20 @@ fn painted() -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
     (app, doc, tr, theme)
 }
 
-/// Press the window bar's slot `id`, as the desktop hands the press to the
-/// app.
-fn press_bar(app: &mut SheetsApp, doc: &mut AutoCommit, id: &str) {
+/// Press the window bar's action named `name` (a menu's item too), as the
+/// desktop hands the press to the app.
+fn press_bar(app: &mut SheetsApp, doc: &mut AutoCommit, name: &str) {
     // The slots are declared as the sheet settles.
     Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
-    Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
-}
-
-/// The id of the item named `name` in the window bar's menu `menu`.
-fn bar_item(app: &SheetsApp, menu: &str, name: &str) -> String {
-    app.window_bar()
+    let id = app
+        .window_bar()
         .actions
         .into_iter()
-        .find(|action| action.id == menu)
-        .and_then(|action| action.items.into_iter().find(|item| item.name == name))
-        .map_or_else(|| panic!("{menu} offers {name}"), |item| item.id)
+        .flat_map(|action| std::iter::once(action.clone()).chain(action.items))
+        .find(|action| action.name == name && action.items.is_empty())
+        .map_or_else(|| panic!("the bar offers {name}"), |action| action.id);
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id });
+    Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
 }
 
 #[test]
@@ -106,8 +103,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `format_menu_applies_the_chosen_format`.
     {
         let (mut app, mut doc, _tr, _theme) = painted();
-        let percent = bar_item(&app, "format", "Percent");
-        press_bar(&mut app, &mut doc, &percent);
+        press_bar(&mut app, &mut doc, "Percent");
         app.sync(&doc, &automerge::ROOT);
         assert_eq!(
             app.current_active_format.category(),
@@ -122,7 +118,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         app.grid.select_only((1, 1));
         app.sync(&doc, &automerge::ROOT);
         assert!(!app.active_cell_bold);
-        press_bar(&mut app, &mut doc, "bold");
+        press_bar(&mut app, &mut doc, "Bold");
         app.sync(&doc, &automerge::ROOT);
         assert!(app.active_cell_bold, "the Bold command bolds the cell");
         paint_frame(&mut app, &mut tr, &theme);
@@ -130,7 +126,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
             .window_bar()
             .actions
             .into_iter()
-            .find(|action| action.id == "bold")
+            .find(|action| action.name == "Bold")
             .expect("the Bold toggle");
         assert!(bold.on, "the toggle reads as on");
         assert!(feed(&mut app, &mut doc, &char_event("b"), ctrl_mods()));
@@ -141,7 +137,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `settings_sheet_applies_a_choice_and_closes_on_done`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
-        press_bar(&mut app, &mut doc, "settings");
+        press_bar(&mut app, &mut doc, "Document settings");
         assert_eq!(app.settings_panel, SettingsPanel::Document);
         paint_frame(&mut app, &mut tr, &theme);
         let eur = app
@@ -279,10 +275,17 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
 fn the_commands_are_the_window_bars_and_the_formula_bar_leads() {
     let (app, _doc, _tr, _theme) = painted();
     let toolbar = app.window_bar();
-    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+    let names: Vec<&str> = toolbar.actions.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(
-        ids,
-        ["file", "format", "bold", "autosum", "formulas", "settings"]
+        names,
+        [
+            "File",
+            "Format",
+            "Bold",
+            "AutoSum",
+            "Show formulas",
+            "Document settings"
+        ]
     );
     assert!(toolbar.actions.iter().take(2).all(|a| !a.items.is_empty()));
     assert!(toolbar.actions.iter().skip(3).all(|a| a.menu));

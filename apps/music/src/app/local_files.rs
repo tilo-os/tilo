@@ -421,15 +421,13 @@ mod tests {
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-            assert!(
-                toolbar
-                    .actions
-                    .iter()
-                    .any(|action| action.id == super::super::window_bar::OPEN_FILE),
-                "Home offers Open audio file in the window's bar: {toolbar:?}"
-            );
+            let open = toolbar
+                .actions
+                .iter()
+                .find(|action| action.name == "Open audio file")
+                .expect("Home offers Open audio file in the window's bar");
             ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-                id: super::super::window_bar::OPEN_FILE.into(),
+                id: open.id.clone(),
             });
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             let intent = ui::widget::controls::take_control_invocation(&mut app)
@@ -458,7 +456,7 @@ mod tests {
                     toolbar
                         .actions
                         .iter()
-                        .any(|action| action.id == super::super::window_bar::OPEN_FILE)
+                        .any(|action| action.name == "Open audio file")
                 })
             };
             assert!(
