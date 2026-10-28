@@ -200,6 +200,19 @@ pub(crate) struct Device {
     /// The channel keys this device's session broker hands its apps, once
     /// it serves through one: what an app connected to it encrypts under.
     pub(crate) endpoint_keys: Mutex<Option<ui::collaboration::EndpointChannelKeys>>,
+    /// Whether this device's session keeps its workspaces' layouts through
+    /// its broker, as a desktop session does ([`Self::carry_layouts`]).
+    carries_layouts: bool,
+    /// Its session broker and the layout records it keeps through it, while
+    /// online.
+    layouts: std::cell::RefCell<Option<SessionLayouts>>,
+}
+
+/// A session's layout records kept in step with its rooms through its own
+/// broker (`shell::workspace_layouts`). The records go before the broker.
+struct SessionLayouts {
+    records: crate::shell::workspace_layouts::WorkspaceLayouts,
+    _broker: crate::shell::collab_broker::BrokerHandle,
 }
 
 /// The session broker's drain, as far as channels go: parked until the
@@ -340,6 +353,8 @@ impl Device {
             notes: Mutex::default(),
             note_writes: Mutex::default(),
             endpoint_keys: Mutex::default(),
+            carries_layouts: false,
+            layouts: std::cell::RefCell::default(),
         };
         device.go_online();
         device
@@ -420,6 +435,8 @@ impl Device {
     /// Take this device off the network, as shutting it down does: its
     /// session ends, its state stays on disk.
     pub(crate) fn go_offline(&mut self) {
+        // The session's broker holds its network: it ends with the session.
+        self.layouts.get_mut().take();
         let net = self.net.take().expect("the device is online");
         self.channels = None;
         self.notes.lock().unwrap().clear();
@@ -454,6 +471,76 @@ impl Device {
         self.tree = tree.shared();
         *self.state.lock().unwrap() = Loop::default();
         self.go_online();
+        if self.carries_layouts {
+            self.serve_layouts();
+        }
+    }
+
+    /// Keep this device's workspaces' layouts in step with their rooms from
+    /// now on, as a desktop session does: through a collaboration broker its
+    /// session serves through, which holds each room's shared desktop record
+    /// on the room's record route, its loop writing the device's layout
+    /// into it and folding in the others' (`shell::workspace_layouts`). The
+    /// room's host decides every write of it, as for any record.
+    pub(crate) fn carry_layouts(&mut self) {
+        self.carries_layouts = true;
+        self.serve_layouts();
+    }
+
+    fn serve_layouts(&mut self) {
+        use std::os::fd::IntoRawFd as _;
+        use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD};
+        let socket = self.dir.join("session-collab.sock");
+        let _ = std::fs::remove_file(&socket);
+        let broker = self.start_broker(&socket);
+        let (key, cert) = (self.key(), self.cert());
+        let keys = self.endpoint_keys.lock().unwrap().clone();
+        let wakes = Arc::clone(&self.wakes);
+        let records =
+            crate::shell::workspace_layouts::WorkspaceLayouts::with_connect(move |room, woken| {
+                let room_text = room.to_string();
+                crate::shell::launcher::register_in_process_launch(DESKTOP_APP, &room_text);
+                let identity = cold_reads::certified_identity(&key, &cert, room, keys.clone());
+                let device = hex::encode(cert.device_public_key);
+                let route = ui::collaboration::RouteSpec::record(
+                    DESKTOP_APP,
+                    room.as_uuid(),
+                    DESKTOP_RECORD,
+                );
+                let socket = socket.clone();
+                let wakes = Arc::clone(&wakes);
+                ui::app::record_routes::RouteDocument::connect_with(
+                    {
+                        let route = route.clone();
+                        move || {
+                            let mut stream = std::os::unix::net::UnixStream::connect(&socket)
+                                .expect("connect to the session's broker");
+                            ::launcher::services::write_collab_handoff(
+                                &mut stream,
+                                DESKTOP_APP,
+                                &room_text,
+                            )
+                            .expect("hand the connection over as the session does");
+                            ui::collaboration::CollaborationManager::for_record_fd_with_identity(
+                                stream.into_raw_fd(),
+                                route,
+                                Some(DESKTOP_KIND.to_owned()),
+                                Some(device),
+                                identity,
+                            )
+                        }
+                    },
+                    route,
+                    move || {
+                        woken.store(true, Ordering::Release);
+                        wakes.wake();
+                    },
+                )
+            });
+        *self.layouts.get_mut() = Some(SessionLayouts {
+            records,
+            _broker: broker,
+        });
     }
 
     /// Hold `keys` for every channel of this device's rooms, as its channel
@@ -590,13 +677,16 @@ impl Device {
 
     /// One turn of this device's compositor loop: the network's tick and the
     /// join card's poll of an enrollment in flight. Nothing while it is
-    /// offline. (A workspace's layout travels on the room's record route,
-    /// which the session's broker carries: `shell::workspace_layouts`.)
+    /// offline. A device that carries its layouts ([`Self::carry_layouts`])
+    /// also pumps them, as the session's loop does.
     pub(crate) fn frame(&self) {
         let Some(net) = self.net.as_ref() else {
             return;
         };
         net.tick();
+        if let Some(layouts) = self.layouts.borrow_mut().as_mut() {
+            layouts.records.pump(&self.tree);
+        }
         let now = Instant::now();
         let pending = self.enrollments.lock().unwrap().clone();
         if !pending.is_empty() {

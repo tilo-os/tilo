@@ -3416,6 +3416,41 @@ impl CollaborationManager {
         )
     }
 
+    /// Hold `route`, a record of `kind` that need not exist yet, over `fd`,
+    /// a connection to the broker its host made itself, joined as the
+    /// certified device `identity` presents: what a host holding a record
+    /// without a window does when it reaches its broker its own way (one of
+    /// several sessions in one process). A route the broker does not take
+    /// leaves the manager offline, as a background connect's does.
+    #[must_use]
+    pub fn for_record_fd_with_identity(
+        fd: RawFd,
+        route: RouteSpec,
+        kind: Option<String>,
+        handle: Option<String>,
+        identity: CertifiedEndpointIdentity,
+    ) -> Self {
+        match Self::connect_route_kind(
+            SdkConnectSource::Fd(fd),
+            route,
+            kind,
+            handle,
+            Some(SdkJoinIdentity {
+                presentation: identity.presentation.clone(),
+                participant_kind: "person",
+                signer: identity.document_signer(),
+            }),
+            "person",
+        ) {
+            Ok(connected) => Self::from_connected(connected),
+            Err(error) => {
+                let mut manager = Self::offline(error.to_string());
+                manager.sync_expected = true;
+                manager
+            }
+        }
+    }
+
     /// Connect to an explicit endpoint with a certified device presentation.
     /// This is the headless equivalent of the launcher-provided identity path.
     ///

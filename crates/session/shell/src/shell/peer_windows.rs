@@ -1913,7 +1913,7 @@ mod tests {
             },
         )
         .unwrap();
-        tree.room_docs.insert(room, document);
+        tree.layout_docs.insert(room, document);
 
         HELD_RECORDS
             .lock()

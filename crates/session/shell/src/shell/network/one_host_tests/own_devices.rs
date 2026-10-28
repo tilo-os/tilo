@@ -22,7 +22,7 @@ fn a_persons_second_device_holds_the_first_devices_workspace_and_catches_up_afte
     let wakes = Arc::new(Wakes::default());
     let ada = Person::new(41);
     home.env().set("TILO_USER_ID", ada.id());
-    let first = Device::start(
+    let mut first = Device::start(
         &ada,
         "Ada's desktop",
         &dir.path().join("desktop"),
@@ -38,6 +38,10 @@ fn a_persons_second_device_holds_the_first_devices_workspace_and_catches_up_afte
         DeviceCapabilities::member(),
         &wakes,
     );
+    // Each keeps its workspaces' layouts through its session's broker, as a
+    // desktop session does.
+    first.carry_layouts();
+    second.carry_layouts();
 
     // The desktop makes a workspace, hosted on it.
     let (_, room) = hosted_workspace(&first, &[&second], "Projects");

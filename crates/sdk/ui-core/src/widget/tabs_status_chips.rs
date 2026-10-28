@@ -110,7 +110,7 @@ impl SharedChip {
             .iter()
             .flat_map(|(&tab, mark)| mark.people().iter().map(move |(user, _)| (tab, user)))
             .collect();
-        people.sort_by(|a, b| a.0.cmp(&b.0));
+        people.sort_by_key(|&(tab, _)| tab);
         people
     }
 }

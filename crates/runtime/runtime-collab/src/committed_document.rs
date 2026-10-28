@@ -202,13 +202,6 @@ pub enum Reply {
         token: [u8; 16],
     },
     ConnectionSnapshot(ConnectionSnapshot),
-    /// The answer to [`Request::Writes`]. `sealed`: the record's room seals
-    /// every write under its channel's keys, so the app encrypts each one
-    /// and a write it cannot encrypt is refused, never sent as written.
-    /// Otherwise the room's owner commits the writes as they are.
-    Writes {
-        sealed: bool,
-    },
     /// The record reaches a device only once it asks
     /// (`neighbour_wire::record_sync`), and the room's hosts sent
     /// everything they hold of it without it, or no host of the room is
@@ -216,6 +209,13 @@ pub enum Reply {
     /// [`Self::Unavailable`] an [`Request::Await`] for `None` holds until
     /// that changes (a host connects, the record arrives).
     Absent,
+    /// The answer to [`Request::Writes`]. `sealed`: the record's room seals
+    /// every write under its channel's keys, so the app encrypts each one
+    /// and a write it cannot encrypt is refused, never sent as written.
+    /// Otherwise the room's owner commits the writes as they are.
+    Writes {
+        sealed: bool,
+    },
 }
 impl Request {
     /// Encode a valid request for the wire.
