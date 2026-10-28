@@ -40,7 +40,7 @@ pub fn round_trip(stream: &mut UnixStream, request: &str) -> io::Result<serde_js
 /// they are given.
 ///
 /// # Errors
-/// Arguments are not an object, or the request cannot be serialized.
+/// Arguments are neither an object nor a nullary call, or the request cannot be serialized.
 pub fn invoke_wire(
     provider: &str,
     id: &str,
@@ -48,10 +48,10 @@ pub fn invoke_wire(
     device: Option<&str>,
     wait_ms: Option<u64>,
 ) -> io::Result<serde_json::Value> {
-    let args = args.as_object().cloned().ok_or_else(|| {
+    let args = crate::protocol::argument_map(args.clone()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "action arguments must be an object",
+            "action arguments must be an object or null",
         )
     })?;
     let request: crate::protocol::Command = crate::protocol::Command::ActionsInvoke {

@@ -724,6 +724,13 @@ fn nonempty_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Strin
     Ok(value)
 }
 
+/// The argument shape accepted by every endpoint, including a nullary legacy call.
+pub(crate) fn argument_map(
+    value: serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Error> {
+    arguments(value)
+}
+
 fn arguments<'de, D: serde::Deserializer<'de>>(
     decoder: D,
 ) -> Result<serde_json::Map<String, serde_json::Value>, D::Error> {

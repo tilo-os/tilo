@@ -54,7 +54,11 @@ fn nullary_compatibility_and_invalid_arguments_have_one_definition() {
     ] {
         assert!(serde_json::from_value::<Command>(value).is_err());
     }
-    assert!(invoke_wire("p", "a", &Value::Null, None, None).is_err());
+    let nullary = invoke_wire("p", "a", &Value::Null, None, None).unwrap();
+    assert_eq!(nullary["args"], json!({}));
+    let nullary: Command = serde_json::from_value(nullary).unwrap();
+    assert!(matches!(nullary, Command::ActionsInvoke { args, .. } if args.is_empty()));
+    assert!(invoke_wire("p", "a", &json!(12), None, None).is_err());
     assert!(invoke_wire("p", "a", &json!([]), None, None).is_err());
 }
 
