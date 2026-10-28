@@ -4950,7 +4950,8 @@ cargo_packages = ["*"]
 inputs = []
 run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
-cargo doc --workspace --no-deps --locked
+# --keep-going: one run names every crate whose documentation fails, not only the first.
+cargo doc --workspace --no-deps --locked --keep-going
 """
 env = { RUSTDOCFLAGS = "-D warnings" }
 cost = "heavy"
