@@ -51,6 +51,13 @@ impl Entry {
 
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
+/// The shape each app declared for its window while its code is on its way,
+/// kept apart from the registry so it outlives the app's code: a window
+/// stands in for an app that is built but has not drawn its first frame yet,
+/// and that is when the declaration is needed most.
+static DECLARED_SHAPES: Mutex<Vec<(&'static str, crate::widget::SkeletonShape)>> =
+    Mutex::new(Vec::new());
+
 fn entries() -> std::sync::MutexGuard<'static, Vec<Entry>> {
     REGISTRY.lock_recover()
 }
@@ -100,23 +107,21 @@ pub fn defer_arriving(
         arrival_shape,
         load,
     });
+    drop(registry);
+    let mut declared = DECLARED_SHAPES.lock_recover();
+    declared.retain(|(id, _)| *id != app_id);
+    declared.push((app_id, arrival_shape));
     true
 }
 
-/// The shape `app_id` declared for its window while its code is on its way;
-/// [`SkeletonShape::Ground`] for an app that declared none, and for one whose
-/// code is in (its own window says what it shows).
+/// The shape `app_id` declared for its window while it has nothing of its
+/// own to show — its code on its way, or its first frame not drawn yet;
+/// [`SkeletonShape::Ground`] for an app whose host was told no declaration.
 pub fn declared_arrival_shape(app_id: &str) -> crate::widget::SkeletonShape {
-    entries()
+    DECLARED_SHAPES
+        .lock_recover()
         .iter()
-        .find_map(|entry| match entry {
-            Entry::Deferred {
-                app_id: id,
-                arrival_shape,
-                ..
-            } if *id == app_id => Some(*arrival_shape),
-            _ => None,
-        })
+        .find_map(|(id, shape)| (*id == app_id).then_some(*shape))
         .unwrap_or(crate::widget::SkeletonShape::Ground)
 }
 
@@ -295,9 +300,11 @@ mod tests {
         );
         let loaded = block_on(load("test.registry.shaped")).unwrap();
         assert_eq!(loaded.app_id, "test.registry.shaped");
+        // The declaration is the app's, not its code's: it stands once the
+        // code is in, for the window that has not drawn yet.
         assert_eq!(
             declared_arrival_shape("test.registry.shaped"),
-            SkeletonShape::Ground
+            SkeletonShape::Page
         );
     }
 
