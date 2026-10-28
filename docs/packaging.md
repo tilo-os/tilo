@@ -37,17 +37,23 @@ the journal keeps the host's normal per-user/root access controls.
 
 | Distribution | Release files                                                    | Architectures                                |
 | ------------ | ---------------------------------------------------------------- | -------------------------------------------- |
-| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb`                                | `amd64`; `arm64` when enabled                |
-| Debian 13    | `tilo-session_*+deb13*.deb`                                      | `amd64`; `arm64` when enabled                |
-| Fedora 44    | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm`                 | `x86_64`; `aarch64` when enabled             |
-| Arch Linux   | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled             |
-| NixOS        | flake package and NixOS module; tagged store-closure export      | `x86_64-linux`; `aarch64-linux` when enabled |
+| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb`                                | `amd64`, plus `arm64` in tagged and full-native builds |
+| Debian 13    | `tilo-session_*+deb13*.deb`                                      | `amd64`, plus `arm64` in tagged and full-native builds |
+| Fedora 44    | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm`                 | `x86_64`, plus `aarch64` in tagged and full-native builds |
+| Arch Linux   | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`, plus `aarch64` in tagged and full-native builds |
+| NixOS        | flake package and NixOS module; tagged store-closure export      | `x86_64-linux`, plus `aarch64-linux` in tagged and full-native builds |
 
 The complete ARM64 package definitions and release verifier are enabled by
-`TILO_DESKTOP_ARM64_RELEASES`. Tagged and explicit full-native builds use the
-native `runner-arm64` pool and publish both architecture sets; ordinary changes
-retain one amd64 lane for faster feedback. The single workflow switch remains
-the emergency control for temporarily pausing ARM64 scheduling.
+`TILO_DESKTOP_ARM64_RELEASES`, which the workflow sets to `"1"`. Tagged and
+explicit full-native builds therefore select the native `runner-large-arm64`
+package lane and publish both architecture sets; weekly and default manual runs
+select only the amd64 lane for faster feedback. The single workflow switch
+remains the emergency control for temporarily pausing ARM64 scheduling.
+
+Building and install-testing the ARM64 packages is not a release qualification:
+`docs/install-contract.json` still lists ARM64 as a planned architecture for
+every desktop-session distribution, and only x86-64 is the qualifying public
+combination until that decision changes.
 
 `tilo-session-devel` is optional and is only for machines developing Tilo. It
 adds a second login entry that can start a user-selected local build after
@@ -157,7 +163,9 @@ or reinstall release RPMs by hand.
 ### What the package route is tested to do
 
 Fedora 44 on x86-64 is the release-gated combination
-(`docs/install-contract.json`); ARM64 packages build but are not release-gated.
+(`docs/install-contract.json`). ARM64 packages build and install-test in tagged
+and full-native runs, but no ARM64 combination is release-qualified or publicly
+supported.
 The packaged session is exercised on that combination by t's check
 `host-session-e2e`: the signed-route RPMs from a release are installed with dnf
 on a stock Fedora 44 Cloud image, a person logs in to Tilo through the display
@@ -331,23 +339,24 @@ can build or substitute the package declaratively.
 ## CI and publishing
 
 `.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests that
-touch packaging or the packaged binaries execute the current x86-64 matrix.
-`desktop-v*` tags execute it regardless of changed paths, wait for every enabled
-native-architecture install test, download the artifacts, require the complete
-current output set, and only then publish the apt, RPM, pacman, and generic Nix
-registries plus a checksummed Forgejo release. The five target userspaces run
-sequentially in one capacity-bounded lane.
+touch packaging or the packaged binaries execute preflight contracts only.
+`desktop-v*` tags execute the lane matrix regardless of changed paths, wait for
+every enabled native-architecture install test, download the artifacts, require
+the complete current output set, and only then publish the apt, RPM, pacman, and
+generic Nix registries plus a checksummed Forgejo release. The five target
+userspaces run sequentially in one capacity-bounded lane per architecture.
 
 The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. The `dist/ci` runner can execute other
 architectures through a job-private PRoot and checksum-pinned QEMU without
 registering a host binfmt handler, but that mechanism is not the release gate:
-the Nix closure must be validated on a native ARM64 runner first. The package
-matrix runs as one sequential x86-64 lane; native Cargo builds use at most four
-compiler jobs. Ordinary changes allocate only that x86-64 lane; tags and manual
-runs with `full_native` add the native ARM64 lane and verify its Nix closure
-without QEMU-user. The Debian-family, Fedora, and Arch jobs reuse the runners'
+the Nix closure must be validated on a native ARM64 runner first. Each selected
+architecture runs all five distribution targets as one sequential lane; native
+Cargo builds use at most six compiler jobs in tagged and full-native runs and
+two otherwise. Ordinary (weekly and default manual) runs allocate only the
+x86-64 lane; tags and manual runs with `full_native` add the native ARM64 lane
+and verify its Nix closure without QEMU-user. The Debian-family, Fedora, and Arch jobs reuse the runners'
 optional remote compiler cache in an architecture namespace and fail open to an
 ordinary build if that service is unavailable. Cache credentials are only
 forwarded on trusted branch, tag, and manual runs; pull requests build cold. The
