@@ -28,17 +28,17 @@ TILO_TPM=1
 # that way would never apply.
 TILO_SECBOOT_KEYS="${TILO_CFS_SECBOOT_KEYS:-persist}"
 TILO_TPM_DIR="$TILO_CFS_RUN/tpm"
-TILO_TPM_SOCK="$TILO_TPM_DIR/swtpm-ctrl.sock"
+# The runtime files tilo-vm keeps in its run directory.
+TILO_RUN="$TILO_CFS_RUN"
 CFS_MON="$TILO_CFS_RUN/mon.sock"
 CFS_SERIAL="$TILO_CFS_RUN/serial.log"
-CFS_CONSOLE="$TILO_CFS_RUN/console.sock"
+CFS_CONSOLE="$TILO_CFS_RUN/serial.sock"
 CFS_PID="$TILO_CFS_RUN/qemu.pid"
 CFS_QEMU_LOG="$TILO_CFS_RUN/qemu.log"
 CFS_SSH_PORT="${CFS_SSH_PORT:-2322}"
 
 running() { [ -f "$CFS_PID" ] && inenv "kill -0 \$(cat '$CFS_PID') 2>/dev/null"; }
 
-chmp() { inenv "printf '%s\n' \"$1\" | socat - 'unix:$CFS_MON'"; }
 
 gsh() {
   env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
@@ -83,28 +83,13 @@ cmd_boot() {
   mkdir -p "$TILO_CFS_RUN"
   # TILO_CFS_VARS overrides the store outright, for testing a prepared one.
   [ -n "${TILO_CFS_VARS:-}" ] && TILO_SECBOOT_KEYS="$TILO_CFS_VARS"
-  firmware_setup
-  rm -f "$CFS_SERIAL" "$CFS_MON" "$CFS_PID"
-  local varstore; varstore="$(firmware_varstore "$TILO_CFS_RUN")"
-  swtpm_start
-  local serial_arg
-  if [ "$serial_mode" = socket ]; then
-    rm -f "$CFS_CONSOLE"
-    serial_arg="-serial unix:$CFS_CONSOLE,server=on,wait=off"
-  else
-    serial_arg="-serial file:$CFS_SERIAL"
-  fi
-  local args="$(machine_args) -enable-kvm -m $TILO_MEM -cpu host -smp $TILO_SMP \
-    $(pflash_args "$varstore") \
-    -drive file=$disk,format=raw,if=virtio \
-    -device virtio-vga -display none \
-    -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$CFS_SSH_PORT-:22 \
-    -monitor unix:$CFS_MON,server,nowait $serial_arg \
-    -pidfile $CFS_PID -name tilo-composefs"
+  local flags=()
+  [ "$serial_mode" != socket ] || flags+=(--serial-socket)
   msg "boot generation $gen ($disk), TPM on, varstore keys=$TILO_SECBOOT_KEYS, ssh on 127.0.0.1:$CFS_SSH_PORT, serial=$serial_mode"
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$CFS_QEMU_LOG' 2>&1 & disown"
-  sleep 1
-  inenv "test -S '$CFS_MON'" || { cat "$CFS_QEMU_LOG" >&2; die "boot failed"; }
+  qemu_flags
+  tilo_vm qemu boot "${QEMU_FLAGS[@]}" --name tilo-composefs --accel kvm --input none \
+    --disk "$disk,format=raw" --display 2d --ssh-port "$CFS_SSH_PORT" "${flags[@]}" >&2 \
+    || die "boot failed (see $CFS_QEMU_LOG)"
   msg "up. serial=$CFS_SERIAL monitor=$CFS_MON"
 }
 
@@ -136,10 +121,7 @@ cmd_serial() {
 }
 
 cmd_stop() {
-  if running; then chmp quit >/dev/null 2>&1 || true; sleep 1; fi
-  if running; then inenv "kill \$(cat '$CFS_PID') 2>/dev/null" || true; fi
-  rm -f "$CFS_PID"
-  swtpm_stop
+  tilo_vm qemu stop --run "$TILO_CFS_RUN" --tpm-dir "$TILO_TPM_DIR" >/dev/null
   msg "stopped"
 }
 

@@ -94,11 +94,10 @@ TILO_TARGET_SIZE="${TILO_TARGET_SIZE:-40G}"
 # unlock-tested, and so a measured boot can be observed at all. Off by default;
 # enable with `--tpm` on a boot subcommand or TILO_TPM=1. State persists in
 # TILO_TPM_DIR so boot-installer (enroll) and boot-target (unlock) share the same
-# emulated TPM across a reboot. Attaching a TPM also pins the firmware choice —
-# see the OVMF section below.
+# emulated TPM across a reboot. Attaching a TPM also pins the firmware to a build
+# that measures, or refuses the boot.
 TILO_TPM="${TILO_TPM:-0}"
 TILO_TPM_DIR="${TILO_TPM_DIR:-$TILO_RUN/tpm}"
-TILO_TPM_SOCK="$TILO_TPM_DIR/swtpm-ctrl.sock"
 
 # Guest login (from os/account.env — the account disk-image.sh creates).
 TILO_USER="${TILO_USER:-tester}"
@@ -275,40 +274,12 @@ inenv() {
 # otherwise this checkout's is built on first use, in the same environment.
 tilo_vm() {
   if [ -z "${TILO_VM_BIN:-}" ]; then
-    inenv "cd $(printf '%q' "$TILO_REPO") && cargo build --quiet --locked -p tilo-vm --bin tilo-vm" >&2 \
+    TILO_VM_BIN="$(inenv "cd $(printf '%q' "$TILO_REPO") && cargo build --quiet --locked -p tilo-vm --bin tilo-vm --message-format=json-render-diagnostics" \
+      | python3 -c 'import json, sys; print(next(m["executable"] for m in map(json.loads, sys.stdin) if m.get("executable") and m["target"]["name"] == "tilo-vm"))')" \
       || die "building tilo-vm failed; set TILO_VM_BIN to a built tilo-vm"
-    TILO_VM_BIN="${CARGO_TARGET_DIR:-$TILO_REPO/target}/debug/tilo-vm"
     export TILO_VM_BIN
   fi
   inenv "$(printf '%q ' "$TILO_VM_BIN" "$@")"
-}
-
-qemu_accel_args() {
-  local kvm_cpu=host
-  case "${TILO_KVM_CPU_VARIANT:-host}" in
-    host) ;;
-    host-no-sve) kvm_cpu=host,sve=off ;;
-    *) die "TILO_KVM_CPU_VARIANT must be host or host-no-sve" ;;
-  esac
-  case "$TILO_ACCEL" in
-    auto)
-      # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
-      local probe
-      printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
-      if inenv "$probe"; then
-        echo "-enable-kvm -cpu $kvm_cpu"
-      else
-        # Emulated CPU: boot and frame timings from this VM say nothing about
-        # a KVM guest (the release gate) or hardware. Do not compare them.
-        warn "no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware"
-        echo "-accel tcg,thread=multi -cpu max"
-      fi
-      ;;
-    kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
-    tcg) echo "-accel tcg,thread=multi -cpu max" ;;
-    hvf) echo "-accel hvf -cpu host" ;;
-    *) die "TILO_ACCEL must be auto, kvm, tcg or hvf (got $TILO_ACCEL)" ;;
-  esac
 }
 
 # Send one HMP monitor command to the running VM, print its reply.
@@ -334,25 +305,6 @@ qmp() {
     printf '%s\n' "$session" | inenv "socat -t1 - 'unix:$TILO_QMP'" | grep -q '"error"' && return 1
   fi
   return 0
-}
-
-# Keep the distrobox command scope alive until QEMU has finished its cold-start
-# work and published the monitor socket. Returning immediately after `disown`
-# races distrobox's scope cleanup on large, cold images and can kill a healthy
-# QEMU before the caller's separate one-second probe sees it. A QEMU that has
-# not opened its monitor within TILO_QEMU_START_SECS is stopped: the boot failed.
-start_qemu() {
-  local args="$1"
-  inenv "setsid nohup '$TILO_QEMU_SYSTEM' $args >'$TILO_QEMU_LOG' 2>&1 &
-    qemu_pid=\$!
-    deadline=\$((SECONDS + $TILO_QEMU_START_SECS))
-    while kill -0 \$qemu_pid 2>/dev/null; do
-      test -S '$TILO_MON' && exit 0
-      [ \$SECONDS -lt \$deadline ] || { echo 'no monitor after ${TILO_QEMU_START_SECS}s' >>'$TILO_QEMU_LOG'; kill -KILL \$qemu_pid; break; }
-      sleep 0.1
-    done
-    wait \$qemu_pid 2>/dev/null || true
-    exit 1"
 }
 
 # Run a command in the guest over SSH (password auth via sshpass, on the host
@@ -387,470 +339,65 @@ gssh() {
     "$TILO_USER@127.0.0.1" "$@"
 }
 
-# Pick a GL render node for virglrenderer. NVIDIA (0x10de) is skipped: its
-# proprietary/open EGL stack works poorly with virglrenderer; a Mesa iGPU
-# (AMD/Intel) is strongly preferred. Override with TILO_RENDERNODE.
-detect_rendernode() {
-  if [ -n "${TILO_RENDERNODE:-}" ]; then echo "$TILO_RENDERNODE"; return; fi
-  local n v
-  for n in /dev/dri/renderD*; do
-    [ -e "$n" ] || continue
-    v="$(cat "/sys/class/drm/$(basename "$n")/device/vendor" 2>/dev/null || echo)"
-    [ "$v" = "0x10de" ] && continue
-    echo "$n"; return
-  done
-  echo /dev/dri/renderD128
-}
-
-# --- OVMF firmware ------------------------------------------------------------
-# Fedora ships two OVMF builds and only one of them can measure:
+# --- the machine ---------------------------------------------------------------
+# tilo-vm builds the QEMU command line (`tilo-vm qemu --help` explains every
+# choice: firmware and what it can measure, TPM, display, input, network). These
+# are this toolkit's settings for it; qemu_flags turns them into its flags.
 #
-#   OVMF_CODE_4M.secboot.qcow2  4 MB. TPM support compiled in. Its TCG2 protocol
-#                               reports an active SHA-256 PCR bank, so the
-#                               firmware starts the TPM, extends PCRs 0-7 itself,
-#                               writes an event log, and hands systemd-stub a
-#                               TCG2 it can extend PCR 11 through.
-#   OVMF_CODE.secboot.fd        2 MB. No TPM support. TCG2 reports ZERO active
-#                               PCR banks, so nothing is ever extended: every PCR
-#                               reads zero, no firmware event log appears, the TPM
-#                               is never started (Linux logs "A TPM error (256)
-#                               occurred attempting the self test") and
-#                               ConditionSecurity=measured-uki is unmet.
-#
-# That second list is exactly what a UKI which failed to measure looks like, so
-# the 4 MB build is a requirement here rather than a preference: under the 2 MB
-# one os/tests/rollback-boot-check.sh reports "nothing measured into PCR 11" for a
-# kernel that measured perfectly, and no amount of guest-side checking can tell
-# the two apart. When a TPM is attached and the 4 MB build is absent this harness
-# refuses to boot and says how to get it, instead of producing a result that
-# cannot mean anything.
-#
-# The secboot flavour is chosen for its measurement support, not to enforce
-# anything: Secure Boot enforcement is not a qemu flag, it is a property of the
-# variable store (see TILO_SECBOOT_KEYS). SMM and a write-protected pflash go with
-# the secboot build unconditionally, because that firmware expects them and a
-# variable store the guest can rewrite makes enforcement theatre.
+# TILO_SECBOOT=1 keeps the pristine variable store across boots so an enrolment
+# in the guest sticks. TILO_SECBOOT_KEYS picks the store's keys: none (setup
+# mode, still measures; re-seeded every boot outside a named cycle), persist,
+# microsoft (vendor keys: an owner-signed UKI does not boot), or the path of a
+# prepared store. TILO_OVMF_DIRS / TILO_AAVMF_DIRS say where to look for the
+# firmware (a Homebrew QEMU on a Mac names its edk2 directory here).
 TILO_SECBOOT="${TILO_SECBOOT:-0}"
-
-# Which keys the variable store starts with. This decides whether an owner-signed
-# image is bootable at all, so it is a deliberate choice rather than whichever
-# template happens to sit next to the firmware:
-#
-#   none       (default) OVMF_VARS_4M.qcow2 — no keys, Secure Boot in setup mode.
-#              Measures into PCR 7 like any other store, and accepts an
-#              owner-signed UKI. Re-seeded from the template on every boot, so
-#              every boot starts from the same firmware state.
-#   persist    the same pristine template, but kept across boots so that an
-#              enrolment performed in the guest survives a restart of qemu. This
-#              is what `--secboot` selects: enrolment is then an explicit act
-#              (`/usr/libexec/tilo-secureboot enroll` in the guest), not something
-#              the template did for us.
-#   microsoft  OVMF_VARS_4M.secboot.qcow2 — Microsoft's KEK and db. NOT "the
-#              secure one": a Tilo UKI is signed with the owner's key, which that
-#              db does not cover, so under it nothing boots and the firmware says
-#              nothing about why. Selecting it is an explicit request to test
-#              vendor-key enforcement.
-#   <path>     a prepared store, used as-is and kept across boots.
 TILO_SECBOOT_KEYS="${TILO_SECBOOT_KEYS:-none}"
-
-# Where to look for the firmware. Overridable so the "this firmware cannot
-# measure" refusal can be exercised against a directory holding only the 2 MB
-# build, instead of being a branch nobody ever takes.
 TILO_OVMF_DIRS="${TILO_OVMF_DIRS:-/usr/share/edk2/ovmf /usr/share/OVMF}"
 TILO_AAVMF_DIRS="${TILO_AAVMF_DIRS:-/usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64}"
-
-# Filled in by firmware_setup; read by machine_args/secboot_qemu_args/pflash_args.
-TILO_FW_CODE=""; TILO_FW_VARS=""; TILO_FW_FMT=""; TILO_FW_MEASURES=0; TILO_FW_SMM=0
-
-# Echo the first of $@ that exists in the env, or nothing.
-_env_first_file() {
-  local f list=""
-  for f in "$@"; do list="$list '$f'"; done
-  inenv "for f in $list; do [ -f \"\$f\" ] && { printf '%s\n' \"\$f\"; exit 0; }; done; exit 1" \
-    2>/dev/null || true
-}
-
-# Resolve the firmware for the current settings into TILO_FW_*, or die with the
-# remedy. Must be called before machine_args / secboot_qemu_args / pflash_args:
-# the pflash format is part of the answer (the 4 MB build ships as qcow2, the
-# 2 MB one as raw, and the wrong `format=` makes qemu read firmware as garbage).
-firmware_setup() {
-  if [ "$TILO_SECBOOT" = "1" ] && [ "$TILO_SECBOOT_KEYS" = "none" ]; then
-    TILO_SECBOOT_KEYS=persist
-    msg "--secboot: variable store will persist across boots so an enrolment sticks"
-  fi
-
-  local dir d cands four_mb=0
-  if [ "$TILO_VM_ARCH" = aarch64 ]; then
-    # AAVMF/QEMU_EFI is distributed under different names by Fedora and
-    # Debian-family hosts. Both layouts provide a writable, blank variable-store
-    # template next to the read-only code image. This release cycle deliberately
-    # exercises the strong-passphrase path; do not imply measured boot from an
-    # arbitrary AAVMF build merely because it happens to expose a TPM device.
-    [ "$TILO_TPM" = 0 ] || die "the aarch64 VM cycle has no verified measured-AAVMF profile yet.
-  Run the release-grade ARM installer cycle with --no-tpm; TPM enrollment remains
-  disabled in Tilo until signed measured-boot predictions are implemented."
-    [ "$TILO_SECBOOT_KEYS" = none ] || die "aarch64 VM Secure Boot key stores are not verified yet;
-  use TILO_SECBOOT_KEYS=none for the ARM installer cycle"
-    cands=""
-    for d in $TILO_AAVMF_DIRS; do
-      cands="$cands $d/QEMU_EFI-pflash.raw $d/AAVMF_CODE.fd"
-    done
-    # shellcheck disable=SC2086
-    TILO_FW_CODE="$(_env_first_file $cands)"
-    [ -n "$TILO_FW_CODE" ] || die "no AAVMF firmware in ${TILO_DISTROBOX:-the host}.
-  Remedy: install edk2-aarch64 (Fedora) or qemu-efi-aarch64 (Debian/Ubuntu)."
-    dir="$(dirname "$TILO_FW_CODE")"
-    case "$(basename "$TILO_FW_CODE")" in
-      QEMU_EFI-pflash.raw)
-        TILO_FW_VARS="$dir/vars-template-pflash.raw" ;;
-      AAVMF_CODE.fd)
-        TILO_FW_VARS="$dir/AAVMF_VARS.fd" ;;
-      *) die "unsupported AAVMF code image: $TILO_FW_CODE" ;;
-    esac
-    [ -n "$(_env_first_file "$TILO_FW_VARS")" ] || die "AAVMF variable-store template missing: $TILO_FW_VARS"
-    TILO_FW_FMT=raw
-    TILO_FW_MEASURES=0
-    TILO_FW_SMM=0
-    msg "firmware: $(basename "$TILO_FW_CODE") [raw] keys=none measures=unverified smm=0"
-    return
-  fi
-
-  cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
-  if [ "$TILO_VM_S3" = 1 ]; then
-    # S3 needs the build without SMM: the SMM-protected store and S3 resume do
-    # not coexist (see secboot_qemu_args). Same 4 MB measuring build otherwise.
-    [ "$TILO_SECBOOT_KEYS" = none ] || [ "$TILO_SECBOOT_KEYS" = persist ] \
-      || die "TILO_VM_S3=1 boots the firmware without Secure Boot; it cannot hold TILO_SECBOOT_KEYS=$TILO_SECBOOT_KEYS"
-    cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.qcow2"; done
-  fi
-  # shellcheck disable=SC2086
-  TILO_FW_CODE="$(_env_first_file $cands)"
-  if [ "$TILO_VM_S3" = 1 ] && [ -n "$TILO_FW_CODE" ]; then
-    TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=0
-    TILO_FW_VARS="$(dirname "$TILO_FW_CODE")/OVMF_VARS_4M.qcow2"
-  elif [ -n "$TILO_FW_CODE" ]; then
-    TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=1
-    dir="$(dirname "$TILO_FW_CODE")"
-    case "$TILO_SECBOOT_KEYS" in
-      none|persist) TILO_FW_VARS="$dir/OVMF_VARS_4M.qcow2" ;;
-      microsoft)    TILO_FW_VARS="$dir/OVMF_VARS_4M.secboot.qcow2" ;;
-      *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
-    esac
-  else
-    # Debian and Ubuntu ship the 4 MB build as raw .fd (OVMF_CODE_4M*.fd with
-    # OVMF_VARS_4M*.fd) and no 2 MB one; Fedora's 2 MB build is OVMF_CODE*.fd.
-    # Their .secboot builds carry SMM, which S3 resume cannot coexist with.
-    cands=""
-    if [ "$TILO_VM_S3" = 1 ]; then
-      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.fd $d/OVMF_CODE.fd"; done
-    else
-      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
-      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
-      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
-    fi
-    # shellcheck disable=SC2086
-    TILO_FW_CODE="$(_env_first_file $cands)"
-    [ "$TILO_VM_S3" != 1 ] || [ -n "$TILO_FW_CODE" ] \
-      || die "TILO_VM_S3=1 needs an OVMF build without SMM: OVMF_CODE_4M.qcow2 (Fedora edk2-ovmf) or OVMF_CODE_4M.fd (Debian ovmf)"
-    [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host} (looked in $TILO_OVMF_DIRS).
-  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf (Fedora), or apt install ovmf (Debian/Ubuntu)"
-    case "$TILO_FW_CODE" in *_4M*) four_mb=1 ;; *) four_mb=0 ;; esac
-    if [ "$TILO_TPM" = "1" ] && [ "$four_mb" = 1 ]; then
-      die "the OVMF build here ($TILO_FW_CODE) is the Debian-family 4 MB raw image,
-  whose measured boot this toolkit has not verified. Refusing to attach a TPM
-  whose PCRs would not be evidence of anything.
-  Remedy: use a host with Fedora's edk2-ovmf, which ships
-    /usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 + OVMF_VARS_4M.qcow2"
-    fi
-    if [ "$TILO_TPM" = "1" ]; then
-      die "the only OVMF build here is the 2 MB one ($TILO_FW_CODE), which has no TPM
-  support: its TCG2 protocol reports zero active PCR banks, so nothing is ever
-  measured. Every PCR would read zero and no event log would appear — the same
-  evidence a UKI that failed to measure leaves behind — so a measured-boot check
-  would fail for a reason that has nothing to do with the kernel. Refusing to
-  attach a TPM to a firmware that cannot measure into it.
-  Remedy: install a current edk2-ovmf in ${TILO_DISTROBOX:-the host}; it ships
-    /usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 + OVMF_VARS_4M.qcow2
-    (distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf)"
-    fi
-    TILO_FW_FMT=raw; TILO_FW_MEASURES=0
-    case "$TILO_FW_CODE" in *.secboot.fd) TILO_FW_SMM=1 ;; *) TILO_FW_SMM=0 ;; esac
-    dir="$(dirname "$TILO_FW_CODE")"
-    if [ "$four_mb" = 1 ]; then
-      warn "the Debian-family OVMF build ($TILO_FW_CODE) is not a verified measuring"
-      warn "firmware here: no PCR, event-log or measured-boot result from this VM is evidence."
-      case "$TILO_SECBOOT_KEYS" in
-        none|persist) TILO_FW_VARS="$dir/OVMF_VARS_4M.fd" ;;
-        microsoft)    TILO_FW_VARS="$dir/OVMF_VARS_4M.ms.fd" ;;
-        *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
-      esac
-    else
-      warn "the 2 MB OVMF build ($TILO_FW_CODE) cannot measure: no PCR, event-log or"
-      warn "measured-boot result from this VM is evidence of anything."
-      case "$TILO_SECBOOT_KEYS" in
-        none|persist) TILO_FW_VARS="$dir/OVMF_VARS.fd" ;;
-        microsoft)    TILO_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
-        *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
-      esac
-    fi
-  fi
-
-  if [ -z "$(_env_first_file "$TILO_FW_VARS")" ]; then
-    case "$TILO_SECBOOT_KEYS" in
-      none|persist|microsoft)
-        die "OVMF variable-store template missing: $TILO_FW_VARS
-  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf" ;;
-      *)
-        die "TILO_SECBOOT_KEYS=$TILO_SECBOOT_KEYS names a variable store that does not
-  exist. Enrolling an owner key is a deliberate step, not something a boot does
-  on the way past: boot with TILO_SECBOOT=1 (pristine store, setup mode, kept
-  across boots), run \`/usr/libexec/tilo-secureboot enroll\` in the guest, and
-  reboot the guest — the store then carries the owner PK/KEK/db." ;;
-    esac
-  fi
-
-  if [ "$TILO_SECBOOT_KEYS" = "microsoft" ]; then
-    warn "variable store: Microsoft's keys ($TILO_FW_VARS). The firmware refuses an"
-    warn "image signed with any other key before it prints anything, so an"
-    warn "owner-signed UKI produces a guest that never appears. Use"
-    warn "TILO_SECBOOT_KEYS=none (setup mode — still measures) unless you are"
-    warn "specifically testing vendor-key enforcement."
-  fi
-
-  msg "firmware: $(basename "$TILO_FW_CODE") [$TILO_FW_FMT] keys=$TILO_SECBOOT_KEYS measures=$TILO_FW_MEASURES smm=$TILO_FW_SMM"
-}
-
-# Seed and echo the working variable store for this VM. `none` is re-seeded every
-# boot for ad-hoc VM use, but is persisted inside a named installation cycle;
-# every other selection is kept, because an
-# enrolment a restart silently threw away is indistinguishable from one that
-# never happened. $1 = run dir (defaults to TILO_RUN).
-firmware_varstore() {
-  local run="${1:-$TILO_RUN}" tag out
-  tag="$(printf '%s' "$TILO_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
-  out="$run/vars-$TILO_FW_FMT-$tag.img"
-  if [ "$TILO_SECBOOT_KEYS" = "none" ] && [ -z "$TILO_VM_CYCLE" ]; then
-    inenv "mkdir -p '$run' && cp -f '$TILO_FW_VARS' '$out'"
-  else
-    inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$TILO_FW_VARS' '$out'; }"
-  fi
-  printf '%s\n' "$out"
-}
-
-# The two -drive lines for the firmware. $1 = working variable store.
-pflash_args() {
-  printf -- '-drive if=pflash,format=%s,readonly=on,file=%s -drive if=pflash,format=%s,file=%s' \
-    "$TILO_FW_FMT" "$TILO_FW_CODE" "$TILO_FW_FMT" "$1"
-}
-
-# Extra qemu args the Secure-Boot firmware needs: SMM, and a pflash that refuses
-# writes from outside SMM. Without both, the variable store is writable from the
-# guest and enforcement is theatre.
-secboot_qemu_args() {
-  [ "$TILO_FW_SMM" = "1" ] || return 0
-  # disable_s3: the SMM-protected variable store and S3 resume do not coexist in
-  # OVMF, and leaving S3 on makes the firmware complain and fall back.
-  printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
-}
-# q35 machine options; SMM is required by the Secure-Boot firmware.
 # TILO_VM_S3=1 offers the guest suspend-to-RAM, which the monitor's
 # `system_wakeup` resumes (x86_64 only; ARM `virt` has no S3).
 TILO_VM_S3="${TILO_VM_S3:-0}"
-# Refused at load time, like the LAN settings: inside the substitution that
-# builds QEMU's arguments a refusal would only end that subshell.
-[ "$TILO_VM_S3" != 1 ] || [ "$TILO_VM_ARCH" != aarch64 ] \
-  || die "TILO_VM_S3=1: the ARM virt machine has no suspend-to-RAM"
-machine_args() {
-  if [ "$TILO_VM_ARCH" = aarch64 ]; then
-    printf -- '-machine virt,gic-version=max'
-    return
-  fi
-  local keyboard=""
-  [ "$TILO_VM_INPUT" != touch ] || keyboard=",i8042=off"
-  if [ "$TILO_FW_SMM" = "1" ]; then
-    printf -- '-machine q35,smm=on%s' "$keyboard"
-  elif [ "$TILO_VM_S3" = 1 ]; then
-    printf -- '-machine q35%s -global ICH9-LPC.disable_s3=0' "$keyboard"
-  else
-    printf -- '-machine q35%s' "$keyboard"
-  fi
-}
-
-# QEMU's VGA-compatible virtio device is specific to PC machines. ARM's `virt`
-# board uses the PCI virtio-gpu variant, which AAVMF exposes through GOP and the
-# graphical installer can modeset in exactly the same way after ExitBootServices.
-display_qemu_args() {
-  local mode="$1" res="xres=$TILO_XRES,yres=$TILO_YRES" rn
-  case "$mode:$TILO_VM_ARCH" in
-    gl:x86_64)
-      rn="$(detect_rendernode)"
-      printf -- '-device virtio-vga-gl,%s -display egl-headless,rendernode=%s' "$res" "$rn" ;;
-    gl:aarch64)
-      rn="$(detect_rendernode)"
-      printf -- '-device virtio-gpu-gl-pci,%s -display egl-headless,rendernode=%s' "$res" "$rn" ;;
-    window:x86_64)
-      printf -- '-device virtio-vga-gl,%s -display gtk,gl=on' "$res" ;;
-    window:aarch64)
-      printf -- '-device virtio-gpu-gl-pci,%s -display gtk,gl=on' "$res" ;;
-    2d:x86_64)
-      printf -- '-device virtio-vga,%s -display none' "$res" ;;
-    2d:aarch64)
-      printf -- '-device virtio-gpu-pci,%s -display none' "$res" ;;
-    *) die "unsupported display mode/architecture: $mode/$TILO_VM_ARCH" ;;
-  esac
-}
-
-# Console channel. The installer and the greeter answer the tilo-control action
-# protocol (actions list / actions invoke / state-dump; see
-# crates/session/console-control) on a virtio-serial port named
-# org.tilo.console.0. This command line is what creates that port; its host end
-# is the Unix socket $TILO_CONSOLE, reachable only by the user running QEMU.
-# Physical machines have no virtio-serial bus, so the channel cannot exist there.
+# The installer/greeter console channel's host end (tilo-control --socket).
 TILO_CONSOLE="$TILO_RUN/console.sock"
-console_qemu_args() {
-  printf -- '-device virtio-serial-pci -chardev socket,id=tiloconsole,path=%s,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0' \
-    "$TILO_CONSOLE"
-}
-
 # Optional second NIC: a point-to-point Ethernet segment to one other VM on this
-# host, carried as UDP between two loopback ports. It is a real shared L2 link —
-# broadcasts and ARP cross it — which user-mode networking (one private NAT per
-# VM) cannot give two guests. Set all three to attach it:
+# host. Set all three, and the mirror image on the peer VM:
 #   TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC=52:54:00:23:83:0a
-# and the mirror image on the peer VM.
+# TILO_VM_LAN_MODEL=e1000 gives a NIC that implements Wake-on-LAN settings.
 TILO_VM_LAN_PORT="${TILO_VM_LAN_PORT:-}"
 TILO_VM_LAN_PEER="${TILO_VM_LAN_PEER:-}"
 TILO_VM_LAN_MAC="${TILO_VM_LAN_MAC:-}"
-# The NIC model on that segment. e1000 implements Wake-on-LAN settings, so a
-# guest can enable magic-packet wake on it; virtio-net cannot.
 TILO_VM_LAN_MODEL="${TILO_VM_LAN_MODEL:-virtio-net-pci}"
-# Validated here, at load time: a refusal inside the command substitution that
-# builds QEMU's arguments would only end that subshell and boot without the NIC.
-if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
-  [[ "$TILO_VM_LAN_PORT" =~ ^[0-9]{4,5}$ && "$TILO_VM_LAN_PEER" =~ ^[0-9]{4,5}$ ]] \
-    || die "TILO_VM_LAN_PORT and TILO_VM_LAN_PEER must both be loopback UDP ports"
-  [[ "$TILO_VM_LAN_MAC" =~ ^52:54:00(:[0-9a-f]{2}){3}$ ]] \
-    || die "TILO_VM_LAN_MAC must be a lowercase 52:54:00:xx:xx:xx address"
-  case "$TILO_VM_LAN_MODEL" in
-    virtio-net-pci|e1000) ;;
-    *) die "TILO_VM_LAN_MODEL must be virtio-net-pci or e1000" ;;
-  esac
-fi
-lan_qemu_args() {
-  [ -n "$TILO_VM_LAN_PORT" ] || return 0
-  printf -- '-netdev socket,id=tilolan,udp=127.0.0.1:%s,localaddr=127.0.0.1:%s -device %s,netdev=tilolan,mac=%s' \
-    "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MODEL" "$TILO_VM_LAN_MAC"
-}
-
-# The guest's input devices. "keyboard" (the default) is a tablet and a
-# keyboard. "touch" is a virtio multitouch screen and no keyboard at all (the
-# PC machine's own i8042 is switched off too), as on a tablet with its keyboard
-# detached, so text can only come from an on-screen keyboard; `vm.sh tap`
-# touches the screen through a QMP socket next to the monitor.
+# The guest's input devices: keyboard (a tablet and a keyboard), or touch (a
+# virtio multitouch screen and no keyboard at all, as on a tablet with its
+# keyboard detached); `vm.sh tap` touches the screen through the QMP socket.
 TILO_VM_INPUT="${TILO_VM_INPUT:-keyboard}"
-case "$TILO_VM_INPUT" in
-  keyboard|touch) ;;
-  *) die "TILO_VM_INPUT must be keyboard or touch" ;;
-esac
 TILO_QMP="$TILO_RUN/qmp.sock"
 # TILO_VM_AUDIO_WAV=PATH gives the guest a sound card whose output QEMU writes
 # to PATH as a WAV file, so a check can hear what the guest said.
 TILO_VM_AUDIO_WAV="${TILO_VM_AUDIO_WAV:-}"
-audio_qemu_args() {
-  [ -n "$TILO_VM_AUDIO_WAV" ] || return 0
-  printf -- '-audiodev wav,id=tiloaudio,path=%s -device virtio-sound-pci,audiodev=tiloaudio' \
-    "$TILO_VM_AUDIO_WAV"
+
+# The `tilo-vm qemu` flags for these settings, in the array QEMU_FLAGS.
+qemu_flags() {
+  local dir
+  QEMU_FLAGS=(--run "$TILO_RUN" --arch "$TILO_VM_ARCH" --qemu "$TILO_QEMU_SYSTEM"
+    --accel "$TILO_ACCEL" --cpu-variant "${TILO_KVM_CPU_VARIANT:-host}"
+    --memory "$TILO_MEM" --smp "$TILO_SMP" --resolution "${TILO_XRES}x${TILO_YRES}"
+    --input "$TILO_VM_INPUT" --keys "$TILO_SECBOOT_KEYS" --tpm-dir "$TILO_TPM_DIR")
+  [ "$TILO_TPM" != 1 ] || QEMU_FLAGS+=(--tpm)
+  [ "$TILO_SECBOOT" != 1 ] || QEMU_FLAGS+=(--secboot)
+  [ "$TILO_VM_S3" != 1 ] || QEMU_FLAGS+=(--s3)
+  # A named installation cycle keeps its firmware state from the installer
+  # boot to the target boot.
+  [ -z "$TILO_VM_CYCLE" ] || QEMU_FLAGS+=(--keep-vars)
+  [ -z "${TILO_RENDERNODE:-}" ] || QEMU_FLAGS+=(--rendernode "$TILO_RENDERNODE")
+  for dir in $TILO_OVMF_DIRS; do QEMU_FLAGS+=(--ovmf-dir "$dir"); done
+  for dir in $TILO_AAVMF_DIRS; do QEMU_FLAGS+=(--aavmf-dir "$dir"); done
 }
 
-input_qemu_args() {
-  if [ "$TILO_VM_INPUT" = touch ]; then
-    printf -- '-device virtio-multitouch-pci -qmp unix:%s,server=on,wait=off' "$TILO_QMP"
-    return
-  fi
-  if [ "$TILO_VM_ARCH" = aarch64 ]; then
-    # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.
-    printf -- '-device qemu-xhci -device usb-tablet -device usb-kbd'
-  else
-    printf -- '-usb -device usb-tablet'
-  fi
-}
-
-# There are deliberately no single-value ovmf_code/ovmf_vars accessors any more.
-# Read in a command substitution they swallowed the refusals above — the caller
-# got an empty string and carried on booting something unmeasurable, which is the
-# class of bug this file exists to remove.
-
-# --- software TPM (swtpm) -----------------------------------------------------
-# Start a persistent swtpm 2.0 socket inside the env (where qemu runs). Idempotent
-# — reuses an already-running instance so boot-installer/boot-target share state.
-swtpm_start() {
-  [ "$TILO_TPM" = "1" ] || return 0
-  inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${TILO_DISTROBOX:-env}'; exit 1; }" \
-    || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${TILO_DISTROBOX:-the env})"
-
-  # A listening emulator is not enough: swtpm enters permanent TPM failure mode
-  # when its NVRAM backend cannot persist state. Catch full/quota-limited runtime
-  # storage before firmware boots into a misleading PCR-service reboot loop.
-  inenv "mkdir -p '$TILO_TPM_DIR' && \
-    printf 'Tilo TPM state preflight\n' >'$TILO_TPM_DIR/.write-test' && \
-    sync '$TILO_TPM_DIR/.write-test' && rm -f '$TILO_TPM_DIR/.write-test'" \
-    || die "cannot persist software-TPM state in $TILO_TPM_DIR (filesystem full or quota exceeded)"
-
-  # A leftover swtpm from before this fix would be reused silently and put the
-  # unstarted TPM back, so check what is actually listening rather than trusting
-  # the socket's existence.
-  #
-  # The '^' matters. `pgrep -f 'swtpm socket'` also matches the shell running this
-  # very check — its command line contains the pattern, the socket path and the
-  # flag name — so an unanchored match finds itself and reports every leftover as
-  # correctly started. Anchoring restricts it to processes whose command line
-  # begins with swtpm.
-  if inenv "test -S '$TILO_TPM_SOCK'" && \
-     ! inenv "pgrep -af '^swtpm socket' | grep -F -- '$TILO_TPM_SOCK' | grep -q startup-clear"; then
-    warn "a swtpm without --flags startup-clear holds $TILO_TPM_SOCK; replacing it"
-    swtpm_stop; sleep 1; inenv "rm -f '$TILO_TPM_SOCK'"
-  fi
-
-  # --flags not-need-init,startup-clear is what makes this a *started* TPM.
-  # Without it swtpm answers every command with TPM_RC_INITIALIZE (256): the
-  # firmware measures nothing, no event log is produced, every PCR reads zero, and
-  # Linux logs "A TPM error (256) occurred attempting the self test" before
-  # issuing TPM2_Startup itself — far too late for the boot to have been measured.
-  # The evidence that leaves behind is identical to a firmware without TPM
-  # support, so it is ruled out here rather than diagnosed afterwards.
-  inenv "mkdir -p '$TILO_TPM_DIR'; \
-    if ! test -S '$TILO_TPM_SOCK'; then \
-      setsid nohup swtpm socket --tpmstate dir='$TILO_TPM_DIR' \
-        --ctrl type=unixio,path='$TILO_TPM_SOCK' --tpm2 \
-        --flags not-need-init,startup-clear \
-        >'$TILO_TPM_DIR/swtpm.log' 2>&1 & disown; \
-      for _ in \$(seq 1 50); do test -S '$TILO_TPM_SOCK' && break; sleep 0.1; done; \
-    fi; \
-    test -S '$TILO_TPM_SOCK'" \
-    || die "swtpm failed to start (see $TILO_TPM_DIR/swtpm.log).
-  If it rejected '--flags not-need-init,startup-clear', the swtpm in
-  ${TILO_DISTROBOX:-the env} is too old to start the TPM itself; without that the
-  firmware cannot measure. Remedy: sudo dnf install --refresh swtpm swtpm-tools"
-
-  # Prove the emulator answers, rather than reading a socket as a working TPM.
-  inenv "command -v swtpm_ioctl >/dev/null || exit 0; swtpm_ioctl -c --unix '$TILO_TPM_SOCK' >/dev/null" \
-    || die "swtpm is listening on $TILO_TPM_SOCK but not answering control commands
-  (see $TILO_TPM_DIR/swtpm.log). A guest booted against it would measure nothing
-  and report every PCR as zero."
-  msg "swtpm up (TPM 2.0, started, state=$TILO_TPM_DIR)"
-}
+# Stop the software TPM of this toolkit's VM, if one serves its socket.
 swtpm_stop() {
-  # Anchored for the same reason as the check above, and here it also stops the
-  # kill from landing on the wrong process: unanchored, the pattern matches the
-  # shell running pkill — so this killed its own wrapper (that is the "Terminated"
-  # line every `vm.sh stop` printed) and could leave the emulator running.
-  inenv "pkill -f \"^swtpm socket .*$TILO_TPM_SOCK\" 2>/dev/null || true"
-}
-# qemu args attaching the swtpm to the guest (empty when TPM disabled).
-tpm_qemu_args() {
-  [ "$TILO_TPM" = "1" ] || return 0
-  printf -- '-chardev socket,id=chrtpm,path=%s -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0' "$TILO_TPM_SOCK"
+  [ -S "$TILO_TPM_DIR/swtpm-ctrl.sock" ] || return 0
+  tilo_vm qemu stop --run "$TILO_RUN" --tpm-dir "$TILO_TPM_DIR" >/dev/null
 }
 
 # --- explaining a boot that produced nothing ----------------------------------
@@ -882,7 +429,7 @@ boot_diagnose() {
     warn "  Two things start a TPM, and neither did: the firmware issues"
     warn "  TPM2_Startup only if it has TPM support (the 2 MB OVMF build does not),"
     warn "  and swtpm issues it itself only with --flags not-need-init,startup-clear."
-    warn "  Firmware in use: ${TILO_FW_CODE:-<not selected>} (measures=${TILO_FW_MEASURES:-?})"
+    warn "  \`vm.sh firmware\` prints the firmware in use and whether it measures."
     return 0
   fi
   if [ "$empty" = 1 ] && [ "$TILO_SECBOOT_KEYS" != "none" ] && [ "$TILO_SECBOOT_KEYS" != "persist" ]; then
@@ -897,8 +444,8 @@ boot_diagnose() {
      ! _serial_has "$log" 'tpm_tis|tpm_crb|TPM.?2\.0|tpm[0-9]'; then
     warn "a TPM was attached but the guest never reported one: the firmware did not"
     warn "expose TCG2, so PCR and event-log checks in the guest would report"
-    warn "'nothing measured' whatever the kernel did. Firmware in use:"
-    warn "  $TILO_FW_CODE (measures=$TILO_FW_MEASURES)"
+    warn "'nothing measured' whatever the kernel did. \`vm.sh firmware --tpm\`"
+    warn "prints the firmware in use and whether it measures."
     return 0
   fi
   return 1

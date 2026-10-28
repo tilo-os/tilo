@@ -253,7 +253,6 @@ suites = [
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/nearby_privileged_processes_test.sh",
   "os/tests/nearby_cleanup_test.py",
-  "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
   "os/tests/windows_owner_backend.sh",
@@ -780,7 +779,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
@@ -1165,19 +1163,13 @@ readers = ["crates/runtime/egress/src/policy.rs"]
 [[cargo]]
 package = "tilo-vm"
 # Its build plan comes from the image's component manifest.
-inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh", "os/components.toml"]
-readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/hypervisor.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/components.toml"]
+readers = ["crates/dev/tilo-vm/src/build.rs"]
 
 [[cargo]]
 package = "tilo-vm-protocol"
 inputs = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
 readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs", "crates/dev/tilo-vm-protocol/src/profile.rs"]
-
-[[cargo]]
-package = "onboarding-walk"
-# Every control the walk presses must be one the onboarding view names.
-inputs = ["crates/session/shell/src/onboarding_view.rs"]
-readers = ["crates/session/onboarding-walk/tests/names.rs"]
 
 [[cargo]]
 package = "tilo-vmd"

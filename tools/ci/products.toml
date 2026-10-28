@@ -1227,7 +1227,7 @@ about = """
 Images built on the OS image of the same tree: its image is os-image-<arch>, composed from the
 layer actions of os/image/layers.toml (the os-layers block, tools/ci/os/os_toml.py), as an OCI
 layout under /target/os/<arch>/image."""
-each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+each = [{ arch = "x86_64", node = "arch=x86_64", vm = "tilo-vm-binary-x86_64" }, { arch = "aarch64", node = "arch=arm64", vm = "tilo-vm-binary-arm64" }]
 
 [[matrix.check]]
 name = "os-dev-image-{arch}"
@@ -1298,7 +1298,8 @@ by itself from an image that fails to boot, so this is all a dev device needs be
 an image: that it takes it, boots it, and takes the next update."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
-needs = ["os-dev-image-{arch}"]
+needs = ["os-dev-image-{arch}", "{vm}"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 outputs = ["/target/publish/os-dev-gate/{arch}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
@@ -1323,7 +1324,8 @@ broke it, and publishes nothing. `t outputs os-acceptance-x86_64` gives every ga
 report and the guests' logs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt && bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
-needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}"]
+needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}", "{vm}"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
@@ -1437,7 +1439,7 @@ latest. `t test os-release-rehearsal-x86_64` runs the boot signing, signing and 
 throwaway keys into a throwaway OCI layout instead, without credentials. A board with a release
 of its own (the Lenovo 83ED) goes through the same steps apart, into its own series in
 code.tilo.so/tilo/tilo (below)."""
-each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+each = [{ arch = "x86_64", node = "arch=x86_64", vm = "tilo-vm-binary-x86_64" }, { arch = "aarch64", node = "arch=arm64", vm = "tilo-vm-binary-arm64" }]
 
 [[matrix.check]]
 name = "os-release-seal-{arch}"
@@ -1455,7 +1457,8 @@ no snapshot of it is published, so a package-set change is checked before stable
 its outputs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh seal {arch} /target/os/{arch}/release-image /target/publish/os-release/{arch}/sealed"
-needs = ["os-release-image-{arch}", "os-release-image-size-{arch}"]
+needs = ["os-release-image-{arch}", "os-release-image-size-{arch}", "{vm}"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 outputs = ["/target/publish/os-release/{arch}/sealed/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]

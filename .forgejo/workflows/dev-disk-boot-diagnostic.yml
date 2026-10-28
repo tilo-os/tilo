@@ -131,6 +131,14 @@ jobs:
             exit 1
           }
 
+      - name: Build tilo-vm, which starts the VM for os/dev/vm.sh
+        run: |
+          set -euo pipefail
+          bin=$(cargo build --locked -p tilo-vm --bin tilo-vm --message-format=json-render-diagnostics \
+            | jq -r 'select(.executable != null and .target.name == "tilo-vm") | .executable')
+          test -x "$bin"
+          echo "TILO_VM_BIN=$bin" >> "$GITHUB_ENV"
+
       - name: Download and verify only the candidate disk
         run: |
           set -euo pipefail

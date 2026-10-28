@@ -16,11 +16,14 @@
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
 #                                             clear and initialize isolated mutable state
 #
+# tilo-vm builds and starts QEMU (`tilo-vm qemu`); this script drives the VM it
+# started through the monitor, console, serial log and SSH in $TILO_RUN.
+#
 # --tpm attaches a software TPM 2.0 (swtpm), started, state persisted across boots
 # so an enrolled disk can be unlock-tested and a measured boot can be observed.
 # It also pins the firmware to the 4 MB OVMF build — the only one with TPM
 # support; the boot is refused rather than run against a firmware that cannot
-# measure (see os/dev/_common.sh). `vm.sh firmware` prints what was selected.
+# measure (`tilo-vm qemu firmware --help`). `vm.sh firmware` prints what was selected.
 #
 # The variable store is PRISTINE by default: no keys, Secure Boot in setup mode,
 # re-seeded every boot, which is the state that both measures and accepts an
@@ -118,15 +121,19 @@ char_key() {
   esac
 }
 
-# A qcow2 virtio disk with a serial (the guest's /dev/disk/by-id name). The
-# serial belongs to the virtio block device: QEMU rejects serial= on -drive.
-virtio_disk() {
-  local file="$1" id="$2" serial="${3:-}"
-  printf -- '-drive file=%s,format=qcow2,if=none,id=%s -device virtio-blk-pci,drive=%s%s' \
-    "$file" "$id" "$id" "${serial:+,serial=$serial}"
-}
-
 vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 2>/dev/null"; }
+
+# Start the VM through tilo-vm with this toolkit's settings, the display mode
+# $1 and the flags after it (disks, forwards). Every boot has the console
+# channel and forwards guest SSH to TILO_SSH_PORT.
+start_vm() {
+  local mode="$1"; shift
+  qemu_flags
+  local flags=("${QEMU_FLAGS[@]}" --display "$mode" --ssh-port "$TILO_SSH_PORT" --console
+    --start-timeout "$TILO_QEMU_START_SECS")
+  [ -z "$TILO_VM_AUDIO_WAV" ] || flags+=(--audio-wav "$TILO_VM_AUDIO_WAV")
+  tilo_vm qemu boot "${flags[@]}" "$@" >&2
+}
 
 cmd_boot() {
   local mode=2d disk="$TILO_DISK" attach="" disk_serial=""
@@ -147,57 +154,35 @@ cmd_boot() {
     --validation-sysext) validation="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
-  vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
   [[ "$disk_serial" =~ ^[A-Za-z0-9._-]{0,20}$ ]] || die "boot: --serial must be up to 20 of [A-Za-z0-9._-]"
-  local attach_arg=""
+  local disks=(--disk "$disk,format=qcow2,id=tilo-disk${disk_serial:+,serial=$disk_serial}")
   if [ -n "$attach" ]; then
-    inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
-    attach_arg="$(virtio_disk "$attach" tilo-install-target tilo-install-target)"
+    disks+=(--disk "$attach,format=qcow2,id=tilo-install-target,serial=tilo-install-target,create=$TILO_TARGET_SIZE")
     msg "attaching $attach as /dev/vdb"
   fi
   if [ -n "$validation" ]; then
     [ -f "$validation" ] || die "validation extension not found: $validation"
-    # QEMU's raw block backend does not accept serial= on -drive. The serial
-    # belongs to the virtio block device, which supplies the guest's by-id path.
-    attach_arg="$attach_arg -drive file=$validation,format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation"
+    disks+=(--disk "$validation,format=raw,id=tilo-validation,serial=tilo-validation,readonly")
     msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
-
   # tilo-vm supplies only its registered public key, never a password or
-  # private key. Use the same systemd OEM credential as the libvirt adapter.
-  # Encode before composing shell arguments, so key comments remain data.
-  local credential_arg=""
-  if [ -n "${TILO_VM_ROOT_KEY_FILE:-}" ]; then
-    [ -r "$TILO_VM_ROOT_KEY_FILE" ] || die "root public key is not readable: $TILO_VM_ROOT_KEY_FILE"
-    local public encoded
-    IFS= read -r public < "$TILO_VM_ROOT_KEY_FILE" || [ -n "$public" ]
-    [ -n "$public" ] || die "root public key is empty"
-    encoded="$(printf "%s\n" "$public" | base64 -w0)"
-    credential_arg="-smbios type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=$encoded"
+  # private key, as the same systemd OEM credential as the libvirt adapter.
+  local extra=()
+  [ -z "${TILO_VM_ROOT_KEY_FILE:-}" ] || extra+=(--root-key "$TILO_VM_ROOT_KEY_FILE")
+  if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
+    extra+=(--lan "$TILO_VM_LAN_PORT:$TILO_VM_LAN_PEER:$TILO_VM_LAN_MAC" --lan-model "$TILO_VM_LAN_MODEL")
   fi
-  local varstore display
-  firmware_setup
-  varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
-  display="$(display_qemu_args "$mode")"
+  # TILO_VM_HOSTFWD: more forwards, as QEMU's comma-separated hostfwd=... list.
+  local forward
+  if [ -n "${TILO_VM_HOSTFWD:-}" ]; then
+    local forwards
+    IFS=, read -ra forwards <<<"$TILO_VM_HOSTFWD"
+    for forward in "${forwards[@]}"; do extra+=(--forward "${forward#hostfwd=}"); done
+  fi
   msg "boot ($mode, $TILO_VM_ARCH, ${TILO_XRES}x${TILO_YRES}) disk=$disk"
-
-  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
-    $(pflash_args "$varstore") \
-    $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22${TILO_VM_HOSTFWD:+,$TILO_VM_HOSTFWD} $(lan_qemu_args) $(input_qemu_args) $(audio_qemu_args) \
-    $(console_qemu_args) $credential_arg \
-    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
-    -pidfile $TILO_PIDFILE -name tilo"
-  swtpm_start
-  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor socket not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot failed"; }
+  start_vm "$mode" --name tilo "${disks[@]}" "${extra[@]}" || die "boot failed"
   msg "up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
-
-# Boot the installer ISO (CD-ROM) against a fresh blank target disk, so Anaconda
-# can install Tilo onto it. After the install completes + reboots, boot the
-# installed system with:  vm.sh boot --gl --disk $TILO_RUN/target.qcow2
 
 # Boot the CUSTOM installer live qcow2 (build-custom-installer.sh) with a blank
 # target disk attached as a SECOND virtio disk (/dev/vdb). The installer
@@ -213,37 +198,20 @@ cmd_boot_installer() {
     *) die "boot-installer: unknown arg $1";; esac; shift; done
   local disk="$TILO_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
-  vm_running && die "VM already running; stop it first"
-  local work_disk="$TILO_INSTALLER_WORK_DISK"
-  if [ ! -f "$work_disk" ]; then
-    inenv "qemu-img create -f qcow2 -F qcow2 -b '$disk' '$work_disk'" >/dev/null
-  fi
-  local varstore display
-  firmware_setup
-  varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
-  local target="$TILO_TARGET_DISK"
-  inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$TILO_TARGET_SIZE'" >/dev/null
-  display="$(display_qemu_args "$mode")"
-  local proof_arg=""
+  # The installer runs from a writable overlay of the medium, so a test never
+  # mutates the release artifact it validates. First virtio disk = installer
+  # (/dev/vda); second = blank target (/dev/vdb).
+  local work_disk="$TILO_INSTALLER_WORK_DISK" target="$TILO_TARGET_DISK"
+  local flags=(
+    --disk "$work_disk,format=qcow2,backing=$disk,id=tilo-installer-medium,serial=tilo-installer-medium"
+    --disk "$target,format=qcow2,create=$TILO_TARGET_SIZE,id=tilo-install-target,serial=tilo-install-target")
   if [ "$install_proof" -eq 1 ]; then
     [ ! -L "$TILO_RUN/install-proof.txt" ] || die "install proof path is a symlink"
     rm -f -- "$TILO_RUN/install-proof.txt"
-    proof_arg="-chardev file,id=tiloproof,path=$TILO_RUN/install-proof.txt -device virtserialport,chardev=tiloproof,name=org.tilo.vm-install-proof"
+    flags+=(--virtio-port "org.tilo.vm-install-proof=$TILO_RUN/install-proof.txt")
   fi
   msg "boot-installer ($mode, ${TILO_XRES}x${TILO_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
-  # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
-  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
-    $(pflash_args "$varstore") \
-    $(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium) \
-    $(virtio_disk "$target" tilo-install-target tilo-install-target) \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) $(audio_qemu_args) \
-    $(console_qemu_args) $proof_arg \
-    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
-    -pidfile $TILO_PIDFILE -name tilo-custom-installer"
-  swtpm_start
-  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot-installer failed"; }
+  start_vm "$mode" --name tilo-custom-installer "${flags[@]}" || die "boot-installer failed"
   msg "installer up. monitor=$TILO_MON serial=$TILO_SERIAL  (installs onto $target as /dev/vdb)"
 }
 
@@ -257,27 +225,14 @@ cmd_boot_target() {
     --secboot) TILO_SECBOOT=1;;
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
-  vm_running && die "VM already running; stop it first"
-  local varstore display
-  firmware_setup
-  varstore="$(firmware_varstore)"
-  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"
-  display="$(display_qemu_args "$mode")"
   msg "boot-target ($mode, ${TILO_XRES}x${TILO_YRES}) disk=$disk (installed system)"
   if [ "$mode" = 2d ]; then
     warn "2D proves the boot/unlock path, but the non-GL virtio display exposes no virgl GPU to the Tilo compositor."
     warn "The framebuffer can go black after Plymouth even when greetd and the session are healthy; use --gl to validate the desktop."
   fi
-  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
-    $(pflash_args "$varstore") \
-    $(virtio_disk "$disk" tilo-install-target tilo-install-target) \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) $(audio_qemu_args) \
-    $(console_qemu_args) \
-    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
-    -pidfile $TILO_PIDFILE -name tilo-target"
-  swtpm_start
-  start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot-target failed"; }
+  start_vm "$mode" --name tilo-target \
+    --disk "$disk,format=qcow2,id=tilo-install-target,serial=tilo-install-target" \
+    || die "boot-target failed"
   msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
@@ -374,14 +329,8 @@ cmd_firmware() {
   while [ $# -gt 0 ]; do case "$1" in
     --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;; --secboot) TILO_SECBOOT=1;;
     *) die "firmware: unknown arg $1";; esac; shift; done
-  firmware_setup
-  printf 'code       %s\n' "$TILO_FW_CODE"
-  printf 'vars       %s\n' "$TILO_FW_VARS"
-  printf 'format     %s\n' "$TILO_FW_FMT"
-  printf 'keys       %s\n' "$TILO_SECBOOT_KEYS"
-  printf 'measures   %s\n' "$TILO_FW_MEASURES"
-  printf 'smm        %s\n' "$TILO_FW_SMM"
-  printf 'tpm        %s\n' "$TILO_TPM"
+  qemu_flags
+  tilo_vm qemu firmware "${QEMU_FLAGS[@]}"
 }
 
 cmd_shot() {
@@ -651,10 +600,7 @@ cmd_shutdown() {
 }
 
 cmd_stop() {
-  if vm_running; then hmp "quit" >/dev/null 2>&1 || true; sleep 1; fi
-  if vm_running; then inenv "kill \$(cat '$TILO_PIDFILE') 2>/dev/null" || true; fi
-  rm -f "$TILO_PIDFILE"
-  swtpm_stop
+  tilo_vm qemu stop --run "$TILO_RUN" --tpm-dir "$TILO_TPM_DIR" >/dev/null
   msg "stopped"
 }
 

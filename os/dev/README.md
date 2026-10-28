@@ -7,10 +7,13 @@ in a distrobox), but configurable for any host via env vars.
 
 ```
 os/dev/
-  _common.sh       shared config + helpers (override via env)
+  _common.sh       shared config + helpers (override via env); tilo_vm runs
+                   `tilo-vm qemu`, which builds every QEMU command line
   build-image.sh   os/image/compile.sh in the OS builder -> podman build -> disk-image.sh -> qcow2
   disk-image.sh    container image -> bootable qcow2 (systemd-repart + bootc install)
-  vm.sh            boot / login / screenshot / logs / stop
+  vm.sh            boot / login / screenshot / logs / stop (boots through
+                   `tilo-vm qemu boot`; TILO_VM_BIN names a built tilo-vm,
+                   otherwise this checkout's is built on first use)
 ```
 
 ## Prerequisites
@@ -163,7 +166,8 @@ banks** — every PCR reads zero, no event log appears, and the TPM is never
 started, which is indistinguishable from a UKI that failed to measure. So the
 4 MB build is selected unconditionally, and `--tpm` against a host that only has
 the 2 MB one is **refused** rather than run. `vm.sh firmware [--tpm] [--secboot]`
-prints the selection, including whether it can measure.
+prints the selection, including whether it can measure (`tilo-vm qemu firmware`
+does the selecting, for every VM launcher in the repository).
 
 Secure Boot *enforcement* is not a qemu flag — it is whether the variable store
 carries keys. `TILO_SECBOOT_KEYS` picks the store:
@@ -233,7 +237,7 @@ re-implementation of it, and both need `sshpass` on the host.
 - **AF_UNIX socket path ≤ 108 bytes.** The monitor socket lives at
   `/tmp/tilo-vm/mon.sock`; don't relocate `TILO_RUN` somewhere deep.
 - **Use the AMD/Intel iGPU for GL, not NVIDIA.** virglrenderer + NVIDIA's EGL is
-  unreliable; `detect_rendernode` skips `0x10de`. Override with `TILO_RENDERNODE`.
+  unreliable; `tilo-vm qemu` skips render nodes of vendor `0x10de`. Override with `TILO_RENDERNODE`.
 - **Compositor backend.** `shell` defaults to the **winit** backend (nested —
   needs a parent Wayland/X display) and panics on a bare TTY. The Wayland-session
   `.desktop` entries launch it with **`--backend drm`** (smithay libseat + udev +

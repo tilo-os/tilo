@@ -1006,6 +1006,20 @@ impl Machine {
     }
 }
 
+/// Make the run directory, refusing one whose VM still runs: nothing of it
+/// (its variable store least of all) may change under a running guest.
+fn claim(run: &RunDir) -> Result<(), QemuError> {
+    run.check_socket_length()?;
+    std::fs::create_dir_all(&run.0).map_err(QemuError::io(&run.0))?;
+    if let Some(pid) = run.running() {
+        return Err(QemuError::new(
+            format!("a VM is already running in {} (pid {pid})", run.0.display()),
+            format!("stop it first: tilo-vm qemu stop --run {}", run.0.display()),
+        ));
+    }
+    Ok(())
+}
+
 struct Prepared {
     firmware: firmware::Firmware,
     varstore: PathBuf,
@@ -1279,14 +1293,6 @@ fn spawn(
     prepared: &Prepared,
     background: bool,
 ) -> Result<Child, QemuError> {
-    run.check_socket_length()?;
-    std::fs::create_dir_all(&run.0).map_err(QemuError::io(&run.0))?;
-    if let Some(pid) = run.running() {
-        return Err(QemuError::new(
-            format!("a VM is already running in {} (pid {pid})", run.0.display()),
-            format!("stop it first: tilo-vm qemu stop --run {}", run.0.display()),
-        ));
-    }
     for disk in &machine.disks {
         disk.prepare(&machine.qemu_img)?;
     }
@@ -1331,7 +1337,7 @@ fn spawn(
 pub fn boot_command(args: &MachineArgs, start_timeout: u64) -> Result<Outcome, CliError> {
     let machine = Machine::try_from(args)?;
     let run = require_run(args)?;
-    std::fs::create_dir_all(&run.0).map_err(QemuError::io(&run.0))?;
+    claim(&run)?;
     let prepared = machine.prepare(&run, true)?;
     let mut child = spawn(&machine, &run, &prepared, true)?;
     // Return only once QEMU has done its cold-start work and published the
@@ -1446,7 +1452,7 @@ pub fn run_command(args: &MachineArgs, wait: &RunArgs) -> Result<Outcome, CliErr
     let ready = compile(&wait.ready)?;
     let fail = compile(&wait.fail)?;
     let (run, scratch) = foreground_run_dir(args.run.as_deref())?;
-    std::fs::create_dir_all(&run.0).map_err(QemuError::io(&run.0))?;
+    claim(&run)?;
     let overlay = run.0.join("overlay.qcow2");
     if wait.overlay {
         boot_overlay(&mut machine, &overlay)?;
@@ -1858,6 +1864,18 @@ mod tests {
         assert!(Machine::try_from(&args).is_err());
         let args = Probe::parse_from(["probe", "--resolution", "wide"]).machine;
         assert!(Machine::try_from(&args).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_run_directory_whose_vm_runs_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = RunDir(dir.path().to_path_buf());
+        claim(&run).unwrap();
+        std::fs::write(run.pidfile(), std::process::id().to_string()).unwrap();
+        assert_eq!(run.running(), Some(std::process::id()));
+        assert!(claim(&run).unwrap_err().detail.contains("already running"));
+        assert_eq!(status_command(dir.path()).data["running"], true);
     }
 
     #[test]
