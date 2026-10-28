@@ -202,12 +202,11 @@ fn standing() -> Arrival<(), RoomUnreachable> {
             RoomSyncState::Connecting => Arrival::Pending {
                 from: Source::host(sync.workspace.trim()),
             },
-            // The person works on what this device has: it is what the room
-            // holds until the host is reached again.
-            RoomSyncState::Unreachable => Arrival::Ready(()),
+            // Unreachable: the person works on what this device has: it is
+            // what the room holds until the host is reached again.
+            RoomSyncState::Unreachable | RoomSyncState::Synced => Arrival::Ready(()),
             RoomSyncState::HostNeedsUpdate => Arrival::Failed(RoomUnreachable::HostNeedsUpdate),
             RoomSyncState::DeviceNeedsUpdate => Arrival::Failed(RoomUnreachable::DeviceNeedsUpdate),
-            RoomSyncState::Synced => Arrival::Ready(()),
         },
     }
 }
