@@ -488,7 +488,7 @@ pub fn to_s16le(block: &[f32]) -> Vec<u8> {
 /// order, so a cache that holds the whole thing never misses twice.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub struct DecodedPcm {
-    paths: std::collections::HashMap<MediaId, String>,
+    sources: std::collections::HashMap<MediaId, media::Source>,
     loaded: std::collections::HashMap<MediaId, Option<std::sync::Arc<Vec<f32>>>>,
 }
 
@@ -497,21 +497,18 @@ impl DecodedPcm {
     /// Index every media in `project` whose bytes are readable. A reference
     /// that has not hydrated is simply absent, and its clips mix as silence.
     pub fn new(project: &Project) -> Self {
-        let mut paths = std::collections::HashMap::new();
-        for item in &project.media {
-            let resolved = item.source();
-            if !resolved.is_decodable() {
-                continue;
-            }
-            match crate::media::engine_source(&resolved.abs_path).to_uri() {
-                Ok(uri) => {
-                    paths.insert(item.id, uri);
-                }
-                Err(error) => tracing::warn!(%error, "media path cannot be decoded"),
-            }
-        }
+        let sources = project
+            .media
+            .iter()
+            .filter_map(|item| {
+                let resolved = item.source();
+                resolved
+                    .is_decodable()
+                    .then(|| (item.id, crate::media::engine_source(&resolved.abs_path)))
+            })
+            .collect();
         Self {
-            paths,
+            sources,
             loaded: std::collections::HashMap::new(),
         }
     }
@@ -521,9 +518,9 @@ impl DecodedPcm {
             return hit.clone();
         }
         let decoded = self
-            .paths
+            .sources
             .get(&media)
-            .and_then(|uri| decode_pcm(uri))
+            .and_then(decode_pcm)
             .map(std::sync::Arc::new);
         self.loaded.insert(media, decoded.clone());
         decoded
@@ -543,161 +540,24 @@ impl PcmSource for DecodedPcm {
     }
 }
 
-/// [`decode_pcm`] for tests that need to read audio back out of a file the
-/// export wrote. Same decode the mixer uses, so a stream it cannot read is a
-/// stream the editor cannot read either.
-#[cfg(test)]
-#[cfg(any(feature = "gst", feature = "decode"))]
-pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
-    decode_pcm(uri)
-}
-
-#[cfg(test)]
-#[cfg(any(feature = "gst", feature = "decode"))]
-thread_local! {
-    /// Decodes on this thread that ended because their deadline ran out.
-    static DECODE_TIMEOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Whether a pull that came back empty means the source has no audio at all.
-///
-/// It means that only once the demuxer has finished exposing its pads and
-/// none of them was audio. On its own an empty pull proves nothing about the
-/// file: `uridecodebin` has to typefind and autoplug before anything reaches
-/// the sink, and on a busy machine that takes longer than one pull's timeout.
-///
-/// Treating the first quiet pull as proof is how a real soundtrack got mixed
-/// as silence whenever the machine was loaded -- and, in the test suite, how
-/// an export that had worked was reported as one that had produced nothing.
-#[cfg(any(feature = "gst", feature = "decode"))]
-fn no_audio_concluded(pads_settled: bool, audio_linked: bool) -> bool {
-    pads_settled && !audio_linked
-}
-
 /// Decode a whole source to interleaved stereo `f32` at [`SAMPLE_RATE`].
 ///
-/// `audioconvert ! audioresample` does the format and rate work, so the
-/// result is directly mixable whatever the file held. `None` when the source
-/// has no audio stream at all — a silent video is not an error.
+/// `None` when the source yields no audio at all — a silent video is not an
+/// error. A decode that stalls past its budget mixes as silence rather than
+/// freezing an export.
 #[cfg(any(feature = "gst", feature = "decode"))]
-fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
-    use gstreamer_app as gst_app;
-    use media::gst;
-    use media::gst::prelude::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    gst::init().ok()?;
-    let pipeline = gst::Pipeline::new();
-    let src = gst::ElementFactory::make("uridecodebin")
-        .property("uri", uri)
-        .build()
-        .ok()?;
-    let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
-    let resample = gst::ElementFactory::make("audioresample").build().ok()?;
-    let sink = gst_app::AppSink::builder()
-        .caps(
-            &gst::Caps::builder("audio/x-raw")
-                .field("format", "F32LE")
-                .field("channels", CHANNELS as i32)
-                .field("rate", SAMPLE_RATE as i32)
-                .field("layout", "interleaved")
-                .build(),
-        )
-        .sync(false)
-        .build();
-    pipeline
-        .add_many([&src, &convert, &resample, sink.upcast_ref()])
-        .ok()?;
-    gst::Element::link_many([&convert, &resample, sink.upcast_ref()]).ok()?;
-
-    // `uridecodebin` exposes pads once it knows the streams; take the audio
-    // one and leave video alone.
-    let linked = Arc::new(AtomicBool::new(false));
-    let convert_weak = convert.downgrade();
-    let linked_in = linked.clone();
-    src.connect_pad_added(move |_, pad| {
-        let is_audio = pad
-            .current_caps()
-            .and_then(|c| c.structure(0).map(|s| s.name().starts_with("audio/")))
-            .unwrap_or(false);
-        if !is_audio {
-            return;
-        }
-        if let Some(c) = convert_weak.upgrade()
-            && let Some(target) = c.static_pad("sink")
-            && (target.is_linked() || pad.link(&target).is_ok())
-        {
-            linked_in.store(true, Ordering::SeqCst);
-        }
-    });
-    // `no-more-pads` is the demuxer saying it has finished finding streams.
-    // Until it fires, "the sink has produced nothing" is a statement about
-    // the clock rather than about the file.
-    let settled = Arc::new(AtomicBool::new(false));
-    let settled_in = settled.clone();
-    src.connect_no_more_pads(move |_| settled_in.store(true, Ordering::SeqCst));
-
-    let bus = pipeline.bus();
-    if pipeline.set_state(gst::State::Playing).is_err() {
-        return None;
+pub(crate) fn decode_pcm(source: &media::Source) -> Option<Vec<f32>> {
+    let mut out = Vec::new();
+    let end = media::pcm::decode(
+        source,
+        SAMPLE_RATE,
+        CHANNELS as u32,
+        std::time::Duration::from_secs(120),
+        |samples| out.extend_from_slice(samples),
+    );
+    if end == media::pcm::PcmEnd::TimedOut {
+        tracing::warn!("audio: decoding {source:?} timed out; mixing it as silence");
     }
-    let mut out: Vec<f32> = Vec::new();
-    // A wedged pipeline must not hang the caller forever. Long enough that a
-    // slow decode of a long source still finishes, short enough that a stall
-    // surfaces as missing audio rather than a frozen export.
-    let deadline = ui::time::now() + std::time::Duration::from_secs(120);
-    loop {
-        if ui::time::now() >= deadline {
-            tracing::warn!("audio: decoding {uri} timed out; mixing it as silence");
-            #[cfg(test)]
-            DECODE_TIMEOUTS.with(|count| count.set(count.get() + 1));
-            break;
-        }
-        // A pipeline that has failed will never produce another buffer, so
-        // stop waiting on one instead of sitting out the whole deadline --
-        // two minutes of waiting is indistinguishable from a hang to
-        // whoever is watching.
-        let mut failed = false;
-        if let Some(bus) = bus.as_ref() {
-            while let Some(msg) = bus.pop() {
-                if let gst::MessageView::Error(e) = msg.view() {
-                    tracing::warn!("audio: decoding {uri} failed: {}", e.error());
-                    failed = true;
-                }
-            }
-        }
-        if failed {
-            break;
-        }
-        if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
-            let Some(buffer) = sample.buffer() else {
-                continue;
-            };
-            let Ok(map) = buffer.map_readable() else {
-                continue;
-            };
-            let (words, _) = map.as_chunks::<4>();
-            out.extend(words.iter().map(|&w| f32::from_le_bytes(w)));
-        } else {
-            if sink.is_eos() {
-                break;
-            }
-            // A source with no audio stream never links the sink, so the
-            // pull times out forever. That is only proof of "no audio
-            // here" once the demuxer has said it has no more pads to
-            // offer -- see `no_audio_concluded`.
-            if out.is_empty()
-                && no_audio_concluded(
-                    settled.load(Ordering::SeqCst),
-                    linked.load(Ordering::SeqCst),
-                )
-            {
-                break;
-            }
-        }
-    }
-    let _ = pipeline.set_state(gst::State::Null);
     (!out.is_empty()).then_some(out)
 }
 
@@ -1326,27 +1186,6 @@ mod tests {
             );
             assert_eq!(peak(&block), 0.0);
         }
-        // Case `quiet_before_the_demuxer_has_settled_is_not_proof_of_no_audio`:
-        // A pull that came back empty used to be read as proof that the file had
-        // no audio stream. It is not, and stating the rule here pins the exact
-        // distinction the loop turns on.
-        #[cfg(any(feature = "gst", feature = "decode"))]
-        {
-            use super::no_audio_concluded;
-            // Nothing pulled, nothing linked, pads still arriving: an empty pull
-            // here is a statement about the clock, not about the file. This is
-            // the case that was getting it wrong -- and it is the one a loaded
-            // machine produces, which is why it failed under a full test run and
-            // passed on its own.
-            assert!(!no_audio_concluded(false, false));
-            // The demuxer has now said that is every pad there is, and none was
-            // audio. Only now is the silence about the file.
-            assert!(no_audio_concluded(true, false));
-            // An audio pad IS linked, so quiet means the pipeline has not got
-            // going yet -- never a reason to stop waiting for it.
-            assert!(!no_audio_concluded(true, true));
-            assert!(!no_audio_concluded(false, true));
-        }
     }
 
     /// A file in the repository, so this test cannot pass by looking at
@@ -1363,53 +1202,20 @@ mod tests {
     #[test]
     #[cfg(feature = "decode")]
     #[serial_test::serial(video_editor_gst)]
-    fn real_source_decode_settles_or_gives_up() {
-        // Case `a_source_that_carries_audio_decodes_to_real_samples`:
-        // The positive half of the rule: a source that really does carry audio
-        // has to come back with it. A decoder that returned `None` here would
+    fn a_source_that_carries_audio_decodes_to_real_samples() {
+        // A source that really does carry audio has to come back with it. A decoder that returned `None` here would
         // make every "the export is silent" assertion in this crate vacuous.
-        'case: {
-            if !media_stack::media_stack() {
-                break 'case;
-            }
-            let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
-                .to_uri()
-                .expect("fixture file URL");
-            let pcm = super::decode_pcm_for_test(&uri).expect("the fixture has an audio stream");
-            assert!(
-                pcm.len() > super::SAMPLE_RATE as usize / 4,
-                "a real read, not a handful of frames: {} samples",
-                pcm.len(),
-            );
-            assert!(super::peak(&pcm) > 0.01, "and it is not silence");
+        if !media_stack::media_stack() {
+            return;
         }
-        // Case `an_unreadable_source_gives_up_long_before_the_deadline`:
-        // The negative half: a source the decoder cannot make sense of must be
-        // given up on promptly. The loop waits two minutes before calling a
-        // stalled decode silence, and two minutes is indistinguishable from a
-        // hang to whoever is waiting -- so the bound is asserted, not assumed.
-        {
-            let junk =
-                std::env::temp_dir().join(format!("tilo-ve-junk-{}.mp4", std::process::id()));
-            std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
-            let uri = crate::media::engine_source(&junk)
-                .to_uri()
-                .expect("fixture file URL");
-
-            let got = super::decode_pcm_for_test(&uri);
-            std::fs::remove_file(&junk).ok();
-
-            assert!(
-                got.is_none(),
-                "there is no audio to be had in {} bytes of junk",
-                31
-            );
-            assert_eq!(
-                super::DECODE_TIMEOUTS.with(std::cell::Cell::get),
-                0,
-                "gave up only at the deadline; the pipeline's failure has to end the wait",
-            );
-        }
+        let source = crate::media::engine_source(&sample("Ambient_Pad.wav"));
+        let pcm = super::decode_pcm(&source).expect("the fixture has an audio stream");
+        assert!(
+            pcm.len() > super::SAMPLE_RATE as usize / 4,
+            "a real read, not a handful of frames: {} samples",
+            pcm.len(),
+        );
+        assert!(super::peak(&pcm) > 0.01, "and it is not silence");
     }
 
     /// A source whose samples encode *where they came from*: frame `n` of a

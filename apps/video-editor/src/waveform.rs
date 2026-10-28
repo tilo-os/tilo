@@ -6,9 +6,9 @@
 //!     directly with no decoder, so peaks are real even on a build with no
 //!     media stack.
 //!   * **Everything else** (MP3, AAC, Opus, FLAC, the audio track of a video
-//!     …) is decoded to PCM under `--features decode`, through a `GStreamer`
-//!     `uridecodebin → appsink` chain fed by the shared [`media::Source`]
-//!     seam, off the UI thread and bounded to one decode at a time.
+//!     …) is decoded to PCM under `--features decode` by [`media::pcm`], fed
+//!     by the shared [`media::Source`] seam, off the UI thread and bounded to
+//!     one decode at a time.
 //!
 //! When neither can produce samples — an un-hydrated reference, a file with
 //! no audio, no decoder linked — the answer is [`WaveformState::Unavailable`]
@@ -50,12 +50,6 @@ const PEAK_RATE: u32 = 8_000;
 #[cfg(feature = "decode")]
 const DECODE_BUDGET: Duration = Duration::from_secs(30);
 
-#[cfg(all(test, feature = "decode"))]
-thread_local! {
-    /// Decodes on this thread that ended because their budget ran out.
-    static BUDGET_EXPIRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Compute `buckets` normalized peak amplitudes (0..1) from the real audio at
 /// `path`: PCM read directly for a WAV, a real decode for anything else.
 ///
@@ -76,186 +70,57 @@ fn peaks_by_decoding(_path: &Path, _buckets: usize) -> Option<Vec<f32>> {
     None
 }
 
-/// Decode `path`'s first audio stream to mono PCM through
-/// `uridecodebin → audioconvert → audioresample → appsink` and reduce it to
+/// Decode `path`'s first audio stream to mono PCM and reduce it to
 /// `buckets` real peaks.
 ///
-/// The URI comes from the shared [`media::Source`] seam, so a file on the
+/// The source comes from the shared [`media::Source`] seam, so a file on the
 /// `/var/workspace` FUSE is read *through* the mount and hydrates on demand,
 /// exactly as playback does.
 #[cfg(feature = "decode")]
 fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
-    use gstreamer as gst;
-    use gstreamer::prelude::*;
-    use gstreamer_app as gst_app;
-
-    // Two-stage reduction: a peak per short window while pulling, then down to
-    // `buckets`. Taking the max at each stage preserves the true peak exactly
-    // while keeping memory flat for a long track.
+    // Two-stage reduction: a peak per short window while decoding, then down
+    // to `buckets`. Taking the max at each stage preserves the true peak
+    // exactly while keeping memory flat for a long track.
     const WINDOW: usize = 256;
-
-    gst::init().ok()?;
-    let uri = crate::media::engine_source(path).to_uri().ok()?;
-
-    let src = gst::ElementFactory::make("uridecodebin")
-        .property("uri", &uri)
-        .build()
-        .ok()?;
-    let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
-    let resample = gst::ElementFactory::make("audioresample").build().ok()?;
-    let caps = gst::Caps::builder("audio/x-raw")
-        .field("format", "S16LE")
-        .field("layout", "interleaved")
-        .field("channels", 1i32)
-        .field("rate", PEAK_RATE as i32)
-        .build();
-    let appsink = gst_app::AppSink::builder()
-        .caps(&caps)
-        .sync(false)
-        .max_buffers(64)
-        .drop(false)
-        .build();
-
-    let pipeline = gst::Pipeline::new();
-    let sink_el: gst::Element = appsink.clone().upcast();
-    pipeline
-        .add_many([&src, &convert, &resample, &sink_el])
-        .ok()?;
-    gst::Element::link_many([&convert, &resample, &sink_el]).ok()?;
-
-    // `uridecodebin` only grows its source pads once it knows the stream, so
-    // the audio branch is linked when the pad appears — and only the first
-    // audio stream is taken.
-    let convert_weak = convert.downgrade();
-    src.connect_pad_added(move |_, pad| {
-        let Some(convert) = convert_weak.upgrade() else {
-            return;
-        };
-        let Some(sink_pad) = convert.static_pad("sink") else {
-            return;
-        };
-        if sink_pad.is_linked() {
-            return;
-        }
-        let is_audio = pad
-            .current_caps()
-            .and_then(|c| c.structure(0).map(|st| st.name().starts_with("audio/")))
-            .unwrap_or(false);
-        if is_audio {
-            let _ = pad.link(&sink_pad);
-        }
-    });
-
-    if pipeline.set_state(gst::State::Playing).is_err() {
-        let _ = pipeline.set_state(gst::State::Null);
-        return None;
-    }
-
-    // A source the pipeline cannot read (no audio, unknown container) reports
-    // an error on the bus and never reaches EOS at the sink; stop there rather
-    // than polling the sink until the budget runs out.
-    let Some(bus) = pipeline.bus() else {
-        let _ = pipeline.set_state(gst::State::Null);
-        return None;
-    };
-    let windows = pull_peak_windows(&appsink, &bus, WINDOW);
-    let _ = pipeline.set_state(gst::State::Null);
-    Some(bucketize(&windows?, buckets))
-}
-
-/// Pull decoded mono S16 samples from `appsink` and reduce each `window` of
-/// them to its peak, until EOS, a pipeline error on `bus`, or the decode
-/// budget. `None` when no samples arrived at all.
-#[cfg(feature = "decode")]
-fn pull_peak_windows(
-    appsink: &gstreamer_app::AppSink,
-    bus: &gstreamer::Bus,
-    window: usize,
-) -> Option<Vec<f32>> {
-    use gstreamer as gst;
 
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
-    let deadline = ui::time::now() + DECODE_BUDGET;
-    let mut saw_any = false;
-    loop {
-        if ui::time::now() > deadline {
-            #[cfg(test)]
-            BUDGET_EXPIRIES.with(|count| count.set(count.get() + 1));
-            break;
-        }
-        if bus.pop_filtered(&[gst::MessageType::Error]).is_some() {
-            break;
-        }
-        match appsink.try_pull_sample(gst::ClockTime::from_mseconds(200)) {
-            Some(sample) => {
-                let Some(buffer) = sample.buffer() else {
-                    continue;
-                };
-                let Ok(map) = buffer.map_readable() else {
-                    continue;
-                };
-                for &pair in map.as_slice().as_chunks::<2>().0 {
-                    let v = f32::from(i16::from_le_bytes(pair)) / 32768.0;
-                    let a = v.abs();
-                    if a > acc {
-                        acc = a;
-                    }
-                    in_window += 1;
-                    if in_window == window {
-                        windows.push(acc);
-                        acc = 0.0;
-                        in_window = 0;
-                    }
-                }
-                saw_any = true;
-            }
-            None => {
-                if appsink.is_eos() {
-                    break;
+    media::pcm::decode(
+        &crate::media::engine_source(path),
+        PEAK_RATE,
+        1,
+        DECODE_BUDGET,
+        |samples| {
+            for v in samples {
+                acc = acc.max(v.abs());
+                in_window += 1;
+                if in_window == WINDOW {
+                    windows.push(acc);
+                    acc = 0.0;
+                    in_window = 0;
                 }
             }
-        }
-    }
+        },
+    );
+    // A budget that ran out, or a stream damaged part way, still leaves the
+    // peaks of everything decoded before it.
     if in_window > 0 {
         windows.push(acc);
     }
-    (saw_any && !windows.is_empty()).then_some(windows)
+    (!windows.is_empty()).then(|| bucketize(&windows, buckets))
 }
 
 /// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
 pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
     let buckets = buckets.max(1);
-    if !d.starts_with(b"RIFF") || d.get(8..12) != Some(b"WAVE".as_slice()) {
+    let layout = crate::probe::wav_layout(d)?;
+    let (fmt, channels, bits) = (layout.format, layout.channels, layout.bits);
+    let (start, size) = layout.data?;
+    let end = start.saturating_add(size).min(d.len());
+    if end <= start {
         return None;
     }
-    let mut i = 12usize;
-    let (mut fmt, mut channels, mut bits) = (0u16, 1u16, 16u16);
-    let mut data_range: Option<(usize, usize)> = None;
-    while let Some(&[i0, i1, i2, i3, s0, s1, s2, s3]) = d.get(i..i + 8) {
-        let size = u32::from_le_bytes([s0, s1, s2, s3]) as usize;
-        let body = i + 8;
-        match &[i0, i1, i2, i3] {
-            b"fmt " => {
-                if let Some(&[f0, f1, c0, c1, .., b0, b1]) = d.get(body..body + 16) {
-                    fmt = u16::from_le_bytes([f0, f1]);
-                    channels = u16::from_le_bytes([c0, c1]).max(1);
-                    bits = u16::from_le_bytes([b0, b1]);
-                }
-            }
-            b"data" => {
-                let end = (body + size).min(d.len());
-                if end > body {
-                    data_range = Some((body, end));
-                }
-            }
-            _ => {}
-        }
-        i = body + size + (size & 1);
-    }
-    let (start, end) = data_range?;
-    // `body < end <= d.len()` when the range was recorded.
     let samples = decode_samples(d.get(start..end)?, fmt, bits, channels)?;
     if samples.is_empty() {
         return None;
@@ -732,14 +597,6 @@ mod tests {
         assert_eq!(cache.state(id), WaveformState::Unrequested);
         cache.warm_blocking(id, &source);
         assert_eq!(cache.state(id), WaveformState::Unavailable);
-        // The failed pipeline settles on its own error, not by holding the
-        // worker until the decode budget runs out.
-        #[cfg(feature = "decode")]
-        assert_eq!(
-            BUDGET_EXPIRIES.with(std::cell::Cell::get),
-            0,
-            "an unreadable source settled only when its decode budget ran out"
-        );
         assert!(cache.peaks(id).is_none());
         assert!(!cache.has_pending(), "a settled failure is not pending");
         std::fs::remove_file(&f).ok();

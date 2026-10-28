@@ -1993,15 +1993,13 @@ mod tests {
     /// the decode came back empty, and "empty" read as "silent".
     #[cfg(feature = "gst")]
     fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
-        let uri = crate::media::engine_source(path)
-            .to_uri()
-            .expect("fixture file URL");
-        let pcm = crate::audio::decode_pcm_for_test(&uri).unwrap_or_else(|| {
-            panic!(
-                "no readable audio stream in {} -- the level cannot be judged",
-                path.display()
-            )
-        });
+        let pcm =
+            crate::audio::decode_pcm(&crate::media::engine_source(path)).unwrap_or_else(|| {
+                panic!(
+                    "no readable audio stream in {} -- the level cannot be judged",
+                    path.display()
+                )
+            });
         assert!(
             pcm.len() > crate::audio::SAMPLE_RATE as usize / 2,
             "only {} samples decoded from {}: too little to say anything about its level",
