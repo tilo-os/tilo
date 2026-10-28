@@ -248,7 +248,6 @@ pub mod platform;
 pub mod pointer_replay;
 pub use ::collaboration::portable_storage;
 pub mod presence;
-pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
 pub use tilo_ui_paint::raster;

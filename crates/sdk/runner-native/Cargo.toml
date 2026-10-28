@@ -18,7 +18,6 @@ webview-adblock = ["ui-core/webview-adblock"]
 x11 = ["ui-core/x11"]
 presentation-feedback = ["ui-core/presentation-feedback"]
 dx12-shader-cache = ["ui-core/dx12-shader-cache"]
-priority-contacts = ["ui-core/priority-contacts"]
 
 [dependencies]
 ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false, features = ["native"] }
