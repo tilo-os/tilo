@@ -238,8 +238,8 @@ class TTomlTests(unittest.TestCase):
                 self.assertEqual(families[f"clippy-{arch}"]["requires"], [node])
                 self.assertEqual(set(families[f"clippy-{arch}"]["packages"]), per_arch)
                 # Their tests start sandboxes as the `test` family's do.
-                self.assertEqual(set(families[f"test-{arch}"]["nested_sandboxes"]),
-                                 set(families["test"]["nested_sandboxes"]) & tested)
+                self.assertEqual(set(families[f"test-{arch}"]["isolation"]["nested"]),
+                                 set(families["test"]["isolation"]["nested"]) & tested)
         # No family whose result stands for both architectures takes one of them.
         for name, family in families.items():
             if family.get("requires") != ["arch=any"]:
@@ -374,7 +374,7 @@ class PlanTests(unittest.TestCase):
 
     def vm(self, name: str) -> bool:
         check = self.checks.get(name, {})
-        return check.get("isolation") == "vm" or bool(check.get("vm") or check.get("privileged"))
+        return check.get("isolation") == "vm"
 
     def test_a_docs_only_commit_plans_no_vm_check(self):
         paths = ["docs/t.md", "docs/developers/getting-started.md", "docs/architecture/security.md"]
