@@ -159,6 +159,7 @@ mod tests {
             app_id: "so.tilo.calculator".into(),
             workspace_id: "room".into(),
             executing_peer: true,
+            window_instance: None,
         }
     }
 

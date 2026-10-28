@@ -979,12 +979,42 @@ pub fn write_collab_handoff(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    let value = serde_json::json!({
-        "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-        "app_id": app_id,
-        "workspace_id": workspace_id,
-    });
-    let bytes = serde_json::to_vec(&value)
+    write_collab_launch(
+        stream,
+        &serde_json::json!({
+            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": app_id,
+            "workspace_id": workspace_id,
+        }),
+    )
+}
+
+/// Name the app, room and window instance a collaboration connection the
+/// session makes for one of its windows is for: the broker attests it
+/// against the launch record of exactly that window, so two windows of one
+/// app in one room never take each other's.
+///
+/// # Errors
+/// The stream refuses the write.
+pub fn write_collab_window_handoff(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+    window_instance: u64,
+) -> std::io::Result<()> {
+    write_collab_launch(
+        stream,
+        &serde_json::json!({
+            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": app_id,
+            "workspace_id": workspace_id,
+            "window_instance": window_instance,
+        }),
+    )
+}
+
+fn write_collab_launch(stream: &mut UnixStream, value: &serde_json::Value) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let frame = COLLAB_LAUNCH_FRAMING.encode(&bytes)?;
     stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
