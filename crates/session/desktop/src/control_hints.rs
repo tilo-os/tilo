@@ -363,6 +363,12 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     if frame.area.is_zero_area() {
         return None;
     }
+    // A window being answered asks the person a question of its own: no
+    // hint anchored to it stands over that (one showing leaves, its anchor
+    // gone). The strip's own hints are not the window's to keep.
+    if frame.row.asking && matches!(spec.gesture, Gesture::MoveWindow | Gesture::ResizeEdge) {
+        return None;
+    }
     let words = crate::i18n::t(
         spec.touch_words
             .filter(|_| frame.touch)
@@ -449,6 +455,7 @@ mod tests {
                     Line::new((700.0, 96.0), (700.0, 880.0)),
                     WindowEdge::Trailing,
                 )),
+                asking: false,
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],
@@ -536,6 +543,60 @@ mod tests {
         for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge, Gesture::PanView] {
             let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
             assert!(place(spec, &frame).is_none(), "{gesture:?}");
+        }
+    }
+
+    // A window asking the person a question has no place for the hints
+    // anchored to it: the one that would stand over the question never
+    // begins, and one already showing leaves with its anchor (the layer's
+    // own rule, `ui::control_hints`). The hints that are not the window's —
+    // moving the view along the strip — are not the question's to keep.
+    #[test]
+    fn no_hint_points_at_a_window_a_person_is_answering() {
+        let mut frame = frame();
+        frame.row.windows = 2;
+        let mut asking = frame.clone();
+        asking.row.asking = true;
+        for gesture in [Gesture::MoveWindow, Gesture::ResizeEdge] {
+            let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+            assert!(
+                place(spec, &asking).is_none(),
+                "{gesture:?} would stand over the question"
+            );
+            assert!(
+                place(spec, &frame).is_some(),
+                "{gesture:?} has its place once the question is answered"
+            );
+        }
+        let pan = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::PanView)
+            .unwrap();
+        assert!(
+            place(pan, &asking).is_some(),
+            "the strip's own hint is not the window's"
+        );
+        // And the coach never begins one over the question.
+        let mut hints = ControlHints::new(Learned::default());
+        let start = ui::time::now();
+        performed::note(Performed::HoveredWindowBar);
+        performed::note(Performed::OpenedWindow);
+        for second in [0, 1, 2, 3, 4, 5] {
+            hints.update(&asking, start + Duration::from_secs(second));
+        }
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        hints.draw(
+            &asking,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            start + Duration::from_secs(5),
+        );
+        let said = hints.accessibility().and_then(|node| node.name);
+        for words in ["control-hint-move", "control-hint-resize"] {
+            assert_ne!(said, Some(crate::i18n::t(words)), "{words} while asking");
         }
     }
 

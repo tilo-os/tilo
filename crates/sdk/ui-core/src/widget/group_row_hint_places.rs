@@ -25,6 +25,19 @@ pub struct HintPlaces {
     /// The focused window's edge nearest the pointer that resizes it, as
     /// the line it is lit along, and which edge it is.
     pub focused_edge: Option<(Line, WindowEdge)>,
+    /// The focused window is asking the person something: a text field of
+    /// it holds the keyboard. No hint points at a window that is being
+    /// answered, where it would stand over the question.
+    pub asking: bool,
+}
+
+/// Whether `window`'s content is asking the person to type: a text field of
+/// its shown tab holds the keyboard (the one control that can, so a window's
+/// tabs are asked at once).
+fn asking_for_input(window: &super::WindowGroup) -> bool {
+    window
+        .active_host()
+        .is_some_and(super::TileHost::asking_for_input)
 }
 
 impl GroupRow {
@@ -64,6 +77,7 @@ impl GroupRow {
             hovered_bar,
             focused_bar: focused.and_then(title_grab),
             focused_edge: focused.and_then(|group| nearest_edge(group, viewport, self.last_cursor)),
+            asking: focused.is_some_and(asking_for_input),
         }
     }
 
@@ -285,5 +299,68 @@ mod tests {
             "{anchor:?} nearer the title {title:?} than the buttons {buttons:?}"
         );
         anchor
+    }
+}
+
+#[cfg(test)]
+mod asking_tests {
+    use super::super::tests::make_row_with_groups_with_taffy;
+    use super::super::{TileContent, Widget};
+    use crate::AppKind;
+    use crate::ime::InputContent;
+    use crate::widget::TaffyTreeExt as _;
+    use crate::widget::app_widget::{AppWidget, IconDescriptor};
+
+    /// A window's content that is (or is not) being typed into.
+    struct Field(bool);
+
+    impl Widget for Field {
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &crate::theme::Theme,
+            _map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+        fn name(&self) -> &'static str {
+            "Field"
+        }
+        fn ime_content(&self) -> Option<InputContent> {
+            self.0.then(InputContent::default)
+        }
+    }
+
+    impl AppWidget for Field {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Field"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Glyph("F")
+        }
+    }
+
+    fn row_whose_window_types(typing: bool) -> super::GroupRow {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let host = row.groups[0].host_for_tab_mut(1).expect("a host");
+        host.replace_content(TileContent::App(Box::new(Field(typing))));
+        row.groups[0].focused = true;
+        row
+    }
+
+    // A window whose text field holds the keyboard is being answered: no
+    // hint points at it, where it would stand over the question.
+    #[test]
+    fn a_window_a_person_is_typing_in_says_so_to_the_hints() {
+        assert!(row_whose_window_types(true).hint_places().asking);
+        assert!(!row_whose_window_types(false).hint_places().asking);
+        // Nothing focused, nothing asked.
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let host = row.groups[0].host_for_tab_mut(1).expect("a host");
+        host.replace_content(TileContent::App(Box::new(Field(true))));
+        assert!(!row.hint_places().asking);
     }
 }
