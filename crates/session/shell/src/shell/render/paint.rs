@@ -634,7 +634,6 @@ pub struct RetainedGpuTarget {
     completion_test: Option<CompletionTest>,
     /// Replaces the Linux per-phase completion allowance for correctness fixtures that must
     /// wait for the GPU to finish rather than for a production frame budget.
-    #[cfg(test)]
     phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,

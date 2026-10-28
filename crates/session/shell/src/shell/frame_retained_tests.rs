@@ -1203,118 +1203,6 @@ fn foreign_filter_settings(frame: &FrameBuilder) -> crate::shell::test_support::
 
 // Exact client damage is published through the Linux capture seam
 // (`publish_damaged_rgba_for_test`).
-#[cfg(target_os = "linux")]
-#[test]
-fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels() {
-    for (imported, density) in [(false, 1), (false, 2), (true, 1), (true, 2)] {
-        let _ambient = DenyAmbientStarts::new();
-        let mut clock = tilo_test_env::ScopedEnv::new();
-        clock.set("TILO_CLOCK", "09:41");
-        let surface = 8_493_206 + u64::from(imported) * 2 + u64::from(density == 2);
-        // A little short of native height, so the tile stays at most 2048 px
-        // tall: the renderer's 8192 px image atlas keeps a window's previous
-        // frame resident while its next one arrives, and two 2x frames of a
-        // taller tile cannot be stacked in it, so the new one would be
-        // omitted (an atlas budget, not the damage tracking under test).
-        let (mut fixture, logical_size, opened) = foreign_damage_fixture_on(
-            ui::widget::WindowWidth::Wide,
-            surface,
-            (NATIVE_WIDTH, NATIVE_HEIGHT - 32),
-        );
-        // Native HiDPI clients render two buffer pixels per logical pixel.
-        // The oracle must prove real filtered GPU output at both densities.
-        let size = (logical_size.0 * density, logical_size.1 * density);
-        let mut retained = bridge();
-        let mut oracle = bridge();
-        publish_foreign_fixture_frame(
-            surface,
-            size,
-            [255, 0, 0, 255],
-            imported.then_some(&retained),
-        );
-        // Pinned: the client answers the instant it is asked, so set-up is no slow client.
-        let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
-        paint_retained_and_compare(&mut retained, &mut oracle, &first, "wide original buffer");
-        let logical_rect = fixture.foreign_surface_rect(surface).unwrap();
-        let placement = fixture.layout_rect_to_scene(logical_rect).unwrap();
-        assert!(
-            placement.area() * 2.0 >= f64::from(NATIVE_WIDTH) * f64::from(NATIVE_HEIGHT),
-            "this fixture must exercise a genuinely wide tile, not the narrow performance case"
-        );
-        let mut pixels = [255, 0, 0, 255].repeat(size.0.saturating_mul(size.1) as usize);
-        let first_dirty = Rect::new(128.0, 128.0, 160.0, 160.0);
-        let second_dirty = Rect::new(256.0, 256.0, 288.0, 288.0);
-        // Two captured buffers arrive before the compositor paints. Both
-        // edits must survive the exact old->new cached sequence join.
-        for dirty in [first_dirty, second_dirty] {
-            for y in dirty.y0 as usize..dirty.y1 as usize {
-                for x in dirty.x0 as usize..dirty.x1 as usize {
-                    let index = (y * size.0 as usize + x) * 4;
-                    pixels[index..index + 4].copy_from_slice(&[0, 255, 0, 255]);
-                }
-            }
-            let store = crate::shell::foreign::store();
-            if imported {
-                let (device, queue) = retained.gpu();
-                let frame = crate::shell::gpu_frames::frame_pixels_for_test(
-                    device,
-                    queue,
-                    retained.present_generation_for_test().unwrap(),
-                    size,
-                    &pixels,
-                    surface,
-                );
-                assert!(
-                    store
-                        .publish_damaged_gpu_for_test(surface, frame, Some(vec![dirty]))
-                        .is_some()
-                );
-            } else {
-                store.publish_damaged_rgba_for_test(surface, &pixels, size, vec![dirty]);
-            }
-        }
-        let changed = fixture.paint_with_damage();
-        let damage = changed
-            .damage_regions
-            .as_ref()
-            .expect("exact buffer damage must stay bounded");
-        let dirty_pixels: u64 = damage
-            .iter()
-            .map(|r| u64::from(r.width) * u64::from(r.height))
-            .sum();
-        assert!(
-            crate::shell::render::paint::damage_is_profitable(
-                dirty_pixels,
-                u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT),
-            ),
-            "a wide tile's two small edits must exercise sparse admission"
-        );
-        // A fresh dense oracle: its image atlas keeps the previous frame
-        // resident for two passes, and at density 2 this 3456x2056 tile's
-        // 6912x4112 buffer cannot share the 8192 px atlas with its own
-        // predecessor, so a reused oracle would omit the new frame and
-        // compare against a blank tile rather than against the truth.
-        oracle = bridge();
-        paint_retained_and_compare(
-            &mut retained,
-            &mut oracle,
-            &changed,
-            "wide coalesced dirty buffers",
-        );
-        assert!(retained.last_sparse_render_attempts() >= 1);
-        for dirty in [first_dirty, second_dirty] {
-            let p = dirty.center();
-            let output = Point::new(
-                placement.x0 + p.x * placement.width() / f64::from(size.0),
-                placement.y0 + p.y * placement.height() / f64::from(size.1),
-            );
-            assert_foreign_pixel(&mut oracle, &changed, output, [0, 255, 0]);
-        }
-        assert_foreign_pixel(&mut oracle, &changed, placement.center(), [0, 0, 255]);
-        crate::shell::foreign::store().forget(surface);
-    }
-}
-
 /// A client that damages one text line (a typed character in a terminal)
 /// repaints only that line of the output: the frame's damage is the line's
 /// rows across the tile, the retained render takes the sparse path and writes
@@ -2076,6 +1964,30 @@ fn render_whole(
     target.read_rgba_for_test()
 }
 
+/// One test per theme of `$check` on `$desktop`. Each pays for its own Vello
+/// targets (made on the software adapter, so each compiles every pipeline) but
+/// runs beside the other themes rather than after them.
+#[cfg(target_os = "linux")]
+macro_rules! per_theme {
+    ($check:ident, $desktop:expr, $dark:ident, $light:ident, $high_contrast:ident $(,)?) => {
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn $dark() {
+            $check($desktop, "dark", Theme::dark());
+        }
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn $light() {
+            $check($desktop, "light", Theme::light());
+        }
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn $high_contrast() {
+            $check($desktop, "high contrast", Theme::high_contrast());
+        }
+    };
+}
+
 /// A desktop a pan is presented on: its panel in device pixels, the scale
 /// the panel shows it at, and how many strips it has (the top one pans).
 #[cfg(target_os = "linux")]
@@ -2111,6 +2023,11 @@ fn pan_fixture(desktop: PanDesktop, theme: Theme) -> PopulatedShellFixture {
     } else {
         wide_retained_fixture_in(desktop.panel, theme)
     };
+    // A control hint's moment comes seconds after the desktop is first
+    // painted, on the wall clock: on a fast machine it lands mid-pan and
+    // changes the chrome the pan is measured against. These tests measure
+    // the pan, so the hints keep away.
+    frame.host_mut().rest_control_hints();
     if (desktop.scale - 1.0).abs() > f64::EPSILON {
         let (width, height) = (f64::from(desktop.panel.0), f64::from(desktop.panel.1));
         frame.set_output_geometry(vec![crate::shell::output_scene::OutputGeometry {
@@ -2232,22 +2149,15 @@ fn render_strips_alone(
 /// layers shows, in every theme; and once the layers are up, a pan frame
 /// rasterises only what it uncovered.
 #[cfg(target_os = "linux")]
-fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
+fn assert_pan_composites_like_full_renders(desktop: PanDesktop, theme_name: &str, theme: Theme) {
     let size = desktop.panel;
     let mut clock = tilo_test_env::ScopedEnv::new();
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(size.0) * u64::from(size.1);
-    // Whole renders keep no history (`render_whole` names no previous
-    // frame), so one oracle serves every theme: making a target compiles
-    // every Vello pipeline on the software adapter again.
     let mut dense = gpu_target(size);
     let mut strips_only = gpu_target(size);
-    for (theme_name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high contrast", Theme::high_contrast()),
-    ] {
+    {
         let name = format!("{}, {theme_name}", desktop.name);
         let mut frame = pan_fixture(desktop, theme);
         frame.set_strip_pan_presenter(false, true);
@@ -2334,16 +2244,18 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_strip_pan_composited_from_layers_matches_a_full_render_in_every_theme() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "100 %",
         panel: (1280, 720),
         scale: 1.0,
         strips: 1,
-    });
-}
+    },
+    a_strip_pan_composited_from_layers_matches_a_full_render_in_dark,
+    a_strip_pan_composited_from_layers_matches_a_full_render_in_light,
+    a_strip_pan_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
 /// Pulling the strip past its start (the rubber band) uncovers what is left
 /// of its first window; composited from layers, the frame shows what a full
@@ -2407,81 +2319,93 @@ fn a_rubber_band_past_the_strip_start_composited_from_layers_matches_a_full_rend
     );
 }
 
-/// A 1920×1080 panel at 150 %: the desktop is laid out at 1280×720 and a
-/// device pixel is two thirds of a layout pixel.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_strip_pan_at_150_percent_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// A 1920×1080 panel at 150 %: the desktop is laid out at 1280×720 and a
+// device pixel is two thirds of a layout pixel.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "150 %",
         panel: (1920, 1080),
         scale: 1.5,
         strips: 1,
-    });
-}
+    },
+    a_strip_pan_at_150_percent_composited_from_layers_matches_a_full_render_in_dark,
+    a_strip_pan_at_150_percent_composited_from_layers_matches_a_full_render_in_light,
+    a_strip_pan_at_150_percent_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
-/// A 1600×900 panel at 125 %: the desktop is laid out at 1280×720 and a
-/// device pixel is four fifths of a layout pixel.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_strip_pan_at_125_percent_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// A 1600×900 panel at 125 %: the desktop is laid out at 1280×720 and a
+// device pixel is four fifths of a layout pixel.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "125 %",
         panel: (1600, 900),
         scale: 1.25,
         strips: 1,
-    });
-}
+    },
+    a_strip_pan_at_125_percent_composited_from_layers_matches_a_full_render_in_dark,
+    a_strip_pan_at_125_percent_composited_from_layers_matches_a_full_render_in_light,
+    a_strip_pan_at_125_percent_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
-/// A 1920×1080 panel at 200 % (laid out at 960×540): the output the
-/// tolerance is measured on, as at 150 %.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_strip_pan_at_200_percent_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// A 1920×1080 panel at 200 % (laid out at 960×540): the output the
+// tolerance is measured on, as at 150 %.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "200 %",
         panel: (1920, 1080),
         scale: 2.0,
         strips: 1,
-    });
-}
+    },
+    a_strip_pan_at_200_percent_composited_from_layers_matches_a_full_render_in_dark,
+    a_strip_pan_at_200_percent_composited_from_layers_matches_a_full_render_in_light,
+    a_strip_pan_at_200_percent_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
-/// Two strips: the upper strip pans and its shadows meet the lower strip's.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_over_two_strips_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// Two strips: the upper strip pans and its shadows meet the lower strip's.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "two strips",
         panel: (1280, 720),
         scale: 1.0,
         strips: 2,
-    });
-}
+    },
+    a_pan_over_two_strips_composited_from_layers_matches_a_full_render_in_dark,
+    a_pan_over_two_strips_composited_from_layers_matches_a_full_render_in_light,
+    a_pan_over_two_strips_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
-/// Two strips on a 1920×1080 panel at 150 %: the strips step by a device
-/// pixel, two thirds of a layout pixel.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// Two strips on a 1920×1080 panel at 150 %: the strips step by a device
+// pixel, two thirds of a layout pixel.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "two strips at 150 %",
         panel: (1920, 1080),
         scale: 1.5,
         strips: 2,
-    });
-}
+    },
+    a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render_in_dark,
+    a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render_in_light,
+    a_pan_over_two_strips_at_150_percent_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
-/// Two strips on a 1920×1080 panel at 200 %.
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_over_two_strips_at_200_percent_composited_from_layers_matches_a_full_render() {
-    assert_pan_composites_like_full_renders(PanDesktop {
+// Two strips on a 1920×1080 panel at 200 %.
+per_theme!(
+    assert_pan_composites_like_full_renders,
+    PanDesktop {
         name: "two strips at 200 %",
         panel: (1920, 1080),
         scale: 2.0,
         strips: 2,
-    });
-}
+    },
+    a_pan_over_two_strips_at_200_percent_composited_from_layers_matches_a_full_render_in_dark,
+    a_pan_over_two_strips_at_200_percent_composited_from_layers_matches_a_full_render_in_light,
+    a_pan_over_two_strips_at_200_percent_composited_from_layers_matches_a_full_render_in_high_contrast
+);
 
 /// [`present`], except that a frame proven unchanged is kept rather than
 /// rendered, as the DRM presenter keeps it.
@@ -2654,21 +2578,16 @@ fn layers_apart(old: &FrameCache, new: &FrameCache) -> String {
 /// alone. A warm that stops for a frame keeps what it finished and the pan
 /// is still right.
 #[cfg(target_os = "linux")]
-fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
+fn assert_pan_from_warmed_rest(desktop: PanDesktop, theme_name: &str, theme: Theme) {
     let size = desktop.panel;
     let mut clock = tilo_test_env::ScopedEnv::new();
     let _ambient = DenyAmbientStarts::new();
     clock.set("TILO_CLOCK", "09:41");
     let output = u64::from(size.0) * u64::from(size.1);
     // Whole renders keep no history (`render_whole` names no previous
-    // frame), so one oracle serves every theme: making a target compiles
-    // every Vello pipeline on the software adapter again.
+    // frame), so one oracle serves both warms.
     let mut dense = gpu_target(size);
-    for (theme_name, theme) in [
-        ("dark", Theme::dark()),
-        ("light", Theme::light()),
-        ("high contrast", Theme::high_contrast()),
-    ] {
+    {
         for stopped in [false, true] {
             let name = format!(
                 "{}, {theme_name}{}",
@@ -2758,49 +2677,57 @@ fn assert_pan_from_warmed_rest(desktop: PanDesktop) {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_from_a_warmed_rest_copies_its_first_frame_in_every_theme() {
-    assert_pan_from_warmed_rest(PanDesktop {
+per_theme!(
+    assert_pan_from_warmed_rest,
+    PanDesktop {
         name: "100 %",
         panel: (1280, 720),
         scale: 1.0,
         strips: 1,
-    });
-}
+    },
+    a_pan_from_a_warmed_rest_copies_its_first_frame_in_dark,
+    a_pan_from_a_warmed_rest_copies_its_first_frame_in_light,
+    a_pan_from_a_warmed_rest_copies_its_first_frame_in_high_contrast
+);
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_from_a_warmed_rest_at_150_percent_copies_its_first_frame() {
-    assert_pan_from_warmed_rest(PanDesktop {
+per_theme!(
+    assert_pan_from_warmed_rest,
+    PanDesktop {
         name: "150 %",
         panel: (1920, 1080),
         scale: 1.5,
         strips: 1,
-    });
-}
+    },
+    a_pan_from_a_warmed_rest_at_150_percent_copies_its_first_frame_in_dark,
+    a_pan_from_a_warmed_rest_at_150_percent_copies_its_first_frame_in_light,
+    a_pan_from_a_warmed_rest_at_150_percent_copies_its_first_frame_in_high_contrast
+);
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_from_a_warmed_rest_at_200_percent_copies_its_first_frame() {
-    assert_pan_from_warmed_rest(PanDesktop {
+per_theme!(
+    assert_pan_from_warmed_rest,
+    PanDesktop {
         name: "200 %",
         panel: (1920, 1080),
         scale: 2.0,
         strips: 1,
-    });
-}
+    },
+    a_pan_from_a_warmed_rest_at_200_percent_copies_its_first_frame_in_dark,
+    a_pan_from_a_warmed_rest_at_200_percent_copies_its_first_frame_in_light,
+    a_pan_from_a_warmed_rest_at_200_percent_copies_its_first_frame_in_high_contrast
+);
 
-#[cfg(target_os = "linux")]
-#[test]
-fn a_pan_over_two_strips_from_a_warmed_rest_copies_its_first_frame() {
-    assert_pan_from_warmed_rest(PanDesktop {
+per_theme!(
+    assert_pan_from_warmed_rest,
+    PanDesktop {
         name: "two strips",
         panel: (1280, 720),
         scale: 1.0,
         strips: 2,
-    });
-}
+    },
+    a_pan_over_two_strips_from_a_warmed_rest_copies_its_first_frame_in_dark,
+    a_pan_over_two_strips_from_a_warmed_rest_copies_its_first_frame_in_light,
+    a_pan_over_two_strips_from_a_warmed_rest_copies_its_first_frame_in_high_contrast
+);
 
 /// A warm at rest after only the chrome changed (a collaborator's pointer
 /// appeared over the desktop) rasterises the chrome tiles that changed, not
@@ -3783,11 +3710,32 @@ fn open_a_note(frame: &mut FrameBuilder, label: &str) -> Point {
     title
 }
 
+// One theme per test: each opens, names and types into a note on a 4K
+// desktop, and the three ran one after another.
 #[cfg(target_os = "linux")]
 #[test]
 fn typing_in_notes_repaints_what_changed_not_the_tile() {
+    typing_in_notes_in(THEMES[0]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn typing_in_notes_repaints_what_changed_not_the_tile_in_the_light_theme() {
+    typing_in_notes_in(THEMES[1]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn typing_in_notes_repaints_what_changed_not_the_tile_in_high_contrast() {
+    typing_in_notes_in(THEMES[2]);
+}
+
+/// Naming a note and typing into it in `theme` repaints the title's band and
+/// the typed line, not the tile, and shows what a dense render shows.
+#[cfg(target_os = "linux")]
+fn typing_in_notes_in((name, theme): ThemeCase) {
     let mut oracle = ChangeOracle::new();
-    for (name, theme) in THEMES {
+    {
         let (mut frame, _clock) = desktop_in(theme());
         let label = format!("naming a note, {name}");
         let title = open_a_note(&mut frame, &label);
@@ -3945,12 +3893,29 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
 #[cfg(target_os = "linux")]
 #[test]
 fn moving_to_another_strip_shows_the_whole_other_screen() {
+    moving_to_another_strip_in(THEMES[0]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn moving_to_another_strip_shows_the_whole_other_screen_in_the_light_theme() {
+    moving_to_another_strip_in(THEMES[1]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn moving_to_another_strip_shows_the_whole_other_screen_in_high_contrast() {
+    moving_to_another_strip_in(THEMES[2]);
+}
+
+#[cfg(target_os = "linux")]
+fn moving_to_another_strip_in((name, theme): ThemeCase) {
     // Each strip is a full-height screen ("Strip two is a full other
     // screen, not just halving the vertical space", 2026-10-21): moving to
     // another strip replaces the whole work area. The frame that shows it
     // must be exactly what a dense render of it shows.
     let mut oracle = ChangeOracle::new();
-    for (name, theme) in THEMES {
+    {
         let mut clock = tilo_test_env::ScopedEnv::new();
         clock.set("TILO_CLOCK", "09:41");
         let mut frame = PopulatedShellFixture::with_tree(
@@ -3994,6 +3959,10 @@ fn moving_to_another_strip_shows_the_whole_other_screen() {
 #[cfg(target_os = "linux")]
 #[path = "frame_scroll_copy_tests.rs"]
 mod scroll_copy;
+
+#[cfg(target_os = "linux")]
+#[path = "frame_wide_foreign_commit_tests.rs"]
+mod wide_foreign_commit;
 
 #[path = "frame_modal_paint_tests.rs"]
 mod modal_paint;
