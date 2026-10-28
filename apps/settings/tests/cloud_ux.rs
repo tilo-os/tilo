@@ -56,6 +56,28 @@ fn capture<A: ui::framework::ResourceApp>(app: &mut TestApp<A>, name: &str) -> T
     Ok(())
 }
 
+/// Wait for the Accounts pane's work to finish, which answers off the UI
+/// thread: the vault's Mail grants among it, which a connected card's status
+/// line shows. A capture taken before they land shows the card without them.
+fn wait_for_accounts_work(settings: &mut TestApp<SettingsShell>) -> TestResult {
+    let started = Instant::now();
+    while settings
+        .surface::<settings::SettingsApp, _>(|app| {
+            app.areas()
+                .find::<AccountsArea>()
+                .is_some_and(|area| area.model().borrow().busy())
+        })
+        .ok_or("mounted Settings surface")?
+    {
+        if started.elapsed() >= tilo_test_env::hang_bound() {
+            return Err("the accounts pane did not finish its work".into());
+        }
+        settings.settle();
+        std::thread::yield_now();
+    }
+    Ok(())
+}
+
 fn assert_captured(output: &std::path::Path) {
     assert!(output.is_file(), "no captured frame: {}", output.display());
 }
@@ -723,6 +745,7 @@ fn google_connected_files_and_gmail_have_one_provider_card() -> TestResult {
         .ok_or("connected Files service")?;
     assert_google_link(files);
     settings.harness().resize((1100, 1500))?;
+    wait_for_accounts_work(&mut settings)?;
     for (name, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
         settings.harness().set_theme(theme);
         capture(
