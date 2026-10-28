@@ -6129,7 +6129,7 @@ needs = ["os-dev-disk-x86_64"]
 git = true
 requires = ["arch=x86_64", "/dev/kvm"]
 isolation = "vm"
-requirement = { cores = 6, memory = "10GiB" }
+requirement = { cores = 6, memory = "14GiB" }
 timeout_secs = 14400
 cache = false
 cost = "heavy"
