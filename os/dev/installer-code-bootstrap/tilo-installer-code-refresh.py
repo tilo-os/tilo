@@ -201,7 +201,7 @@ def main():
         # guest port rather than spinning on EOF or treating it as new code.
         with PORT.open('r+b', buffering=0) as stream:
             try:
-                if os.environ.get('TILO_CODE_BOOTSTRAP_HANDSHAKE') == '1':
+                if (BASE / 'bootstrap.json').is_file():
                     files, receipt = bootstrap_receive(stream)
                 else:
                     files, receipt = protocol.receive(stream)

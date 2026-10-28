@@ -484,9 +484,16 @@ pub trait Guest {
         notify_ready()
     }
 
-    /// Whether the old-media bootstrap's handshake precedes the packet.
+    /// Whether the old-media bootstrap seeded this VM before the packet.
+    ///
+    /// The seed writes `bootstrap.json` into [`Guest::base`] and then starts
+    /// this daemon in the same process, so the receipt is the durable record of
+    /// the handshake. It is read from the root-owned runtime directory rather
+    /// than from the environment: an environment variable is inherited by every
+    /// child and set by anyone who can start the unit, while the seed's receipt
+    /// can only be written by root into a 0700 directory it owns.
     fn bootstrap_handshake(&self) -> bool {
-        std::env::var_os("TILO_CODE_BOOTSTRAP_HANDSHAKE").is_some_and(|v| v == "1")
+        self.base().join("bootstrap.json").is_file()
     }
 
     /// The pause before the port is reopened; an error ends the loop.
