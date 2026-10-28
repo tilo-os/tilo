@@ -83,12 +83,24 @@ Building it showed four gaps. They are decided as follows:
      state.
    - **UI host:** the palette, the Ask bar and the History views, which show the tilolang host's
      records.
-3. **The store client becomes a crate of its own, without the UI.**
-   - **What moves:** the UI-free half of `ui_core::collaboration`: the record, the door
-     (permission checks, attributed commits), claims, the invocation lifecycle, undo and
-     presence.
-   - **Where to:** a crate named `collaboration` after the module, which ui-core re-exports as
-     `ui_core::collaboration`. Both ui-core and the tilolang host link it.
+3. **The commit path becomes a crate of its own, without the UI.**
+   - **What the tilolang host needs:** tilolang's app half (`tilolang_tilo`) already has no
+     toolkit. It plans every change as a recorded action (`DynAction`) and follows the room record
+     through `TiloStore::sync_from`. What it lacks is the path that commits those actions and
+     brings the record's changes back. Today `apps/tilolang` borrows that path from ui-core.
+   - **What moves:** the broker client in `ui_core::collaboration` (routes, transport, committed
+     reads, signing, invocation updates, presence transport), the record store it commits to,
+     and the managed sender with its private storage, whole. The sender's constructors stay
+     private: custody is never loosened to make a cut easier.
+   - **What stays in ui-core:** the door's widget side (`bound_dispatch`, `invocation_scope`'s
+     UI state), participants and content loading state. Widgets live in the UI host; an event
+     there becomes an action the tilolang host executes and commits.
+   - **Where to:** the crate `collaboration` (crates/collab/collaboration), re-exported under the
+     old `ui_core` paths. The broker's ui-core dependencies become small interfaces in the crate
+     (document custody, native launch errors and connections, component bindings, record read
+     errors) that ui-core implements.
+   - **Done when:** `tilolang_tilo::instance` commits through the crate, and its dependency tree
+     has no ui-core and no tilo-host.
    - **Why it's worth doing anyway:** thin mode, browser workers and the convergence log
      (`convergence.md` §9) all need it. Native apps keep working through ui-core on top of it.
    - **Order:** this is the prerequisite for step 2.
