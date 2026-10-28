@@ -6164,7 +6164,6 @@ dependencies = [
  "tempfile",
  "tilo-automerge-fork",
  "tilo-boot-signin",
- "tilo-face",
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
