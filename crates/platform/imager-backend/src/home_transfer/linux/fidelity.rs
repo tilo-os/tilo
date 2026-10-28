@@ -5,10 +5,10 @@
 mod adoption;
 use super::super::super::migration_store::NativePath;
 use super::*;
+use crate::migration_journal_log;
 pub(super) use adoption::{
     verify as verify_adoption, verify_applications as verify_adoption_applications,
 };
-use advisory_lock::FileLock;
 use cap_primitives::fs::MetadataExt as UnixMetadataExt;
 use std::{
     collections::BTreeMap,
@@ -60,12 +60,35 @@ struct Done {
 }
 
 struct Log {
-    file: FileLock,
-    parent: Arc<PinnedDirectory>,
-    name: std::ffi::OsString,
-    identity: durability::Identity,
+    log: migration_journal_log::Log,
     manifest: Manifest,
     completed: BTreeMap<usize, Option<durability::Identity>>,
+}
+const MAGIC: [u8; 8] = *b"TILOHF1\n";
+/// Writes a manifest entry as the `Entry` frame [`Record`] reads back.
+#[derive(Serialize)]
+#[serde(tag = "record")]
+enum EntryRecord<'a> {
+    Entry { entry: &'a Entry },
+}
+/// The manifest's header, then one frame per entry (published together),
+/// then one completion receipt per finalized entry.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "record", deny_unknown_fields)]
+enum Record {
+    Header {
+        version: u32,
+        revision: [u8; 32],
+        source: durability::Identity,
+        root: durability::Identity,
+        entries: usize,
+    },
+    Entry {
+        entry: Entry,
+    },
+    Done {
+        done: Done,
+    },
 }
 
 pub(super) fn begin(
@@ -318,109 +341,89 @@ fn verify_no_unreviewed_additions(
 
 impl Log {
     fn create(path: &Path, manifest: Manifest) -> io::Result<Self> {
-        let parent = PinnedDirectory::open_absolute(
-            path.parent()
-                .ok_or_else(|| changed("Finalization journal has no parent."))?,
-        )?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| changed("Finalization journal has no name."))?
-            .to_owned();
-        let mut temporary = migration::OwnedTemporary::create(&parent, &name)?;
-        let file =
-            FileLock::try_exclusive(temporary.file.try_clone()?).map_err(io::Error::other)?;
-        serde_json::to_writer(&mut temporary.file, &manifest)?;
-        temporary.file.write_all(b"\n")?;
-        if temporary.file.metadata()?.len() > 512 * 1024 * 1024 {
-            return Err(changed(
-                "Home finalization manifest exceeds its 512 MiB recovery bound.",
-            ));
+        if manifest.entries.len() > MAX_ENTRIES {
+            return Err(changed("Home manifest exceeds entry bounds."));
         }
-        durability::sync_file(&temporary.file)?;
-        temporary.validate()?;
-        cap_primitives::fs::hard_link(
-            &parent.file,
-            Path::new(&temporary.name),
-            &parent.file,
-            Path::new(&name),
-        )?;
-        durability::sync_directory(&parent.file)?;
-        let identity = durability::identity(&file)?;
+        let header = Record::Header {
+            version: manifest.version,
+            revision: manifest.revision,
+            source: manifest.source.clone(),
+            root: manifest.root.clone(),
+            entries: manifest.entries.len(),
+        };
+        let log =
+            migration_journal_log::Log::create_with(path, MAGIC, &header, |file, sequence| {
+                for entry in &manifest.entries {
+                    migration_journal_log::write_record(
+                        file,
+                        sequence,
+                        &EntryRecord::Entry { entry },
+                    )?;
+                }
+                Ok(())
+            })?;
         Ok(Self {
-            file,
-            parent,
-            name,
-            identity,
+            log,
             manifest,
             completed: BTreeMap::new(),
         })
     }
     fn open(path: &Path) -> io::Result<Self> {
-        let parent = PinnedDirectory::open_absolute(
-            path.parent()
-                .ok_or_else(|| changed("Finalization journal has no parent."))?,
-        )?;
-        parent.validate_destination()?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| changed("Finalization journal has no name."))?
-            .to_owned();
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .follow(FollowSymlinks::No)
-            .nonblock(true);
-        let raw = cap_primitives::fs::open(&parent.file, Path::new(&name), &options)?;
-        super::super::super::destination_security::check_private_file(&raw)?;
-        if !raw.metadata()?.is_file() || raw.metadata()?.len() > 1024 * 1024 * 1024 {
-            return Err(changed(
-                "Finalization journal exceeds bounds or is not a regular file.",
-            ));
-        }
-        let file = FileLock::try_exclusive(raw).map_err(io::Error::other)?;
-        let mut reader = io::BufReader::new(file.try_clone()?);
-        let mut bytes = Vec::new();
-        reader.read_until(b'\n', &mut bytes)?;
-        if bytes.last() != Some(&b'\n') {
+        let mut log = migration_journal_log::Log::open(path, MAGIC)?;
+        let Some(Record::Header {
+            version,
+            revision,
+            source,
+            root,
+            entries: count,
+        }) = migration_journal_log::read_record(&mut log.file, log.sequence)?
+        else {
             return Err(changed("Home manifest was not completely published."));
-        }
-        let manifest: Manifest = serde_json::from_slice(&bytes)?;
-        if manifest.entries.len() > 1_000_000 {
+        };
+        log.sequence += 1;
+        if count > MAX_ENTRIES {
             return Err(changed("Home manifest exceeds entry bounds."));
         }
-        let mut offset = bytes.len() as u64;
+        let mut manifest = Manifest {
+            version,
+            revision,
+            source,
+            root,
+            entries: Vec::with_capacity(count),
+        };
         let mut completed = BTreeMap::new();
-        loop {
-            bytes.clear();
-            if reader.read_until(b'\n', &mut bytes)? == 0 {
-                break;
+        let mut end = log.file.stream_position()?;
+        while let Some(record) = migration_journal_log::read_record(&mut log.file, log.sequence)? {
+            match record {
+                Record::Entry { entry }
+                    if manifest.entries.len() < count && completed.is_empty() =>
+                {
+                    manifest.entries.push(entry);
+                }
+                Record::Done { done }
+                    if manifest.entries.len() == count
+                        && done.index < count
+                        && !completed.contains_key(&done.index) =>
+                {
+                    completed.insert(done.index, done.destination);
+                }
+                _ => {
+                    return Err(changed(
+                        "Finalization log has an invalid or duplicate receipt.",
+                    ));
+                }
             }
-            if bytes.last() != Some(&b'\n') {
-                break;
-            }
-            let record: Done = serde_json::from_slice(&bytes)?;
-            if record.index >= manifest.entries.len()
-                || completed.insert(record.index, record.destination).is_some()
-            {
-                return Err(changed(
-                    "Finalization log has an invalid or duplicate receipt.",
-                ));
-            }
-            offset += bytes.len() as u64;
+            log.sequence += 1;
+            end = log.file.stream_position()?;
+        }
+        if manifest.entries.len() != count {
+            return Err(changed("Home manifest was not completely published."));
         }
         // An interrupted last append has no durable completion receipt. Its
         // operation is revalidated and repeated; no earlier receipt is removed.
-        file.set_len(offset)?;
-        let mut file = file;
-        file.seek(SeekFrom::End(0))?;
-        durability::sync_file(&file)?;
-        let identity = durability::identity(&file)?;
+        log.repair(end, || Ok(()))?;
         Ok(Self {
-            file,
-            parent,
-            name,
-            identity,
+            log,
             manifest,
             completed,
         })
@@ -430,25 +433,12 @@ impl Log {
         index: usize,
         destination: Option<durability::Identity>,
     ) -> io::Result<()> {
-        self.parent.validate_destination()?;
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let current = cap_primitives::fs::open(&self.parent.file, Path::new(&self.name), &options)?;
-        if durability::identity(&current)? != self.identity {
-            return Err(changed("Finalization journal was replaced."));
-        }
-        let bytes = serde_json::to_vec(&Done {
-            index,
-            destination: destination.clone(),
+        self.log.append(&Record::Done {
+            done: Done {
+                index,
+                destination: destination.clone(),
+            },
         })?;
-        if bytes.len() > 512 {
-            return Err(changed(
-                "Home completion receipt exceeds its recovery bound.",
-            ));
-        }
-        self.file.write_all(&bytes)?;
-        self.file.write_all(b"\n")?;
-        durability::sync_file(&self.file)?;
         self.completed.insert(index, destination);
         #[cfg(test)]
         if INTERRUPT_AFTER_CHECKPOINT.with(|flag| flag.replace(false)) {
@@ -459,6 +449,21 @@ impl Log {
         Ok(())
     }
 }
+/// Whether the log holds a durable receipt that a runtime socket was omitted.
+#[cfg(test)]
+pub(super) fn runtime_socket_omission_is_receipted(path: &Path) -> bool {
+    let log = Log::open(path).unwrap();
+    log.manifest
+        .entries
+        .iter()
+        .enumerate()
+        .any(|(index, entry)| {
+            matches!(entry.kind, Kind::RuntimeSocket)
+                && log.completed.get(&index).is_some_and(Option::is_none)
+        })
+}
+/// A home with more entries than this is refused before anything is published.
+const MAX_ENTRIES: usize = 1_000_000;
 
 fn regular(parent: &PinnedDirectory, name: &OsStr) -> io::Result<File> {
     parent.validate()?;

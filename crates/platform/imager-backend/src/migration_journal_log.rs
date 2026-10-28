@@ -170,11 +170,15 @@ pub fn append_synced(
     before_sync()?;
     durability::sync_file(file)
 }
+/// Publish a journal whose first frames (the header, then whatever `rest`
+/// writes) are complete and synced before its name exists: a reader never
+/// sees a partly written beginning.
 pub fn create_private<T: Serialize>(
     parent: &Arc<PinnedDirectory>,
     name: &std::ffi::OsStr,
     magic: [u8; 8],
     header: &T,
+    rest: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
 ) -> io::Result<(FileLock, Metadata, u64)> {
     durability::supported()?;
 
@@ -182,6 +186,7 @@ pub fn create_private<T: Serialize>(
     temporary.file.write_all(&magic)?;
     let mut sequence = 0;
     write_record(&mut temporary.file, &mut sequence, header)?;
+    rest(&mut temporary.file, &mut sequence)?;
     durability::sync_file(&temporary.file)?;
     parent.validate_destination()?;
     temporary.validate()?;
@@ -207,8 +212,17 @@ pub struct Log {
 }
 impl Log {
     pub fn create<T: Serialize>(path: &Path, magic: [u8; 8], header: &T) -> io::Result<Self> {
+        Self::create_with(path, magic, header, |_, _| Ok(()))
+    }
+    /// [`Self::create`] with further frames published together with the header.
+    pub fn create_with<T: Serialize>(
+        path: &Path,
+        magic: [u8; 8],
+        header: &T,
+        rest: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let (parent, name) = parent(path)?;
-        let (file, identity, sequence) = create_private(&parent, &name, magic, header)?;
+        let (file, identity, sequence) = create_private(&parent, &name, magic, header, rest)?;
         Ok(Self {
             file,
             sequence,

@@ -439,6 +439,7 @@ impl MigrationJournal {
             &Record::Header {
                 document: document.clone(),
             },
+            |_, _| Ok(()),
         )?;
         Ok(Self {
             document,
