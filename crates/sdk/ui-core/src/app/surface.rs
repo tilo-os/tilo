@@ -903,6 +903,100 @@ impl App {
             .is_some_and(crate::wake::WakeScope::is_pending)
     }
 
+    /// When the app next wants a frame with no input to bring one, for a
+    /// host that schedules its own frames: now while something moves, else
+    /// the earliest deadline its widgets set (a caret's blink, the clock's
+    /// next minute) or a tooltip's dwell runs out.
+    pub fn surface_next_frame(&self) -> Option<crate::time::Instant> {
+        let now = crate::time::now();
+        let moving = self.root_widget.needs_animation_frame()
+            || crate::motion::frames_wanted(now)
+            || self
+                .presence_ctx
+                .interaction_animation_demand(now, &self.theme);
+        if moving {
+            return Some(now);
+        }
+        [
+            self.root_widget.next_wake_deadline(),
+            self.input.tooltip_host.reveal_at(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// What a window of its own does for its accessibility before each
+    /// frame: apply the preference a control asked for (larger text, high
+    /// contrast, the screen reader) and say what changed in live regions.
+    /// Returns whether a preference changed, which repaints the frame.
+    pub fn surface_accessibility(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        let changed = self.apply_accessibility_request();
+        self.scan_live_regions();
+        changed
+    }
+
+    /// Hand `payload` to the app's root, as an external event a window of
+    /// its own receives ([`crate::widget::Widget::on_external_event`]).
+    pub fn external_event(&mut self, payload: &str) {
+        let _entry = self.enter_wake_scope();
+        self.root_widget.on_external_event(
+            payload,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        self.needs_sync = true;
+    }
+
+    /// A finger on a surface whose host reads the touchscreen itself: the
+    /// pointer events a tap, drag or pinch makes go to the widgets as the
+    /// platform window's do (`emulator` keeps the gesture across contacts),
+    /// then the contact itself for widgets that read fingers. Once every
+    /// gesture has landed, touch is the input in use.
+    #[cfg(feature = "native")]
+    pub fn surface_touch(
+        &mut self,
+        window: &dyn AppSurface,
+        touch: winit::event::Touch,
+        emulator: &mut crate::interaction::TouchPointerEmulator,
+    ) -> bool {
+        let scale = window.scale_factor();
+        let events = emulator.events_claimed(&touch, |at| {
+            self.touch_claim_at(Point::new(at.x / scale, at.y / scale))
+        });
+        let mut handled = false;
+        for event in events {
+            handled |= self.surface_input(window, event.window_event(touch.device_id), true);
+        }
+        if emulator.settled() {
+            self.set_interaction_environment(self.input.interaction.with_touch_modality());
+        }
+        handled | self.surface_input(window, WindowEvent::Touch(touch), false)
+    }
+
+    /// A still finger that reached the long-press delay by `now`: the
+    /// secondary click it makes, though no contact marks the moment.
+    #[cfg(feature = "native")]
+    pub fn surface_touch_hold(
+        &mut self,
+        window: &dyn AppSurface,
+        emulator: &mut crate::interaction::TouchPointerEmulator,
+        now: crate::time::Instant,
+    ) -> bool {
+        let Some((device_id, events)) = emulator.poll(now) else {
+            return false;
+        };
+        let mut handled = false;
+        for event in events {
+            handled |= self.surface_input(window, event.window_event(device_id), true);
+        }
+        if emulator.settled() {
+            self.set_interaction_environment(self.input.interaction.with_touch_modality());
+        }
+        handled
+    }
+
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;
