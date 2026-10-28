@@ -4405,14 +4405,44 @@ pub(crate) fn gossip_caches_drain_within() -> Duration {
         .saturating_add(config.cache_evict_interval)
 }
 
+/// How long gossip keeps message ids and messages in a test process that
+/// asked for it with [`shorten_gossip_retention_for_this_process`]; unset,
+/// gossip keeps iroh-gossip's and [`GOSSIP_MESSAGE_RETENTION`].
+#[cfg(test)]
+static TEST_GOSSIP_RETENTION: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+
+/// Keep gossip's message ids and messages only `retention` in every
+/// endpoint this process starts from now on. For a test that runs alone in
+/// a process of its own and must wait until gossip's caches drain: the
+/// sweep keeps its production interval, so what the desktop does while
+/// linked and after the caches empty is the same, only the 90 s a message
+/// id outlives its message is not waited out.
+#[cfg(test)]
+pub(crate) fn shorten_gossip_retention_for_this_process(retention: Duration) {
+    let set = TEST_GOSSIP_RETENTION.get_or_init(|| retention);
+    assert_eq!(
+        *set, retention,
+        "gossip retention already set differently in this process"
+    );
+}
+
 /// Plumtree broadcast settings: iroh-gossip's, with the cache swept every
 /// [`GOSSIP_CACHE_SWEEP`] instead of every second.
 fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
-    iroh_gossip::proto::PlumtreeConfig {
+    let config = iroh_gossip::proto::PlumtreeConfig {
         cache_evict_interval: GOSSIP_CACHE_SWEEP,
         message_cache_retention: GOSSIP_MESSAGE_RETENTION,
         ..iroh_gossip::proto::PlumtreeConfig::default()
+    };
+    #[cfg(test)]
+    if let Some(&retention) = TEST_GOSSIP_RETENTION.get() {
+        return iroh_gossip::proto::PlumtreeConfig {
+            message_id_retention: retention,
+            message_cache_retention: config.message_cache_retention.min(retention),
+            ..config
+        };
     }
+    config
 }
 
 /// The QUIC transport collaboration endpoints use: iroh's, with the

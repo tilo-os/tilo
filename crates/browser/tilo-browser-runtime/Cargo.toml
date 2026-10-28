@@ -91,6 +91,10 @@ deferred-model-clients = []
 # fetched the first time it opens, and hands its code over through
 # `install_feedback_composer`. Without it the composer is linked in.
 deferred-feedback-composer = []
+# Feedback's custody and delivery (`FEEDBACK`) are fetched once the page is
+# configured with a destination: the bundling crate splits them out and hands
+# them over. Without it they are linked in.
+deferred-feedback = []
 # The bundling crate supplies the pinned people overlay's code through
 # `defer_people_overlay`, which the browser desktop fetches as its own module
 # the first time someone pins who is here. Without it the overlay is linked

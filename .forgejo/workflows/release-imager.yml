@@ -86,6 +86,9 @@ env:
   TILO_RELEASE_API_URL: https://api.github.com
   TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases' }}
   TILO_HOMEBREW_TAP_REPOSITORY: ${{ vars.IMAGER_HOMEBREW_TAP_REPOSITORY || 'tilo-os/homebrew-tilo' }}
+  # The name users type in `brew tap`, which the tap README, the install tests
+  # and the landing page must all name identically.
+  TILO_HOMEBREW_TAP_NAME: ${{ vars.IMAGER_HOMEBREW_TAP_NAME || 'tilo/tilo' }}
 
 jobs:
   plan:
@@ -1492,7 +1495,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
+          brew tap "$TILO_HOMEBREW_TAP_NAME" "${TILO_RELEASE_SERVER%/}/$TILO_HOMEBREW_TAP_REPOSITORY.git"
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager
@@ -1523,7 +1526,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
+          brew tap "$TILO_HOMEBREW_TAP_NAME" "${TILO_RELEASE_SERVER%/}/$TILO_HOMEBREW_TAP_REPOSITORY.git"
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager

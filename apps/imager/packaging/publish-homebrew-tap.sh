@@ -15,10 +15,15 @@ version="${GITHUB_REF_NAME#imager-v}"
 release_server="${TILO_RELEASE_SERVER:-https://github.com}"
 release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
 tap_repository="${TILO_HOMEBREW_TAP_REPOSITORY:-tilo-os/homebrew-tilo}"
+# The tap name users type is not the repository owner: keep one value that the
+# landing page publication reuses, so both surfaces name the same tap.
+tap_name="${TILO_HOMEBREW_TAP_NAME:-tilo/tilo}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$tap_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'Homebrew tap repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+[[ "$tap_name" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap name must be OWNER/NAME\n' >&2; exit 2; }
 base_url="${release_server%/}/${release_repository}/releases/download/${GITHUB_REF_NAME}"
 release_page="${release_server%/}/${release_repository}"
 
@@ -139,8 +144,8 @@ HOMEBREW_NO_AUTO_UPDATE=1 brew untap tilo/release-audit >/dev/null
 audit_tapped=0
 
 if [ ! -f "$work/tap/README.md" ]; then
-  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap tilo/tilo %s/%s.git\nbrew install tilo-imager\n```\n' \
-    "$release_server" "$tap_repository" > "$work/tap/README.md"
+  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap %s %s/%s.git\nbrew install tilo-imager\n```\n' \
+    "$tap_name" "$release_server" "$tap_repository" > "$work/tap/README.md"
   if [ "$macos_enabled" = 1 ]; then
     printf '\nmacOS GUI:\n```sh\nbrew install --cask tilo-imager\n```\n' >> "$work/tap/README.md"
   fi

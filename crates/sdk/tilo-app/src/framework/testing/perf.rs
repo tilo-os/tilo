@@ -26,6 +26,10 @@ pub struct Report {
     label: String,
     /// Wall time of each step, its settle included, in microseconds.
     samples: Vec<u64>,
+    /// The CPU time the measuring (UI) thread ran in each step, in
+    /// microseconds: what the step cost it, without the moments other work
+    /// on the machine held its core ([`Clocks`]).
+    cpu: Vec<u64>,
     /// Each named scope's total time (ns) and calls over every step.
     phases: BTreeMap<&'static str, (u128, usize)>,
     /// The frame passes the steps ran.
@@ -69,18 +73,29 @@ impl Report {
         })
     }
 
+    /// The median step's CPU time on the measuring thread, in microseconds:
+    /// the figure a cost budget holds, steady on a machine busy with other
+    /// work, where the wall-time [`Self::p50_us`] also counts the moments
+    /// other processes held the core.
+    #[must_use]
+    pub fn cpu_p50_us(&self) -> u64 {
+        quantile(&self.cpu, 0.5)
+    }
+
+    /// Add one step measured from `start`, with the scopes it ran.
+    fn record(&mut self, start: &Clocks, scopes: Vec<tilo_resource::profiling::Sample>) {
+        let (wall, cpu) = start.elapsed_us();
+        self.samples.push(wall);
+        self.cpu.push(cpu);
+        for scope in scopes {
+            let entry = self.phases.entry(scope.phase).or_default();
+            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
+            entry.1 = entry.1.saturating_add(scope.calls);
+        }
+    }
+
     fn quantile(&self, q: f64) -> u64 {
-        let mut sorted = self.samples.clone();
-        sorted.sort_unstable();
-        let last = sorted.len().saturating_sub(1);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "a percentile index over a few hundred samples"
-        )]
-        let at = ((last as f64) * q).round() as usize;
-        sorted.get(at.min(last)).copied().unwrap_or_default()
+        quantile(&self.samples, q)
     }
 
     /// Write the report to stderr, one `perf` line per figure.
@@ -91,12 +106,14 @@ impl Report {
     pub fn print(&self) -> &Self {
         let max = self.samples.iter().copied().max().unwrap_or_default();
         eprintln!(
-            "perf {}: n={} p50={}us p99={}us max={}us",
+            "perf {}: n={} p50={}us p99={}us max={}us cpu_p50={}us cpu_p99={}us",
             self.label,
             self.samples.len(),
             self.p50_us(),
             self.p99_us(),
             max,
+            self.cpu_p50_us(),
+            quantile(&self.cpu, 0.99),
         );
         let frames = self.frames.len();
         let steps = u64::try_from(self.samples.len().max(1)).unwrap_or(1);
@@ -132,6 +149,51 @@ impl Report {
     }
 }
 
+/// The `q` quantile of `samples`.
+fn quantile(samples: &[u64], q: f64) -> u64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let last = sorted.len().saturating_sub(1);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a percentile index over a few hundred samples"
+    )]
+    let at = ((last as f64) * q).round() as usize;
+    sorted.get(at.min(last)).copied().unwrap_or_default()
+}
+
+/// The two clocks a step is read on, started together: wall time, what the
+/// step took, and the measuring thread's CPU time, what it cost that thread
+/// ([`ui_core::rt::thread_cpu_time`]; wall time where the platform keeps no
+/// per-thread clock).
+struct Clocks {
+    wall: ui_core::time::Instant,
+    cpu: Option<std::time::Duration>,
+}
+
+impl Clocks {
+    fn start() -> Self {
+        Self {
+            cpu: ui_core::rt::thread_cpu_time(),
+            wall: ui_core::time::now(),
+        }
+    }
+
+    /// Microseconds since [`Self::start`]: wall time, then CPU time.
+    fn elapsed_us(&self) -> (u64, u64) {
+        let wall = self.wall.elapsed();
+        let cpu = self
+            .cpu
+            .zip(ui_core::rt::thread_cpu_time())
+            .map_or(wall, |(start, now)| now.saturating_sub(start));
+        let us =
+            |elapsed: std::time::Duration| u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        (us(wall), us(cpu))
+    }
+}
+
 /// `A` as its `--shots` capture shows it (the fixture of `scenario`, or the
 /// plain capture), at [`YOGA`], with every frame the launch queued run.
 pub fn open<A: ResourceApp>(scenario: Option<&str>) -> Result<HeadlessApp<A>, LaunchError> {
@@ -162,24 +224,18 @@ pub fn measure<A: ResourceApp>(
     let mut report = Report {
         label: label.to_owned(),
         samples: Vec::with_capacity(steps),
+        cpu: Vec::with_capacity(steps),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
     app.harness().begin_profiling();
     for index in 0..steps {
-        let start = ui_core::time::now();
+        let start = Clocks::start();
         let ((), scopes) = tilo_resource::profiling::observe(|| {
             step(app, warm.saturating_add(index));
             app.idle();
         });
-        report
-            .samples
-            .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-        for scope in scopes {
-            let entry = report.phases.entry(scope.phase).or_default();
-            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-            entry.1 = entry.1.saturating_add(scope.calls);
-        }
+        report.record(&start, scopes);
     }
     report.frames = app.harness().take_profile_samples();
     report
@@ -201,21 +257,15 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
     let mut report = Report {
         label: format!("{} start", A::ID),
         samples: Vec::with_capacity(launches),
+        cpu: Vec::with_capacity(launches),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
     for _ in 0..launches {
-        let start = ui_core::time::now();
+        let start = Clocks::start();
         let (app, scopes) =
             tilo_resource::profiling::observe(|| HeadlessApp::<A>::open_data_dir(profile.path()));
-        report
-            .samples
-            .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-        for scope in scopes {
-            let entry = report.phases.entry(scope.phase).or_default();
-            entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-            entry.1 = entry.1.saturating_add(scope.calls);
-        }
+        report.record(&start, scopes);
         drop(app?);
     }
     Ok(report)
@@ -512,6 +562,7 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
     let mut report = Report {
         label: "glide frame".to_owned(),
         samples: Vec::with_capacity(frames),
+        cpu: Vec::with_capacity(frames),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
@@ -526,19 +577,12 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
         }
         app.harness().send(&wheel(TouchPhase::Ended, 0.0));
         while report.samples.len() < frames {
-            let start = ui_core::time::now();
+            let start = Clocks::start();
             let (ran, scopes) = tilo_resource::profiling::observe(|| app.frame());
             if !ran {
                 break;
             }
-            report
-                .samples
-                .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-            for scope in scopes {
-                let entry = report.phases.entry(scope.phase).or_default();
-                entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-                entry.1 = entry.1.saturating_add(scope.calls);
-            }
+            report.record(&start, scopes);
             // The glide advances on the toolkit's clock: a frame's worth.
             let _ = ui_core::rt::sleep_thread(std::time::Duration::from_millis(4));
         }
@@ -787,7 +831,8 @@ impl Sweep {
     /// Hold every motion to what a hover change is: it repaints the two
     /// rows it moved between (and the anti-aliasing at their edges), asks
     /// for no sync or layout, and in an optimised build costs no more than
-    /// the 2 ms p50 any pointer motion is held to.
+    /// the 2 ms p50 any pointer motion is held to, in CPU time on the UI
+    /// thread.
     ///
     /// # Panics
     ///
@@ -814,10 +859,12 @@ impl Sweep {
             );
         }
         if !cfg!(debug_assertions) {
-            let p50 = self.report.p50_us();
+            // CPU time, not wall time: a motion that does no more work
+            // reads the same on a machine busy with other processes.
+            let p50 = self.report.cpu_p50_us();
             assert!(
                 p50 <= 2_000,
-                "{}: p50 {p50}us exceeds the 2000us pointer-motion budget",
+                "{}: CPU p50 {p50}us exceeds the 2000us pointer-motion budget",
                 self.report.label,
             );
         }
@@ -980,24 +1027,18 @@ fn sweep_rows(label: &str, app: &mut ui_core::App, rounds: usize) -> Sweep {
     let mut report = Report {
         label: label.to_owned(),
         samples: Vec::new(),
+        cpu: Vec::new(),
         phases: BTreeMap::new(),
         frames: Vec::new(),
     };
     let mut steps = Vec::new();
     for _ in 0..rounds {
         for &to in &path {
-            let start = ui_core::time::now();
+            let start = Clocks::start();
             let (unsettled, scopes) = tilo_resource::profiling::observe(|| {
                 sweep_motion(app, &mut scene, &mut damage, to)
             });
-            report
-                .samples
-                .push(u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX));
-            for scope in scopes {
-                let entry = report.phases.entry(scope.phase).or_default();
-                entry.0 = entry.0.saturating_add(scope.elapsed_ns);
-                entry.1 = entry.1.saturating_add(scope.calls);
-            }
+            report.record(&start, scopes);
             let repainted = damage
                 .take()
                 .ok_or_else(|| damage.repainted().unwrap_or("no reason given"));

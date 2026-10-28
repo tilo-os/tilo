@@ -1723,7 +1723,7 @@ impl WasmPeer {
                         return;
                     };
                     crate::replication::pump(id);
-                    crate::feedback_delivery::pump(id);
+                    crate::feedback_code::pump(id);
                     let current = listeners.borrow().clone();
                     for listener in current {
                         let _ = listener.call0(&JsValue::NULL);
@@ -1753,7 +1753,7 @@ impl WasmPeer {
     /// Refuses missing existing membership, record or a repeated configuration.
     #[wasm_bindgen(js_name = configureFeedback)]
     pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
-        crate::feedback_delivery::configure(
+        crate::feedback_code::configure(
             self.id,
             self.handle.clone(),
             self.reporter_cert.clone(),
@@ -1764,7 +1764,7 @@ impl WasmPeer {
     }
     #[wasm_bindgen(js_name = feedbackStatus)]
     pub fn feedback_status(&self) -> String {
-        crate::feedback_delivery::status(self.id)
+        crate::feedback_code::status(self.id)
     }
 
     /// `PeerSnapshot` JSON.

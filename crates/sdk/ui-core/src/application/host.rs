@@ -232,8 +232,22 @@ struct NativeProcessEnvironment {
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
     home: Option<PathBuf>,
-    action_authority: Option<tilo_host::action_authority::AuthoritySource>,
+    action_authority: Option<HostAuthority>,
 }
+
+/// Where the host's view of the person's authority over the app's actions
+/// is read, and how a change of it is heard.
+#[derive(Clone)]
+struct HostAuthority {
+    read: tilo_host::action_authority::AuthoritySource,
+    watch: AuthorityWatcher,
+}
+
+type AuthorityWatcher = std::sync::Arc<
+    dyn Fn(Box<dyn Fn() + Send>) -> Result<tilo_host::action_authority::AuthorityWatch, String>
+        + Send
+        + Sync,
+>;
 
 struct ResolvedNativeProcessHost {
     package_id: String,
@@ -274,10 +288,18 @@ impl NativeProcessEnvironment {
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
             home: path("HOME"),
-            action_authority: Some(tilo_host::action_authority::source(
-                collab_types::action_authority::PROJECTION_PATH.into(),
-                collab_types::action_authority::MAX_PROJECTION_BYTES,
-            )),
+            action_authority: Some(HostAuthority {
+                read: tilo_host::action_authority::source(
+                    collab_types::action_authority::PROJECTION_PATH.into(),
+                    collab_types::action_authority::MAX_PROJECTION_BYTES,
+                ),
+                watch: std::sync::Arc::new(|changed| {
+                    tilo_host::action_authority::watch(
+                        Path::new(collab_types::action_authority::PROJECTION_PATH),
+                        changed,
+                    )
+                }),
+            }),
         }
     }
 
@@ -319,21 +341,19 @@ impl NativeProcessEnvironment {
             self.participation.as_deref(),
         )?;
         if workspace_scoped
-            && let Some(source) = self.action_authority
-            && source().ok().flatten().is_some()
+            && let Some(authority) = self.action_authority
+            && (authority.read)().ok().flatten().is_some()
         {
-            let app = app_id.to_owned();
-            let room = workspace_id.clone();
-            let person = author.clone();
-            let current_source = source.clone();
-            let initial = read_action_authority_projection(&source, &room, &app, &person);
-            if initial.is_ok() {
-                permissions = permissions.with_action_authority(
-                    app.clone(),
-                    std::sync::Arc::new(move || {
-                        action_authority_context(&current_source, &room, &app, &person)
-                    }),
-                );
+            match FollowedAuthority::follow(authority, &workspace_id, app_id, author) {
+                Ok(followed) => {
+                    permissions = permissions.with_action_authority(
+                        app_id.to_owned(),
+                        std::sync::Arc::new(move || followed.current()),
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the host's action authority is not followed");
+                }
             }
         }
         let instance_id = self.continuity_instance.map_or_else(
@@ -517,6 +537,138 @@ fn permissions_for_participation(
     Ok(PermissionContext::member_of(room, author.0.clone(), role))
 }
 
+/// The host's view of the person's authority over one app's actions, read
+/// again only when the host changes it: what deciding reads is the last
+/// read, never the file.
+struct FollowedAuthority {
+    state: std::sync::Arc<FollowedState>,
+    _watch: std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>,
+}
+
+struct FollowedState {
+    authority: HostAuthority,
+    room: String,
+    app: String,
+    person: UserId,
+    /// Held across a read and the store of what it read, so a read never
+    /// replaces a later one.
+    reading: std::sync::Mutex<()>,
+    current: std::sync::RwLock<Result<PermissionContext, String>>,
+}
+
+impl FollowedState {
+    fn read(&self) {
+        let _reading = self
+            .reading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let read =
+            action_authority_context(&self.authority.read, &self.room, &self.app, &self.person);
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = read;
+    }
+}
+
+impl FollowedAuthority {
+    /// Read the host's view now and again on each change of it.
+    ///
+    /// # Errors
+    /// When it cannot be read now or its changes cannot be heard.
+    fn follow(
+        authority: HostAuthority,
+        room: &str,
+        app: &str,
+        person: &UserId,
+    ) -> Result<Self, String> {
+        let state = std::sync::Arc::new(FollowedState {
+            authority: authority.clone(),
+            room: room.to_owned(),
+            app: app.to_owned(),
+            person: person.clone(),
+            reading: std::sync::Mutex::new(()),
+            current: std::sync::RwLock::new(Err("host action policy is unread".into())),
+        });
+        let changed = std::sync::Arc::downgrade(&state);
+        // Heard before the first read, so a change during it is read again.
+        let watch = (authority.watch)(Box::new(move || {
+            if let Some(state) = changed.upgrade() {
+                state.read();
+                crate::permissions::outside_changed();
+            }
+        }))?;
+        state.read();
+        if let Err(error) = &*state
+            .current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(error.clone());
+        }
+        Ok(Self {
+            state,
+            _watch: std::sync::Mutex::new(watch),
+        })
+    }
+
+    /// The host's view as last read, judged now.
+    fn current(&self) -> Result<PermissionContext, String> {
+        let current = self
+            .state
+            .current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()?;
+        let now_ms =
+            crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
+        Ok(current.at_unix_time(now_ms / 1000))
+    }
+}
+
+/// `context` deciding `app`'s actions by the host's view `read` gives of
+/// its person's authority in `room`, read again whenever `watch` reports a
+/// change.
+#[cfg(test)]
+pub(crate) fn follow_host_authority(
+    context: PermissionContext,
+    read: tilo_host::action_authority::AuthoritySource,
+    watch: AuthorityWatcher,
+    room: &str,
+    app: &str,
+) -> Result<PermissionContext, String> {
+    let person = context.user().clone();
+    let followed = FollowedAuthority::follow(HostAuthority { read, watch }, room, app, &person)?;
+    Ok(context.with_action_authority(
+        app.to_owned(),
+        std::sync::Arc::new(move || followed.current()),
+    ))
+}
+
+/// A watch a test reports the host's changes through, as the kernel would.
+#[cfg(test)]
+pub(crate) fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>)
+{
+    type Listener = Box<dyn Fn() + Send>;
+    let listener: std::sync::Arc<std::sync::Mutex<Option<Listener>>> = std::sync::Arc::default();
+    let installed = listener.clone();
+    let watch: AuthorityWatcher = std::sync::Arc::new(move |changed| {
+        *installed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(changed);
+        Ok(Box::new(()))
+    });
+    let changed = std::sync::Arc::new(move || {
+        if let Some(changed) = &*listener
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            changed();
+        }
+    });
+    (watch, changed)
+}
+
 fn action_authority_context(
     source: &tilo_host::action_authority::AuthoritySource,
     room: &str,
@@ -526,7 +678,6 @@ fn action_authority_context(
     // Current for as long as the host holds it: the source reads a policy
     // the host let go of as absent.
     let projection = read_action_authority_projection(source, room, app, person)?;
-    let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
     let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
     if projection.foreign {
         standing = standing.on_foreign_device();
@@ -535,8 +686,7 @@ fn action_authority_context(
         crate::permissions::Actor::person(person.0.clone()).in_room(room),
         Vec::new(),
         standing,
-    )
-    .at_unix_time(now_ms / 1000))
+    ))
 }
 
 fn read_action_authority_projection(
@@ -1450,11 +1600,20 @@ mod native_process_tests {
             let bytes = bytes.clone();
             Arc::new(move || Ok(bytes.lock().unwrap().clone()))
         };
+        let (watch, changed) = manual_authority_watch();
         let environment = NativeProcessEnvironment {
             workspace_id: Some(room.into()),
             participation: Some("read-only".into()),
-            action_authority: Some(source.clone()),
+            action_authority: Some(HostAuthority {
+                read: source.clone(),
+                watch,
+            }),
             ..environment(temp.path())
+        };
+        // The host changes what it holds, and the watch reports it.
+        let publish = |value: Option<Vec<u8>>| {
+            *bytes.lock().unwrap() = value;
+            changed();
         };
         let resolved = environment.resolve(app, &author).unwrap();
         let permissions = resolved.permissions;
@@ -1472,13 +1631,13 @@ mod native_process_tests {
         let allowed = permissions.directory_witness().unwrap();
         let mut revoked = original.clone();
         revoked.policy.owner = None;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+        publish(Some(serde_json::to_vec(&revoked).unwrap()));
         assert_ne!(permissions.directory_witness().unwrap(), allowed);
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         {
             let mut invalid = original.clone();
             invalid.schema_version = 2;
-            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            publish(Some(serde_json::to_vec(&invalid).unwrap()));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         }
         for (field, value) in [
@@ -1488,16 +1647,16 @@ mod native_process_tests {
         ] {
             let mut invalid = serde_json::to_value(&original).unwrap();
             invalid[field] = value.into();
-            *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
+            publish(Some(serde_json::to_vec(&invalid).unwrap()));
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
         for invalid in [None, Some(b"invalid".to_vec())] {
-            *bytes.lock().unwrap() = invalid;
+            publish(invalid);
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&original).unwrap());
+        publish(Some(serde_json::to_vec(&original).unwrap()));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
     }
