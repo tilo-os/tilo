@@ -28,7 +28,7 @@ use tilo_relay_client::https as carrier;
 use tilo_relay_protocol::rooms::{JoinReply, Room, RoomRole, RoomsReply, RoomsRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{TestHost, admitted, enrol, next_document, start_peer, start_room_host, wait_for};
+use support::{TestHost, admitted, enrol, next_document_on, start_peer, start_room_host, wait_for};
 
 async fn rooms(link: &HttpsLink, request: RoomsRequest) -> Room {
     match carrier::rooms(link.client().as_ref(), link.session(), &request)
@@ -241,7 +241,10 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
         )
         .unwrap();
     let mut pending = Vec::new();
-    assert_eq!(next_document(&watcher, &mut pending).await, hello);
+    assert_eq!(
+        next_document_on(&watcher, &mut pending, &route).await,
+        hello
+    );
     assert_eq!(paths.asked("/channel-keys").first(), Some(&200));
     assert!(paths.asked("/here").is_empty());
 
@@ -249,7 +252,10 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     // reached her or was refused it.
     let again = DocumentMutation::Incremental(b"and again".to_vec());
     alice_page.publish(route.clone(), &again).unwrap();
-    assert_eq!(next_document(&watcher, &mut pending).await, again);
+    assert_eq!(
+        next_document_on(&watcher, &mut pending, &route).await,
+        again
+    );
     let status = watcher.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
     assert_eq!(status.outgoing_pending, 0);
