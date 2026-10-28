@@ -2852,11 +2852,6 @@ fn stream_operations_settle_exactly_once_for_their_request() {
 #[ignore = "queries third-party music services; nightly runs it explicitly"]
 fn live_search_and_stream_resolve_through_the_app() {
     let (mut app, mut doc) = app_with_doc();
-    // The render proof below is about the system sink, not a capture.
-    #[cfg(feature = "audio")]
-    {
-        app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
-    }
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     let first = live_search_top_result(&mut app);
@@ -2865,9 +2860,8 @@ fn live_search_and_stream_resolve_through_the_app() {
     // …and, when this build can actually reach a sound sink, prove the real
     // stream *renders* — decoded PCM buffers reach a real audio sink and the
     // transport advances off the stream clock. This is the end-to-end "a real
-    // YouTube track plays sound" proof: the engine stages the resolved
-    // (rangeable) source to a temp file with bounded reqwest ranges and plays
-    // that.
+    // YouTube track plays sound" proof: the media engine streams the resolved
+    // whole-file URL.
     #[cfg(feature = "audio")]
     live_audio_render_proof(&mut app);
 }
@@ -3100,37 +3094,14 @@ fn decode_plugins_present() -> bool {
 }
 
 /// **Full-track proof** (`--features live,audio`; requires network access):
-/// resolve a real `YouTube` track, stage it, and prove what the staged bytes
-/// actually support.
-///
-/// The resolver picks a whole-file stream because it is meant to serve
-/// arbitrary byte ranges over the whole file, where the adaptive streams are
-/// refused past their first segment. Whether the
-/// source honours that on the day is the source's decision, and the two
-/// outcomes are different claims — so this reads the staging byte counts and
-/// proves the one that happened:
-///
-/// * **the source served the whole file** — seek to ~88 s and require the
-///   transport to advance past **90 s** with decoded PCM still reaching the
-///   sink, which a stream truncated at ~1 minute could never do;
-/// * **the source refused a range partway** — require the app to be honest
-///   about it rather than pretend: the partial track still renders real PCM
-///   to a real sink, `staging_complete()` reports the shortfall, and when the
-///   staged bytes run out the transport ends the track instead of freezing
-///   while still claiming to play.
-///
-/// Neither branch is a skip and both assert the production path. What is
-/// ruled out is the shape this replaces, which read `staging_complete()` and
-/// a `duration_ms()` over two minutes as proof of a whole track: the download
-/// thread set "done" when it *stopped*, refused range included, and the
-/// duration comes from the MP4 header, so a ~1-minute stub satisfied both and
-/// the proof passed on exactly the stream it existed to rule out. It then
-/// failed 15 s later at the seek, blaming the seek. Skips honestly only when
-/// an audio server or decode plugins are absent (never a fakesink, never a
-/// weakened assertion).
+/// resolve a real `YouTube` track, play it, seek to ~88 s and require the
+/// transport to advance past **90 s** with decoded audio still reaching the
+/// sink, which a stream refused after its first minute could never do.
+/// Skips honestly only when an audio server or decode plugins are absent
+/// (never a fakesink, never a weakened assertion).
 #[cfg(all(feature = "live", feature = "audio"))]
 #[test]
-// Both branches above still need the track to arrive: this streams a real
+// This streams a real
 // one end to end through InnerTube and a live audio server, so it depends on a
 // third party being reachable and on that video still existing. It
 // self-skips when the tools are missing, which made it pass on CI and fail
@@ -3138,14 +3109,10 @@ fn decode_plugins_present() -> bool {
 // environment decided the result, not the code.
 //
 // Opt in with `cargo nextest run -p music --run-ignored all -E
-// 'test(full_track_streams_whole_file_or_reports_the_source_truncation)'`
+// 'test(full_track_streams_past_the_first_minute)'`
 // when changing the stream resolver; that is when it has something to say.
 #[ignore = "streams a real track over the network; opt in with --run-ignored"]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one end-to-end proof covers complete playback and explicit source truncation"
-)]
-fn full_track_streams_whole_file_or_reports_the_source_truncation() {
+fn full_track_streams_past_the_first_minute() {
     use std::time::Duration;
     if !audio_server_present() || !decode_plugins_present() {
         eprintln!("[full-track] skipped — no audio server / decode plugins");
@@ -3153,8 +3120,6 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
     }
 
     let (mut app, mut doc) = app_with_doc();
-    // Real sound through the system sink is what this proves.
-    app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     "rick astley never gonna give you up".clone_into(&mut app.search_query);
     app.request_live_search();
@@ -3180,89 +3145,30 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         &mut ui::widget::Edits::lend(&mut doc),
     );
 
-    // Wait until the resolved stream renders PCM and the staging download has
-    // stopped fetching — whether it finished the file or the source cut it
-    // off. Waiting on "complete" instead would spin the whole budget out
-    // against a range-gated source that is never going to finish.
+    // Wait until the resolved stream renders sound.
     let mut frames = 0u64;
     for _ in 0..6000 {
         app.drain_worker();
         app.tick();
         frames = app.audio.frames_rendered();
-        if frames > 0 && app.audio.staging_finished() {
+        if frames > 0 {
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(frames > 0, "the resolved stream rendered PCM to the sink");
-    assert!(
-        app.audio.staging_finished(),
-        "the staging download reached a terminal state rather than hanging"
-    );
+    assert!(frames > 0, "the resolved stream rendered audio to the sink");
     // Real sound out of a real sink — never a fakesink quietly swallowing it.
     assert_eq!(
         app.audio.audio_sink_is_real(),
         Some(true),
-        "decoded PCM went to a real audio sink ({:?}), not a fakesink",
+        "decoded audio went to a real audio sink ({:?}), not a fakesink",
         app.audio.actual_audio_sink_name()
     );
-
-    // What the resolver *found*: a multi-minute track. This is a property of
-    // the resolved media's header, not of the bytes on disk — a truncated
-    // fetch of the same URL reports the same duration — so it says the
-    // resolver picked a full song, and nothing about how much of it landed.
     let dur = app.audio.duration_ms().unwrap_or(0);
     assert!(
         dur > 120_000,
         "the resolver returned a full song ({dur}ms > 2min), not a short stub"
     );
-
-    let (got, want) = app.audio.staged_progress().unwrap_or((0, None));
-    let whole_file = app.audio.staging_complete();
-    eprintln!(
-        "[full-track] duration={dur}ms frames={frames} staged={got}/{} complete={whole_file}",
-        want.map_or_else(|| "?".into(), |w| w.to_string())
-    );
-
-    if !whole_file {
-        // The source refused a range partway. Prove the app is honest about
-        // it instead of pretending the rest is there.
-        let want = want.expect("a refused range is only detectable against a declared length");
-        assert!(
-            got < want,
-            "an incomplete staging must report fewer bytes than declared ({got} of {want})"
-        );
-
-        // Seek past the staged bytes. The pipeline runs out of media, and the
-        // transport must *end the track* — not sit at `playing` with a frozen
-        // playhead, which is what the truncation used to look like to a user.
-        app.audio.seek_ms(88_000);
-        let mut settled = false;
-        for _ in 0..1500 {
-            app.tick();
-            if !app.pb.playing {
-                settled = true;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        eprintln!(
-            "[full-track] source served {got} of {want} bytes — transport ended the track \
-                 rather than freezing (playing={})",
-            app.pb.playing
-        );
-        assert!(
-            settled,
-            "running past the staged bytes ended the track; the transport still claimed to \
-                 be playing at playhead {:.0}ms with no media behind it",
-            app.playhead_ms
-        );
-        assert!(
-            !app.audio.has_stream(),
-            "the exhausted pipeline was torn down rather than left loaded"
-        );
-        return;
-    }
 
     // Seek to ~88 s. Then let the flushing seek land: drive ticks until the
     // *real* pipeline position reflects the seek (~88 s). Reaching 88 s is
