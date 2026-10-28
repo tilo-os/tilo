@@ -51,6 +51,12 @@ pub enum Request {
     /// which is when a fingerprint may confirm them (sign-in.md §4.3).
     /// Answered in `key_held`. The peer is root, that person or the greeter.
     KeyHeld { user: String },
+    /// Whether `user`'s secret is a PIN or a password, so the login screen
+    /// names the field and opens a number pad for a PIN. Answered in
+    /// `secret`, absent when their record does not say. The peer is root,
+    /// that person or the greeter; the volume header's sign-in tokens say
+    /// the same to anyone holding the disk.
+    SecretKind { user: String },
     /// The device's sign-in comforts, which the login screens start with.
     /// Answered with the comforts object or `null`; anyone may ask, as
     /// anyone holding the disk can read them from the volume header.
@@ -103,6 +109,8 @@ pub struct Reply {
     pub factors: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_held: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<crate::record::SecretKind>,
 }
 
 impl Reply {
