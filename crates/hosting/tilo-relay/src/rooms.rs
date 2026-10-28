@@ -39,10 +39,8 @@ mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
-mod listing;
-mod member_records;
-pub use member_records::PreparedRecord;
 mod layout_scope;
+mod listing;
 mod pages;
 mod peer_parts;
 mod private;
@@ -107,9 +105,9 @@ pub use tilo_relay_session::rooms::{
     ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, ENTER_ROOM, EnteredRoom,
     GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
     IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT,
-    ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
-    RoomListing, RoomReply, RoomSummary, SetMemberRoleRequest, member_resource,
+    MEMBER_RESOURCE_KIND, PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN,
+    RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply,
+    RoomSummary, SetMemberRoleRequest, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -184,21 +182,24 @@ fn readers(
     ))
 }
 
-/// The stewards of `room`'s channels, under `dir`, when `authority` (this
-/// relay) may own workspaces.
+/// The stewards of `room`'s channels, under `dir`, for `authority` (this
+/// relay), which must be certified to own workspaces.
+///
+/// A device that governs a room stewards every record's channel, so a node
+/// whose certificate lacks the own capability governs no room at all: rooms
+/// written in the clear are never a second way for a record to exist.
 fn stewardship(
     dir: &Path,
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
-) -> Option<Arc<stewardship::Steward>> {
-    authority.capabilities.can_own_workspaces.then(|| {
-        Arc::new(stewardship::Steward::new(stewardship::Stewardship::new(
-            room,
-            dir.join(format!("{room}.channels")),
-            key,
-        )))
-    })
+) -> Result<Arc<stewardship::Steward>, String> {
+    if !authority.capabilities.can_own_workspaces {
+        return Err("a device that may not own workspaces cannot govern a room".into());
+    }
+    Ok(Arc::new(stewardship::Steward::new(
+        stewardship::Stewardship::new(room, dir.join(format!("{room}.channels")), key),
+    )))
 }
 
 /// What taking a member's write into the governor's copy did.
@@ -336,7 +337,7 @@ impl GovernedRoom {
             wait_list: wait_list::WaitList::open(&path)?,
             parts,
             path,
-            stewardship: stewardship(dir, &room, authority, key),
+            stewardship: stewardship(dir, &room, authority, key)?,
             record,
             peer,
             publisher: Arc::default(),
@@ -383,9 +384,12 @@ impl GovernedRoom {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
-        let stewardship = path
-            .parent()
-            .and_then(|dir| stewardship(dir, &record.room, authority, key));
+        let stewardship = stewardship(
+            path.parent().ok_or("room record has no directory")?,
+            &record.room,
+            authority,
+            key,
+        )?;
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
@@ -393,7 +397,7 @@ impl GovernedRoom {
             peer,
             parts,
             path,
-            stewardship,
+            stewardship: Some(stewardship),
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,

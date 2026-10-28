@@ -76,8 +76,7 @@ mod workspace_checkpoints;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, PreparedElsewhere, PreparingElsewhere,
+    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
@@ -9490,21 +9489,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let reply = self
                     .await_committed_change(known_revision)
                     .await
-                    .map_err(capnp::Error::failed)?;
-                results
-                    .get()
-                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
-                Ok(())
-            });
-        }
-        if let Some(preparing) = self.committed_creation_elsewhere(&request) {
-            // The device that creates the record (the room's host) answers
-            // over the network: awaited on this LocalSet, so the channel's
-            // and every other channel's calls keep flowing meanwhile.
-            return Promise::from_future(async move {
-                let prepared = preparing.await;
-                let reply = self
-                    .committed_document_dispatch_prepared(&request, Some(prepared))
                     .map_err(capnp::Error::failed)?;
                 results
                     .get()

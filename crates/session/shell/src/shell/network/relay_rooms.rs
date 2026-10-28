@@ -44,7 +44,7 @@ use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
     HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
-    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
+    RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -575,52 +575,6 @@ impl ShellNetwork {
                     .ok_or_else(|| {
                         "the host answered the app authorship with something else".into()
                     })
-            }
-            .await,
-        )
-    }
-
-    /// Have the host governing `room` create `app`'s record `record` there
-    /// (`""` for the primary), empty and signed by the host, as `caller`,
-    /// this device: what opening an app there for the first time asks when
-    /// the room does not hold its record. The app's first state then goes to
-    /// the record as this device's own change. `None` when no host governs
-    /// the room: a device governing it creates the record through its own
-    /// owner. Answers whether the host created it (rather than finding it).
-    pub(crate) async fn prepare_application_record_at_host(
-        &self,
-        room: RoomId,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-        record: &str,
-    ) -> Option<Result<bool, String>> {
-        let host = match self.governing_host(room, caller) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => return Some(Err(error)),
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("app".into(), app.into());
-        arguments.insert("record".into(), record.into());
-        let invoke = invocation(
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource(&room.to_string()),
-            PREPARE_APPLICATION_RECORD,
-            arguments,
-        );
-        Some(
-            async {
-                let answer =
-                    self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)?;
-                let status =
-                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-                        .await
-                        .map_err(|_| "app record reply worker stopped")?
-                        .map_err(|_| "the host did not answer the app record in time")??;
-                receipt_value(status)?
-                    .get("created")
-                    .and_then(serde_json::Value::as_bool)
-                    .ok_or_else(|| "the host answered the app record with something else".into())
             }
             .await,
         )

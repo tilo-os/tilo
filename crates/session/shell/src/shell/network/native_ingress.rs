@@ -23,32 +23,6 @@ impl ShellNetwork {
             Ok((view.device().clone(), view.governor().clone()))
         })
     }
-    pub(crate) fn prepare_native_application(
-        &self,
-        owner: &NativeWorkspaceOwner,
-        room: RoomId,
-        creator: &tilo_user_identity::DeviceCert,
-        route: &tilo_joined_room::ApplicationRecord,
-    ) -> Result<bool, String> {
-        let identity = self
-            .host_identity
-            .as_ref()
-            .ok_or("native custody unavailable")?;
-        let (certificate, _) = owner.with_current(room, |view| {
-            identity.current_native_material(view.workspace())
-        })?;
-        if &certificate != creator {
-            return Err("application creator differs from selected native custody".into());
-        }
-        owner.prepare_application_record(
-            room,
-            &certificate,
-            &identity.device_signing_key,
-            route,
-            SystemTime::now(),
-        )
-    }
-
     /// In a room this device governs whose records its native owner
     /// commits, give the room its shared desktop record when it has none
     /// yet, so every member's layout has the record to land in. A room made
@@ -62,28 +36,48 @@ impl ShellNetwork {
         let Some(identity) = self.host_identity.as_ref().filter(|_| commits) else {
             return;
         };
-        let prepared = owner
+        // The room's own governor publishes its genesis: a host stewards
+        // every record's channel, so nothing is signed on a member's behalf.
+        let published = owner
             .with_current(room, |view| {
-                if !view.governed_here() {
-                    return Ok(None);
-                }
-                Ok(Some(identity.current_native_material(view.workspace())?.0))
-            })
-            .and_then(|certificate| {
-                let Some(certificate) = certificate else {
+                if !view.governed_here()
+                    || view.peer().document(DESKTOP_APP, DESKTOP_RECORD).is_some()
+                {
                     return Ok(false);
-                };
-                owner.prepare_application_record(
-                    room,
-                    &certificate,
+                }
+                let _ = identity.current_native_material(view.workspace())?;
+                let message = view.peer().clone().publication_mut().publish_document(
+                    DESKTOP_APP,
+                    DESKTOP_RECORD,
+                    automerge::AutoCommit::new().save(),
                     &identity.device_signing_key,
-                    &tilo_joined_room::ApplicationRecord::host(DESKTOP_APP, DESKTOP_RECORD)?,
                     SystemTime::now(),
-                )
+                )?;
+                let tilo_peer_state::NeighbourMsg::AppDocument {
+                    app_id,
+                    cluster_id,
+                    record_id,
+                    envelope,
+                    ..
+                } = message
+                else {
+                    return Err("the workspace's layout record is not a document".into());
+                };
+                Ok(Some(tilo_owner_commit::OwnerCommitRequest {
+                    room: cluster_id,
+                    operation: tilo_owner_commit::CommitOperation::Document {
+                        app: app_id,
+                        record: record_id,
+                        envelope,
+                    },
+                }))
+            })
+            .and_then(|request| match request {
+                Some(request) => owner.commit_document(request, SystemTime::now()),
+                None => Ok(()),
             });
-        match prepared {
-            Ok(true) => self.schedule_native_owner_publication(room),
-            Ok(false) => {}
+        match published {
+            Ok(()) => self.schedule_native_owner_publication(room),
             Err(error) => {
                 tracing::warn!(%room, %error, "the workspace's layout record was not made")
             }
@@ -107,21 +101,7 @@ impl ShellNetwork {
         if &certificate != creator {
             return Err("application initialization creator custody changed".into());
         }
-        if self.governed_elsewhere(room) {
-            // The host governing the room created the empty record for this
-            // device; the bootstrap is this member's own change to it, which
-            // the host admits like any other.
-            let revision = owner.initialize_application_record_as_member(
-                room,
-                &certificate,
-                &identity.device_signing_key,
-                initialization,
-                SystemTime::now(),
-            )?;
-            self.schedule_native_owner_publication(room);
-            return Ok(revision);
-        }
-        owner.initialize_application_record(
+        owner.initialize_application_record_as_member(
             room,
             &certificate,
             &identity.device_signing_key,

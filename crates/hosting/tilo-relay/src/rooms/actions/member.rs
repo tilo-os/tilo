@@ -1,22 +1,21 @@
 //! A member's own business in a room this relay governs, as actions
-//! (provider [`MEMBER_ACTIONS_PROVIDER`]): recording their own effect receipt, having the host create the empty
-//! record of an app they open there first, sharing one record or item with
-//! the room and ending that share, and asking what they may do at a node.
+//! (provider [`MEMBER_ACTIONS_PROVIDER`]): recording their own effect
+//! receipt, sharing one record or item with the room and ending that share,
+//! and asking what they may do at a node.
 //!
 //! None is governance: each runs a room method that decides it for the
 //! person the room certified the calling device to (a receipt is only their
-//! own, a record only for an app the
-//! room lets author and a record they may change). A share grants the room
-//! only what the sharer holds, on one record or one item of it, and only
-//! its sharer ends it (`crate::rooms::shares`). Every person the room
-//! admitted is offered all of them; an agent or a bot is offered none.
+//! own). A share grants the room only what the sharer holds, on one record
+//! or one item of it, and only its sharer ends it (`crate::rooms::shares`).
+//! Every person the room admitted is offered all of them; an agent or a bot
+//! is offered none.
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
-    MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
+    MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS,
+    SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -29,20 +28,13 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 5] = [
+const MEMBER_VERBS: [Verb; 4] = [
     Verb {
         id: RECORD_EFFECT_RECEIPT,
         label: "Record effect receipt",
         gate: RECORD_EFFECT_RECEIPT,
         kind: ActionKind::Outside,
         params: receipt_params,
-    },
-    Verb {
-        id: PREPARE_APPLICATION_RECORD,
-        label: "Prepare application record",
-        gate: PREPARE_APPLICATION_RECORD,
-        kind: ActionKind::Outside,
-        params: record_params,
     },
     Verb {
         id: SHARE_RESOURCE,
@@ -123,21 +115,6 @@ fn receipt_params() -> Vec<ActionParam> {
     ]
 }
 
-fn record_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "app",
-            ParamType::Text,
-            "The application, which the room must already let author its records.",
-        ),
-        ActionParam::optional(
-            "record",
-            ParamType::Text,
-            "The record's id on the wire; the app's primary when omitted.",
-        ),
-    ]
-}
-
 /// What a member of `room` is offered for themselves.
 pub(super) fn rows(room: &GovernedRoom) -> Vec<CatalogueRow> {
     let resource = member_resource(room.room());
@@ -179,17 +156,6 @@ impl Rooms {
                 let redacted = args.required_text("redacted")?;
                 self.record_member_effect_receipt(&room, &device, invocation, redacted.as_bytes())
                     .await
-            }
-            PREPARE_APPLICATION_RECORD => {
-                let request = crate::rooms::member_records::PrepareApplicationRecordRequest {
-                    app: args.required_text("app")?.to_owned(),
-                    record: args.text("record")?.unwrap_or_default().to_owned(),
-                };
-                return self
-                    .prepare_member_application_record(&room, &device, &request)
-                    .await
-                    .map(|done| json!({ "created": done.created, "generation": done.generation }))
-                    .map_err(|error| refused(&error));
             }
             SHARE_RESOURCE => {
                 let access = args

@@ -35,7 +35,7 @@ pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration
 pub use crate::collab_broker_capnp::{
     AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
-    NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere, PreparingElsewhere,
+    NativeMediaRequestContext, NativeMediaServices,
 };
 
 /// One read-only host view lookup. The original admitted channel and exact

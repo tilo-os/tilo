@@ -9,8 +9,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_relay_session::rooms::{
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS,
-    SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
+    MEMBER_ACTIONS_PROVIDER, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE,
+    UNSHARE_RESOURCE, member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -97,7 +97,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
         offered(&host, workspace, &caller(&ada)).await,
         [
             RECORD_EFFECT_RECEIPT,
-            PREPARE_APPLICATION_RECORD,
             SHARE_RESOURCE,
             UNSHARE_RESOURCE,
             RESOURCE_PERMITS

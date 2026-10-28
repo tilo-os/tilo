@@ -69,14 +69,6 @@ pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
 /// and `redacted`, its canonical redacted public receipt as JSON text.
 /// Answers the room's `generation` that carries it.
 pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
-/// Have the host governing the room create the record `record` (`""` for
-/// the app's primary) of `app`, empty and signed by the host: what opening
-/// an app there for the first time asks when the room does not hold its
-/// record. Only for an app the room lets author and a record the caller may
-/// change; no member-supplied bytes cross it, and the app's first state is
-/// then the member's own change. Answers `created` (false when the record
-/// was already there) and the room's `generation`.
-pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
 /// Share one record, or one item of it, with the room: `share` (the share's
 /// id, such as the message that shares it), `node` (the record's or item's
 /// node, in its text form) and `access` (`view` or `edit`). The room's
