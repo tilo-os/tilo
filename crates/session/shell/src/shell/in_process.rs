@@ -1429,6 +1429,137 @@ mod tests {
         );
     }
 
+    /// The hosted Editor's text selection and clipboard commands are driven
+    /// through the keyboard, headlessly: select all, copy, and paste into a
+    /// second document that already holds text of its own.
+    ///
+    /// A teacher that has to edit a document can select and copy text instead
+    /// of deleting it one character at a time, which is what a person does.
+    /// The checks read the published accessible selection, so the route is the
+    /// one a screen reader and an agent also take.
+    #[test]
+    fn the_hosted_editor_selects_copies_and_pastes_through_the_keyboard() {
+        use ui::a11y::Action as SemanticAction;
+        use ui::headless::Action;
+
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
+        inputs.mount_apps_in_process(
+            InProcessApps::at(
+                profile.path(),
+                &profile.path().join("person"),
+                "test-person",
+            )
+            .unwrap(),
+        );
+
+        let line = "moor at the east quay\n";
+        let source = folder.path().join("harbour-plan.txt");
+        std::fs::write(&source, line).unwrap();
+        inputs.bind_document(
+            81,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: source.canonicalize().unwrap(),
+            },
+        );
+        let mut editor = mount_tab(
+            &inputs,
+            81,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "the Editor tab shows its document"
+        );
+        assert!(
+            editor
+                .perform_named("editor_view", &SemanticAction::Focus)
+                .is_ok(),
+            "the keyboard reaches the document"
+        );
+
+        let outcome = ui::headless::driver::drive(
+            &mut editor,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("a".into()).into(),
+                Action::Key("c".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(0, line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "select all and copy must select the whole document: {:?}",
+            outcome.failure()
+        );
+
+        let drafted = "";
+        let destination = folder.path().join("tide-notes.txt");
+        std::fs::write(&destination, drafted).unwrap();
+        inputs.bind_document(
+            82,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: destination.canonicalize().unwrap(),
+            },
+        );
+        let mut second = mount_tab(
+            &inputs,
+            82,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            second
+                .wait_for_named("editor_view", tilo_test_env::hang_bound())
+                .is_ok(),
+            "the second Editor tab shows its document"
+        );
+        assert!(
+            second
+                .perform_named("editor_view", &SemanticAction::Focus)
+                .is_ok(),
+            "the keyboard reaches the second document"
+        );
+
+        // Paste the copied line into the empty destination: one command that
+        // writes text a character-by-character route would have typed.
+        let outcome = ui::headless::driver::drive(
+            &mut second,
+            &[
+                Action::Modifiers(vec!["ctrl".into()]).into(),
+                Action::Key("v".into()).into(),
+                Action::Key("s".into()).into(),
+                Action::Modifiers(Vec::new()).into(),
+                Action::Expect(
+                    ui::headless::SemanticExpectation::named("editor_view")
+                        .value(line)
+                        .text_selection(line.len(), line.len()),
+                )
+                .into(),
+            ],
+        );
+        assert!(
+            outcome.is_pass(),
+            "paste must write the copied line at the caret: {:?}",
+            outcome.failure()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            line,
+            "the pasted text is the document the copy came from"
+        );
+    }
+
     /// A Notes tab shown as an app of its own runs what its launch queued:
     /// a Markdown file it is opened on becomes a note in the tab's notebook.
     #[test]
