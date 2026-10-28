@@ -2493,12 +2493,12 @@ mod two_sessions {
         }
     }
     use super::*;
-    use crate::network::actor::NetCmd;
     use crate::network::protocol::NeighbourMsg;
     use crate::shell::frame::FrameBuilder;
     use crate::shell::network::shell_network_for_test;
     use crate::shell::output_scene::OutputGeometry;
     use crate::shell::state::{GroupId, RoomId, WorkspaceTree};
+    use tilo_network_actor::NetCmd;
 
     #[test]
     fn certified_people_replacement_and_room_removal_retire_software_presence_without_a_pointer() {
@@ -2570,7 +2570,7 @@ mod two_sessions {
 
     /// The handle presence frames identify `peer` by.
     fn handle_of(peer: &str) -> u64 {
-        crate::network::behaviour::peer_liveness_handle(
+        tilo_network_actor::behaviour::peer_liveness_handle(
             &peer.parse::<iroh::EndpointId>().expect("an endpoint id"),
         )
     }

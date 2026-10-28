@@ -25,7 +25,7 @@ use iroh_gossip::net::Gossip;
 use tokio::sync::mpsc;
 
 use super::{InternalEvent, SURFACE_STREAM_ALPN, WorkspaceId, topic_id};
-use crate::network::protocol::NeighbourMsg;
+use neighbour_wire::NeighbourMsg;
 
 /// How much remote work one room may have waiting. Beyond it the room's
 /// devices are not keeping up, and more waiting would only send stale

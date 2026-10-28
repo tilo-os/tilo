@@ -170,7 +170,7 @@ pub fn member_workspaces(tree: &WorkspaceTree, held: &HeldRooms) -> BTreeMap<Roo
 
 /// The directory's stable id for `room`: the room's collaboration topic.
 fn entry_id(room: RoomId) -> u64 {
-    crate::shell::network::room_topic_id(room)
+    tilo_network_actor::room_topic_id(room)
 }
 
 /// The directory's entries that carry a valid room, in the person's order.

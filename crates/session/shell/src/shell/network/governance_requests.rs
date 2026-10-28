@@ -260,7 +260,7 @@ impl ShellNetwork {
     /// changed, a host's session came up ([`NetEvent::HostReady`]), another
     /// change was made, or this device's own host was installed.
     ///
-    /// [`NetEvent::HostReady`]: crate::network::actor::NetEvent::HostReady
+    /// [`NetEvent::HostReady`]: tilo_network_actor::NetEvent::HostReady
     pub(super) fn send_outbox(&self, entries: &[crate::shell::state::Outgoing]) {
         use crate::shell::state::{HostAnswer, RoomChange};
         let mut answers = Vec::with_capacity(entries.len());

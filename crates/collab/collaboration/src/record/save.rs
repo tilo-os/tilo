@@ -90,3 +90,91 @@ pub fn record_document(
         StorageKey::record(package, home, record_key),
     )
 }
+
+/// The on-disk copy of the room document of `package` in the room `room`:
+/// what an app that keeps one record for the room ([`StorageKey::room_index`])
+/// holds there, as a shared writer in `documents`.
+///
+/// # Errors
+/// Refuses a package or room name that is not a valid identity, and a store
+/// that cannot open the document.
+pub fn room_document(
+    documents: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+) -> Result<DocStore, StoreError> {
+    app_state::validate_room_identity(package, room)?;
+    DocStore::shared(Rc::clone(documents), StorageKey::room_index(package, room))
+}
+
+/// Open the document `store` holds, as a room this device governs reads it:
+/// from its on-disk copy, with a writer that keeps it there. A document that
+/// left the room ([`super::retirement`]) starts over; one written by a newer
+/// build is opened without persistence, so the copy on disk is left intact.
+pub fn open_stored(mut store: DocStore) -> (AutoCommit, DocWriter) {
+    let mut doc = store.load_or_new();
+    // The app's document moved to another workspace, which now holds it
+    // with its history; this room's app starts over.
+    if super::retirement::is_retired(&doc) {
+        doc = store.new_document();
+        if let Err(error) = store.save(&mut doc) {
+            tracing::error!(%error, "could not start a new app document after a move");
+        }
+    }
+    // A document written by a newer build is not opened, and the empty
+    // stand-in must never reach disk — with autosave on, the first edit
+    // (or the exit flush) would save it over the existing document. The store
+    // also refuses the write itself; the disabled writer is what stops
+    // the app logging an error on every keystroke to earn that guarantee.
+    if let Some(reason) = store.refusal() {
+        let reason = reason.to_string();
+        tracing::error!(
+            reason = %reason,
+            "app state was written by a newer version of this app; running \
+             without persistence so the file on disk is left intact"
+        );
+        eprintln!("tilo: {reason}");
+        eprintln!("tilo: this session starts empty and will NOT be saved.");
+        return (doc, DocWriter::disabled(reason));
+    }
+    let mut autosave = store.writer();
+    autosave.seed(&mut doc);
+    (doc, autosave)
+}
+
+/// Open the document `store` holds, as a room another host governs reads it:
+/// the broker's committed read of the room (`read`) merged into the on-disk
+/// copy, which keeps the merged graph from then on.
+///
+/// # Errors
+/// The copy on disk cannot be read or written, or the read is not a
+/// snapshot that loads.
+pub fn open_with_committed_read(
+    mut store: DocStore,
+    read: &crate::CommittedDocument,
+) -> Result<(AutoCommit, DocWriter), String> {
+    use tilo_automerge::ApplyIncoming as _;
+    let stored = store.load_complete().map_err(|e| e.to_string())?;
+    let had_stored = stored.is_some();
+    let mut doc = stored.unwrap_or_else(|| store.new_document());
+    if let Some(reason) = store.refusal() {
+        return Err(reason.to_string());
+    }
+    let mut writer = store.writer();
+    // Only the previously stored heads are durable. The captured graph must
+    // remain a pending local-cache write even without a subsequent user edit.
+    if had_stored {
+        writer.seed(&mut doc);
+    }
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native initial snapshot missing".to_string());
+        };
+        let mut actual = AutoCommit::load(bytes).map_err(|e| e.to_string())?;
+        doc.merge_incoming(&mut actual).map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })??;
+    writer.request(&mut doc);
+    read.applied();
+    Ok((doc, writer))
+}

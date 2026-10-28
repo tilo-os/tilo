@@ -7,7 +7,9 @@
 #
 #   builder-vm.sh image                  build the dev image of this worktree (tilo-vm image
 #                                        build with the worktree's rcargo build image;
-#                                        TILO_BUILD_ARGS=--no-cache builds every step again)
+#                                        TILO_BUILD_ARGS=--no-cache builds every step again),
+#                                        with the Browser and Mail as CI and releases ship
+#                                        them (TILO_WITH_BROWSER=0 leaves them out)
 #   builder-vm.sh disk                   its dev disk, installed as os-dev-disk installs it,
 #                                        inside a VM booted from main's published dev disk
 #                                        (the builder has no loop devices and no root)
@@ -32,7 +34,7 @@
 set -euo pipefail
 
 cmd=${1:-}
-[[ -n $cmd ]] || { sed -n '2,30p' "$0"; exit 2; }
+[[ -n $cmd ]] || { sed -n '2,33p' "$0"; exit 2; }
 shift
 repo=$(git rev-parse --show-toplevel)
 cd "$repo"
@@ -158,6 +160,7 @@ cmd_image() {
       -v $scratch/store:/var/lib/containers -v /srv/rcargo/ci-cache:/srv/rcargo/ci-cache:ro \
       -v $src:'$local_path' -v $out:/out -v $bin:/usr/local/bin/tilo-vm:ro \
       -w '$local_path' -e TILO_LOCAL_TAG=wt-$key -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+      -e TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} \
       -e TILO_CARGO_BUILD_JOBS=32 -e TILO_DEV_CARGO_BUILD_JOBS=32 -e TILO_BUILD_ARGS='${TILO_BUILD_ARGS:-}' \
       -e TILO_ASSET_STORE=/var/lib/containers/tilo-external-assets -e TMPDIR=/var/lib/containers/tmp \
       -e TILO_IMAGE_SCCACHE_URL=https://code.tilo.so/ci-cache/r/tilo/tilo/ \
@@ -210,14 +213,17 @@ cmd_disk() {
   base=$(base_disk)
   image=$(host_image)
   note "installing $digest onto a disk in a VM booted from main's dev disk ($(basename "$base"))"
-  builder_job disk <<<"set -e; rm -rf $disks.part $scratch/work/$key
-    mkdir -p $disks.part $scratch/work/$key
-    podman run --rm --name bvm-disk-$key --label $label=disk --label $label.tree=$key \
+  # The worker's work disk is the builder's, not the worktree's: it keeps the layers of the
+  # last image installed, which the next worktree's image mostly shares. One disk step uses
+  # it at a time; another waits for the lock.
+  builder_job disk <<<"set -e; rm -rf $disks.part
+    mkdir -p $disks.part $scratch/worker
+    flock $scratch/worker/lock podman run --rm --name bvm-disk-$key --label $label=disk --label $label.tree=$key \
       --device /dev/kvm -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
-      -v $base:/base:ro -v $disks.part:/out -v $scratch/work/$key:/work \
+      -v $base:/base:ro -v $disks.part:/out -v $scratch/worker:/work \
       -v $(image_dir "${digest#sha256:}"):/layout:ro -v $bin:/usr/local/bin/tilo-vm:ro \
       -v $src:/src:ro $image bash /src/tools/ci/builder-vm-guest.sh disk
-    rm -rf $disks $scratch/work/$key; mv $disks.part $disks"
+    rm -rf $disks; mv $disks.part $disks"
   note "dev disk of $digest in $(( $(stamp) - t0 )) s"
 }
 
@@ -308,5 +314,5 @@ case $cmd in
   acceptance) cmd_acceptance "$@" ;;
   all) cmd_image; cmd_disk; cmd_acceptance "$@" ;;
   clean) cmd_clean "$@" ;;
-  *) note "unknown command $cmd"; sed -n '2,30p' "$0"; exit 2 ;;
+  *) note "unknown command $cmd"; sed -n '2,33p' "$0"; exit 2 ;;
 esac

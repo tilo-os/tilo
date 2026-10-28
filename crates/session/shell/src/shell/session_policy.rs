@@ -76,8 +76,8 @@ pub fn load_or_create_workspace_salt(
     }
 
     let salt = if peer_key_path.try_exists()? {
-        let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
-        crate::network::behaviour::peer_salt_from_keypair(&key)
+        let key = tilo_network_actor::behaviour::load_or_create_keypair(peer_key_path)?;
+        tilo_network_actor::behaviour::peer_salt_from_keypair(&key)
     } else {
         let bytes = crate::random::bytes::<2>();
         // Never `0` (no id space) or the reserved namespace.
@@ -220,9 +220,9 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let state_path = dir.path().join("config/state.json");
             let peer_key_path = dir.path().join("system/device-key");
-            let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
+            let key = tilo_network_actor::behaviour::load_or_create_keypair(&peer_key_path)
                 .expect("create existing transport identity");
-            let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
+            let expected = tilo_network_actor::behaviour::peer_salt_from_keypair(&key).max(1);
 
             let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
                 .expect("migrate historical salt");

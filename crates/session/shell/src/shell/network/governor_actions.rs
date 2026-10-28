@@ -2,10 +2,10 @@
 //! this device, over the room's own relay session, and signing what this
 //! device says there. The governor decides; this side only asks and waits.
 use super::{NetCmd, ShellNetwork, room_topic_id};
-use crate::network::actor::governor_lane::Request;
 use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
 use tilo_actions::remote::Pending;
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
+use tilo_network_actor::governor_lane::Request;
 use tokio::sync::mpsc;
 
 /// How long one invocation may take end to end.
@@ -234,9 +234,7 @@ impl ShellNetwork {
                     )
                     .await;
                 match answer {
-                    Err(reason)
-                        if reason == crate::network::actor::native_ingress::NOT_CONNECTED =>
-                    {
+                    Err(reason) if reason == tilo_network_actor::native_ingress::NOT_CONNECTED => {
                         // The actor refused before queueing a directed request.
                         // Wait for the original native session, never a fallback.
                         tokio::time::sleep(STATUS_INTERVAL).await;
@@ -413,7 +411,7 @@ impl ShellNetwork {
                     .await;
                     match result {
                         Err(reason)
-                            if reason == crate::network::actor::native_ingress::NOT_CONNECTED =>
+                            if reason == tilo_network_actor::native_ingress::NOT_CONNECTED =>
                         {
                             tokio::time::sleep(STATUS_INTERVAL).await;
                         }

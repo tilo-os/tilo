@@ -9,10 +9,11 @@ use shell::shell::chrome_state::ChromeState;
 use shell::shell::continuity_suggestion::{ContinuityFeed, FocusRecency};
 use shell::shell::personal_continuity::{
     AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceFocus,
-    DeviceId, LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
+    LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
 };
 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
 use shell::shell::topbar_chrome::TopBarChrome;
+use tilo_network_actor::fabric::DeviceId;
 use ui::a11y::Action;
 use ui::widget::Widget;
 

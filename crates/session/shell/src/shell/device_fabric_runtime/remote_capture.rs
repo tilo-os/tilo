@@ -12,11 +12,11 @@ use tokio::sync::oneshot;
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::device_fabric::PersonalFabricAction;
 use crate::shell::network::{ReceivedPersonalFabricAction, ShellNetwork};
-use crate::shell::personal_continuity::DeviceId;
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS;
 use crate::shell::remote_capture::runtime::{RemoteCaptureConsentView, SharedRemoteCaptureRuntime};
+use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Default)]
 pub(super) struct RemoteCaptureIntegration {

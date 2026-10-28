@@ -1,14 +1,15 @@
 //! Private, root-bound cached monitor facts. This sidecar is not a wire
 //! checkpoint and contains neither online authority nor input leases.
 
-use crate::shell::device_fabric::{
-    DeviceFabric, DisplayConnectorPlacement, DisplayOutputObservation, FabricStamp, MAX_DEVICES,
-};
-use crate::shell::personal_continuity::DeviceId;
+use crate::shell::device_fabric::{DeviceFabric, MAX_DEVICES};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::Read as _;
 use std::path::Path;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::DisplayConnectorPlacement;
+use tilo_network_actor::fabric::DisplayOutputObservation;
+use tilo_network_actor::fabric::FabricStamp;
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_STORE_BYTES: u64 = 2 * 1024 * 1024;

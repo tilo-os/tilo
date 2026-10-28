@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 pub const REMOTE_CAPTURE_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_REMOTE_CAPTURE_SESSIONS: usize = 8;

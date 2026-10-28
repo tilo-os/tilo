@@ -40,7 +40,7 @@ impl ShellNetwork {
                 .find_map(|addr| {
                     self.online_enrolled_room(addr.id, Some(room))
                         .ok()
-                        .map(|shared| (addr.id, crate::shell::network::room_topic_id(shared)))
+                        .map(|shared| (addr.id, tilo_network_actor::room_topic_id(shared)))
                 })
         else {
             return Err(unavailable(

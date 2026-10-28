@@ -404,7 +404,8 @@ fn endpoint_of(device: &[u8; 32]) -> Option<iroh::EndpointId> {
 }
 
 fn source_peer_of(device: &[u8; 32]) -> Option<u64> {
-    endpoint_of(device).map(|endpoint| crate::network::behaviour::peer_liveness_handle(&endpoint))
+    endpoint_of(device)
+        .map(|endpoint| tilo_network_actor::behaviour::peer_liveness_handle(&endpoint))
 }
 
 impl ShellNetwork {
@@ -629,7 +630,7 @@ fn advance(carrier: &mut Carrier, inputs: (u64, u64)) {
     let next = match carrier {
         Carrier::Opening(slot) => match take_opened(slot) {
             Some(Ok(opened)) => {
-                crate::network::media_caps::record_caps(
+                tilo_network_actor::media_caps::record_caps(
                     carrier_peer(opened.room()),
                     carrier_capabilities(),
                 );

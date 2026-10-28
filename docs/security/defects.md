@@ -797,7 +797,7 @@ a snapshot whose session is not the invite's workspace and record. Held by
 
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
-`crates/session/shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
+`crates/session/network-actor/src/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
 public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-findable. Note the
 newer `PeerOrigin` (`crates/session/shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
@@ -809,13 +809,13 @@ across Rust releases, so two peers on different toolchains would have stopped re
 other's publishes. Held by
 `crates/session/shell/src/network/identity.rs::tests::identity_store_keys_entries_per_peer_and_rejects_invalid_ones`
 (phase `distinct_peers_never_share_an_entry`),
-`crates/session/shell/src/network/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+`crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `liveness_and_salt_are_stable`) and
 `crates/collab/neighbour-wire/src/lib.rs::tests::peer_handle_is_fnv1a_of_the_device_key`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
-`crates/session/shell/src/network/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
+`crates/session/network-actor/src/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
@@ -825,7 +825,7 @@ compositor leaves peer sync off rather than syncing an unsalted id space. The ke
 machine's one device key, so the compositor no longer keeps a network identity of its own.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. The key now lives at
 `/var/lib/tilo/device-private/keypair.bin` (`DEVICE_KEY_PATH`). Held by
-`crates/session/shell/src/network/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
+`crates/session/network-actor/src/behaviour.rs::tests::device_key_persists_and_is_never_replaced`
 (phase `malformed_key_is_never_replaced`), `::created_device_key_is_not_world_accessible`, and
 `crates/collab/tilo-user-identity/src/persist.rs::tests::device_keys_are_group_private_created_once_and_never_rotated_silently`.
 

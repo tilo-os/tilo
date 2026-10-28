@@ -4,9 +4,9 @@
 use super::{InputLease, SpatialInputState, spatial_input_state};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
 use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
+use tilo_network_actor::fabric::DeviceId;
 
 const RENEW_MARGIN_MS: u64 = 5 * 60 * 1000;
 

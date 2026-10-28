@@ -102,7 +102,7 @@ rooms a desktop mints.
 
 ## Direct collaboration
 
-`crates/session/shell/src/network/actor.rs` owns an Iroh endpoint and one `iroh-gossip` topic
+`crates/session/network-actor/src/lib.rs` owns an Iroh endpoint and one `iroh-gossip` topic
 per workspace. An invite contains the inviter's authenticated `EndpointAddr`,
 workspace room, expiry, and an Ed25519 signature. Iroh chooses a direct path
 when possible and uses its encrypted relay path when NAT traversal cannot
