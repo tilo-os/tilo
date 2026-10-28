@@ -739,7 +739,7 @@ and proves nothing about flips.
    client is refused as on `main`, and everything else behaves as in steps
    1–4: the switch-off a driver problem needs, without a rebuild.
 
-The same `FrameBuilder` is used by `cargo run -p shell --features hosted-test-control --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
+The same `FrameBuilder` is used by `cargo run -p shell --features hosted-test-control,in-process-apps --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `docs/architecture/overview.md` for the e2e infrastructure overview.
 
 ## Foreign-client adoption
 

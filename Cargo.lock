@@ -15632,6 +15632,7 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "sheets",
+ "shell",
  "signal-hook-registry",
  "smithay",
  "smithay-client-toolkit",

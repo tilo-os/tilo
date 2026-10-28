@@ -55,12 +55,14 @@ pub struct HostedTileInputs {
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
     file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
     /// The notebook each tab [`Self::mount_note`] mounted keeps.
+    #[cfg(feature = "in-process-apps")]
     note_records: Rc<RefCell<HashMap<TabId, ui::record::RecordId>>>,
     /// The framework apps this host mounts in its own process; without
     /// them a tab of such an app says it is unavailable.
     in_process: Option<super::in_process::SharedInProcessApps>,
     /// Whether the terminals this host mounts open sessions on the
     /// session's process supervisor: only a real session's do.
+    #[cfg(feature = "in-process-apps")]
     opens_sessions: bool,
     /// Whether the packaged first-party apps run as their own processes,
     /// their windows bound into the tabs that open them, rather than drawn
@@ -134,6 +136,7 @@ impl HostedTileInputs {
                 },
             ]),
             in_process: Some(Rc::new(RefCell::new(apps))),
+            #[cfg(feature = "in-process-apps")]
             opens_sessions: true,
             ..Self::default()
         })
@@ -155,7 +158,10 @@ impl HostedTileInputs {
         .map_err(|error| std::io::Error::other(error.to_string()))?;
         let owned = Arc::new(FixtureDirectory(vec![profile]));
         let mut inputs = Self::for_host_directory(directory, apps)?;
-        inputs.opens_sessions = false;
+        #[cfg(feature = "in-process-apps")]
+        {
+            inputs.opens_sessions = false;
+        }
         inputs.private_profile = Some(owned);
         Ok(inputs)
     }
@@ -226,8 +232,10 @@ impl HostedTileInputs {
             native_apps: Arc::default(),
             documents: Rc::default(),
             file_directories: Rc::default(),
+            #[cfg(feature = "in-process-apps")]
             note_records: Rc::default(),
             in_process: Some(Rc::new(RefCell::new(apps))),
+            #[cfg(feature = "in-process-apps")]
             opens_sessions: false,
             apps_as_processes: false,
             private_profile: None,
@@ -239,7 +247,10 @@ impl HostedTileInputs {
     /// sessions on the session's process supervisor.
     pub fn mount_apps_in_process(&mut self, apps: super::in_process::InProcessApps) {
         self.in_process = Some(Rc::new(RefCell::new(apps)));
-        self.opens_sessions = true;
+        #[cfg(feature = "in-process-apps")]
+        {
+            self.opens_sessions = true;
+        }
     }
 
     /// The Wayland session's inputs: its apps run as their own processes,
@@ -247,7 +258,10 @@ impl HostedTileInputs {
     /// the messaging accounts).
     pub fn run_apps_as_processes(&mut self, services: super::in_process::InProcessApps) {
         self.in_process = Some(Rc::new(RefCell::new(services)));
-        self.opens_sessions = true;
+        #[cfg(feature = "in-process-apps")]
+        {
+            self.opens_sessions = true;
+        }
         self.apps_as_processes = true;
     }
 
@@ -257,6 +271,7 @@ impl HostedTileInputs {
     }
 
     /// Whether the terminals this host mounts open sessions.
+    #[cfg(feature = "in-process-apps")]
     pub(crate) fn opens_sessions(&self) -> bool {
         self.opens_sessions
     }
@@ -461,6 +476,7 @@ impl HostedTileInputs {
     /// Notes for tab `tab` of `room`, on a notebook of its own holding
     /// `markdown` as the note `name`, as Notes opens a Markdown file it is
     /// handed. `None` for a host that mounts no apps in-process.
+    #[cfg(feature = "in-process-apps")]
     pub fn mount_note(
         &self,
         room: &str,
@@ -515,6 +531,7 @@ impl HostedTileInputs {
     /// Mount Activity for tab `tab` of `room`: the workspace's history, as
     /// the session serves it under its provider. `None` for a host that
     /// mounts no apps in-process.
+    #[cfg(feature = "in-process-apps")]
     pub fn mount_activity(
         &self,
         room: &str,
@@ -545,6 +562,7 @@ impl HostedTileInputs {
     ///
     /// # Errors
     /// The tab mounts no notebook here, or a change does not merge.
+    #[cfg(feature = "in-process-apps")]
     pub fn merge_note_edits(
         &self,
         room: &str,

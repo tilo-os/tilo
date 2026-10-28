@@ -44,7 +44,7 @@ cargo test --locked -p shell --lib tab_context_menu -j 4
 cargo test --locked -p shell --lib tab_menu_ -j 4
 cargo test --locked -p settings-store --lib shortcuts -j 4
 cargo check --locked -p shell --tests -j 4
-cargo run --locked -p shell --features hosted-test-control --bin shots -j 4 -- --mode offscreen --scenario tab_menu_keyboard --out target/ux-tab-menu-dark
+cargo run --locked -p shell --features hosted-test-control,in-process-apps --bin shots -j 4 -- --mode offscreen --scenario tab_menu_keyboard --out target/ux-tab-menu-dark
 ```
 
 Use `TILO_SHOTS_THEME=light|dark|high-contrast` for the three material/contrast

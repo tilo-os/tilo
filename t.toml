@@ -5656,7 +5656,7 @@ default = false
 name = "motion-recordings"
 run = """
 rm -rf /target/motion-recordings
-cargo build --locked -p shell --features test-support,hosted-test-control --bin shots
+cargo build --locked -p shell --features test-support,hosted-test-control,in-process-apps --bin shots
 for theme in light dark; do
   mkdir -p "/target/motion-recordings/$theme"
   for scenario in motion_gallery motion_review_quick_settings motion_review_notifications \
@@ -5683,7 +5683,7 @@ default = false
 name = "shell-scenes"
 run = """
 rm -rf /target/shell-scenes
-cargo build --locked -p shell --features test-support,hosted-test-control --bin shots
+cargo build --locked -p shell --features test-support,hosted-test-control,in-process-apps --bin shots
 for theme in light dark; do
   mkdir -p "/target/shell-scenes/$theme"
   TILO_SHOTS_THEME="$theme" bash tools/test-env.sh "$CARGO_TARGET_DIR/debug/shots" \\

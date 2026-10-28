@@ -173,6 +173,7 @@ impl InProcessApps {
 
     /// The window tab `tab` is shown in, to lend its app: the same one for
     /// every mount of the tab, until the tab is gone.
+    #[cfg(feature = "in-process-apps")]
     pub(crate) fn hosted_window(&mut self, tab: u64) -> ui::hosted_window::HostedWindow {
         let window = self.windows.entry(tab).or_default().clone();
         // An app asking from its own thread (a shell that exited) wakes the

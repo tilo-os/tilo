@@ -826,7 +826,7 @@ pub struct FrameBuilder {
     osk_overlay: Option<ForeignSurfaceWidget>,
     /// The keyboard an offscreen capture draws, as no client surface exists
     /// to mirror; laid out where [`Self::layout_osk_overlay`] docks it.
-    shots_keyboard: Option<osk::widget::OskWidget>,
+    shots_keyboard: Option<Box<dyn Widget>>,
     /// Authenticated app-owned call/navigation toplevels. Like the OSK these
     /// are client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
@@ -2194,7 +2194,7 @@ impl FrameBuilder {
             keyboard.place_floating(panel);
         }
         if let Some(keyboard) = self.shots_keyboard.as_mut() {
-            crate::shell::shots_keyboard::lay_out(keyboard, panel, &self.theme);
+            crate::shell::shots_keyboard::lay_out(keyboard.as_mut(), panel, &self.theme);
         }
     }
 
@@ -4653,7 +4653,7 @@ impl FrameBuilder {
     ///
     /// # Errors
     /// No Terminal window is active.
-    #[cfg(feature = "hosted-test-control")]
+    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
     pub fn feed_active_terminal_for_shots(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.relayout();
         let id = self
@@ -4710,9 +4710,11 @@ impl FrameBuilder {
     /// Stand a capture in for a keyboard client: `content` is what the
     /// focused field asks an input method for, so the shot gets that
     /// purpose's layout. `None` puts the keyboard away.
-    #[cfg(feature = "hosted-test-control")]
+    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
     pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
-        self.shots_keyboard = content.map(crate::shell::shots_keyboard::keyboard_for);
+        self.shots_keyboard = content.map(|content| {
+            Box::new(crate::shell::shots_keyboard::keyboard_for(content)) as Box<dyn Widget>
+        });
         self.layout_osk_overlay();
     }
 
@@ -6546,7 +6548,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 }
 
 /// The terminal a hosted Terminal tab shows, inside its app.
-#[cfg(any(test, feature = "hosted-test-control"))]
+#[cfg(all(
+    feature = "in-process-apps",
+    any(test, feature = "hosted-test-control")
+))]
 fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
     let embedded = widget
         .as_any_mut()?
