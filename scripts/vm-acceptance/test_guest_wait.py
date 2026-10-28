@@ -42,6 +42,20 @@ class LineWaitTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertLess(time.monotonic() - started, 3)
 
+    def test_a_write_inotify_does_not_see_is_still_read(self):
+        # The slot writes its log through another mount, whose writes reach no watch here.
+        other = Path(self.dir.name) / "elsewhere"
+        other.write_text("")
+        self.append_later("APP-STARTUP app=so.x total_ms=9\n")
+        real = guest_wait.os.path.realpath
+        guest_wait.os.path.realpath = lambda p: str(other)
+        try:
+            started = time.monotonic()
+            self.assertEqual(guest_wait.wait_line(str(self.log), 3, 10, [r"APP-STARTUP app=so\.x "]), 0)
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            guest_wait.os.path.realpath = real
+
     def test_a_line_never_written_runs_out(self):
         self.assertEqual(guest_wait.wait_line(str(self.log), 3, 0.3, [r"APP-STARTUP app=so\.x "]), 1)
 
