@@ -41,6 +41,7 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -642,6 +643,7 @@ mod history_jobs;
 #[path = "history_read.rs"]
 mod history_read;
 pub mod native_ops;
+mod posix_ops;
 mod unavailable;
 mod write_stage;
 use tilo_lock::MutexRecover as _;
@@ -6560,7 +6562,7 @@ impl Filesystem for QuickFS {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         _flags: i32,
         reply: ReplyCreate,
@@ -6590,6 +6592,11 @@ impl Filesystem for QuickFS {
                 return;
             }
         };
+        self.publish(delta);
+        if let Err(errno) = self.set_mode(ino, Some(mode), None, None) {
+            reply.error(to_errno(errno));
+            return;
+        }
         let attr = self.ns().getattr(ino);
         let Some(attr) = attr else {
             reply.error(to_errno(EIO));
@@ -6609,7 +6616,6 @@ impl Filesystem for QuickFS {
                 },
             );
         }
-        self.publish(delta);
         if !signed {
             self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
         }
@@ -6736,9 +6742,9 @@ impl Filesystem for QuickFS {
         &self,
         _req: &Request,
         ino: INodeNo,
-        _mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
         size: Option<u64>,
         _atime: Option<TimeOrNow>,
         _mtime: Option<TimeOrNow>,
@@ -6750,20 +6756,24 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
-        // Truncation is a write. Everything else here is ignored anyway, but
-        // a `setattr` on something outside the view must not describe it, so
-        // the visibility check runs regardless.
+        // Truncation is a write, and so is a mode change. Everything else
+        // here is ignored anyway, but a `setattr` on something outside the
+        // view must not describe it, so the visibility check runs regardless.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if size.is_some()
+        if (size.is_some() || mode.is_some())
             && let Err(e) = self.check_access(ino.0, Access::Write)
         {
             reply.error(to_errno(e));
             return;
         }
-        // Handle truncation/extension; ignore perm/owner/time changes.
+        if let Err(errno) = self.set_mode(ino.0, mode, uid, gid) {
+            reply.error(to_errno(errno));
+            return;
+        }
+        // Handle truncation/extension; ignore owner/time changes.
         // Truncation never reads the bytes it drops: a stage only changes its
         // length, and an unopened file commits the kept prefix.
         if let Some(new_size) = size
@@ -6795,7 +6805,7 @@ impl Filesystem for QuickFS {
         _req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
@@ -6811,10 +6821,14 @@ impl Filesystem for QuickFS {
                 return;
             }
         };
+        self.publish(delta);
+        if let Err(errno) = self.set_mode(ino, Some(mode), None, None) {
+            reply.error(to_errno(errno));
+            return;
+        }
         let attr = self.ns().getattr(ino);
         match attr {
             Some(attr) => {
-                self.publish(delta);
                 if self.record_publisher.is_none() || self.history.is_none() {
                     self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 }
@@ -6822,6 +6836,66 @@ impl Filesystem for QuickFS {
             }
             None => reply.error(to_errno(EIO)),
         }
+    }
+
+    fn symlink(
+        &self,
+        _req: &Request,
+        parent: INodeNo,
+        link_name: &OsStr,
+        target: &Path,
+        reply: ReplyEntry,
+    ) {
+        let ino = match self.create_symlink(
+            parent.0,
+            link_name.as_bytes(),
+            target.as_os_str().as_bytes(),
+        ) {
+            Ok(ino) => ino,
+            Err(errno) => {
+                reply.error(to_errno(errno));
+                return;
+            }
+        };
+        match self.ns().getattr(ino) {
+            Some(attr) => reply.entry(&TTL, &attr, Generation(0)),
+            None => reply.error(to_errno(EIO)),
+        }
+    }
+
+    fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+        let is_link = self
+            .ns()
+            .getattr(ino.0)
+            .is_some_and(|attr| attr.kind == FileType::Symlink);
+        if !is_link {
+            reply.error(to_errno(EINVAL));
+            return;
+        }
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        match self.read_full_blocking(ino.0) {
+            Ok(target) => reply.data(&target),
+            Err(error) => reply.error(to_errno(error.raw_os_error().unwrap_or(EIO))),
+        }
+    }
+
+    /// A FIFO, socket or device node has no record to become: refusing the
+    /// creation keeps it from being stored as a regular file that a peer
+    /// would find empty. A regular file arrives through `create`.
+    fn mknod(
+        &self,
+        _req: &Request,
+        _parent: INodeNo,
+        _name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        reply.error(to_errno(libc::EPERM));
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
