@@ -26,6 +26,8 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# A `RichText` field is the platform's rich-text field: tilo-doc's rich text, edited by its actions.
+tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The collab client an instance commits to its room through, without the toolkit.
@@ -52,6 +54,8 @@ room = [
 wasmtime = ["tilolang-runtime/wasmtime"]
 
 [dev-dependencies]
+# The system's mention notices, read from a room holding tilolang rich text.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The fake broker a room's committed read is served from in the tests.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }

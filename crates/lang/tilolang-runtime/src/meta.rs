@@ -17,6 +17,9 @@ pub enum FieldKind {
     Register,
     Counter,
     Text,
+    /// Rich text (`RichText`): tilo-doc's rich text under the field, merged by splices and
+    /// marks.
+    RichText,
     Collection,
     Set,
     Map,
@@ -55,6 +58,7 @@ pub fn field_kind(field: &FieldMeta, ty: &Ty) -> FieldKind {
         (Ty::Collection(_), _) => FieldKind::Collection,
         (Ty::Set(_), _) => FieldKind::Set,
         (Ty::Map(_), _) => FieldKind::Map,
+        (Ty::RichText, _) => FieldKind::RichText,
         (_, MergeKind::Counter) => FieldKind::Counter,
         (_, MergeKind::Text) => FieldKind::Text,
         (_, MergeKind::Register | MergeKind::Structural) => FieldKind::Register,

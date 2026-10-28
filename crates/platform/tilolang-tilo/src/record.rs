@@ -27,6 +27,8 @@ pub enum DynValue {
     Register(Json),
     Counter(Counter),
     Text(String),
+    /// tilo-doc's rich text, as native records hold it.
+    RichText(tilo_document::RichText),
     Set(Set<Json>),
     Map(Map<Json>),
     Collection(Collection<DynRecord>),
@@ -118,6 +120,7 @@ fn default_value(field: &FieldSchema) -> Result<DynValue, ModelError> {
         MergeKind::Register => DynValue::Register(field.default.clone()),
         MergeKind::Counter => DynValue::Counter(Counter::default()),
         MergeKind::Text => DynValue::Text(String::new()),
+        MergeKind::RichText => DynValue::RichText(tilo_document::RichText::default()),
         MergeKind::Set => DynValue::Set(Set::new()),
         MergeKind::Map => DynValue::Map(Map::new()),
         MergeKind::Collection => DynValue::Collection(Collection::default()),
@@ -142,6 +145,12 @@ fn read_field(doc: &Doc, obj: &ObjId, field: &FieldSchema) -> Result<DynValue, M
         }
         MergeKind::Counter => DynValue::Counter(read_key(doc, obj, id)?),
         MergeKind::Text => DynValue::Text(read_key(doc, obj, id)?),
+        MergeKind::RichText => {
+            // A record is read whole, its rich text with every paragraph.
+            let mut rich: tilo_document::RichText = read_key(doc, obj, id)?;
+            rich.read_whole(doc)?;
+            DynValue::RichText(rich)
+        }
         MergeKind::Set => DynValue::Set(read_key(doc, obj, id)?),
         MergeKind::Map => DynValue::Map(read_key(doc, obj, id)?),
         MergeKind::Collection => DynValue::Collection(read_key(doc, obj, id)?),
@@ -160,6 +169,7 @@ fn write_field(
         (MergeKind::Register, DynValue::Register(value)) => write_key(doc, obj, id, value),
         (MergeKind::Counter, DynValue::Counter(value)) => write_key(doc, obj, id, value),
         (MergeKind::Text, DynValue::Text(value)) => write_key(doc, obj, id, value),
+        (MergeKind::RichText, DynValue::RichText(value)) => write_key(doc, obj, id, value),
         (MergeKind::Set, DynValue::Set(value)) => write_key(doc, obj, id, value),
         (MergeKind::Map, DynValue::Map(value)) => write_key(doc, obj, id, value),
         (MergeKind::Collection, DynValue::Collection(value)) => write_key(doc, obj, id, value),
@@ -173,6 +183,7 @@ fn value_json(value: &DynValue) -> Json {
         DynValue::Register(value) => value.clone(),
         DynValue::Counter(value) => value.to_json(),
         DynValue::Text(value) => value.to_json(),
+        DynValue::RichText(value) => value.to_json(),
         DynValue::Set(value) => value.to_json(),
         DynValue::Map(value) => value.to_json(),
         DynValue::Collection(value) => value.to_json(),
@@ -189,6 +200,7 @@ fn value_from_json(field: &FieldSchema, json: &Json) -> Result<DynValue, ModelEr
         }),
         MergeKind::Counter => DynValue::Counter(Counter::from_json(json)?),
         MergeKind::Text => DynValue::Text(String::from_json(json)?),
+        MergeKind::RichText => DynValue::RichText(tilo_document::RichText::from_json(json)?),
         MergeKind::Set => DynValue::Set(Set::from_json(json)?),
         MergeKind::Map => DynValue::Map(Map::from_json(json)?),
         MergeKind::Collection => DynValue::Collection(Collection::from_json(json)?),
@@ -337,6 +349,7 @@ impl Fields for DynRecord {
             MergeKind::Register => Json::edit(doc, slot, rest, op, cx),
             MergeKind::Counter => Counter::edit(doc, slot, rest, op, cx),
             MergeKind::Text => String::edit(doc, slot, rest, op, cx),
+            MergeKind::RichText => tilo_document::RichText::edit(doc, slot, rest, op, cx),
             MergeKind::Set => Set::<Json>::edit(doc, slot, rest, op, cx),
             MergeKind::Map => Map::<Json>::edit(doc, slot, rest, op, cx),
             MergeKind::Collection => Collection::<Self>::edit(doc, slot, rest, op, cx),

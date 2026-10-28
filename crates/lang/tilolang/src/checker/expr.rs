@@ -690,6 +690,7 @@ impl Checker<'_> {
         match b.ty.clone() {
             Ty::Error => Ex::error(),
             Ty::Identifier => self.identifier_part(b, name),
+            Ty::RichText => self.rich_part(b, name),
             Ty::Record(key) => {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {

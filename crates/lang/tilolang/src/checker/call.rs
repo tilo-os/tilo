@@ -16,6 +16,12 @@ impl Checker<'_> {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
+                    && name.name == "RichText"
+                    && self.lookup(crate::stdlib::NS).is_none()
+                {
+                    return self.builtin_rich_text(args, span);
+                }
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == crate::stdlib::NS)
                     && name.name == "Identifier"
                     && self.lookup(crate::stdlib::NS).is_none()
                 {
@@ -74,6 +80,9 @@ impl Checker<'_> {
         if let Some(t) = env.own_type(name).filter(|_| !self.in_std()) {
             let key = t.key.clone();
             return self.construct(&key, args);
+        }
+        if name == "RichText" {
+            return self.builtin_rich_text(args, span);
         }
         if matches!(name, "Date" | "Time") {
             return match crate::resolve::date_value(name, args) {
@@ -495,6 +504,53 @@ impl Checker<'_> {
 
     /// `person("Mia")` in a scenario: a principal named for the sample data, whose id is
     /// `scenario:Mia`. Nothing else can make a principal from text.
+    /// `RichText("Ask ", ada, " about ", task)`: text as it is, and a run naming each person
+    /// (`@Ada`) or resource (its title) that refers to it; `RichText()` is empty.
+    fn builtin_rich_text(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let list_ty = Ty::List(Box::new(Ty::Text));
+        let tmp = self.fresh(list_ty.clone());
+        let mut stmts = vec![Stmt::Set(
+            tmp,
+            Ex::host(Imp::ListNew, Vec::new(), list_ty.clone()),
+        )];
+        for a in args {
+            if let Some(n) = &a.name {
+                self.err(
+                    "E022",
+                    n.span,
+                    "`RichText(...)` takes its parts in order, unnamed: `RichText(\"Ask \", ada)`",
+                );
+            }
+            let v = self.expr(&a.value, None);
+            let fits = matches!(
+                v.ty,
+                Ty::Text | Ty::RichText | Ty::Principal | Ty::Record(_) | Ty::Error
+            );
+            if !fits {
+                let t = self.show(&v.ty);
+                self.err(
+                    "E023",
+                    a.value.span,
+                    format!(
+                        "a part of rich text is text, rich text, a person or a resource, not {t}"
+                    ),
+                );
+                continue;
+            }
+            stmts.push(Stmt::Eval(Ex::host(
+                Imp::ListPushH,
+                vec![Ex::local(tmp, list_ty.clone()), v],
+                Ty::Unit,
+            )));
+        }
+        let _ = span;
+        let list = Ex::new(
+            Ek::Seq(stmts, Box::new(Ex::local(tmp, list_ty.clone()))),
+            list_ty,
+        );
+        Ex::host(Imp::RichNew, vec![list], Ty::RichText)
+    }
+
     fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if !self.st.scenario {
             self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
@@ -1049,6 +1105,9 @@ impl Checker<'_> {
                 Ex::error()
             }
             (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
+            (Ty::RichText, "is_empty") if args.is_empty() => {
+                Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
+            }
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
             }
@@ -1107,6 +1166,7 @@ impl Checker<'_> {
                 let t = self.show(other);
                 let known = match other {
                     Ty::Text => "len",
+                    Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",
                     Ty::Bool => "to_text",

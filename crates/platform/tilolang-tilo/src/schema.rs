@@ -22,6 +22,9 @@ pub enum MergeKind {
     Counter,
     /// Splices merge.
     Text,
+    /// Rich text (`RichText`): tilo-doc's rich text under the field, edited through
+    /// `RichTextAction`s, so splices and marks merge.
+    RichText,
     /// Per element.
     Set,
     /// Per key.
@@ -33,12 +36,21 @@ pub enum MergeKind {
 }
 
 impl MergeKind {
+    /// Whether the field holds text search finds a resource by: a text or a rich text.
+    #[must_use]
+    pub const fn holds_text(self) -> bool {
+        matches!(self, Self::Text | Self::RichText)
+    }
+
     /// The kind a compiler metadata `merge` word and field type name stand for.
     ///
     /// `merge` is the declared merge (`register`, `counter`, `text`) or `None`; `ty` is the type
     /// expression. Containers merge structurally, so the type decides for them.
     #[must_use]
     pub fn of(merge: Option<&str>, ty: &str) -> Self {
+        if matches!(ty.trim(), "RichText" | "std.RichText") {
+            return Self::RichText;
+        }
         match merge {
             Some("counter") => return Self::Counter,
             Some("text") => return Self::Text,
