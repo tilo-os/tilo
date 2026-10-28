@@ -21,11 +21,11 @@ use super::{
     RECOVERY_BACKOFF_INITIAL, RECOVERY_BACKOFF_MAX, RetainedGpuTarget, SceneDamage, VelloDrmBridge,
     WARNED_CPU_FALLBACK, XrgbHistoryIdentity,
 };
-use crate::shell::hdr_surface::HdrLayer;
 use crate::shell::render::hdr_composite::HdrCompositor;
 use crate::shell::render::hdr_encode::HdrEncodePipeline;
 use crate::shell::render::icc_lut::IccLut;
 use crate::shell::render::orientation::OrientedCopy;
+use tilo_color_pipeline::hdr_surface::HdrLayer;
 
 /// The presenting renderer's wgpu context and the index of its device.
 ///
@@ -1079,7 +1079,7 @@ impl VelloDrmBridge {
 
     /// [`paint`](Self::paint) for a frame with HDR layers: the tight RGBA render with every
     /// layer image black, and the render with each in its channel colour, for
-    /// [`crate::shell::hdr_surface::composite_hdr_pixel`].
+    /// [`tilo_color_pipeline::hdr_surface::composite_hdr_pixel`].
     ///
     /// # Errors
     /// Fails like [`paint`](Self::paint), or when the second render cannot be read back.

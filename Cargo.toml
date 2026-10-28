@@ -397,6 +397,7 @@ members = [
     "crates/runtime/env-tools",
 
     # Session
+    "crates/session/color-pipeline",
     "crates/session/console-control",
     "crates/session/control-cli",
     "crates/session/desktop-model",

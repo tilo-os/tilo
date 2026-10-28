@@ -3,7 +3,7 @@
 //! A rotated output's surface holds its part of the scene upright; its scanout target is the
 //! physical KMS mode. The final pass that writes the target (a copy, the PQ encode or the HDR
 //! composite) reads each target pixel from the surface pixel it shows, through
-//! `oriented_source_pixel` (`shell/output_orientation.wgsl`, concatenated in front of each
+//! `oriented_source_pixel` (`output_orientation.wgsl` in tilo-color-pipeline, concatenated in front of each
 //! final-pass shader). That is the mapping the readback presenter applies on the
 //! CPU (`write_subrect_transformed` in `paint.rs`), so a rotated output can render direct
 //! with the same pixels and no readback.
@@ -38,8 +38,9 @@ pub fn turned(size: (u32, u32), transform: OutputTransform) -> (u32, u32) {
     }
 }
 
-const COPY_SHADER_SOURCE: &str = concat!(
-    include_str!("../output_orientation.wgsl"),
+/// The copy pass after the shared orientation helpers
+/// ([`tilo_color_pipeline::color_pipeline::OUTPUT_ORIENTATION_SHADER`]).
+const COPY_SHADER_BODY: &str = concat!(
     include_str!("../output_color_lut.wgsl"),
     r"
 struct CopyParams {
@@ -131,7 +132,14 @@ impl OrientedCopy {
     pub fn new(device: &wgpu::Device) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tilo-oriented-copy"),
-            source: wgpu::ShaderSource::Wgsl(COPY_SHADER_SOURCE.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                [
+                    tilo_color_pipeline::color_pipeline::OUTPUT_ORIENTATION_SHADER,
+                    COPY_SHADER_BODY,
+                ]
+                .concat()
+                .into(),
+            ),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilo-oriented-copy"),

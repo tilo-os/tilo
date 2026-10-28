@@ -60,9 +60,9 @@ use paint::{
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::frame::FramePaint;
 use crate::compositor::present::Presenter;
-use crate::shell::hdr_surface::{CpuComposite, HdrLayer};
 pub use runtime::DrmBackendError;
 use runtime::{ScanoutCommand, ScanoutEntry, SignalReport};
+use tilo_color_pipeline::hdr_surface::{CpuComposite, HdrLayer};
 use tilo_lock::MutexRecover as _;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] (libseat session + udev + libinput) plus a [`paint::VelloDrmBridge`] for the vello → RGBA bytes path.
@@ -1835,7 +1835,7 @@ fn present_direct(
     // Dimming in the final pass changes every pixel the same way: a new
     // level renders in full. Dimming in the CRTC's LUT needs no new frame.
     // Field by field: `targets` holds the direct targets borrowed.
-    let dim = crate::shell::software_dim::final_pass_dim(
+    let dim = tilo_color_pipeline::software_dim::final_pass_dim(
         entry.software_dim,
         entry.scanout.software_dim_in_crtc(),
     );
@@ -1878,7 +1878,7 @@ fn present_direct(
         .checked_add(DIRECT_FRAME_DEADLINE)
         .unwrap_or(render_started);
     let sdr_white_nits = entry.scanout.hdr_request().map_or(
-        crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+        tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
         |request| request.sdr_white_nits,
     );
     let painted = bridge.paint_output_until(
@@ -4096,7 +4096,7 @@ mod lone_output_tests {
                     .checked_add(tilo_test_env::hang_bound())
                     .expect("the hang bound fits in an Instant"),
                 paint::OutputSignal {
-                    sdr_white_nits: crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                    sdr_white_nits: tilo_color_pipeline::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                     hdr_layers: &[],
                     color_lut: None,
                     dim: None,

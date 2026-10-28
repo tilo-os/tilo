@@ -22,8 +22,8 @@ use settings_store::hardware::OutputTransform;
 use super::super::icc_lut::IccLut;
 use super::super::orientation::turned;
 use super::{BridgeError, GpuFrameStats, RetainedGpuTarget, SceneDamage, VelloDrmBridge};
-use crate::shell::hdr_surface::HdrLayer;
 use crate::shell::render::OutputId;
+use tilo_color_pipeline::hdr_surface::HdrLayer;
 
 /// Which part of the scene one output shows, and at what size.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,7 +133,7 @@ pub struct OutputSignal<'a> {
     pub color_lut: Option<&'a IccLut>,
     /// The share of linear light software dimming lets through, when the
     /// output's CRTC cannot dim it itself: the final pass scales and dithers
-    /// it ([`crate::shell::software_dim`]). `None` dims nothing.
+    /// it ([`tilo_color_pipeline::software_dim`]). `None` dims nothing.
     pub dim: Option<f32>,
     /// The frame as layers, when it came as layers: an output that is the
     /// whole scene composites a strip pan from them instead of rendering it.

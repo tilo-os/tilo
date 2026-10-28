@@ -15325,6 +15325,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-cli-kit",
  "tilo-clock",
+ "tilo-color-pipeline",
  "tilo-contact-directory",
  "tilo-content",
  "tilo-control",
@@ -17799,6 +17800,19 @@ dependencies = [
  "serde_json",
  "tilo-fs-client",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-color-pipeline"
+version = "0.1.0"
+dependencies = [
+ "neighbour-wire",
+ "os-actions",
+ "settings-store",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-wayland-ext",
  "workspace-hack",
 ]
 
@@ -26593,6 +26607,7 @@ dependencies = [
  "tilo-clipboard",
  "tilo-clock",
  "tilo-cloud-files",
+ "tilo-color-pipeline",
  "tilo-connector",
  "tilo-contact-directory",
  "tilo-content",

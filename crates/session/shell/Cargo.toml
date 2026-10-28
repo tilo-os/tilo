@@ -303,6 +303,8 @@ fs-protocol = { path = "../../system/fs-protocol" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The color-management-v1 handlers and the EDID parsing behind them.
 tilo-wayland-ext = { path = "../wayland-ext" }
+# The colour maths: HDR encode, tone mapping, the HDR composite and dimming.
+tilo-color-pipeline = { path = "../color-pipeline" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }

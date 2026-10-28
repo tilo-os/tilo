@@ -890,7 +890,7 @@ pub trait Backend {
 
     /// Dim each display named in `dims` (by its connector, with the share of
     /// linear light it lets through, `1.0` undimmed) in software, and undim
-    /// every other ([`crate::shell::software_dim`]). Default no-op.
+    /// every other ([`tilo_color_pipeline::software_dim`]). Default no-op.
     fn set_software_dim(&mut self, _dims: &[(String, f32)]) {}
 
     /// Adaptive sync is engaged on some output: pace frames by content

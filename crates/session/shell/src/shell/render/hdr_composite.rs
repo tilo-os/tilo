@@ -1,4 +1,4 @@
-//! GPU side of HDR layer compositing (see [`crate::shell::hdr_surface`]).
+//! GPU side of HDR layer compositing (see [`tilo_color_pipeline::hdr_surface`]).
 //!
 //! [`HdrCompositor::prepare`] uploads each layer's plane, provides the black
 //! and channel-colour textures vello substitutes for the layers' SDR images,
@@ -12,8 +12,8 @@ use vello::wgpu;
 
 use super::fullscreen_pass;
 use super::orientation::shader_code;
-use crate::shell::color_pipeline::sanitize_sdr_white_nits;
-use crate::shell::hdr_surface::{
+use tilo_color_pipeline::color_pipeline::sanitize_sdr_white_nits;
+use tilo_color_pipeline::hdr_surface::{
     COMPOSITE_SHADER_SOURCE, HdrLayer, HdrTexelFormat, MAX_HDR_LAYERS,
 };
 
