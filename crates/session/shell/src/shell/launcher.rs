@@ -4315,13 +4315,20 @@ pub(crate) fn queue_native_authoring_launch(
     let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
-    let expected = tree
-        .read()
-        .installed_native_owner()
+    let owner = native_owner
+        .as_ref()
         .ok_or_else(|| LaunchError::IdentityUnavailable {
             detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
-        })?
-        .with_current(room, |view| Ok(view.device().clone()))
+        })?;
+    // Who the person asked as: the device the room is held under now. A room
+    // whose enrollment has not committed yet (placed on this device's own
+    // host, or joined, as the session starts) has none so far; the opening
+    // takes the one its commit installs.
+    let asked_as = owner
+        .rooms()
+        .contains(&room)
+        .then(|| owner.with_current(room, |view| Ok(view.device().clone())))
+        .transpose()
         .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
     queue_prepared_launch(
         app,
@@ -4330,6 +4337,10 @@ pub(crate) fn queue_native_authoring_launch(
             // Asked for while the session's broker was still binding (an app
             // opened as the session starts): it is prepared once launches run.
             session.wait_while_launches_held();
+            let expected = match asked_as {
+                Some(device) => device,
+                None => room_hold::committed_device(&session, &tree, room)?,
+            };
             let unavailable = |detail: String| LaunchError::IdentityUnavailable { detail };
             let (_, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room.to_string())
