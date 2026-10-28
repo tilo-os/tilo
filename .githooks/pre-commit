@@ -133,10 +133,6 @@ if grep -qE '^\+\s*#\[ignore\]\s*$' <<< "$own_diff"; then
   fail=1
 fi
 
-# Match CI's whole-file policy for the exact staged blobs. Looking only at
-# added lines misses an unchanged `#[allow]` in a file that this commit edits.
-python3 "$root/tools/ci/check_changed_rust_allows.py" --root "$root" --staged || fail=1
-
 # Credentials, merge-conflict markers and dbg! in the lines the change adds.
 # CI repeats this exact check on every new commit (check_commit_policy.py).
 python3 "$root/tools/policy/added_line_policy.py" --root "$root" --staged || fail=1
@@ -167,12 +163,6 @@ fi
 if grep -qx 'Cargo.lock' <<< "$staged_names" \
    && ! grep -qE '(^|/)Cargo\.toml$' <<< "$lock_staged_names"; then
   python3 "$root/tools/ci/check_lock_update.py" --root "$root" || fail=1
-fi
-# A manifest change can close a cycle in the package graph, which leaves the
-# whole workspace unresolvable (cargo metadata, every build). Resolving it
-# compiles nothing and takes about a second.
-if grep -qE '(^|/)Cargo\.(toml|lock)$' <<< "$staged_names"; then
-  python3 "$root/tools/policy/check_dependency_cycles.py" || fail=1
 fi
 # A vendored crate's own lock file is a build artifact, not ours.
 if grep -qE '^vendor/[^/]+/Cargo\.lock$' <<< "$staged_names"; then

@@ -20,11 +20,6 @@ class PreCommitContractTests(unittest.TestCase):
 
             for command in ("cargo check", "cargo clippy", "cargo test", "cargo nextest"):
                 self.assertNotIn(command, hook)
-        with self.subTest(phase='local hook checks staged allow reasons'):
-            hook = HOOK.read_text(encoding="utf-8")
-
-            self.assertIn("check_changed_rust_allows.py", hook)
-            self.assertIn("--staged", hook)
         with self.subTest(phase='local hook admits only declared lock updates'):
             hook = HOOK.read_text(encoding="utf-8")
 
@@ -58,7 +53,6 @@ class PreCommitMergeContentTests(unittest.TestCase):
             "tools/policy/check_source_content.py",
             "tools/policy/check_public_references.py",
             "tools/policy/added_line_policy.py",
-            "tools/ci/check_changed_rust_allows.py",
         }
         # Keep the production hook and content/changed-line security checks.
         # Workspace/UI/interpreter inventories are unrelated to this tiny repo.

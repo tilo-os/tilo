@@ -7,9 +7,8 @@ repo="${TILO_REPO_ROOT:-$(cd "$script_dir/../.." && pwd)}"
 cd "$repo"
 
 # Use the same PR-versus-push semantics and shallow-history recovery as the
-# allow-reason gate; an unavailable comparison must fail both checks.
-range=$(python3 "$script_dir/check_changed_rust_allows.py" \
-    --root "$repo" --comparison-range "${1:-}" "${2:-}")
+# other changed-file checks; an unavailable comparison fails the check.
+range=$(python3 "$script_dir/comparison_range.py" --root "$repo" "${1:-}" "${2:-}")
 
 # Same rule as .githooks/pre-commit: a vendored crate under vendor/ is
 # upstream's code, carried as it ships, and a generated source says so with an

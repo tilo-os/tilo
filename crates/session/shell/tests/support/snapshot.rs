@@ -17,7 +17,10 @@
 //! unreviewed baseline: it asks for `UPDATE_SNAPSHOTS=1`, followed by a normal
 //! run that compares the checked-in file.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different subset of these helpers"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

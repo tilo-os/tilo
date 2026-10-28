@@ -3,7 +3,7 @@
 //! The TOML here mirrors the schema in the crate docs verbatim
 //! so a future spec edit is one place away.
 
-#![allow(dead_code)] // each test file pulls a different subset
+#![allow(dead_code, reason = "each test file pulls a different subset")]
 
 use std::path::Path;
 

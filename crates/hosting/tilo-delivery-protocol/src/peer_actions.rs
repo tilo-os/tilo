@@ -1,6 +1,9 @@
 //! Private live action vocabulary. These are inert transport values: only a
 //! certified native broker with durable admission may execute an invocation.
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    reason = "wire structs whose fields are named for what they carry"
+)]
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{InvocationId, InvocationUpdate};

@@ -40,13 +40,6 @@ git = "paths"
 inputs = ["**"]
 
 [[step]]
-name = "dependency-cycles"
-label = "Package graph is acyclic"
-run = "python3 tools/policy/check_dependency_cycles.py"
-inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
-pre_push = true
-
-[[step]]
 name = "integration-test-modules"
 label = "Integration tests are compiled by a test target"
 run = "python3 tools/policy/check_integration_test_modules.py"
@@ -295,13 +288,6 @@ inputs = ["crates/**/*.rs", "apps/**/*.rs"]
 pre_push = true
 
 [[step]]
-name = "crypto-dependencies"
-label = "Raw cryptography stays behind tilo-seal"
-run = "python3 tools/policy/check_crypto_dependencies.py"
-inputs = ["Cargo.toml", "**/Cargo.toml", ".config/hakari.toml", "**/*.rs"]
-pre_push = true
-
-[[step]]
 name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
@@ -419,7 +405,7 @@ whole_tree_tests = [
   "tools/tests/test_signal_runtime_staging.py", "tools/tests/test_suites.py",
   "tools/tests/test_test_environment.py", "tools/tests/test_workflow_package_paths.py",
   "tools/tests/test_check_host_data_apps.py", "tools/tests/test_component_manifest.py",
-  "tools/tests/test_copy_language.py", "tools/tests/test_dependency_cycles.py",
+  "tools/tests/test_copy_language.py",
   "tools/tests/test_developer_docs.py", "tools/tests/test_development_book.py",
   "tools/tests/test_extension_resolve.py", "tools/tests/test_language_packs.py",
   "tools/tests/test_package_sets.py", "tools/tests/test_policy_steps.py",

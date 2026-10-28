@@ -11,7 +11,10 @@
 // behind it. The lint's concern is a caller coming to depend on the narrower
 // return; nothing outside this test binary constructs these servers, so the
 // refinement stays where it is written.
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "the fakes return capnp's concrete Promise, see above"
+)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -14,7 +14,10 @@
 // behind it. The lint's concern is a caller coming to depend on the narrower
 // return; nothing outside this file constructs these servers, so the
 // refinement stays where it is written.
-#![allow(refining_impl_trait_internal)]
+#![allow(
+    refining_impl_trait_internal,
+    reason = "the fakes return capnp's concrete Promise, see above"
+)]
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
