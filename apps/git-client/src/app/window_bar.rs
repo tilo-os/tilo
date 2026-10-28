@@ -17,24 +17,15 @@ use crate::i18n::t;
 use crate::panels::RemoteAction;
 use crate::settings::DiffLayout;
 
-/// The bar's menu items that choose the diff's layout.
-pub(crate) const UNIFIED: &str = "git.diff-layout.unified";
-pub(crate) const SPLIT: &str = "git.diff-layout.split";
-/// The bar's menu item that turns syntax highlighting on and off.
-pub(crate) const SYNTAX: &str = "git.syntax-highlight";
-/// The bar's menu item that shows or hides whitespace.
-pub(crate) const WHITESPACE: &str = "git.show-whitespace";
-/// The bar's menu item that wraps long lines or stops wrapping them.
-pub(crate) const WRAP: &str = "git.wrap-lines";
-/// The bar's menu item that opens another repository.
-pub(crate) const OPEN: &str = "git.choose-repository";
-
-pub(crate) fn remote_id(action: RemoteAction) -> &'static str {
-    match action {
-        RemoteAction::Fetch => "git.remote.fetch",
-        RemoteAction::Pull => "git.remote.pull",
-        RemoteAction::Push => "git.remote.push",
-    }
+/// What an entry of the window bar does.
+#[derive(Clone, PartialEq)]
+pub(crate) enum BarCommand {
+    /// Fetch, Pull or Push.
+    Remote(RemoteAction),
+    /// Show the diff in this layout.
+    Layout(DiffLayout),
+    /// The client's published effect.
+    Effect(GitClientEffect),
 }
 
 impl GitClientApp {
@@ -44,41 +35,56 @@ impl GitClientApp {
         if self.awaiting_repo {
             return WindowToolbar::default();
         }
+        let bar = &self.bar;
         let remote = self.can_run_remote();
         let mut actions: Vec<ToolbarAction> = RemoteAction::ALL
             .into_iter()
             .map(|action| {
-                ToolbarAction::new(remote_id(action), action.icon().name(), action.name())
-                    .enabled(remote)
+                bar.entry(
+                    action.icon().name(),
+                    action.name(),
+                    BarCommand::Remote(action),
+                )
+                .enabled(remote)
             })
             .collect();
+        let effect = |icon: &str, name: &str, effect: GitClientEffect| {
+            bar.entry(icon, t(name), BarCommand::Effect(effect))
+                .in_menu()
+        };
         // Every screen has a menu, so the views stand where they stood when
         // the screen changes.
         actions.push(
-            ToolbarAction::new(OPEN, "folder-open", t("git-open-title"))
-                .enabled(self.mode != RunMode::Past)
-                .in_menu(),
+            effect(
+                "folder-open",
+                "git-open-title",
+                GitClientEffect::ChooseRepository,
+            )
+            .enabled(self.mode != RunMode::Past),
         );
         if self.screen == Screen::Changes {
             let layout = self.diff_layout();
+            let unified = BarCommand::Layout(DiffLayout::Unified);
+            let split = BarCommand::Layout(DiffLayout::SideBySide);
             actions.extend([
-                ToolbarAction::new(UNIFIED, "list", t("git-diff-unified-name"))
+                bar.entry("list", t("git-diff-unified-name"), unified)
                     .on(layout == DiffLayout::Unified)
                     .in_menu(),
-                ToolbarAction::new(SPLIT, "columns-2", t("git-diff-split-name"))
+                bar.entry("columns-2", t("git-diff-split-name"), split)
                     .on(layout == DiffLayout::SideBySide)
                     .in_menu(),
-                ToolbarAction::new(SYNTAX, "code", t("git-syntax-name"))
-                    .on(self.settings.syntax_highlight)
-                    .in_menu(),
+                effect("code", "git-syntax-name", GitClientEffect::SyntaxHighlight)
+                    .on(self.settings.syntax_highlight),
                 // The two controls that make an unreadable diff readable sit
                 // beside the layout, not behind them in the palette.
-                ToolbarAction::new(WHITESPACE, "ruler", t("git-whitespace-name"))
-                    .on(self.diff_preference(|settings| settings.show_whitespace))
-                    .in_menu(),
-                ToolbarAction::new(WRAP, "arrow-up-down", t("git-wrap-name"))
-                    .on(self.diff_preference(|settings| settings.wrap_lines))
-                    .in_menu(),
+                effect(
+                    "ruler",
+                    "git-whitespace-name",
+                    GitClientEffect::ShowWhitespace,
+                )
+                .on(self.diff_preference(|settings| settings.show_whitespace)),
+                effect("arrow-up-down", "git-wrap-name", GitClientEffect::WrapLines)
+                    .on(self.diff_preference(|settings| settings.wrap_lines)),
             ]);
         }
         WindowToolbar {
@@ -140,9 +146,22 @@ impl GitClientApp {
         if self.awaiting_repo || self.confirm.is_some() {
             return;
         }
+        if let Some(command) = self.bar.pressed(event) {
+            self.run_bar_command(command);
+            return;
+        }
         match event {
             ToolbarEvent::ToggleSidebar if self.screen.has_list() => self.drawer.toggle(),
-            ToolbarEvent::Action { id } => self.run_bar_action(id),
+            ToolbarEvent::Action { id } => {
+                if let Some(screen) = Screen::ALL.into_iter().find(|screen| screen.target() == id) {
+                    let effect = match screen {
+                        Screen::Changes => GitClientEffect::ShowChanges,
+                        Screen::History => GitClientEffect::ShowHistory,
+                        Screen::Panels => GitClientEffect::ShowBranches,
+                    };
+                    self.dispatch_or(&effect, |app| app.switch_screen(screen));
+                }
+            }
             ToolbarEvent::Commit { text } if self.mode != RunMode::Past => {
                 self.dispatch_or(
                     &GitClientEffect::OpenRepository { path: text.clone() },
@@ -155,62 +174,25 @@ impl GitClientApp {
         }
     }
 
-    fn run_bar_action(&mut self, id: &str) {
-        if let Some(screen) = Screen::ALL.into_iter().find(|screen| screen.target() == id) {
-            let effect = match screen {
-                Screen::Changes => GitClientEffect::ShowChanges,
-                Screen::History => GitClientEffect::ShowHistory,
-                Screen::Panels => GitClientEffect::ShowBranches,
-            };
-            self.dispatch_or(&effect, |app| app.switch_screen(screen));
-            return;
-        }
-        if let Some(action) = RemoteAction::ALL
-            .into_iter()
-            .find(|action| remote_id(*action) == id)
-        {
-            if self.can_run_remote() {
-                self.apply_remote_action(action);
+    fn run_bar_command(&mut self, command: BarCommand) {
+        match command {
+            BarCommand::Remote(action) => {
+                if self.can_run_remote() {
+                    self.apply_remote_action(action);
+                }
             }
-            return;
-        }
-        match id {
-            OPEN if self.mode != RunMode::Past => {
-                self.dispatch_or(&GitClientEffect::ChooseRepository, |_| {});
-            }
-            UNIFIED | SPLIT => {
-                let want = if id == SPLIT {
-                    DiffLayout::SideBySide
-                } else {
-                    DiffLayout::Unified
-                };
+            BarCommand::Layout(want) => {
                 if self.diff_layout() != want {
                     self.dispatch_or(&GitClientEffect::DiffLayout, Self::toggle_diff_layout);
                 }
             }
-            SYNTAX => {
-                self.dispatch_or(
-                    &GitClientEffect::SyntaxHighlight,
-                    Self::toggle_syntax_highlight,
-                );
+            BarCommand::Effect(GitClientEffect::ChooseRepository) if self.mode == RunMode::Past => {
             }
-            WHITESPACE => self.dispatch_or(&GitClientEffect::ShowWhitespace, |app| {
-                let before = app.settings.show_whitespace;
-                if let Err(error) = app.change_preferences(|settings| {
-                    settings.show_whitespace = !before;
-                }) {
+            BarCommand::Effect(effect) => self.dispatch_or(&effect, |app| {
+                if let Some(Err(error)) = app.apply_diff_preference(&effect) {
                     app.last_error = Some(error);
                 }
             }),
-            WRAP => self.dispatch_or(&GitClientEffect::WrapLines, |app| {
-                let before = app.settings.wrap_lines;
-                if let Err(error) = app.change_preferences(|settings| {
-                    settings.wrap_lines = !before;
-                }) {
-                    app.last_error = Some(error);
-                }
-            }),
-            _ => {}
         }
     }
 

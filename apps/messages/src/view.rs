@@ -411,6 +411,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
         setup: setup.clone(),
         groups: groups.clone(),
         dispatcher: cx.dispatcher(),
+        actions: Rc::new(ui::framework::BarActions::new(cx.dispatcher())),
         link: Rc::clone(&link),
     };
     let content = Box::new(

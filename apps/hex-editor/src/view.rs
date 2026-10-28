@@ -157,6 +157,8 @@ pub struct HexView {
     // --- chrome ---
     /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
+    /// The window bar's toggle of the inspector.
+    inspector_entry: ui::framework::BarCommands<()>,
     /// The endianness strip in the inspector, and the pick.
     endian_group: ToggleGroup,
     endian_pick: Rc<Cell<Option<usize>>>,
@@ -244,6 +246,7 @@ impl HexView {
             drawer: SidebarDrawer::new()
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
+            inspector_entry: ui::framework::BarCommands::new(),
             endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
             endian_pick,
             empty: empty_state(),

@@ -1196,9 +1196,8 @@ mod tests {
         app.settle();
         let before = app.peer_document().get_heads();
         app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
-                id: "git.diff-layout.split".into(),
-            });
+            .press_window_action("Side-by-side diff")
+            .unwrap();
         app.settle();
         let layout = |app: &TestApp<GitClientShell>| app.settings::<Settings>().get().diff_layout;
         assert_eq!(layout(&app), DiffLayout::SideBySide);

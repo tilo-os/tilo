@@ -261,12 +261,17 @@ mod tests {
             .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
+    /// Press the window bar's entry named `name`.
+    fn press_named(app: &mut TestApp<MonitorShell>, name: &str) {
+        app.harness().press_window_action(name).unwrap();
+    }
+
     /// The update frequency the window bar's menu button names.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
         bar(app)
             .actions
             .into_iter()
-            .find(|action| action.id == crate::app::window_bar::CADENCE)
+            .find(|action| action.name.starts_with("Update frequency"))
             .expect("the bar holds the update frequency")
             .name
     }
@@ -293,7 +298,7 @@ mod tests {
         );
 
         let versions = app.versions().len();
-        press(&mut app, &crate::view::Cadence::Every(5000).item_id());
+        press_named(&mut app, "Every 5 seconds");
         assert_eq!(
             shown_interval(&mut app),
             "Update frequency: Every 5 seconds"
@@ -359,7 +364,7 @@ mod tests {
         assert_eq!(app.state().sort, SortKey::Name);
         assert!(app.state().ascending);
         assert_eq!(app.versions().len(), versions + 2);
-        press(&mut app, crate::app::window_bar::TREE);
+        press_named(&mut app, "Tree view");
         assert!(app.state().flat);
         assert!(app.undo());
         assert!(!app.state().flat);
@@ -457,7 +462,7 @@ mod tests {
         })
         .unwrap();
 
-        press(&mut app, crate::app::window_bar::TREE);
+        press_named(&mut app, "Tree view");
         assert!(
             !inspected(&mut app, child.id()),
             "the child is not selected"
@@ -600,7 +605,7 @@ mod tests {
         crate::sampler::reset_provider_read_count();
         let mut app = TestApp::<MonitorShell>::capture(None).unwrap();
         app.harness().relayout();
-        press(&mut app, crate::app::window_bar::TREE);
+        press_named(&mut app, "Tree view");
         let first = app.versions().first().unwrap().hash;
         assert!(app.past_version(&[first]).is_ok());
         assert_eq!(
@@ -617,7 +622,7 @@ mod tests {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "processes: {audit:?}");
-        press(&mut app, crate::app::window_bar::TREE);
+        press_named(&mut app, "Tree view");
         assert!(app.state().flat);
         let audit = app.harness().native_app_audit();
         assert!(audit.is_certified(), "flat processes: {audit:?}");

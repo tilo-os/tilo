@@ -5,6 +5,7 @@
 //! list ([`crate::view::ProcessesPane`] is its `Filterable`). The window
 //! draws no header row and the list no row of toggles of its own.
 
+use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarView, ToolbarViews, WindowToolbar};
 
 use super::{MonitorApp, Tab};
@@ -12,11 +13,16 @@ use crate::model::ProcessDataStatus;
 use crate::tree::SumMode;
 use crate::view::{Cadence, Request};
 
-pub(crate) const REFRESH: &str = "monitor.refresh";
-pub(crate) const CADENCE: &str = "monitor.cadence";
-pub(crate) const TREE: &str = "monitor.tree-mode";
-pub(crate) const SUM_CHILDREN: &str = "monitor.sum-children";
-pub(crate) const KERNEL_THREADS: &str = "monitor.kernel-threads";
+/// What an entry of the window bar does.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum BarCommand {
+    Refresh,
+    TreeMode,
+    SumChildren,
+    KernelThreads,
+    /// Sample at this cadence.
+    Cadence(Cadence),
+}
 
 impl Tab {
     /// The view's id in the window bar.
@@ -24,16 +30,6 @@ impl Tab {
         match self {
             Self::Processes => "monitor.view.processes",
             Self::Resources => "monitor.view.resources",
-        }
-    }
-}
-
-impl Cadence {
-    /// The choice's id in the bar's update frequency menu.
-    pub(crate) fn item_id(self) -> String {
-        match self {
-            Self::Every(ms) => format!("{CADENCE}.{ms}"),
-            Self::Paused => format!("{CADENCE}.paused"),
         }
     }
 }
@@ -53,6 +49,7 @@ impl MonitorApp {
                 .collect(),
             chosen: self.tab.view_id().to_owned(),
         });
+        let bar: &BarCommands<BarCommand> = &self.bar;
         let chosen = self.cadence();
         let cadences = Cadence::all()
             .into_iter()
@@ -62,13 +59,14 @@ impl MonitorApp {
                 } else {
                     "timer"
                 };
-                ToolbarAction::new(cadence.item_id(), icon, cadence.label()).on(cadence == chosen)
+                bar.entry(icon, cadence.label(), BarCommand::Cadence(cadence))
+                    .on(cadence == chosen)
             })
             .collect();
         let mut actions = vec![
-            ToolbarAction::new(REFRESH, "refresh", "Refresh"),
+            bar.entry("refresh", "Refresh", BarCommand::Refresh),
             ToolbarAction::new(
-                CADENCE,
+                "monitor.cadence",
                 "timer",
                 format!("Update frequency: {}", chosen.label()),
             )
@@ -78,16 +76,19 @@ impl MonitorApp {
             && self.model.process_status == ProcessDataStatus::Ready
             && self.shared.borrow().total > 0;
         if lists {
-            actions.push(ToolbarAction::new(TREE, "list-tree", "Tree view").on(self.tree_mode));
+            actions.push(
+                bar.entry("list-tree", "Tree view", BarCommand::TreeMode)
+                    .on(self.tree_mode),
+            );
             if self.tree_mode {
                 actions.push(
-                    ToolbarAction::new(SUM_CHILDREN, "layers", "Include children")
+                    bar.entry("layers", "Include children", BarCommand::SumChildren)
                         .on(self.sum_mode == SumMode::SumSubtree)
                         .in_menu(),
                 );
             }
             actions.push(
-                ToolbarAction::new(KERNEL_THREADS, "eye", "Kernel threads")
+                bar.entry("eye", "Kernel threads", BarCommand::KernelThreads)
                     .on(self.prefs.show_kernel_threads)
                     .in_menu(),
             );
@@ -106,25 +107,28 @@ impl MonitorApp {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
-            let ToolbarEvent::Action { id } = event else {
-                continue;
-            };
-            if let Some(cadence) = Cadence::all()
-                .into_iter()
-                .find(|cadence| cadence.item_id() == id)
-            {
-                self.set_cadence(cadence);
-                continue;
-            }
-            let request = match id.as_str() {
-                REFRESH => Request::Refresh,
-                TREE => Request::TreeMode(!self.tree_mode),
-                SUM_CHILDREN => Request::SumChildren(self.sum_mode != SumMode::SumSubtree),
-                KERNEL_THREADS => Request::KernelThreads(!self.prefs.show_kernel_threads),
-                view => match Tab::ALL.into_iter().find(|tab| tab.view_id() == view) {
-                    Some(tab) => Request::Tab(tab),
-                    None => continue,
-                },
+            let request = match self.bar.pressed(&event) {
+                Some(BarCommand::Cadence(cadence)) => {
+                    self.set_cadence(cadence);
+                    continue;
+                }
+                Some(BarCommand::Refresh) => Request::Refresh,
+                Some(BarCommand::TreeMode) => Request::TreeMode(!self.tree_mode),
+                Some(BarCommand::SumChildren) => {
+                    Request::SumChildren(self.sum_mode != SumMode::SumSubtree)
+                }
+                Some(BarCommand::KernelThreads) => {
+                    Request::KernelThreads(!self.prefs.show_kernel_threads)
+                }
+                None => {
+                    let ToolbarEvent::Action { id } = event else {
+                        continue;
+                    };
+                    match Tab::ALL.into_iter().find(|tab| tab.view_id() == id) {
+                        Some(tab) => Request::Tab(tab),
+                        None => continue,
+                    }
+                }
             };
             self.shared.borrow_mut().push(request);
         }

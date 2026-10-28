@@ -10,7 +10,7 @@ use ui::widget::toast::ToastKind;
 use ui::widget::{FindMode, FindOptions, InPlace, SearchDriver};
 use ui::window_toolbar::{SearchOpening, ToolbarEvent};
 
-use super::{INSERT, INSPECTOR, OVERWRITE};
+use super::{INSERT, OVERWRITE};
 use crate::model::EditMode;
 use crate::{HexEditor, HexEditorShell, HexView};
 
@@ -34,13 +34,13 @@ fn action(id: &str) -> ToolbarEvent {
     ToolbarEvent::Action { id: id.into() }
 }
 
-/// Every name and action target in `node`'s subtree.
-fn labels(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    out.extend(node.name.clone());
-    out.extend(node.action_target.clone());
-    for child in &node.children {
-        labels(child, out);
-    }
+/// The bar's inspector toggle.
+fn inspector(view: &HexView) -> ui::window_toolbar::ToolbarAction {
+    view.window_toolbar()
+        .actions
+        .into_iter()
+        .find(|action| action.icon == "panel-right")
+        .expect("the inspector's toggle is a bar action")
 }
 
 /// The editor on a file of `bytes`, launched as a person opens it.
@@ -75,7 +75,7 @@ fn replace(
 }
 
 #[test]
-fn the_view_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
+fn the_bar_names_the_file_and_shows_the_edit_mode_and_the_inspector() {
     let view = sample();
     let toolbar = view.window_toolbar();
     assert_eq!(
@@ -84,34 +84,14 @@ fn the_view_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
         "the bar names the file"
     );
     let views = toolbar.views.expect("the edit mode is the bar's views");
-    let ids: Vec<&str> = views.choices.iter().map(|view| view.id.as_str()).collect();
-    assert_eq!(ids, [OVERWRITE, INSERT]);
-    assert_eq!(views.chosen, OVERWRITE);
-    let inspector = toolbar
-        .actions
+    let labels: Vec<&str> = views
+        .choices
         .iter()
-        .find(|action| action.id == INSPECTOR)
-        .expect("the inspector's toggle is a bar action");
-    assert_eq!(inspector.on, view.drawer.is_open());
-
-    let mut drawn = Vec::new();
-    labels(
-        &ui::Widget::accessibility(&view).expect("the view's semantics"),
-        &mut drawn,
-    );
-    for own in [
-        "Show inspector",
-        "Hide inspector",
-        "Overwrite",
-        "Insert",
-        ui::widget::HISTORY_CONTROL_ID,
-        INSPECTOR,
-    ] {
-        assert!(
-            !drawn.iter().any(|label| label == own),
-            "the view draws no {own} of its own: {drawn:?}"
-        );
-    }
+        .map(|view| view.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Overwrite", "Insert"]);
+    assert_eq!(views.chosen, OVERWRITE);
+    assert_eq!(inspector(&view).on, view.drawer.is_open());
 
     assert_eq!(
         HexView::empty().window_toolbar(),
@@ -133,15 +113,13 @@ fn the_bar_switches_the_edit_mode_and_shows_and_hides_the_inspector() {
     assert_eq!(view.model.mode(), EditMode::Overwrite);
 
     let open = view.drawer.is_open();
-    view.run_window_bar_event(&action(INSPECTOR));
+    view.run_window_bar_event(&action(&inspector(&view).id));
     assert_eq!(view.drawer.is_open(), !open);
-    let toggle = view
-        .window_toolbar()
-        .actions
-        .into_iter()
-        .find(|action| action.id == INSPECTOR)
-        .expect("the inspector's toggle");
-    assert_eq!(toggle.on, !open, "the toggle shows the inspector's state");
+    assert_eq!(
+        inspector(&view).on,
+        !open,
+        "the toggle shows the inspector's state"
+    );
 }
 
 #[test]

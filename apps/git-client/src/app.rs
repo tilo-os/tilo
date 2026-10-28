@@ -352,6 +352,8 @@ pub struct GitClientApp {
     /// what collaborators see of it go through this, as do the effects the
     /// controls ask the host for.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
+    /// The window bar's entries, each carrying what it does.
+    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     mode: RunMode,
     opened: Option<String>,
     presented: bool,
@@ -550,6 +552,7 @@ impl GitClientApp {
             .with_placeholder(t("git-repository-path"));
         Self {
             dispatcher: None,
+            bar: ui::framework::BarCommands::new(),
             mode: RunMode::Live,
             opened: None,
             presented: false,

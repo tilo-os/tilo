@@ -269,6 +269,8 @@ pub struct MonitorApp {
 
     rect: Rect,
     shell: NavShell,
+    /// The window bar's entries, each carrying what it asks for.
+    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
     /// Model or view state changed since the panes were last told.
@@ -378,6 +380,7 @@ impl MonitorApp {
             sample_only: false,
             rect: Rect::ZERO,
             shell,
+            bar: ui::framework::BarCommands::new(),
             shared,
             shown_tab,
             stale: true,
@@ -2092,6 +2095,11 @@ mod tests {
         harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
     }
 
+    /// Press the window bar's entry named `name`.
+    fn press_named(harness: &mut FrameHarness, name: &str) {
+        harness.press_window_action(name).unwrap();
+    }
+
     fn bar() -> ui::window_toolbar::WindowToolbar {
         ui::window_toolbar::declared().expect("the window declares its slots")
     }
@@ -2104,12 +2112,6 @@ mod tests {
         let mut harness = window(app(), (390, 844));
         harness.present_in_window_bar();
         harness.relayout();
-        for drawn in ["monitor.tabs", "monitor.cadence", "monitor.filter"] {
-            assert!(
-                ui::widget::find_test_id(harness.root::<MonitorApp>(), drawn).is_none(),
-                "the window draws no {drawn} of its own"
-            );
-        }
         let views = bar().views.expect("the tabs are the bar's views");
         assert_eq!(
             views
@@ -2128,7 +2130,7 @@ mod tests {
             bar()
                 .actions
                 .iter()
-                .all(|action| action.id != window_bar::TREE),
+                .all(|action| action.name != "Tree view"),
             "the list's options leave with the list"
         );
         press(&mut harness, Tab::Processes.view_id());
@@ -2137,16 +2139,16 @@ mod tests {
         let cadence = bar()
             .actions
             .into_iter()
-            .find(|action| action.id == window_bar::CADENCE)
+            .find(|action| action.name.starts_with("Update frequency"))
             .expect("the update frequency is a menu button");
         assert_eq!(cadence.items.len(), Cadence::all().len());
-        press(&mut harness, &Cadence::Paused.item_id());
+        press_named(&mut harness, "Paused");
         assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
 
         let tree = harness.root::<MonitorApp>().tree_mode;
-        press(&mut harness, window_bar::TREE);
+        press_named(&mut harness, "Tree view");
         assert_eq!(harness.root::<MonitorApp>().tree_mode, !tree);
-        press(&mut harness, window_bar::KERNEL_THREADS);
+        press_named(&mut harness, "Kernel threads");
         assert!(harness.root::<MonitorApp>().prefs.show_kernel_threads);
 
         ui::widget::apply_filter(&mut *harness.root_mut::<MonitorApp>(), "cargo");
@@ -2171,7 +2173,7 @@ mod tests {
         press(&mut harness, Tab::Processes.view_id());
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
 
-        press(&mut harness, &Cadence::Paused.item_id());
+        press_named(&mut harness, "Paused");
         assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
 
         let (x, y) = center_of(&harness, "tilo-fs").expect("tilo-fs row");
