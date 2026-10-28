@@ -1905,8 +1905,8 @@ fn step_card(
     };
     let number = editor::step_number(steps, &step.id).unwrap_or(0);
     let title = format!("{number}. {}", editor::title(step, &input.catalog, steps));
-    let actions = step_actions(ui, draft_id, path, (index, count));
     let is_folded = folded(ui, draft_id, path);
+    let actions = step_actions(ui, draft_id, path, (index, count), !is_folded);
     let (body, nested) = step_fields(&at, step);
     // A folded step keeps its header, without the fields under it: its
     // fields and the steps inside it come back when it is opened.
@@ -1916,10 +1916,7 @@ fn step_card(
         ))
         .with_title_action(title, Box::new(fold_button(ui, draft_id, path, false)))
     } else {
-        Card::new(Box::new(body)).with_title_action(
-            title,
-            Box::new(actions.with_first(fold_button(ui, draft_id, path, true))),
-        )
+        Card::new(Box::new(body)).with_title_action(title, Box::new(actions))
     };
     let mut items: Vec<Element> = vec![Box::new(card)];
     if !is_folded {
@@ -2396,7 +2393,16 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
 }
 
 /// A step's own actions: move it up or down its block, or remove it.
-fn step_actions(ui: &Ui, draft_id: &Id, path: &str, (index, count): (usize, usize)) -> ActionGroup {
+/// What a person can do with a step from its header, in the order the
+/// buttons sit: move it within its block, remove it, and fold it away.
+fn step_actions(
+    ui: &Ui,
+    draft_id: &Id,
+    path: &str,
+    (index, count): (usize, usize),
+    folded: bool,
+) -> ActionGroup {
+    let fold = fold_button(ui, draft_id, path, folded);
     let step_button = |id: &str, icon: Icon, name: &str| {
         Button::icon_only(&format!("{id}-{path}"), icon, name).control_size(ControlSize::Small)
     };
@@ -2432,7 +2438,10 @@ fn step_actions(ui: &Ui, draft_id: &Id, path: &str, (index, count): (usize, usiz
             move |()| (draft.clone(), path.clone())
         }),
     );
-    ActionGroup::new(remove).secondary(up).secondary(down)
+    ActionGroup::new(fold)
+        .secondary(remove)
+        .secondary(up)
+        .secondary(down)
 }
 
 /// What a step is made of: its fields in a column, and the blocks inside it.
