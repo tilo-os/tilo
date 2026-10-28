@@ -2746,18 +2746,22 @@ impl Namespace {
             .into_iter()
             .filter(|c| self.reaches_root(c))
             .filter_map(|c| {
-                let name = self.name_of(&c)?;
+                // One read of the node object answers all three questions a
+                // listing asks about it; a listing reads each child once.
+                let obj = self.node(&c)?;
+                let name = read_name(&self.doc, &obj, "name")?;
+                let kind = str_at(&self.doc, &obj, "kind")
+                    .map_or(NodeKind::File, |k| NodeKind::from_str(&k));
                 // A record whose content is a symbolic link's target is
                 // listed as one, so `find` and `ls -l` see it as the kernel
                 // will report it in `getattr`.
-                let kind = if self
-                    .record_id_for_id(&c)
-                    .and_then(|record| self.posix_attrs(record))
-                    .is_some_and(|posix| posix.symlink)
-                {
-                    FileType::Symlink
-                } else {
-                    self.kind_of(&c).to_file_type()
+                let record = str_at(&self.doc, &obj, RECORD_ID_KEY)
+                    .and_then(|raw| Uuid::parse_str(&raw).ok())
+                    .map(FileRecordId)
+                    .and_then(|record| self.posix_attrs(record));
+                let kind = match (record, kind) {
+                    (Some(posix), _) if posix.symlink => FileType::Symlink,
+                    (_, kind) => kind.to_file_type(),
                 };
                 Some((c.clone(), name, kind))
             })
