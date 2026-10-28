@@ -376,11 +376,7 @@ pub use collab_types::presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
 /// and gives `None`.
 #[must_use]
 pub fn nearest_presence_hue(colour: Color) -> Option<PresenceHue> {
-    let source = Oklch::from_color(colour);
-    if source.c < 0.02 {
-        return None;
-    }
-    Some(PresenceHue::nearest_to_degrees(source.h))
+    PresenceHue::nearest_to_srgb(colour.r(), colour.g(), colour.b())
 }
 
 /// How much of a person's chroma their face keeps while they are idle or

@@ -62,20 +62,3 @@ impl RecordStore {
         }
     }
 }
-
-impl RecordId {
-    /// Whether a room's hosts send this record to a device only once it
-    /// asks for it: a [`Self::part`] of a chain (the head too, which a
-    /// device that joined before it started asks for) or an
-    /// [`Self::on_demand`] record. Opening one reads what this device holds
-    /// or asks for it, and never waits for it to arrive
-    /// ([`super::RecordOpenError::Arriving`]).
-    #[must_use]
-    pub fn arrives_on_demand(&self) -> bool {
-        self.chain_part().is_some()
-            || self
-                .0
-                .strip_prefix("derived:on-demand@")
-                .is_some_and(|base| !base.is_empty())
-    }
-}

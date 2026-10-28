@@ -142,7 +142,9 @@ pub(crate) mod application_test_support;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app;
-pub mod app_surface;
+/// The app surface an app's changes are decided against, kept with the collab
+/// client that names it on every signed op.
+pub use ::collaboration::app_surface;
 pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
