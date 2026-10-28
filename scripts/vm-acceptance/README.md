@@ -48,7 +48,8 @@ guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 `tools/ci/builder-vm.sh` runs the whole thing on the rcargo builder from this worktree, with
 nothing heavy on this machine. The builder has no loop devices or root, so the disk is
 installed the way `os-dev-disk` installs it (`tools/ci/publish/os-dev-disk.sh`), but inside a
-worker VM booted from main's newest published dev disk, with an empty work disk beside it:
+worker VM booted from main's newest published dev disk, with a work disk beside it. The image
+has the Browser and Mail, as CI and releases build it (`TILO_WITH_BROWSER=0` leaves them out):
 
 ```bash
 tools/ci/builder-vm.sh image        # the dev image, built with the worktree's rcargo build image
@@ -63,12 +64,17 @@ tools/ci/builder-vm.sh clean        # this worktree's run containers and run scr
 - **Where things live.** Everything stays under `/srv/rcargo/scratch/builder-vm` on the
   builder: `store` (the image build's podman store), `out/<worktree>` (the OS build's
   output and caches), `images/<digest>` (the image's OCI layout), `disks/<digest>` (its
-  disk, with its install log), `base/<tag>` (the published disk the worker boots) and
-  `runs/<run>` (each run's reports).
+  disk, with its install log), `base/<tag>` (the published disk the worker boots),
+  `worker` (the worker's work disk) and `runs/<run>` (each run's reports).
 - **What makes a re-run warm.** The image build runs in a container of its own (rcargo
   stops idle worktree containers and prunes its shared store, which a long build does not
   survive), with a podman store and the OS build's cargo and sccache caches that outlive
-  it. A disk is kept per image digest, and the VM host image per package list.
+  it. The base is rebuilt only when a file its build reads changed
+  (`os/dev/base-input-paths.py`), so a change to the harness, a CI script or a doc reuses it.
+  A disk is kept per image digest, and the VM host image per package list. The worker's work
+  disk keeps the last disk's image in its podman stores and local registry, and the last disk
+  itself as the seed of the next (`disk-image.sh --seed-raw`): a new image moves and installs
+  only the layers the last one lacked. One disk step uses it at a time.
 - **The VM host containers.** They come from Fedora plus `tools/ci/packages/
   vm-acceptance.txt`, with `/dev/kvm` passed through. Each shard runs
   `tools/ci/vm-acceptance.sh` in a container of its own (`builder-vm-guest.sh`), with its
