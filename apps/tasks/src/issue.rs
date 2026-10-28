@@ -98,6 +98,7 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                                 Text::new("tasks-issue-description").with_role(TextRole::Heading),
                             ))
                             .push(body)
+                            .push(about(cx, id))
                             .push(sub_issues(cx, id, nav))
                             .push(links(cx, id))
                             .push(run(cx, id))
@@ -429,6 +430,60 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 /// that keeps it; the way to write a note for it in Notes, which links the
 /// note here; and the way to link a note already written, picked by its
 /// title in the system palette.
+/// What the issue is about, when it was asked about something: the resource
+/// the request named and the app it is in, as the desktop carried them
+/// ([`tilo_actions::SelectionSubject`]). It is what the agent starts from,
+/// so a person reading the task sees the same context their agent was given,
+/// whether the request was about a selection or about the view of an app
+/// they asked from.
+fn about(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let subject = cx.value({
+        let id = id.clone();
+        move |tracker: &Tracker| {
+            tracker
+                .issues
+                .get(&id)
+                .and_then(|issue| issue.subject.clone())
+                .and_then(|subject| {
+                    serde_json::from_value::<tilo_actions::SelectionSubject>(subject).ok()
+                })
+        }
+    });
+    cx.switch(&subject, |cx, subject| {
+        let Some(subject) = subject else {
+            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
+        };
+        let resource = &subject.resource;
+        let reference = ui::tilo_reference::ResourceRef::whole(
+            resource.kind.clone(),
+            resource.id.clone(),
+            resource.label.clone(),
+        );
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(Box::new(
+                Text::new("tasks-about").with_role(TextRole::Heading),
+            ))
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(Text::new(&subject.app_label).dimmed()))
+                    .push(Box::new(cx.reference(&subject.app_id, None, &reference))),
+            ));
+        if let Some(excerpt) = subject.anchor.excerpt.as_deref()
+            && !excerpt.trim().is_empty()
+        {
+            column = column.push(Box::new(
+                Text::new(excerpt.trim()).with_role(TextRole::Caption),
+            ));
+        }
+        Box::new(column) as Element
+    })
+}
+
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -656,13 +711,13 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         }
     });
     let people = cx.people();
-    let list = cx.switch(&messages, move |_, messages| {
+    let list = cx.switch(&messages, move |cx, messages| {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related);
         for message in messages {
-            column = column.push(message_row(&people, message));
+            column = column.push(message_row(cx, &people, message));
         }
         Box::new(column) as Element
     });
@@ -717,7 +772,7 @@ fn take(draft: &LocalState<String>) -> String {
     text
 }
 
-fn message_row(people: &ui::framework::People, message: &Message) -> Element {
+fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {
     let author = if message.by_agent {
         message.author.trim_start_matches("agent:").to_owned()
     } else {
@@ -739,6 +794,31 @@ fn message_row(people: &ui::framework::People, message: &Message) -> Element {
             heading = heading.push(Box::new(
                 Badge::text(tr("tasks-message-from-run")).style(ChipStyle::Tinted(Tone::Info)),
             ));
+        }
+        // A lookup is the run having read this, through system search under
+        // its own permissions: the resource reads as the chip a link does, so
+        // the person follows it where the run went without asking again.
+        MessageKind::Lookup => {
+            heading = heading.push(Box::new(
+                Badge::text(tr("tasks-message-lookup")).style(ChipStyle::Neutral),
+            ));
+            let Some(resource) =
+                serde_json::from_str::<ui::tilo_reference::ResourceAt>(&message.lookup).ok()
+            else {
+                return Box::new(heading) as Element;
+            };
+            return Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(ui::tokens::Rhythm::Tight)
+                    .push(Box::new(heading))
+                    .push(Box::new(cx.reference(
+                        &resource.app,
+                        resource.record.as_deref(),
+                        &resource.reference,
+                    ))),
+            );
         }
     }
     Box::new(

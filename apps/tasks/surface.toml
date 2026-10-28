@@ -40,6 +40,7 @@ fields = [
   { path = "issues.*.comments.*.text", type = "String", readonly = true },
   { path = "issues.*.comments.*.kind", type = "MessageKind", readonly = true },
   { path = "issues.*.comments.*.run", type = "u64", readonly = true },
+  { path = "issues.*.comments.*.lookup", type = "String", readonly = true },
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
   { path = "issues.*.author", type = "String", readonly = true },
   { path = "issues.*.created_ms", type = "i64", readonly = true },
@@ -400,3 +401,11 @@ params = [
   { name = "tasks", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { assignee = { type = ["string", "null"] }, author = { type = "string" }, created_ms = { type = "integer" }, instruction = { type = "string" }, messages = { type = "array", items = { type = "object", additionalProperties = false, properties = { at_ms = { type = "integer" }, author = { type = "string" }, by_agent = { type = "boolean" }, text = { type = "string" } }, required = ["author", "text"] } }, status = { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }, task = { type = "string" }, title = { type = "string" } }, required = ["task", "title", "status"] } } },
 ]
 
+[[resources.verbs]]
+id = "record-read"
+kind = "undoable"
+writes = ["record", "issues.*"]
+params = [
+  { name = "issue", required = true, schema = { type = "string" } },
+  { name = "resource", required = true, schema = { type = "object", pick = "resource", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
+]
