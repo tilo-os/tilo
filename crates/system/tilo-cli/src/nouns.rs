@@ -187,7 +187,6 @@ pub const PACKAGE: &[Verb] = &[
         &["unpack"],
         "Extract a .tapp's files and manifest",
     ),
-    packaging("keygen", &["keygen"], "Make a publisher identity"),
     packaging("attest", &["attest"], "Vouch for a package as an attestor"),
     packaging("thin", &["thin"], "Write a .tapp's metadata-only form"),
     packaging(

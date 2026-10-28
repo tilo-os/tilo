@@ -216,8 +216,8 @@ case $command in
     # Before anything is packaged: the registry accepts Tilo's apps only from the publisher its
     # entries already name, so an identity that signs as another key would fail at submit, after
     # the tapps were signed and uploaded under it.
-    publisher=$("$built/compiled/release/tilo-app-package" publisher-key --identity "$app_identity") \
-      || die "TAPP_PUBLISHER_IDENTITY is no identity tilo-app-package reads (it takes {\"secret_key_hex\": ...})"
+    publisher=$("$built/compiled/release/tilo-runtime-bundle" key pubkey --identity "$app_identity") \
+      || die "TAPP_PUBLISHER_IDENTITY is no publisher key file (it takes {\"secret_key_hex\": ...})"
     known=$(curl --fail --silent --show-error --max-time 30 --retry 3 "$registry_url/entries" \
       | jq -r '[.entries[] | select(.package_id | startswith("so.tilo.")) | .publisher_pubkey_hex] | unique | join(" ")') \
       || die "could not read $registry_url/entries to check the publisher"

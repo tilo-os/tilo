@@ -18,6 +18,13 @@ fn bin_path() -> PathBuf {
     tilo_test_env::package_binary!("tilo-app-package")
 }
 
+/// Write a publisher key file for `seed` at `path`; returns its public half.
+fn write_key(path: &std::path::Path, seed: u8) -> String {
+    let key = registry_client::key::SigningKey::from_bytes(&[seed; 32]);
+    std::fs::write(path, registry_client::key::encode(&key)).unwrap();
+    registry_client::key::public_hex(&key)
+}
+
 /// Tiny manifest fixture — same shape as the tilo-app-package fixtures
 /// module but inlined here so the CLI test stays self-contained.
 fn sample_manifest_with(identity_hex: &str) -> String {
@@ -235,11 +242,7 @@ fn cli_pack_inspect_unpack_and_verify_round_trip() {
 fn cli_entry_emits_a_server_acceptable_signed_change() {
     let workdir = tempfile::tempdir().unwrap();
     let identity = workdir.path().join("publisher.json");
-    let keygen = Command::new(bin_path())
-        .args(["keygen", "--out", identity.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(keygen.status.success(), "keygen: {keygen:?}");
+    write_key(&identity, 1);
 
     let payload_dir = workdir.path().join("payload");
     std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
@@ -474,7 +477,7 @@ fn run(args: &[&str]) -> std::process::Output {
 fn cli_packs_a_macos_build_and_emits_its_registry_request() {
     let workdir = tempfile::tempdir().unwrap();
     let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
-    run(&["keygen", "--out", &path("publisher.json")]);
+    write_key(&workdir.path().join("publisher.json"), 2);
     std::fs::write(
         path("manifest.toml"),
         sample_manifest_with(&"00".repeat(32)),
@@ -547,7 +550,7 @@ fn cli_packs_a_macos_build_and_emits_its_registry_request() {
 fn cli_splits_a_runtime_and_describes_its_thin_form_with_the_objects() {
     let workdir = tempfile::tempdir().unwrap();
     let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
-    run(&["keygen", "--out", &path("publisher.json")]);
+    write_key(&workdir.path().join("publisher.json"), 3);
     std::fs::write(
         path("manifest.toml"),
         format!(
@@ -659,18 +662,8 @@ impl AttestFixture {
         let dir = tempfile::tempdir().unwrap();
         let publisher = dir.path().join("publisher.json");
         let attestor = dir.path().join("attestor.json");
-        let generate = |path: &std::path::Path| {
-            let output = Command::new(bin_path())
-                .arg("keygen")
-                .arg("--out")
-                .arg(path)
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
-        let public = generate(&publisher);
-        let attestor_public = generate(&attestor);
+        let public = write_key(&publisher, 4);
+        let attestor_public = write_key(&attestor, 5);
         let manifest = dir.path().join("manifest.toml");
         std::fs::write(&manifest, sample_manifest_with(&public)).unwrap();
         let payload = dir.path().join("payload");
@@ -946,7 +939,7 @@ fn cli_compress_writes_a_twin_that_decompresses_to_the_package() {
 fn bot_entry_signs_the_canonical_program() {
     let dir = tempfile::tempdir().unwrap();
     let identity = dir.path().join("publisher.json");
-    run(&["keygen", "--out", identity.to_str().unwrap()]);
+    write_key(&identity, 6);
     let program = serde_json::json!({
         "id": "echo", "name": "Echo",
         "steps": [{"id": "post", "step": "invoke",

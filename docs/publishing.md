@@ -25,16 +25,17 @@ each one can still change.
 Service on Linux, the login Keychain on macOS, or sealed files in
 `$TILO_SECRETS_DIR` on a machine without one) and prints its public half. It
 never replaces an existing key. Back it up with `tilo-app keys export`, which
-prints the secret seed: the key is your identity as a publisher, and an update
-signed by any other key is refused.
+prints it as a key file, `{"secret_key_hex": ...}`: the key is your identity as
+a publisher, and an update signed by any other key is refused.
 
 The same key signs your packages and the registry requests `tilo-app publish`
 sends: `tilo-app package` uses it whenever it can find it, and a throwaway key
 otherwise (`--identity FILE` picks another). `tilo-app keys show` prints the
 public key and the proof line described below. Every command that needs the
-key reads `--key FILE` (a `{"secret_key_hex": ...}` identity file or the bare
-hex seed), then `$TILO_PUBLISHER_KEY` (the hex seed, which is how CI passes
-it), then the secret store.
+key reads `--key FILE` (a key file), then `$TILO_PUBLISHER_KEY` (the key
+file's contents, which is how CI passes it), then the secret store. A key file
+for a build that never touches a secret store comes from
+`tilo package runtime key generate --out FILE`.
 
 On Tilo OS, the App Publisher app does the same with buttons and actions:
 it creates the key, shows the public key and proof line, copies the key for a

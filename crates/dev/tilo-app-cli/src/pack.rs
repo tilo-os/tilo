@@ -9,26 +9,13 @@ use tilo_app_package::{
     BlobSource, DiscardBlobs, Manifest, SigningIdentity, Verification, pack, verify,
 };
 
-/// Reads a signing identity file, `{"secret_key_hex": "<32-byte seed>"}`: the
-/// format `tilo-app-package keygen` writes.
+/// Reads a publisher key file (see [`registry_client::key`]).
 ///
 /// # Errors
 ///
-/// Returns an error when the file cannot be read or is not an identity.
+/// Returns an error when the file cannot be read or is not a key file.
 pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("reading identity {}", path.display()))?;
-    let file: serde_json::Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parsing identity {}", path.display()))?;
-    let seed_hex = file
-        .get("secret_key_hex")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow!("{} has no secret_key_hex", path.display()))?;
-    let seed: [u8; 32] = hex::decode(seed_hex.trim())
-        .context("identity secret key is not hex")?
-        .try_into()
-        .map_err(|_| anyhow!("identity secret key must be 32 bytes"))?;
-    Ok(SigningIdentity::from_seed(&seed))
+    registry_client::key::load(path).map(SigningIdentity::from_signing_key)
 }
 
 /// What [`pack_manifest`] produced.
