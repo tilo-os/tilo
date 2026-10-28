@@ -1676,6 +1676,7 @@ fn shot_scenarios_compose() {
         AuthScenario::PersonalServiceDown,
         AuthScenario::PersonalPasscodeExpired,
         AuthScenario::PersonalSessions,
+        AuthScenario::PersonalPin,
     ] {
         let mut app = GreeterApp::for_shot(scenario);
         layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
@@ -1895,4 +1896,89 @@ fn the_accessibility_toggles_ask_the_host_once() {
     let mut host = ui::App::new(ui::State::new(), Box::new(greeter));
     assert!(host.apply_accessibility_request());
     assert!(host.high_contrast());
+}
+
+/// The on-screen keyboard as the laid-out screen shows it, no keyboard
+/// being attached.
+fn shown_keyboard(app: &mut GreeterApp) -> ui::passcode_keyboard::PasscodeKeyboard {
+    app.keyboards = Some(false);
+    layout_at_with_theme(app, (1280.0, 800.0), &Theme::dark());
+    app.touch_keyboard.keyboard.get()
+}
+
+/// Where the passcode field and the on-screen keyboard are on the
+/// laid-out screen.
+fn field_and_keys(app: &GreeterApp) -> (Option<Rect>, Option<Rect>) {
+    let card = app.composed.element().expect("composed");
+    (
+        passcode_field_rect(card),
+        rect_of(card, "greeter.touch-keyboard"),
+    )
+}
+
+#[test]
+fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password() {
+    let mut pin = GreeterApp::for_shot(AuthScenario::PersonalPin);
+    assert!(shown_keyboard(&mut pin).shows_pad());
+    let field = passcode_node(pin.composed.element().expect("composed"));
+    assert!(
+        field
+            .children
+            .iter()
+            .any(|child| child.name.as_deref() == Some("PIN")),
+        "the field asks for the PIN by name: {field:?}"
+    );
+
+    let mut password = GreeterApp::for_shot(AuthScenario::Personal);
+    assert!(!shown_keyboard(&mut password).shows_pad());
+
+    // At boot the supervisor's list says, and choosing another person
+    // opens their keyboard.
+    let (_supervisor, link) = boot::Link::pair().unwrap();
+    let mut app = GreeterApp::for_boot(BootLink::new(link), false);
+    let person = |uid, name: &str, secret| boot::Person {
+        uid,
+        name: name.into(),
+        display_name: name.into(),
+        secret,
+    };
+    app.boot_message(ToGreeter::People {
+        people: vec![
+            person(1000, "ada", boot::SecretKind::Pin),
+            person(1001, "ben", boot::SecretKind::Password),
+        ],
+        highlighted: 0,
+    });
+    assert!(shown_keyboard(&mut app).shows_pad());
+    app.boot_message(ToGreeter::Ask {
+        person: 1,
+        note: Note::None,
+        several: true,
+    });
+    assert!(!shown_keyboard(&mut app).shows_pad());
+}
+
+#[test]
+fn switching_between_the_pad_and_the_letters_keeps_the_card_in_place() {
+    use ui::passcode_keyboard::PasscodeKey;
+    let mut app = GreeterApp::for_shot(AuthScenario::PersonalPin);
+    let mut keyboard = shown_keyboard(&mut app);
+    let placed = field_and_keys(&app);
+    assert!(placed.0.is_some() && placed.1.is_some(), "{placed:?}");
+
+    keyboard.press(PasscodeKey::Letters);
+    app.touch_keyboard.keyboard.set(keyboard);
+    assert!(
+        !shown_keyboard(&mut app).shows_pad(),
+        "a PIN may have letters"
+    );
+    assert_eq!(field_and_keys(&app), placed);
+
+    keyboard.press(PasscodeKey::Symbols);
+    app.touch_keyboard.keyboard.set(keyboard);
+    assert!(
+        shown_keyboard(&mut app).shows_pad(),
+        "?123 comes back to the pad"
+    );
+    assert_eq!(field_and_keys(&app), placed);
 }

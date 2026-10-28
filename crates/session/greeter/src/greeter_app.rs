@@ -529,6 +529,23 @@ pub enum AuthScenario {
     /// A machine with three accounts: the remembered one is chosen and the
     /// others are listed to switch to.
     Accounts,
+    /// Personal-device form for a person whose secret is a PIN: the field
+    /// asks for it by name, and the on-screen keyboard is a number pad.
+    PersonalPin,
+}
+
+/// Two installed sessions, for a shot whose footer offers the choice.
+fn shot_sessions_with_a_choice() -> Vec<Session> {
+    vec![
+        Session {
+            name: "Tilo".to_string(),
+            argv: vec!["/usr/libexec/tilo-session".to_string()],
+        },
+        Session {
+            name: "GNOME".to_string(),
+            argv: vec!["/usr/bin/gnome-session".to_string()],
+        },
+    ]
 }
 
 /// Recognise the deliberately small, machine-readable-looking portion of
@@ -647,6 +664,10 @@ pub struct GreeterApp {
     /// Account-specific enrollment resolver. Production calls `fprintd-list`;
     /// a function pointer keeps multi-account routing deterministic in tests.
     fingerprint_probe: fn(&str) -> bool,
+    /// Whose secret is a PIN and whose a password, as `tilo-authd` keeps it
+    /// ([`crate::handoff::secret_kind`]); a person not here is asked for a
+    /// password. At boot the supervisor's list says instead.
+    secret_kinds: std::collections::HashMap<String, boot::SecretKind>,
     /// Process-local only. Passcode text never enters Automerge, persistence,
     /// presence, diagnostics, or peer sync and is zeroized after every attempt.
     password_buffer: Arc<Mutex<String>>,
@@ -815,6 +836,14 @@ impl GreeterApp {
             chosen.and_then(|index| users.get(index).cloned()),
             fingerprint,
         );
+        let socket = std::path::Path::new(crate::handoff::DEFAULT_SOCKET);
+        app.secret_kinds = users
+            .iter()
+            .filter_map(|user| {
+                crate::handoff::secret_kind(socket, &user.username)
+                    .map(|kind| (user.username.clone(), kind))
+            })
+            .collect();
         app.users = users;
         app.device = DeviceStatus::read();
         if let Some(name) = crate::handoff::pending_sign_in(
@@ -930,6 +959,7 @@ impl GreeterApp {
             login_user,
             fingerprint,
             fingerprint_probe: fingerprint_offered,
+            secret_kinds: std::collections::HashMap::new(),
             password_buffer: Arc::new(Mutex::new(String::new())),
             auth_session: None,
             challenge_sequence: Arc::new(AtomicU64::new(1)),
@@ -1051,16 +1081,7 @@ impl GreeterApp {
             FingerprintAvailability::Enrolled
         };
         let sessions = if scenario == AuthScenario::PersonalSessions {
-            vec![
-                Session {
-                    name: "Tilo".to_string(),
-                    argv: vec!["/usr/libexec/tilo-session".to_string()],
-                },
-                Session {
-                    name: "GNOME".to_string(),
-                    argv: vec!["/usr/bin/gnome-session".to_string()],
-                },
-            ]
+            shot_sessions_with_a_choice()
         } else {
             sessions
         };
@@ -1081,6 +1102,10 @@ impl GreeterApp {
             | AuthScenario::Personal
             | AuthScenario::PersonalNoFingerprint
             | AuthScenario::PersonalSessions => {}
+            AuthScenario::PersonalPin => {
+                app.secret_kinds
+                    .insert("kai".to_owned(), boot::SecretKind::Pin);
+            }
             AuthScenario::Accounts => {
                 app.users = vec![
                     person("ada", "Ada Lovelace"),
@@ -1313,7 +1338,7 @@ impl GreeterApp {
                 FieldRole::Secret,
                 t(if challenge {
                     "greeter-auth-response"
-                } else if self.boot_secret() == Some(boot::SecretKind::Pin) {
+                } else if self.secret_is_pin() {
                     "greeter-pin"
                 } else {
                     "greeter-passcode"
@@ -1825,6 +1850,7 @@ impl GreeterApp {
             Stack::column(s.s2, {
                 let mut column = vec![view, self.build_footer(busy, theme)];
                 if self.shows_touch_keyboard() {
+                    self.fit_touch_keyboard_to_secret();
                     column.push(Box::new(touch_keyboard::TouchKeyboard::new(
                         self.touch_keyboard.clone(),
                     )));

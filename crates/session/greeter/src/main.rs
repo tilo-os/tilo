@@ -218,7 +218,7 @@ fn shot_displays(spec: &str) -> Result<greeter::output_scale::Arrangement, Strin
 }
 
 /// Every `--scenario` name and the login-card state it captures.
-const SCENARIOS: [(&str, AuthScenario); 22] = [
+const SCENARIOS: [(&str, AuthScenario); 23] = [
     ("form", AuthScenario::Form),
     ("error", AuthScenario::Error),
     ("authenticating", AuthScenario::Authenticating),
@@ -256,6 +256,7 @@ const SCENARIOS: [(&str, AuthScenario); 22] = [
         AuthScenario::PersonalRepeatedError,
     ),
     ("accounts", AuthScenario::Accounts),
+    ("personal-pin", AuthScenario::PersonalPin),
 ];
 
 /// The login-card state a `--scenario` name captures; an unknown name's error
@@ -307,6 +308,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
+        AuthScenario::PersonalPin => Some(("kai", "2580")),
         _ => Some(("kai", "hunter2")),
     }
 }

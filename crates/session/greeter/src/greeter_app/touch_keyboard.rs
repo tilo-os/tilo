@@ -7,12 +7,17 @@
 //! A key is the same size and in the same place for a finger as for the
 //! pointer: the keyboard's layout depends on the screen and the theme
 //! alone, and a tap reaches it as the pointer press the toolkit makes of it.
+//!
+//! A PIN opens the number pad, a password the letters; either switches to
+//! the other. Each key is a button to the screen reader, named as it types
+//! or by what it does, row by row.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use ui::passcode_keyboard::{PasscodeInput, PasscodeKeyboard};
+use ui::a11y::{AccessNode, AccessState, Action, Role};
+use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -23,6 +28,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;
 
 use super::AuthPhase;
+use crate::i18n::t;
 
 impl super::GreeterApp {
     /// Decide whether a keyboard is attached by asking the kernel
@@ -45,6 +51,18 @@ impl super::GreeterApp {
                 .contains(ui::InputDevice::Keyboard)
         });
         !keyboard || self.environment.modality == ui::InputModality::Touch
+    }
+
+    /// Open the keyboard the chosen person's secret wants: the number pad
+    /// for a PIN, the letters for a password. A keyboard already for that
+    /// kind of secret stays on the layer it is on.
+    pub(super) fn fit_touch_keyboard_to_secret(&self) {
+        let pin = self.secret_is_pin();
+        if self.touch_keyboard.keyboard.get().is_for_pin() != pin {
+            self.touch_keyboard
+                .keyboard
+                .set(PasscodeKeyboard::for_secret(pin));
+        }
     }
 
     /// Type what was pressed on the on-screen keyboard into the passcode, as
@@ -142,10 +160,16 @@ impl TouchKeyboard {
     }
 
     fn press_at(&self, point: Point) -> bool {
-        let mut keyboard = self.shared.keyboard.get();
+        let keyboard = self.shared.keyboard.get();
         let Some(key) = keyboard.key_at(self.rect, self.metrics.0, self.metrics.1, point) else {
             return false;
         };
+        self.press(key);
+        true
+    }
+
+    fn press(&self, key: PasscodeKey) {
+        let mut keyboard = self.shared.keyboard.get();
         let typed = keyboard.press(key);
         if keyboard != self.shared.keyboard.get() {
             self.shared.keyboard.set(keyboard);
@@ -154,7 +178,32 @@ impl TouchKeyboard {
         if let Some(typed) = typed {
             self.shared.typed.borrow_mut().push(typed);
         }
-        true
+    }
+}
+
+/// What the screen reader calls `key` on `keyboard`: the character it
+/// types, or what it does.
+fn key_name(keyboard: PasscodeKeyboard, key: PasscodeKey) -> String {
+    if let Some(character) = keyboard.character(key) {
+        return character;
+    }
+    t(match key {
+        PasscodeKey::Shift => "greeter-key-shift",
+        PasscodeKey::Symbols if keyboard.is_for_pin() => "greeter-key-numbers",
+        PasscodeKey::Symbols => "greeter-key-symbols",
+        PasscodeKey::Letters => "greeter-key-letters",
+        PasscodeKey::Space => "greeter-key-space",
+        PasscodeKey::Backspace => "greeter-key-delete",
+        PasscodeKey::Enter | PasscodeKey::Char(_) => "greeter-key-enter",
+    })
+}
+
+/// The identity a key keeps for the screen reader across layers and
+/// relayouts: what it is, not where it sits.
+fn key_id(key: PasscodeKey) -> String {
+    match key {
+        PasscodeKey::Char(c) => format!("char:{c}"),
+        other => format!("{other:?}"),
     }
 }
 
@@ -239,6 +288,54 @@ impl Widget for TouchKeyboard {
         self.dirty.get()
     }
 
+    /// The keys as buttons, row by row and left to right, which is the
+    /// order the screen reader walks them in.
+    fn accessibility(&self) -> Option<AccessNode> {
+        let keyboard = self.shared.keyboard.get();
+        let keys = keyboard
+            .layout(self.rect, self.metrics.0, self.metrics.1)
+            .into_iter()
+            .map(|(key, rect)| {
+                AccessNode::new(Role::Button)
+                    .with_name(key_name(keyboard, key))
+                    .with_interface_name(true)
+                    .with_hashed_key(key_id(key))
+                    .with_bounds(rect)
+                    .with_state(AccessState::new().focusable(true))
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("greeter-keyboard"))
+                .with_interface_name(true)
+                .with_children(keys)
+                .with_keyed_action_routes("greeter.touch-keyboard"),
+        )
+    }
+
+    /// The screen reader presses a key as a tap would.
+    fn perform_action(
+        &mut self,
+        action: &Action,
+        key_path: &[u64],
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        let ([key], Action::Activate) = (key_path, action) else {
+            return false;
+        };
+        let keyboard = self.shared.keyboard.get();
+        let Some((pressed, _)) = keyboard
+            .layout(self.rect, self.metrics.0, self.metrics.1)
+            .into_iter()
+            .find(|(candidate, _)| ui::a11y::hash_key(&key_id(*candidate)) == *key)
+        else {
+            return false;
+        };
+        self.press(pressed);
+        true
+    }
+
     fn name(&self) -> &'static str {
         "TouchKeyboard"
     }
@@ -258,7 +355,14 @@ mod tests {
     use ui::passcode_keyboard::PasscodeKey;
 
     fn laid_out(theme: &Theme) -> TouchKeyboard {
-        let mut keyboard = TouchKeyboard::new(Shared::default());
+        laid_out_for(theme, PasscodeKeyboard::default())
+    }
+
+    fn laid_out_for(theme: &Theme, start: PasscodeKeyboard) -> TouchKeyboard {
+        crate::i18n::ensure();
+        let shared = Shared::default();
+        shared.keyboard.set(start);
+        let mut keyboard = TouchKeyboard::new(shared);
         keyboard.metrics = metrics(theme);
         keyboard.rect = Rect::new(
             0.0,
@@ -305,5 +409,96 @@ mod tests {
                 PasscodeInput::Enter,
             ]
         );
+    }
+
+    /// What the screen reader says for each key, in the order the keyboard
+    /// lists them to it.
+    fn spoken_keys(keyboard: &TouchKeyboard) -> Vec<String> {
+        keyboard
+            .accessibility()
+            .expect("the keyboard is accessible")
+            .children
+            .iter()
+            .inspect(|node| assert_eq!(node.role, Role::Button))
+            .map(|node| node.name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn the_pad_taps_digits_and_its_letters_key_opens_the_letters_and_back() {
+        let theme = Theme::dark();
+        let keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
+        for key in [
+            PasscodeKey::Char('2'),
+            PasscodeKey::Letters,
+            PasscodeKey::Char('k'),
+            PasscodeKey::Symbols,
+            PasscodeKey::Char('0'),
+            PasscodeKey::Enter,
+        ] {
+            assert!(keyboard.press_at(centre_of(&keyboard, key)), "{key:?}");
+        }
+        assert!(keyboard.shared.keyboard.get().shows_pad());
+        assert_eq!(
+            *keyboard.shared.typed.borrow(),
+            [
+                PasscodeInput::Text("2".into()),
+                PasscodeInput::Text("k".into()),
+                PasscodeInput::Text("0".into()),
+                PasscodeInput::Enter,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_screen_reader_names_every_key_row_by_row_and_presses_it() {
+        let theme = Theme::dark();
+        let mut keyboard = laid_out_for(&theme, PasscodeKeyboard::for_pin());
+        assert_eq!(
+            spoken_keys(&keyboard),
+            [
+                "1", "2", "3", "4", "5", "6", "7", "8", "9", "Letters", "0", "Delete", "Enter"
+            ]
+        );
+        let node = keyboard
+            .accessibility()
+            .expect("the keyboard is accessible");
+        assert!(
+            node.children.iter().all(|key| key.bounds.is_some()
+                && key.state.focusable
+                && key.action_target.is_some())
+        );
+        assert_eq!(
+            ui::screen_reader::describe(&node.children[11]),
+            "Delete, button"
+        );
+
+        // Activating "Letters" opens the letters, named as they type.
+        let letters = node
+            .children
+            .iter()
+            .find(|key| key.name.as_deref() == Some("Letters"))
+            .and_then(|key| key.action_target.clone())
+            .unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        let mut edits = ui::widget::Edits::lend(&mut doc);
+        assert!(keyboard.perform_semantic_action(
+            &letters,
+            &Action::Activate,
+            &mut edits,
+            &automerge::ROOT
+        ));
+        let spoken = spoken_keys(&keyboard);
+        assert_eq!(
+            &spoken[..10],
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+        );
+        assert_eq!(spoken[10], "q");
+        for name in ["Shift", "Delete", "Numbers", "Space", "Enter"] {
+            assert!(
+                spoken.iter().any(|said| said == name),
+                "{name} in {spoken:?}"
+            );
+        }
     }
 }
