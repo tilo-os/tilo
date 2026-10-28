@@ -426,11 +426,13 @@ fn typed(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation, screenshots: b
                 .with_id("feedback-preview"),
         )
     });
+    // An absent band takes its gap with it (`ui_core::widget::optional`), so
+    // a composer with no attachment has no hole where one would be.
     let picture = cx.switch(&presentation.pixels, |_, png| {
         png.as_ref()
             .and_then(|bytes| crate::widget::Image::from_encoded(bytes).ok())
             .map_or_else(
-                || Box::new(group()) as Element,
+                || ui_core::widget::optional(None),
                 |image| Box::new(image.with_alt("feedback-screenshot-preview")) as Element,
             )
     });
@@ -459,7 +461,7 @@ fn typed(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation, screenshots: b
     }
     sending = sending.push(cx.switch(&presentation.recorded, |part, scope| {
         let Some(scope) = scope else {
-            return Box::new(group()) as Element;
+            return ui_core::widget::optional(None);
         };
         Box::new(
             group()
@@ -470,17 +472,27 @@ fn typed(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation, screenshots: b
                 ))),
         ) as Element
     }));
+    // The sheet's one primary action (docs/design-language.md, "Buttons";
+    // HIG §7, "a single primary action per screen"): it was a secondary fill
+    // like everything beside it, so the one control that sends read as an
+    // optional step. Checking delivery is the quiet recovery beside it.
     let sending = sending
+        .push(Box::new(ui_core::widget::When::from_state(
+            &presentation.status,
+            |status| status != "feedback-review-first",
+            Box::new(
+                Text::from_state(&presentation.status, Clone::clone)
+                    .with_id("feedback-status")
+                    .with_live(crate::a11y::Politeness::Polite),
+            ),
+        )))
         .push(Box::new(
-            cx.effect_button("feedback-submit", &FeedbackEffect::Submit),
+            cx.effect_button("feedback-submit", &FeedbackEffect::Submit)
+                .role(ui_core::widget::ButtonRole::Primary),
         ))
         .push(Box::new(
-            Text::from_state(&presentation.status, Clone::clone)
-                .with_id("feedback-status")
-                .with_live(crate::a11y::Politeness::Polite),
-        ))
-        .push(Box::new(
-            cx.effect_button("feedback-retry", &FeedbackEffect::Retry),
+            cx.effect_button("feedback-retry", &FeedbackEffect::Retry)
+                .role(ui_core::widget::ButtonRole::Plain),
         ));
     Box::new(
         choices
@@ -499,7 +511,7 @@ fn typed(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation, screenshots: b
 fn about(cx: &ViewCx<FeedbackDraft>, subject: &LocalState<Option<Subject>>) -> Element {
     cx.switch(subject, |part, subject| {
         let Some(subject) = subject else {
-            return Box::new(group()) as Element;
+            return ui_core::widget::optional(None);
         };
         let name = if subject.name.is_empty() {
             subject.app.clone()
@@ -529,7 +541,7 @@ fn recording_offer(
 ) -> Element {
     cx.switch(offer, |part, offer| {
         let Some(scope) = offer else {
-            return Box::new(group()) as Element;
+            return ui_core::widget::optional(None);
         };
         Box::new(
             group()
