@@ -213,13 +213,15 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
             .is_some(),
         "the published view must observe the parent tile"
     );
-    h.state
-        .share_registry
-        .insert(9, parent_id, shell::network::StreamingShare::new());
+    h.state.share_registry.insert(
+        9,
+        parent_id,
+        tilo_window_share::streaming::StreamingShare::new(),
+    );
     assert!(h.state.apply_remote_input(
         9,
         parent_id,
-        shell::network::InputEvent::KeyboardFocus {
+        tilo_window_share::streaming::InputEvent::KeyboardFocus {
             surface: parent_id,
             focused: true
         }
@@ -228,7 +230,7 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
         h.state.apply_remote_input(
             9,
             parent_id,
-            shell::network::InputEvent::Key {
+            tilo_window_share::streaming::InputEvent::Key {
                 keysym: 30,
                 pressed: true,
                 modifiers: 0
@@ -239,7 +241,7 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     assert!(h.state.apply_remote_input(
         9,
         parent_id,
-        shell::network::InputEvent::Key {
+        tilo_window_share::streaming::InputEvent::Key {
             keysym: 30,
             pressed: false,
             modifiers: 0

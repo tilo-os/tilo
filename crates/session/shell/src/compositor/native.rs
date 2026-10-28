@@ -3370,7 +3370,7 @@ struct FrameBuilderControlState<'a> {
     doc: Option<(&'a AutoCommit, &'a ObjId)>,
     /// The compositor's actual stream/input authority. Layout-only tests have
     /// no compositor and therefore leave this absent.
-    shares: Option<&'a crate::network::streaming::ShareRegistry>,
+    shares: Option<&'a tilo_window_share::streaming::ShareRegistry>,
     /// Read-only lock authentication status. Layout-only fixtures omit this;
     /// the native transport supplies it so an acceptance client can wait for
     /// an asynchronous verifier before entering a retry.
@@ -8603,7 +8603,7 @@ struct PortalBackend {
     /// Never read: retaining the registration keeps its D-Bus connection, bus
     /// name, and object server alive once registered.
     _server: crate::session_runtime::Registration<crate::portal::ServerHandle>,
-    remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
+    remote_input: std::sync::mpsc::Receiver<tilo_window_share::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
     screencast: crate::portal::ScreenCastStreamProvisionerHandle,
     capture_requests: std::sync::mpsc::Receiver<PortalCaptureCommand>,
@@ -13630,7 +13630,7 @@ pub fn run() {
                             surface,
                             event,
                         } => {
-                            match postcard::from_bytes::<crate::network::streaming::InputEvent>(
+                            match postcard::from_bytes::<tilo_window_share::streaming::InputEvent>(
                                 &event,
                             ) {
                                 Ok(event) => {
@@ -20772,7 +20772,7 @@ mod tests {
         // than degrading to an anonymous "sharing" boolean.
         {
             use crate::compositor::tab_binding::{self, Placement};
-            use crate::network::streaming::{ShareRegistry, StreamingShare};
+            use tilo_window_share::streaming::{ShareRegistry, StreamingShare};
 
             const AGENT_PEER: u64 = 0xA9;
             const SURFACE: u64 = 71_900;

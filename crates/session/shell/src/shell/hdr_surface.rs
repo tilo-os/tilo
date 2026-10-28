@@ -38,13 +38,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::ImageData;
 
-use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::color_pipeline::{
     BT709_PRIMARIES, BT2020_PRIMARIES, DISPLAY_P3_PRIMARIES, Mat3, SDR_REFERENCE_WHITE_NITS,
     bt709_to_bt2020_matrix, gamut_matrix, hlg_inverse_oetf, pack_xbgr2101010, pq_eotf,
     pq10_from_nits, srgb_eotf, srgb_oetf,
 };
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_rgb_signal_to_sdr_linear};
+use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 
 /// The GPU composite for PQ outputs; mirrors [`composite_hdr_pixel`].
 pub const COMPOSITE_SHADER_SOURCE: &str = concat!(
@@ -239,7 +239,7 @@ impl HdrPlane {
     ) -> Option<Self> {
         let limited = matches!(
             signal.colorimetry.range,
-            crate::collab::colorimetry::ColorRange::Limited
+            neighbour_wire::colorimetry::ColorRange::Limited
         );
         let planes = crate::shell::hdr_tonemap::P010Planes {
             luma,
@@ -710,8 +710,8 @@ impl CpuComposite<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
     use crate::shell::color_pipeline::pq_inverse_eotf;
+    use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn pq_signal() -> SurfaceSignal {
         SurfaceSignal::for_colorimetry(Colorimetry::hdr10(), HdrTonemapConfig::default())

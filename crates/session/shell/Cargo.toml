@@ -304,6 +304,9 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
+# The share session, encoders, viewer registry and counters of a window
+# shared with the workspace's other devices.
+tilo-window-share = { path = "../window-share" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The reusable video-streaming stack (encode/decode, per-share frame transport
 # substrate, throttle). `network::{encoder,

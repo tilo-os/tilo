@@ -7047,7 +7047,7 @@ pub(super) mod tests {
     fn hdr_is_requested_only_where_sink_driver_and_setting_agree() {
         let hdr_sink = tilo_wayland_ext::edid::HdrDisplayInfo {
             supported_transfers: vec![
-                crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084,
+                neighbour_wire::colorimetry::TransferCharacteristics::SmpteSt2084,
             ],
             ..tilo_wayland_ext::edid::HdrDisplayInfo::default_sdr()
         };

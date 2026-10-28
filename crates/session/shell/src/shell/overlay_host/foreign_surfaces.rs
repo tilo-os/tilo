@@ -156,7 +156,7 @@ impl ShellOverlayHost {
             surface_id,
             local_peer,
             codec,
-            crate::diagnostics::PeerSurfaceMetrics::default(),
+            tilo_window_share::diagnostics::PeerSurfaceMetrics::default(),
             &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
             hdr_static_metadata,
         )

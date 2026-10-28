@@ -249,7 +249,7 @@ pub struct ChordMods {
 }
 
 impl ChordMods {
-    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`crate::network::streaming::InputEvent::Key`].
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the peer-sync wire protocol uses for [`tilo_window_share::streaming::InputEvent::Key`].
     pub fn from_xkb_bits(bits: u32) -> Self {
         Self {
             shift: bits & 0x1 != 0,

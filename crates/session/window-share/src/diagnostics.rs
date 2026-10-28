@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::collab::encoder::EncoderKind;
+use crate::encoder::EncoderKind;
 use tilo_lock::MutexRecover as _;
 
 /// Default ring capacity — 128 samples ≈ 2.1 s at 60 fps.

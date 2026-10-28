@@ -15,10 +15,10 @@
 //! Hable over BT.2390 (the broadcast-HDR alternative): simpler math wins in
 //! a codepath that runs per-frame per-viewport.
 
-use crate::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, TransferCharacteristics,
 };
-use crate::collab::hdr_metadata::Hdr10Metadata;
+use tilo_window_share::hdr_metadata::Hdr10Metadata;
 
 /// Compute-shader source, same math as [`tonemap_p010_to_rgba8`]. Tests in
 /// `hdr_tonemap_shader.rs` compile it on an offscreen wgpu device and check
@@ -377,7 +377,7 @@ fn clamped_f32_to_u8(v: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collab::colorimetry::{
+    use neighbour_wire::colorimetry::{
         ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
     };
 
@@ -436,7 +436,7 @@ mod tests {
         }
 
         fn tonemap_config_from_metadata_reads_mastering_peak() {
-            use crate::collab::hdr_metadata::{
+            use tilo_window_share::hdr_metadata::{
                 ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
             };
             let md = Hdr10Metadata {

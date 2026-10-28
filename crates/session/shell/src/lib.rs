@@ -11,14 +11,12 @@
 pub mod app_icons;
 pub mod bluetooth;
 pub mod bluetooth_prompt;
-pub mod collab;
 pub mod compositor;
 pub mod config;
 pub mod crash_log;
 #[cfg(unix)]
 pub mod stderr_guard;
 pub use tilo_identity_host::device_fleet;
-pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
 #[cfg(target_os = "linux")]

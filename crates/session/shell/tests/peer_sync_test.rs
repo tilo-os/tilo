@@ -1421,7 +1421,7 @@ fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::Fa
     // Keysym lookup must convert back to evdev before the common seat injector.
     for pressed in [true, false] {
         assert!(state.apply_remote_desktop_action(
-            shell::network::streaming::RemoteAction::KeyboardKeysym {
+            tilo_window_share::streaming::RemoteAction::KeyboardKeysym {
                 keysym: 0x61,
                 pressed
             }

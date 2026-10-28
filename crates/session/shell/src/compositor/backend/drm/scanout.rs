@@ -1224,7 +1224,7 @@ impl CardHandle {
         let edid = std::fs::read(self.connector_sysfs(connector_name).join("edid")).ok()?;
         let info = tilo_wayland_ext::edid::parse_hdr_display_info(&edid);
         info.supported_transfers
-            .contains(&crate::collab::colorimetry::TransferCharacteristics::SmpteSt2084)
+            .contains(&neighbour_wire::colorimetry::TransferCharacteristics::SmpteSt2084)
             .then_some(info)
     }
 

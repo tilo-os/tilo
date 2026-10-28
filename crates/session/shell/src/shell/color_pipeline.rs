@@ -10,9 +10,9 @@
 //! headless is driving a DRM connector in an HDR signalling mode, see
 //! [`OutputColorState::from_display`].
 
-use crate::collab::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 use crate::shell::hdr_display::DisplayCapabilities;
 use crate::shell::hdr_tonemap::HdrTonemapConfig;
+use neighbour_wire::colorimetry::{ColorPrimaries, Colorimetry, TransferCharacteristics};
 
 /// WGSL source for the SDR → HDR output-encode compute shader, the GPU
 /// mirror of [`map_sdr_pixel_to_pq_bt2020`]. Validated through `naga` in tests.
@@ -620,7 +620,7 @@ pub fn plan_surface_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
+    use neighbour_wire::colorimetry::{ColorRange, MatrixCoefficients};
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps

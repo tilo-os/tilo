@@ -371,7 +371,7 @@ fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrT
 #[cfg(any(test, target_os = "linux"))]
 fn hdr_signal(
     layout: CpuLayout,
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
 ) -> Option<crate::shell::hdr_surface::SurfaceSignal> {
     if matches!(layout, CpuLayout::Rgba8(_)) {
         return None;
@@ -389,7 +389,7 @@ fn convert_rows<'a>(
     layout: CpuLayout,
     rows: impl Iterator<Item = &'a [u8]>,
     (width, height): (u32, u32),
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
 ) -> Option<crate::shell::hdr_surface::HdrPlane> {
     let signal = hdr_signal(layout, colorimetry);
@@ -424,7 +424,7 @@ fn convert_rows<'a>(
 fn convert_row(
     layout: CpuLayout,
     src: &[u8],
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
     out: &mut Vec<u8>,
 ) {
     let tonemap = crate::shell::hdr_tonemap::HdrTonemapConfig::default();
@@ -553,7 +553,7 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
@@ -561,7 +561,7 @@ pub fn import_dmabuf_rgba(
     let layout = CpuLayout::for_fourcc(format.code)
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     let colorimetry =
-        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+        colorimetry.unwrap_or_else(neighbour_wire::colorimetry::Colorimetry::sdr_bt709);
     *hdr = None;
     if layout == CpuLayout::P010 {
         return import_p010(dmabuf, out, colorimetry, hdr);
@@ -644,7 +644,7 @@ pub fn import_dmabuf_rgba(
 fn import_p010(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
-    colorimetry: crate::collab::colorimetry::Colorimetry,
+    colorimetry: neighbour_wire::colorimetry::Colorimetry,
     hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     let width = dmabuf.width();
@@ -833,7 +833,7 @@ struct ForeignEntry {
     activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
     hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
@@ -1327,9 +1327,34 @@ struct CaptureProtection {
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
 
-/// The process-wide [`ForeignFrameStore`].
+/// The process-wide [`ForeignFrameStore`]. It is also the store window
+/// shares encode a window's frames from ([`tilo_window_share::window_frames`]).
 pub fn store() -> &'static ForeignFrameStore {
-    STORE.get_or_init(ForeignFrameStore::default)
+    static PROVIDED: std::sync::Once = std::sync::Once::new();
+    let store = STORE.get_or_init(ForeignFrameStore::default);
+    PROVIDED.call_once(|| tilo_window_share::window_frames::provide(store));
+    store
+}
+
+impl tilo_window_share::window_frames::WindowFrames for ForeignFrameStore {
+    fn frame(&self, surface: SurfaceId) -> Option<tilo_window_share::window_frames::WindowFrame> {
+        let snapshot = self.snapshot(surface)?;
+        Some(tilo_window_share::window_frames::WindowFrame {
+            rgba: snapshot.rgba,
+            width: snapshot.width,
+            height: snapshot.height,
+            seq: snapshot.seq,
+        })
+    }
+
+    fn changes(
+        &self,
+        surface: SurfaceId,
+        previous: u64,
+        current: u64,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        self.snapshot_changes(surface, previous, current)
+    }
 }
 
 /// How a dmabuf's bytes were obtained.
@@ -1383,7 +1408,7 @@ struct CaptureJob<T> {
 pub struct DmabufCommit {
     pub buffer: Dmabuf,
     /// The surface's colour description, if it has one.
-    pub colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    pub colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     /// The commit's opaque region covers the whole surface
     /// ([`crate::compositor::opaque_region`]): the buffer's alpha channel is
     /// padding. The frame is drawn ignoring it, as an `X` format is, and a
@@ -2463,13 +2488,13 @@ fn share_dmabuf(
 fn decode_dmabuf(
     dmabuf: &Dmabuf,
     rgba: &mut Vec<u8>,
-    colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32, DmabufRoute), String> {
     *hdr = None;
     let layout = CpuLayout::for_fourcc(dmabuf.format().code);
     let description =
-        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+        colorimetry.unwrap_or_else(neighbour_wire::colorimetry::Colorimetry::sdr_bt709);
     if layout == Some(CpuLayout::P010)
         && let Ok((width, height)) = import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr)
     {
@@ -2532,7 +2557,7 @@ fn decode_dmabuf(
 impl ForeignFrameStore {
     /// The image description the surface's client last attached.
     #[cfg(target_os = "linux")]
-    fn colorimetry(&self, id: SurfaceId) -> Option<crate::collab::colorimetry::Colorimetry> {
+    fn colorimetry(&self, id: SurfaceId) -> Option<neighbour_wire::colorimetry::Colorimetry> {
         self.entries
             .lock_recover()
             .get(&id)
@@ -2709,7 +2734,7 @@ impl ForeignFrameStore {
         id: SurfaceId,
         client: Client,
         dmabuf: Dmabuf,
-        colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+        colorimetry: Option<neighbour_wire::colorimetry::Colorimetry>,
     ) -> Option<PreparedDmabufCapture> {
         let commit = DmabufCommit {
             buffer: dmabuf,
@@ -6028,7 +6053,7 @@ mod tests {
 
     #[test]
     fn ten_bit_and_half_float_rows_convert_for_the_sdr_desktop() {
-        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
         // XB30: red in the low bits. Full red, half green, zero blue.
         let word: u32 = 0xC008_03FF; // red 1023, green 512, padding set
         let mut out = Vec::new();
@@ -6068,7 +6093,7 @@ mod tests {
         // A PQ signal is tone-mapped rather than shown raw: PQ 0.58
         // (~200 cd/m² of a 1000 cd/m² master) lands darker than the
         // 148/255 an SDR reading of the same code would give.
-        let pq = crate::collab::hdr_metadata::HdrConfig::pq_reference().colorimetry();
+        let pq = tilo_window_share::hdr_metadata::HdrConfig::pq_reference().colorimetry();
         let mid: u32 = 0x2529_4A52; // 594 in every channel
         let mut out = Vec::new();
         convert_row(
@@ -6090,8 +6115,8 @@ mod tests {
     #[test]
     fn hdr_frames_keep_a_full_precision_plane() {
         use crate::shell::hdr_surface::{HdrTexelFormat, SignalTransfer};
-        let pq = crate::collab::colorimetry::Colorimetry::hdr10();
-        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
 
         // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
         {
@@ -6196,12 +6221,12 @@ mod tests {
         }
     }
 
-    fn scrgb() -> crate::collab::colorimetry::Colorimetry {
-        crate::collab::colorimetry::Colorimetry {
-            primaries: crate::collab::colorimetry::ColorPrimaries::Bt709,
-            transfer: crate::collab::colorimetry::TransferCharacteristics::Linear,
-            matrix: crate::collab::colorimetry::MatrixCoefficients::Identity,
-            range: crate::collab::colorimetry::ColorRange::Full,
+    fn scrgb() -> neighbour_wire::colorimetry::Colorimetry {
+        neighbour_wire::colorimetry::Colorimetry {
+            primaries: neighbour_wire::colorimetry::ColorPrimaries::Bt709,
+            transfer: neighbour_wire::colorimetry::TransferCharacteristics::Linear,
+            matrix: neighbour_wire::colorimetry::MatrixCoefficients::Identity,
+            range: neighbour_wire::colorimetry::ColorRange::Full,
         }
     }
 

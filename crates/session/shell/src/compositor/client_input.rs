@@ -2952,7 +2952,7 @@ mod tests {
         // guest a coordinate the local user can't even click on. Drives the real publisher against the real laid-out tree, then asks the firewall the question a peer's event asks.
         {
             use crate::network::input_firewall::Denial;
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
@@ -3135,9 +3135,9 @@ mod tests {
     /// A `State` with a live seat, one peer holding write access to `surface`, and that surface on screen with the keyboard.
     fn state_sharing(surface: u64) -> crate::compositor::state::State {
         use crate::network::input_firewall::ShellView;
-        use crate::network::streaming::StreamingShare;
         use smithay::reexports::calloop::EventLoop;
         use smithay::reexports::wayland_server::Display;
+        use tilo_window_share::streaming::StreamingShare;
 
         let event_loop: EventLoop<'static, crate::compositor::state::State> =
             EventLoop::try_new().expect("calloop event loop");
@@ -3191,7 +3191,7 @@ mod tests {
         // a late network release is harmless rather than landing in B.
         {
             use crate::network::input_firewall::{Denial, ShellView};
-            use crate::network::streaming::InputEvent;
+            use tilo_window_share::streaming::InputEvent;
 
             const SHARED: u64 = 808;
             const PRIVATE: u64 = 909;
@@ -3249,7 +3249,7 @@ mod tests {
         // Releasing one participant's left button must not end the other one's
         // implicit drag; only the last release reaches Smithay.
         {
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             const SHARED: u64 = 808;
             const SECOND_PEER: u64 = 78;
@@ -3310,7 +3310,7 @@ mod tests {
         }
         // Phase `remote_click_restores_that_participants_cursor_after_another_peer_moves`.
         {
-            use crate::network::streaming::{InputEvent, StreamingShare};
+            use tilo_window_share::streaming::{InputEvent, StreamingShare};
 
             const SHARED: u64 = 808;
             const SECOND_PEER: u64 = 78;
@@ -3373,7 +3373,7 @@ mod tests {
         }
         // Phase `remote_pointer_leave_ends_drag_but_preserves_caret_focus`.
         {
-            use crate::network::streaming::InputEvent;
+            use tilo_window_share::streaming::InputEvent;
 
             const SHARED: u64 = 808;
             const LEFT: u32 = 272;
@@ -3568,7 +3568,7 @@ mod tests {
         state.review_remote_input(
             KILL_PEER,
             KILL_SURFACE,
-            crate::network::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+            tilo_window_share::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
         )
     }
 

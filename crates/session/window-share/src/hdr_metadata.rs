@@ -25,7 +25,7 @@ pub struct HdrConfig {
 }
 
 /// Which HDR transfer function to use. Kept separate from
-/// [`crate::collab::colorimetry::TransferCharacteristics`] because the
+/// [`neighbour_wire::colorimetry::TransferCharacteristics`] because the
 /// config knob only has two live values — PQ (HDR10 / HDR10+) or HLG
 /// (broadcast).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,11 +57,11 @@ impl HdrConfig {
         }
     }
 
-    /// Emit the receive-side [`crate::collab::colorimetry::Colorimetry`]
+    /// Emit the receive-side [`neighbour_wire::colorimetry::Colorimetry`]
     /// that pairs with this HDR config. Always BT.2020 primaries + the
     /// matching transfer + BT.2020 non-constant matrix + limited range.
-    pub fn colorimetry(self) -> crate::collab::colorimetry::Colorimetry {
-        use crate::collab::colorimetry::{
+    pub fn colorimetry(self) -> neighbour_wire::colorimetry::Colorimetry {
+        use neighbour_wire::colorimetry::{
             ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
         };
         Colorimetry {
@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn hdr_metadata_pairs_colorimetry_and_round_trips() {
         {
-            use crate::collab::colorimetry::TransferCharacteristics;
+            use neighbour_wire::colorimetry::TransferCharacteristics;
             let pq = HdrConfig::pq_reference();
             assert_eq!(
                 pq.colorimetry().transfer,

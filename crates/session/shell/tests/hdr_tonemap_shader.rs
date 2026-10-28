@@ -3,7 +3,7 @@
 //! since fetching an adapter costs the `OffscreenRenderer` bring-up. Both
 //! paths use the same PQ math.
 
-use shell::collab::colorimetry::{
+use neighbour_wire::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
 use shell::shell::hdr_tonemap::{HdrTonemapConfig, SHADER_SOURCE, tonemap_p010_to_rgba8};

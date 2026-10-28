@@ -20,23 +20,22 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::collab::colorimetry::Colorimetry;
-use crate::collab::encoder::nv12::Region;
-use crate::collab::encoder::{
-    Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, build,
-};
-use crate::collab::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::diagnostics::{CapturePath, PeerSurfaceMetrics};
-use crate::network::encoder::EncodeError;
-use crate::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
-use crate::network::streaming::{InputEvent, ShareRegistry, StreamingShare, StreamingThrottle};
-use crate::network::surface_stream::SurfaceStreamSender;
+use crate::encoder::nv12::Region;
+use crate::encoder::{Codec, Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, build};
+use crate::hdr_metadata::{Hdr10Metadata, HdrConfig};
+use crate::streaming::{InputEvent, ShareRegistry, StreamingShare};
 use media::realtime::{CodecCapabilities, RealtimePolicy, negotiate, negotiate_hdr};
+use neighbour_wire::colorimetry::Colorimetry;
+use neighbour_wire::{NeighbourMsg, PeerId, SurfaceId};
 #[cfg(target_os = "linux")]
 use smithay::backend::allocator::Buffer as _;
 #[cfg(target_os = "linux")]
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use tilo_callstream::encoder::EncodeError;
+use tilo_callstream::stream::SurfaceStreamSender;
+use tilo_callstream::throttle::StreamingThrottle;
 use tilo_lock::MutexRecover as _;
 
 /// The least time between two keyframes forced at viewers' requests. Every
@@ -138,7 +137,7 @@ impl EncodedFrame {
 }
 
 /// `SurfaceStreamStart::codec` of a page shared as a display list.
-pub const PAINT_CODEC: &str = ui::webview::paint::stream::wire::CODEC;
+pub const PAINT_CODEC: &str = tilo_paint_stream::wire::CODEC;
 
 /// What [`SharedFlatpakSession::assemble`] builds a session from.
 struct Started {
@@ -180,7 +179,7 @@ impl Encoder for PaintPassthrough {
         &mut self,
         _input: FrameInput<'_>,
         _out: &mut Vec<u8>,
-    ) -> Result<crate::collab::encoder::FrameStats, EncoderError> {
+    ) -> Result<crate::encoder::FrameStats, EncoderError> {
         Err(EncoderError::EncodeFailed {
             kind: self.kind(),
             detail: "paint_passthrough".into(),
@@ -385,7 +384,7 @@ impl SharedFlatpakSession {
 
     /// Same as [`Self::start`], negotiating the codec with `receivers` (the
     /// viewers' advertised capabilities; see
-    /// `crate::network::media_caps::capabilities`) and attaching a shared
+    /// the compositor's `media_caps::capabilities`) and attaching a shared
     /// [`PeerSurfaceMetrics`] handle so the OSD sees encode-side counters.
     ///
     /// # Errors
@@ -801,7 +800,7 @@ impl SharedFlatpakSession {
     }
 
     /// The frame store holds frame `seq` of the window
-    /// ([`crate::compositor::foreign::ForeignFrameStore::frame_seq`]).
+    /// ([`crate::window_frames::WindowFrames`]).
     /// Returns whether it is one not seen before.
     pub fn note_window_frame(&self, seq: u64) -> bool {
         !self.paint && seq != 0 && self.window_noted.swap(seq, Ordering::AcqRel) != seq
@@ -846,8 +845,8 @@ impl SharedFlatpakSession {
     /// frame last taken from it; `None` when it holds none at the stream's
     /// size or nothing changed since.
     fn window_frame(&self) -> Option<(Vec<u8>, Option<Vec<Region>>)> {
-        let store = crate::compositor::foreign::store();
-        let snapshot = store.snapshot(self.surface_id)?;
+        let store = crate::window_frames::provided()?;
+        let snapshot = store.frame(self.surface_id)?;
         if (snapshot.width, snapshot.height) != (self.width, self.height) {
             return None;
         }
@@ -855,8 +854,8 @@ impl SharedFlatpakSession {
         if previous == Some(snapshot.seq) {
             return None;
         }
-        let changed = previous
-            .and_then(|previous| store.snapshot_changes(self.surface_id, previous, snapshot.seq));
+        let changed =
+            previous.and_then(|previous| store.changes(self.surface_id, previous, snapshot.seq));
         Some((snapshot.rgba, changed))
     }
 
@@ -1205,10 +1204,7 @@ impl SharedFlatpakSession {
         self.stream_sender.pending_for(peer)
     }
 
-    pub fn poll_stream_frame(
-        &self,
-        peer: PeerId,
-    ) -> Option<crate::network::surface_stream::SurfaceFrame> {
+    pub fn poll_stream_frame(&self, peer: PeerId) -> Option<tilo_callstream::stream::SurfaceFrame> {
         self.stream_sender.poll(peer)
     }
 
@@ -1241,11 +1237,11 @@ impl SharedFlatpakSession {
     }
 
     /// Route an inbound `InputEvent` through the share-registry gate only —
-    /// see [`crate::network::streaming::ShareRegistry::route_to`]. A sink
+    /// see [`crate::streaming::ShareRegistry::route_to`]. A sink
     /// that is the compositor's seat must not be driven from here;
-    /// [`crate::compositor::state::State::review_remote_input`] runs the
+    /// the compositor state's `review_remote_input` runs the
     /// region/z-order/scrubber/rate checks.
-    pub fn route_input<S: crate::network::streaming::RemoteInputSink>(
+    pub fn route_input<S: crate::streaming::RemoteInputSink>(
         &self,
         peer: PeerId,
         event: InputEvent,
@@ -1356,7 +1352,7 @@ mod tests {
         );
         assert!(SharedFlatpakSession::start_paint(1, "x", 1, 0, 600, &cfg_software()).is_err());
     }
-    use crate::network::streaming::test_support::RecordingSink;
+    use crate::streaming::test_support::RecordingSink;
 
     fn cfg_software() -> FlatpakShareConfig {
         FlatpakShareConfig {
@@ -1598,7 +1594,7 @@ mod tests {
                     assert_eq!(sender_monotonic_ns_at_send, ts);
                     assert_eq!(
                         colorimetry,
-                        Some(crate::collab::colorimetry::Colorimetry::sdr_bt709())
+                        Some(neighbour_wire::colorimetry::Colorimetry::sdr_bt709())
                     );
                     assert!(hdr_static_metadata.is_none());
                     assert_eq!(bit_depth, 8);

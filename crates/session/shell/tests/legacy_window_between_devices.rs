@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
-use shell::collab::flatpak_share::{self, SharedFlatpakSession};
-use shell::config::{EncoderChoice, FlatpakShareConfig};
-use shell::diagnostics::PeerSurfaceMetrics;
-use shell::network::streaming::InputEvent;
 use shell::network::{Actor, NeighbourMsg, NetCmd, NetEvent};
 use shell::shell::peer_view::{PeerView, PushOutcome};
+use tilo_window_share::config::{EncoderChoice, FlatpakShareConfig};
+use tilo_window_share::diagnostics::PeerSurfaceMetrics;
+use tilo_window_share::flatpak_share::{self, SharedFlatpakSession};
+use tilo_window_share::streaming::InputEvent;
 use tokio::sync::mpsc;
 use ui::widget::Widget as _;
 

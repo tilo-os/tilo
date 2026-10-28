@@ -19,8 +19,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use neighbour_wire::colorimetry::Colorimetry;
 use settings_store::hardware::OutputTransform;
-use shell::collab::colorimetry::Colorimetry;
 use shell::compositor::backend::drm::paint::{
     OutputSignal, OutputTarget, OutputView, SceneDamage, VelloDrmBridge,
 };

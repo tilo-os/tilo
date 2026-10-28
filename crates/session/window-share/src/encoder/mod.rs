@@ -13,13 +13,13 @@
 
 pub mod nv12;
 
-use crate::collab::colorimetry::Colorimetry;
-use crate::collab::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use crate::config::EncoderChoice;
+use crate::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use media::realtime::{
     CodecElement, CodecFamily, CodecTier, EncoderConfig, HdrStaticMetadata, InputFormat,
     InputFrame, RealtimeEncoder, RealtimePolicy, StreamColor,
 };
+use neighbour_wire::colorimetry::Colorimetry;
 use std::time::{Duration, Instant};
 
 /// The bitstream on the wire. Its [`Codec::wire_label`] is what
@@ -302,7 +302,7 @@ fn colour(c: Colorimetry) -> StreamColor {
         primaries: c.primaries.cicp(),
         transfer: c.transfer.cicp(),
         matrix: c.matrix.cicp(),
-        full_range: c.range == crate::collab::colorimetry::ColorRange::Full,
+        full_range: c.range == neighbour_wire::colorimetry::ColorRange::Full,
     }
 }
 
