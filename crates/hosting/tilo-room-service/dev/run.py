@@ -134,6 +134,9 @@ def parse_args():
                         help='the persistent room (TILO_ROOMS_PERSISTENT; default: local)')
     parser.add_argument('--shown-name', help='the name people see (TILO_ROOMS_NAME; default: the name, capitalized)')
     parser.add_argument('--home-app', help='the app in front of the home workspace (entry.json home.app), e.g. so.tilo.notes')
+    parser.add_argument('--feedback-channel', default=os.environ.get('TILO_ROOMS_FEEDBACK_CHANNEL'),
+                        help='the Chat channel members report problems to (TILO_ROOMS_FEEDBACK_CHANNEL; '
+                             'entry.json home.feedback names its id, as the image does)')
     parser.add_argument('--fresh', action='store_true', help='forget the room: remove its state and root first')
     parser.add_argument('--relay-bin', type=pathlib.Path, help='a prebuilt tilo-relay (built with --features agents)')
     parser.add_argument('--room-service-bin', type=pathlib.Path, help='a prebuilt tilo-room-service')
@@ -232,6 +235,12 @@ def lay_out(bundle, site):
     return output.stdout.strip()
 
 
+def channel_id(channel):
+    """The Chat channel ids the service keeps `channel` under: `c_<name>`,
+    with `-` as `_` (crates/hosting/tilo-room-service/src, the room's chat)."""
+    return f"c_{channel.replace('-', '_')}"
+
+
 def entry_json(args, relay_origin, api_origin):
     """What container/entrypoint.sh writes for a home workspace, with the
     local origins: the relay's plain listener and the API, which an ingress
@@ -240,6 +249,12 @@ def entry_json(args, relay_origin, api_origin):
             'admission': f'{api_origin}/'}
     if args.home_app:
         home['app'] = args.home_app
+    if args.feedback_channel:
+        # Where the room service keeps that channel in Chat
+        # (TILO_ROOMS_FEEDBACK_CHANNEL, the relay's `--feedback-channel`),
+        # which the image names for its entry with TILO_WEB_HOME_FEEDBACK:
+        # without it the Tilo menu has no "Give feedback…".
+        home['feedback'] = {'channel': channel_id(args.feedback_channel)}
     entry = {'home': home}
     # The About sheet's links, from the same variables the image reads.
     about = {key: url for key in ('notify', 'source', 'community')
@@ -380,6 +395,9 @@ def main():
     })
     if args.shown_name:
         env['TILO_ROOMS_NAME'] = args.shown_name
+    # The flag and the variable are one thing: the room keeps the channel.
+    if args.feedback_channel:
+        env['TILO_ROOMS_FEEDBACK_CHANNEL'] = args.feedback_channel
 
     server = serve(args, site, entry)
     service = subprocess.Popen([bin_dir / 'tilo-room-service'], env=env, start_new_session=True)
