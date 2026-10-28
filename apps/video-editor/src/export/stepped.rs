@@ -24,6 +24,7 @@ use crate::model::Project;
 const BACKLOG: u32 = 8;
 
 /// Seconds between key frames, so a player can seek in the file.
+// ratchet-allow(pixel_const): a span of seconds in the encoded file, not spacing
 const KEY_EVERY_S: f64 = 2.0;
 
 /// A render in progress; [`Self::step`] advances it.
