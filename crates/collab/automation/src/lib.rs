@@ -45,6 +45,7 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+mod saved;
 pub mod scenario;
 pub mod shortcut;
 mod template;
@@ -71,6 +72,7 @@ pub use run::{
     RunTrigger, STEP_FACET, StepFailure, StepOutcome, StepRecord, StepStatus, StopWatch,
     invocation_id, run,
 };
+pub use saved::{SavedShortcut, decode_saved};
 pub use scenario::{
     Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
     ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,

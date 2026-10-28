@@ -65,7 +65,12 @@ fn populated_tree() -> WorkspaceTree {
         .with_id("cap-fixed"),
     );
     ws.share_surface(7, 42);
-    (ws.shortcuts, ws.schedule_claims) = saved_shortcuts();
+    let (shortcuts, claims) = saved_shortcuts();
+    ws.shortcuts = shortcuts
+        .iter()
+        .map(tilo_automation::SavedShortcut::encode)
+        .collect();
+    ws.schedule_claims = claims;
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
         id: 3,

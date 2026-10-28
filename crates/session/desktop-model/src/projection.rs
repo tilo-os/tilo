@@ -61,7 +61,7 @@ pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 /// The document's error when the shortcuts map cannot be created.
 pub fn project_workspace_shortcuts(
     doc: &mut AutoCommit,
-    shortcuts: &[tilo_automation::Shortcut],
+    shortcuts: &[tilo_automation::SavedShortcut],
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -72,22 +72,20 @@ pub fn project_workspace_shortcuts(
     };
     let stale: Vec<String> = doc
         .keys(&map)
-        .filter(|key| !shortcuts.iter().any(|shortcut| shortcut.id == *key))
+        .filter(|key| !shortcuts.iter().any(|shortcut| shortcut.id() == key))
         .collect();
     for key in stale {
         doc.delete(&map, key.as_str())?;
     }
     for shortcut in shortcuts {
-        let Ok(blob) = serde_json::to_vec(shortcut) else {
-            continue;
-        };
+        let blob = shortcut.json().as_bytes().to_vec();
         let unchanged = matches!(
-            doc.get(&map, shortcut.id.as_str()).ok().flatten(),
+            doc.get(&map, shortcut.id()).ok().flatten(),
             Some((Value::Scalar(value), _))
                 if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
         );
         if !unchanged {
-            doc.put(&map, shortcut.id.as_str(), ScalarValue::Bytes(blob))?;
+            doc.put(&map, shortcut.id(), ScalarValue::Bytes(blob))?;
         }
     }
     Ok(())
@@ -297,23 +295,25 @@ pub fn room_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride>
 
 /// The shortcuts a room document carries, by id. A value that does not
 /// decode is skipped.
-pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::Shortcut> {
+pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::SavedShortcut> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
     let Some((_, map)) = doc.get(&ROOT, ROOM_AUTOMATIONS_KEY).ok().flatten() else {
         return Vec::new();
     };
-    let mut shortcuts: Vec<tilo_automation::Shortcut> = doc
+    let mut shortcuts: Vec<tilo_automation::SavedShortcut> = doc
         .keys(&map)
         .filter_map(|key| match doc.get(&map, key.as_str()).ok().flatten() {
             Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
+                ScalarValue::Bytes(blob) => std::str::from_utf8(blob)
+                    .ok()
+                    .and_then(|json| tilo_automation::SavedShortcut::parse(json).ok()),
                 _ => None,
             },
             _ => None,
         })
         .collect();
-    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts.compact_sort_by(|left, right| left.id().cmp(right.id()));
     shortcuts
 }
 

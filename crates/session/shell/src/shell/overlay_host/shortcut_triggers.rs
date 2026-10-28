@@ -407,6 +407,7 @@ impl ShellOverlayHost {
                 workspace
                     .shortcuts
                     .iter()
+                    .filter_map(|saved| saved.decode().ok())
                     .any(|shortcut| !shortcut.triggers.is_empty())
             });
         if !any_trigger {

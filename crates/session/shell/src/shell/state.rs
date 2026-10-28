@@ -2664,7 +2664,10 @@ impl WorkspaceTree {
         let forged = projection::workspace_shortcuts_of(candidate)
             .into_iter()
             .find(|shortcut| {
-                shortcut.saved_by.as_deref() == Some(local_id.as_str()) && !held.contains(shortcut)
+                shortcut
+                    .decode()
+                    .is_ok_and(|decoded| decoded.saved_by.as_deref() == Some(local_id.as_str()))
+                    && !held.contains(shortcut)
             });
         match forged {
             Some(shortcut) => {
@@ -2672,7 +2675,7 @@ impl WorkspaceTree {
                     target: "shell::state",
                     room = %room,
                     from = %from,
-                    shortcut = %shortcut.id,
+                    shortcut = %shortcut.id(),
                     "room sync refused: a peer wrote a shortcut as if this \
                      device's person had saved it",
                 );
@@ -4181,18 +4184,20 @@ impl WorkspaceTree {
         else {
             return false;
         };
+        let shortcut = tilo_automation::SavedShortcut::encode(shortcut);
         match workspace
             .shortcuts
             .iter_mut()
-            .find(|saved| saved.id == shortcut.id)
+            .find(|saved| saved.id() == shortcut.id())
         {
             Some(saved) => *saved = shortcut.clone(),
             None => workspace.shortcuts.push(shortcut.clone()),
         }
         workspace
             .shortcuts
-            .sort_by(|left, right| left.id.cmp(&right.id));
-        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
+            .sort_by(|left, right| left.id().cmp(right.id()));
+        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, &shortcut)
+        {
             self.commit_room_change();
         }
         self.queue_save();
@@ -4216,7 +4221,7 @@ impl WorkspaceTree {
         if !workspace
             .shortcuts
             .iter()
-            .any(|shortcut| shortcut.id == claim.shortcut)
+            .any(|shortcut| shortcut.id() == claim.shortcut)
         {
             return false;
         }
@@ -4224,7 +4229,7 @@ impl WorkspaceTree {
         workspace.schedule_claims.retain(|held| {
             shortcuts
                 .iter()
-                .any(|shortcut| shortcut.id == held.shortcut)
+                .any(|shortcut| shortcut.id() == held.shortcut)
         });
         match workspace
             .schedule_claims
@@ -4268,7 +4273,7 @@ impl WorkspaceTree {
         let before = workspace.shortcuts.len();
         workspace
             .shortcuts
-            .retain(|shortcut| shortcut.id != shortcut_id);
+            .retain(|shortcut| shortcut.id() != shortcut_id);
         if workspace.shortcuts.len() == before {
             return false;
         }
@@ -6400,7 +6405,7 @@ mod automerge_foundation_tests {
             .find(|w| w.room() == room)
             .expect("the host is in the room")
             .shortcuts
-            .push(forged.clone());
+            .push(tilo_automation::SavedShortcut::encode(&forged));
         let changes = host
             .export_room_changes_since(room, &[])
             .expect("the host is in the room");
@@ -6433,7 +6438,10 @@ mod automerge_foundation_tests {
                 .apply_room_changes(room, &changes, &PeerOrigin::hub(1))
                 .expect("the person's own device merges")
         );
-        assert_eq!(guest_shortcuts(&guest), vec![forged]);
+        assert_eq!(
+            guest_shortcuts(&guest),
+            vec![tilo_automation::SavedShortcut::encode(&forged)]
+        );
     }
 
     #[test]

@@ -112,19 +112,20 @@ impl Fixture {
         let mut workspace = Workspace::new(WorkspaceId(9), "Shortcuts");
         workspace.set_owner(principal.clone());
         let room = workspace.room().to_string();
-        workspace.shortcuts.push(
-            serde_json::from_value(serde_json::json!({
-                "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
-                "saved_by": principal,
-                "triggers": [
-                    {"trigger": "keyboard", "chord": "Super+Shift+E"},
-                    {"trigger": "app_opened", "app_id": "notes"}
-                ]
-            }))
-            .unwrap(),
-        );
+        let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
+            "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
+            "saved_by": principal,
+            "triggers": [
+                {"trigger": "keyboard", "chord": "Super+Shift+E"},
+                {"trigger": "app_opened", "app_id": "notes"}
+            ]
+        }))
+        .unwrap();
+        workspace
+            .shortcuts
+            .push(tilo_automation::SavedShortcut::encode(&echo));
         for (id, target) in [("middle", "echo"), ("outer", "middle"), ("denied", "echo")] {
-            let mut shortcut = workspace.shortcuts[0].clone();
+            let mut shortcut = echo.clone();
             shortcut.id = id.into();
             shortcut.name = id.into();
             shortcut.steps = vec![tilo_automation::Step::new(
@@ -152,9 +153,13 @@ impl Fixture {
                     tilo_action_policy::Answer::Allow,
                 )];
             }
-            workspace.shortcuts.push(shortcut);
+            workspace
+                .shortcuts
+                .push(tilo_automation::SavedShortcut::encode(&shortcut));
         }
-        workspace.shortcuts.extend_from_slice(extra);
+        workspace
+            .shortcuts
+            .extend(extra.iter().map(tilo_automation::SavedShortcut::encode));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge) = CapnpBrokerState::new_configured(

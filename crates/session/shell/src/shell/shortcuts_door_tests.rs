@@ -744,7 +744,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     };
     assert_eq!(
         door.membership.read().desktop.workspaces[0].shortcuts,
-        std::slice::from_ref(&stored),
+        [tilo_automation::SavedShortcut::encode(&stored)],
         "the workspace holds the saved shortcut, as saved by the owner"
     );
     assert!(
@@ -1196,7 +1196,7 @@ fn an_app_declared_event_runs_the_shortcut_with_the_event_bound_as_its_input() {
     let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
     let armed = [crate::shell::automation_triggers::Armed {
         room: ROOM.to_string(),
-        shortcut: &on_message,
+        shortcut: on_message.clone(),
         claims: &[],
     }];
     assert!(
