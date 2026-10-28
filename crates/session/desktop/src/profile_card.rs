@@ -1327,6 +1327,275 @@ impl Widget for ProfileCard {
     }
 }
 
+/// What the desktop asks of a profile card, as the trait object
+/// [`PROFILE_CARD`] makes.
+pub trait ProfileCardApi: Widget {
+    fn toggle(&mut self, model: &ProfileModel, anchor: Rect, viewport: Rect);
+    fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool;
+    fn set_linked(&mut self, linked: Vec<LinkedAccount>);
+    fn close(&mut self);
+    fn is_open(&self) -> bool;
+    fn take_choice(&mut self) -> Option<ProfileChoice>;
+}
+
+impl ProfileCardApi for ProfileCard {
+    fn toggle(&mut self, model: &ProfileModel, anchor: Rect, viewport: Rect) {
+        Self::toggle(self, model, anchor, viewport);
+    }
+    fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
+        Self::follow_anchor(self, anchor, viewport)
+    }
+    fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
+        Self::set_linked(self, linked);
+    }
+    fn close(&mut self) {
+        Self::close(self);
+    }
+    fn is_open(&self) -> bool {
+        Self::is_open(self)
+    }
+    fn take_choice(&mut self) -> Option<ProfileChoice> {
+        Self::take_choice(self)
+    }
+}
+
+/// The profile card's code, as a program that fetches it on first use
+/// hands it over.
+#[derive(Clone, Copy)]
+pub struct MakeProfileCard(fn() -> Box<dyn ProfileCardApi>);
+
+/// The profile card this build links.
+#[must_use]
+pub fn builtin_profile_card() -> MakeProfileCard {
+    MakeProfileCard(|| Box::new(ProfileCard::new()))
+}
+
+ui::lazy_code! {
+    /// The profile card's code: linked, or with `lazy-profile-card`
+    /// fetched the first time a card opens.
+    pub static PROFILE_CARD: MakeProfileCard = builtin_profile_card, feature = "lazy-profile-card";
+}
+
+/// A profile card whose code may still be on its way: it opens once it is
+/// in, and a quiet panel stands under the avatar meanwhile.
+#[derive(Default)]
+pub struct LazyProfileCard {
+    card: Option<Box<dyn ProfileCardApi>>,
+    /// The card was asked to open before its code was in: with what, under
+    /// which anchor and in which viewport.
+    opening: Option<(ProfileModel, Rect, Rect)>,
+    /// Linked accounts handed over before the card was made.
+    linked: Option<Vec<LinkedAccount>>,
+    /// The empty node a card that is not made yet lays out as.
+    empty: Option<NodeId>,
+}
+
+impl LazyProfileCard {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The card, made once its code is in; `None` until then.
+    fn card(&mut self) -> Option<&mut Box<dyn ProfileCardApi>> {
+        if self.card.is_none() {
+            let make = PROFILE_CARD.get()?;
+            let mut card = (make.0)();
+            if let Some(linked) = self.linked.take() {
+                card.set_linked(linked);
+            }
+            self.card = Some(card);
+        }
+        self.card.as_mut()
+    }
+
+    /// Open the card, or close it when it is open.
+    pub fn toggle(&mut self, model: &ProfileModel, anchor: Rect, viewport: Rect) {
+        if self.opening.take().is_some() {
+            return;
+        }
+        match self.card() {
+            Some(card) => card.toggle(model, anchor, viewport),
+            None => self.opening = Some((model.clone(), anchor, viewport)),
+        }
+    }
+
+    /// Follow the anchor; whether the card moved. A card asked to open
+    /// before its code was in opens here once it is.
+    pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
+        if let Some((model, _, _)) = self.opening.as_ref()
+            && PROFILE_CARD.get().is_some()
+        {
+            let model = model.clone();
+            self.opening = None;
+            if let Some(card) = self.card() {
+                card.toggle(&model, anchor, viewport);
+            }
+            return true;
+        }
+        if let Some((_, placed, in_view)) = self.opening.as_mut() {
+            let moved = *placed != anchor || *in_view != viewport;
+            *placed = anchor;
+            *in_view = viewport;
+            return moved;
+        }
+        self.card
+            .as_mut()
+            .is_some_and(|card| card.follow_anchor(anchor, viewport))
+    }
+
+    pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
+        match self.card.as_mut() {
+            Some(card) => card.set_linked(linked),
+            None => self.linked = Some(linked),
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.opening = None;
+        if let Some(card) = self.card.as_mut() {
+            card.close();
+        }
+    }
+
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.opening.is_some() || self.card.as_ref().is_some_and(|card| card.is_open())
+    }
+
+    pub fn take_choice(&mut self) -> Option<ProfileChoice> {
+        self.card.as_mut().and_then(|card| card.take_choice())
+    }
+
+    /// Where the quiet panel stands while the card's code is on its way:
+    /// under the anchor, as wide as the card, inside the viewport.
+    fn waiting_rect(anchor: Rect, viewport: Rect, theme: &Theme) -> Rect {
+        let width = f64::from(theme.tokens.metrics.panel_width_utility * theme.text_scale.max(1.0));
+        let height = f64::from(theme.text(TextRole::Body).line_height_px())
+            + 2.0 * f64::from(theme.padding_standard);
+        let x0 = (anchor.x1 - width)
+            .max(viewport.x0)
+            .min(viewport.x1 - width);
+        let y0 = anchor.y1 + f64::from(theme.gap_standard);
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+}
+
+impl Widget for LazyProfileCard {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        if let Some(card) = self.card.as_mut() {
+            return card.build_layout(taffy, theme, map);
+        }
+        let node = taffy
+            .new_leaf(taffy::Style::default())
+            .unwrap_or_else(|_| taffy::NodeId::from(0_u64));
+        self.empty = Some(node);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if let Some(card) = self.card.as_mut() {
+            card.apply_layout(taffy, node, origin);
+        }
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        self.card
+            .as_mut()
+            .is_some_and(|card| card.update(state, path))
+    }
+
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        if let Some(card) = self.card.as_mut() {
+            card.sync(state, path);
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(card) = self.card.as_mut() {
+            card.handle_event(event, ctx);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some((_, anchor, viewport)) = self.opening {
+            let rect = Self::waiting_rect(anchor, viewport, theme);
+            ui::lazy_code::draw_loading(scene, transform, text, theme, rect, "lazy-loading");
+            return;
+        }
+        if let Some(card) = self.card.as_mut() {
+            card.draw(scene, transform, text, theme, presence);
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.card
+            .as_deref()
+            .map(|card| card as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match self.card.as_mut() {
+            Some(card) => vec![card.as_mut() as &mut dyn Widget],
+            None => Vec::new(),
+        }
+    }
+
+    fn take_focus_reset(&mut self) -> bool {
+        self.card
+            .as_mut()
+            .is_some_and(|card| card.take_focus_reset())
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.card
+            .as_mut()
+            .is_some_and(|card| card.take_structure_dirty())
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.card.as_ref().is_some_and(|card| card.traps_focus())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.card.as_ref().and_then(|card| card.modal_capture())
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.card
+            .as_ref()
+            .is_some_and(|card| card.wants_pointer_capture())
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.opening.is_some() || self.card.as_ref().is_some_and(|card| card.needs_redraw())
+    }
+
+    fn name(&self) -> &'static str {
+        "ProfileCard"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.card
+            .as_ref()
+            .map_or(Rect::ZERO, |card| card.get_rect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,6 +1684,22 @@ mod tests {
     }
 
     /// Opening the card is not editing: focus rests on the card itself, and
+    /// A build that links the card makes it at once: the lazy card opens,
+    /// shows it as its child and closes as the card does.
+    #[test]
+    fn a_linked_lazy_card_opens_and_closes_as_the_card() {
+        let mut card = LazyProfileCard::new();
+        assert!(!card.is_open());
+        assert!(card.children().is_empty(), "made on first use");
+        let anchor = Rect::new(300.0, 0.0, 332.0, 32.0);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        card.toggle(&model(), anchor, viewport);
+        assert!(card.is_open());
+        assert_eq!(card.children().len(), 1);
+        card.close();
+        assert!(!card.is_open());
+    }
+
     /// Tab (or a click) enters the name field.
     #[test]
     fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
