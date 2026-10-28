@@ -91,9 +91,9 @@ fn test_wayland_handshake_fixed() {
     // host: the sandbox binds the /usr that cargo sees, so on a machine that
     // builds in a container the host having alacritty proves nothing, and the
     // failure surfaced as "server received no events" with "exec: alacritty:
-    // not found" buried in the app log. Cargo always builds this one, and
-    // the handshake is what is under test, not which client performs it.
-    let client = tilo_test_env::package_binary!("click_test_client");
+    // not found" buried in the app log. The workspace always builds this one,
+    // and the handshake is what is under test, not which client performs it.
+    let client = crate::support::click_client::path();
     let container = Container::new(
         client
             .parent()

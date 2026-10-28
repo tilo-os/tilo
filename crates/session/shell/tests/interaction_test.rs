@@ -443,9 +443,8 @@ fn gtk_text_editor_keeps_one_caret_for_overlapping_collaborator_keys() {
     reason = "one end-to-end sandbox scenario: spawn, wait for the window, drive input and assert, in order"
 )]
 fn test_click_interaction_in_sandbox() {
-    // Cargo builds every binary target of the package before its integration
-    // tests and hands us the path as CARGO_BIN_EXE_click_test_client; a nested
-    // `cargo build` here would only recompile the crate under another profile.
+    // The client is built before the tests (support::click_client); a nested
+    // `cargo build` here would only recompile it under another profile.
     let (tx, mut rx) = mpsc::unbounded_channel();
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (input_tx, input_tx_rx) = mpsc::unbounded_channel();
@@ -457,9 +456,9 @@ fn test_click_interaction_in_sandbox() {
     // cargo runs an integration test with the *package* root as its cwd, not
     // the workspace root, so a relative "target/debug/..." resolved to
     // shell/target and the sandbox reported the client missing — as "did not
-    // become ready", with the real cause only in the app log. This is the path
-    // cargo hands us for its own binary, so it survives any layout change.
-    let client = tilo_test_env::package_binary!("click_test_client");
+    // become ready", with the real cause only in the app log. The path comes
+    // from the test binary's own target directory or the runner, never the cwd.
+    let client = crate::support::click_client::path();
     let container = Container::new(
         client
             .parent()
