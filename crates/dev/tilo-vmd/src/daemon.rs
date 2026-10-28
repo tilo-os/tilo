@@ -39,7 +39,11 @@ const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
 /// How long a started session may take to bind its control socket.
 const CONTROL_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a person's onboarding may take, identity creation included.
+/// How long a person's onboarding may take once its session is up, identity
+/// creation included. A first-login session binds its control socket only
+/// after it has set up onboarding (47 s after its unit started on a loaded
+/// builder, against 10 s for a session without onboarding), so waiting for
+/// the socket is part of this bound, not of [`CONTROL_SOCKET_TIMEOUT`].
 const ONBOARDING_TIMEOUT: Duration = Duration::from_secs(180);
 /// How long `fs` may take to start once the device key is certified.
 const FS_START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1514,8 +1518,9 @@ impl Daemon {
         if created {
             let mut pressed = Vec::new();
             let started = Instant::now();
+            let deadline = started.checked_add(ONBOARDING_TIMEOUT).unwrap_or(started);
             loop {
-                let targets = self.onboarding_targets(&session)?;
+                let targets = self.onboarding_targets(&session, deadline)?;
                 if targets.is_empty() && self.apply.machine_identity().certified {
                     break;
                 }
@@ -1579,14 +1584,18 @@ impl Daemon {
     }
 
     /// The onboarding controls the session shows, by name; empty once
-    /// onboarding is gone. Waits for a control socket a starting session
-    /// has not bound yet.
-    fn onboarding_targets(&mut self, session: &apply::Session) -> Result<Vec<String>, DaemonError> {
+    /// onboarding is gone. Waits, until `deadline`, for a control socket a
+    /// starting session has not bound yet.
+    fn onboarding_targets(
+        &mut self,
+        session: &apply::Session,
+        deadline: Instant,
+    ) -> Result<Vec<String>, DaemonError> {
         let args = ["raw".to_owned(), r#"{"op":"list_targets"}"#.to_owned()];
-        let asked = Instant::now();
         let reply = loop {
             let reply = self.apply.control(session, &args)?;
-            if reply.exit_code != 2 || asked.elapsed() >= CONTROL_SOCKET_TIMEOUT {
+            // tilo-control exits 2 when it cannot reach the socket.
+            if reply.exit_code != 2 || Instant::now() >= deadline {
                 break reply;
             }
             std::thread::sleep(Duration::from_millis(250));
