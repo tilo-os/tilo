@@ -223,6 +223,16 @@ impl From<&str> for BridgeError {
 impl From<BridgeError> for String {
     fn from(error: BridgeError) -> Self {
         match error {
+            // What happened, and what to do: a bare code leaves the caller
+            // guessing whether to retry, and a caller that retries the same
+            // stale revision fails the same way.
+            BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision) => {
+                "the resource changed since the revision this call named, which you read: \
+                 the action is offered at a newer revision now. Invoke it again and omit \
+                 revision, which runs it against the directory as it is now, or re-run \
+                 tilo_query and invoke it at the revision that page names"
+                    .to_owned()
+            }
             BridgeError::Host(error) => error.to_string(),
             BridgeError::Bridge(message) => message,
         }
@@ -398,6 +408,7 @@ struct InvokeArgs {
     wait_ms: Option<u64>,
 }
 /// One action of either form, after the batch has been split apart.
+#[derive(Clone)]
 struct OneCall {
     /// Resolved once per tool call: a batch runs on one peer.
     provider: Addressed,
@@ -1663,7 +1674,20 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }),
         };
         let detail = args.detail.unwrap_or_else(|| self.detail());
-        let mut page = self.ask(query.clone()).await?;
+        let mut page = match self.ask(query.clone()).await {
+            Err(BridgeError::Host(tilo_actions::remote::ActionHostError::StaleRevision))
+                if !query.revision.as_deref().unwrap_or_default().is_empty() =>
+            {
+                // A directory moves on every change the app publishes, and
+                // a caller that keeps a revision from the page it read a
+                // few calls ago is reading the directory, not asking for
+                // that snapshot back: read it as it is now, once.
+                let mut now = query.clone();
+                now.revision = None;
+                self.ask(now).await?
+            }
+            read => read?,
+        };
         let mut partial = false;
         if words.len() > 1 {
             page.rows.retain(|row| page::matches_words(row, &words));
@@ -1803,6 +1827,61 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(())
     }
+    /// The row offering one action to this caller: the resource it names by
+    /// id, kind or label, at the revision the caller named or the directory
+    /// as it is now.
+    ///
+    /// A revision refuses only when it is not the directory's current one,
+    /// and a directory moves whenever the app's page does: a caller that
+    /// named a revision it read a few calls ago is asking about the action,
+    /// not about a snapshot it wants restored. So a named revision that
+    /// moved on is resolved once more as the directory is now, and the
+    /// answer names the revision it was resolved against — the one to pass
+    /// to `tilo_invoke`. Only a directory that moves between those two
+    /// reads (or one that keeps refusing) is reported, with what to do.
+    async fn resolve_target(&self, a: TargetArgs) -> Result<Value, String> {
+        if a.revision.as_deref() == Some("") {
+            return Err("revision must not be empty".into());
+        }
+        let provider = self
+            .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
+            .await?;
+        let named = a.revision.clone().unwrap_or_default();
+        let (revision, _) = self.revision_for(&provider, a.revision).await?;
+        let mut target = RemoteActionTarget {
+            provider,
+            address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
+        };
+        let mut page = self
+            .ask(CatalogueQuery::resolve(&target, revision.clone()))
+            .await?;
+        if page.rows.is_empty()
+            && !page.stale_cursor
+            && let Some(resolved) = self.named_resource(&target).await?
+        {
+            target.address.resource = resolved;
+            page = self
+                .ask(CatalogueQuery::resolve(&target, revision.clone()))
+                .await?;
+        }
+        if page.stale_cursor {
+            // The directory moved between reading its revision and asking
+            // it: read it as it is now, once, and answer with the revision
+            // it was resolved against.
+            let current = self.current_revision(&target.provider).await?;
+            page = self
+                .ask(CatalogueQuery::resolve(&target, current.clone()))
+                .await?;
+            if page.stale_cursor {
+                let before = if named.is_empty() { revision } else { named };
+                return Err(stale_revision_error(&before, &current));
+            }
+        }
+        match page.rows.first() {
+            Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
+            None => Err(self.not_offered(&target).await?),
+        }
+    }
     /// The revision `provider`'s directory is at now, for a caller that
     /// named none.
     async fn current_revision(&self, provider: &str) -> Result<String, BridgeError> {
@@ -1847,37 +1926,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         match name {
             "tilo_list_apps" => self.apps(parse(args)?).await,
             "tilo_query" => self.query(parse(args)?).await,
-            "tilo_resolve" => {
-                let a: TargetArgs = parse(args)?;
-                if a.revision.as_deref() == Some("") {
-                    return Err("revision must not be empty".into());
-                }
-                let provider = self
-                    .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-                    .await?;
-                let (revision, _) = self.revision_for(&provider, a.revision).await?;
-                let mut target = RemoteActionTarget {
-                    provider,
-                    address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
-                };
-                let mut page = self
-                    .ask(CatalogueQuery::resolve(&target, revision.clone()))
-                    .await?;
-                if page.rows.is_empty()
-                    && !page.stale_cursor
-                    && let Some(named) = self.named_resource(&target).await?
-                {
-                    target.address.resource = named;
-                    page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
-                }
-                if page.stale_cursor {
-                    return Err("StaleRevision".into());
-                }
-                match page.rows.first() {
-                    Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
-                    None => Err(self.not_offered(&target).await?),
-                }
-            }
+            "tilo_resolve" => self.resolve_target(parse(args)?).await,
             "tilo_invoke" => self.invoke(parse(args)?).await,
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
@@ -2021,6 +2070,43 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
     async fn invoke_one(&self, mut a: OneCall) -> Result<Value, String> {
+        let named = a.revision.clone();
+        match self.start_one(a.clone()).await {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let moved = error.contains(tilo_actions::remote::STALE_REVISION_REASON);
+                match self.maybe_retry_stale(&mut a, &named, moved).await {
+                    Some(retried) => retried,
+                    None => Err(error),
+                }
+            }
+        }
+    }
+    /// `error` as an answer, after running the action again against the
+    /// directory as it is now when the caller named a revision the
+    /// directory has left behind.
+    ///
+    /// A revision a caller names is one it read a few calls ago, and a
+    /// directory moves whenever the app's page does: the caller is after the
+    /// action, not that snapshot. An omitted revision is resolved by the
+    /// host as it admits the action, which always names the revision it
+    /// resolved against, so a second refusal is a directory that moved under
+    /// the call itself and is reported with what to do.
+    async fn maybe_retry_stale(
+        &self,
+        a: &mut OneCall,
+        named: &Option<String>,
+        moved: bool,
+    ) -> Option<Result<Value, String>> {
+        if !moved || named.as_deref().is_none_or(str::is_empty) {
+            return None;
+        }
+        a.revision = None;
+        Some(self.start_one(a.clone()).await)
+    }
+    /// [`Self::invoke_one`] for one revision: the action started, or the
+    /// host's refusal.
+    async fn start_one(&self, mut a: OneCall) -> Result<Value, String> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -3016,6 +3102,15 @@ fn resource_list(rows: &[CatalogueRow]) -> String {
     } else {
         listed.join(", ")
     }
+}
+/// What a caller is told when a directory moved on under a resolve: which
+/// revision it named, which the directory is at, and what to do next.
+fn stale_revision_error(named: &str, current: &str) -> String {
+    format!(
+        "the resource changed since revision {named}, which you read; it is at {current} now. \
+         The directory moved while it was being read: re-run tilo_query for the resource and \
+         resolve it again, or omit revision to resolve against the directory as it is now"
+    )
 }
 fn call_failed(value: &Value) -> bool {
     if value.get("pending").is_some() || value.pointer("/opened/error").is_some() {
