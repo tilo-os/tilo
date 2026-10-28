@@ -213,7 +213,7 @@ impl PromptQueue {
 
     /// Take the file choosers waiting, in the order they were raised, and
     /// leave every other ask where it is. The chooser is drained by the
-    /// overlay that draws it ([`crate::shell::file_picker_overlay`]), while
+    /// overlay that draws it (`crate::shell::file_picker_overlay`), while
     /// the other sheets are drained by the sheet controller; one queue, read
     /// by the surface each kind belongs to.
     pub fn take_pickers(&self) -> Vec<super::file_picker_spawner::FilePickerRequest> {
