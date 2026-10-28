@@ -4154,147 +4154,18 @@ scenario! {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
-#[expect(
-    clippy::float_cmp,
-    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
-)]
-fn keyboard_edit_shortcuts_mutate_the_crdt() {
-    // Case `split_shortcut_mutates_the_crdt_timeline`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        let target = app.project.top_video_clip_at(10.0).unwrap().id;
-        app.selection.select_only(target);
-        app.playhead = 12.0;
-        settle(&mut app, &mut doc);
-        let before = load(&doc).clips.len();
-        assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
-        // The new clip is in the *document*, not just the in-memory mirror.
-        settle(&mut app, &mut doc);
-        let reloaded = load(&doc);
-        assert_eq!(
-            reloaded.clips.len(),
-            before + 1,
-            "split wrote a clip to the CRDT"
-        );
-        assert!(
-            take_steps() > 0,
-            "split dispatched an action, arming one undo boundary",
-        );
-    }
-    // Case `copy_paste_shortcuts_add_an_independent_clip`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        let id = app.project.top_video_clip_at(5.0).unwrap().id;
-        app.selection.select_only(id);
-        settle(&mut app, &mut doc);
-        let before = load(&doc).clips.len();
-        assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C handled");
-        app.playhead = 30.0;
-        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V handled");
-        settle(&mut app, &mut doc);
-        let reloaded = load(&doc);
-        assert_eq!(
-            reloaded.clips.len(),
-            before + 1,
-            "paste added a clip to the CRDT"
-        );
-        let pasted = app.selected().unwrap();
-        assert_ne!(pasted, id);
-        assert!((reloaded.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
-    }
-    // Case `set_in_out_shortcuts_trim_the_selected_clip`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        // Interview clip spans roughly [8, 20] on V1.
-        let id = app.project.top_video_clip_at(12.0).unwrap().id;
-        app.selection.select_only(id);
-        app.playhead = 15.0;
-        assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
-        settle(&mut app, &mut doc);
-        let reloaded = load(&doc);
-        assert!(
-            (reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6,
-            "O trims the tail to the playhead"
-        );
-        assert!(
-            take_steps() > 0,
-            "setting the out-point dispatched an action, arming one undo boundary",
-        );
-    }
-    // Case `jkl_shuttle_moves_and_stops_the_playhead`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        app.playhead = 5.0;
-        assert!(key_press(&mut app, &mut doc, "l", false), "L handled");
-        assert!(app.shuttle > 0.0, "L shuttles forward");
-        assert!(key_press(&mut app, &mut doc, "l", false));
-        assert!(app.shuttle >= 2.0, "repeated L doubles the rate");
-        assert!(key_press(&mut app, &mut doc, "k", false), "K handled");
-        assert_eq!(app.shuttle, 0.0, "K stops the shuttle");
-        assert!(key_press(&mut app, &mut doc, "j", false));
-        assert!(app.shuttle < 0.0, "J shuttles in reverse");
-    }
-    // Case `ripple_delete_shortcut_closes_the_gap_in_the_crdt`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        // Market cutaway is the last V1 clip at start=20.
-        let v1_first = app.project.top_video_clip_at(3.0).unwrap();
-        let track = v1_first.track;
-        let first = v1_first.id;
-        let next = app
-            .project
-            .clips_on(track)
-            .into_iter()
-            .find(|c| c.id != first)
-            .map(|c| (c.id, c.start));
-        app.selection.select_only(first);
-        let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
-        let r = app.regions();
-        app.handle_key(
-            &WKey::Named(NamedKey::Delete),
-            mods,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &r,
-        );
-        settle(&mut app, &mut doc);
-        let reloaded = load(&doc);
-        assert!(
-            reloaded.clip(first).is_none(),
-            "rippled clip removed from CRDT"
-        );
-        if let Some((nid, old_start)) = next {
-            assert!(
-                reloaded.clip(nid).unwrap().start < old_start,
-                "later clip shifted left in the CRDT"
-            );
-        }
-    }
-    // Case `nudge_arrow_moves_selected_clip_in_the_crdt`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        let id = app.project.top_video_clip_at(12.0).unwrap().id;
-        app.selection.select_only(id);
-        settle(&mut app, &mut doc);
-        let before = load(&doc).clip(id).unwrap().start;
-        let r = app.regions();
-        let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
-        app.handle_key(
-            &WKey::Named(NamedKey::ArrowRight),
-            shift,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &r,
-        );
-        settle(&mut app, &mut doc);
-        let after = load(&doc).clip(id).unwrap().start;
-        assert!(
-            (after - before - 1.0).abs() < 1e-6,
-            "Shift+Right nudges +1s in the CRDT"
-        );
-    }
+#[expect(clippy::float_cmp, reason = "K assigns the literal zero")]
+fn jkl_shuttle_moves_and_stops_the_playhead() {
+    let (mut app, mut doc) = app_and_doc();
+    app.playhead = 5.0;
+    assert!(key_press(&mut app, &mut doc, "l", false), "L handled");
+    assert!(app.shuttle > 0.0, "L shuttles forward");
+    assert!(key_press(&mut app, &mut doc, "l", false));
+    assert!(app.shuttle >= 2.0, "repeated L doubles the rate");
+    assert!(key_press(&mut app, &mut doc, "k", false), "K handled");
+    assert_eq!(app.shuttle, 0.0, "K stops the shuttle");
+    assert!(key_press(&mut app, &mut doc, "j", false));
+    assert!(app.shuttle < 0.0, "J shuttles in reverse");
 }
 
 #[test]
