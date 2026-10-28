@@ -314,7 +314,7 @@ fn main() {
                 harness.settle_for_capture(Duration::from_secs(2));
                 let start = ui::time::now();
                 {
-                    let stage = harness.root_mut::<Stage>();
+                    let mut stage = harness.root_mut::<Stage>();
                     stage.now = start;
                     if let Some(cue) = moment.cue {
                         stage.hints.observe(cue, start);

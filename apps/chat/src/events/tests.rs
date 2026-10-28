@@ -2311,7 +2311,7 @@ fn inspector_accessibility_focus_retires_the_previous_keyboard_owner() {
         .iter()
         .position(|node| node.action_target.as_deref() == Some("inspector-resize"))
         .unwrap();
-    let root = driver.root_mut::<ChatApp>();
+    let mut root = driver.root_mut::<ChatApp>();
     assert!(root.focus_synthetic_accessibility(&[attach]));
     assert!(root.focus_synthetic_accessibility(&[right]));
     assert!(root.keyboard_target.is_none());

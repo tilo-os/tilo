@@ -347,6 +347,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
         ),
         ("take_profile_samples", "drains the profiler"),
         (
+            "embedded_targets",
+            "reaches the app through `root_mut`, which invalidates",
+        ),
+        (
             "take_collaboration_requests",
             "drains what the widgets asked of the transport, which no frame reads",
         ),

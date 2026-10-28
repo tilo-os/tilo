@@ -1677,7 +1677,7 @@ fn an_unavailable_destination_is_published_disabled_and_the_rest_kept() {
         .selection_actions((0..4).map(|index| (format!("item-{index}"), binding.clone())));
     let mut h = tall(list);
     crate::widget::controls::ActionControls::refresh_control_action_availability(
-        h.root_mut::<NavList>(),
+        &mut *h.root_mut::<NavList>(),
         &HashSet::new(),
     );
     let list = h.root::<NavList>();

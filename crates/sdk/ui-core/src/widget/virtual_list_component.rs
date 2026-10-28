@@ -660,4 +660,10 @@ impl Decorator for DescribedList {
     fn name(&self) -> &'static str {
         "DescribedList"
     }
+
+    /// The list's change is the described list's: it adds no structure of its own, so rows
+    /// the list builds anew stay mounted in place and the window keeps its tree.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.inner_mut().take_structure_change()
+    }
 }

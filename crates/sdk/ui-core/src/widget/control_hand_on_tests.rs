@@ -78,7 +78,7 @@ fn rect(d: &FrameHarness, index: usize) -> vello::kurbo::Rect {
 fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource) {
     let mut doc = automerge::AutoCommit::new();
     crate::motion::note_source(source);
-    let column = d.root_mut::<Column>();
+    let mut column = d.root_mut::<Column>();
     let control = &mut column.children_mut()[index];
     assert!(Widget::perform_action(
         *control,
