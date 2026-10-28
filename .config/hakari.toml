@@ -103,6 +103,11 @@ third-party = [
     # JSON decoding: 13 to 28 KB of each aarch64 tapp (Monitor 1,168,896 ->
     # 1,141,248 B). The gateway still builds them as Rig asks.
     { name = "rig-core", path = "vendor/rig-core" },
+    # wasmtime is the tilolang runtime's comparison engine, behind its
+    # `wasmtime` feature that no build turns on (docs/tilolang-engines.md).
+    # Counted, the hack handed every managed member parts of it (the Pulley
+    # interpreter, wasmtime's core crate, Cranelift's bitset).
+    { name = "wasmtime" },
 ]
 
 [final-excludes]
