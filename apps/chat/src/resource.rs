@@ -759,73 +759,10 @@ impl ChatApp {
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod reach_tests {
-    use ui::framework::ResourceApp as _;
-    use ui::framework::testing::{TestApp, unreachable_actions, unreachable_actions_in_share};
-
-    /// The walk's slices: a drive of one scenario walks dozens of actions,
-    /// so each slice is its own test and they run side by side.
-    const SLICES: usize = 6;
-
-    /// The scenarios of a long thread publish thousands of actions (each
-    /// message offers its own): every slice asks its share of them, so no
-    /// slice holds a whole long thread.
-    const LONG: &[&str] = &["long-thread", "agent-long-thread"];
-
-    /// Every action the app publishes is reachable by address in a drive of
-    /// every `SLICES`th scenario from `slice`, and of `slice`'s share of a
-    /// long thread's: none is advertised yet handled only by a click. The
-    /// scenarios stage fixtures; the app someone opens acts on this
-    /// machine, so it is not walked.
-    fn walk(slice: usize) {
-        for (index, scenario) in super::ChatShell::scenarios().iter().enumerate() {
-            let long = LONG.contains(scenario);
-            if !long && index % SLICES != slice {
-                continue;
-            }
-            let mut app = TestApp::<super::ChatShell>::drive(scenario)
-                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
-            let unreachable = if long {
-                unreachable_actions_in_share(&mut app, slice, SLICES)
-            } else {
-                unreachable_actions(&mut app)
-            };
-            assert_eq!(
-                unreachable,
-                Vec::<String>::new(),
-                "{scenario}: published actions a drive cannot invoke"
-            );
-        }
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
-        walk(0);
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
-        walk(1);
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
-        walk(2);
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
-        walk(3);
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_4() {
-        walk(4);
-    }
-
-    #[test]
-    fn a_drive_of_every_scenario_reaches_every_published_action_5() {
-        walk(5);
-    }
-}
+// A long thread publishes thousands of actions (each message offers its
+// own), so every share asks its part of them.
+ui::reach_tests!(
+    ChatShell,
+    shares: [share_0, share_1, share_2, share_3, share_4, share_5],
+    long: ["long-thread", "agent-long-thread"],
+);

@@ -77,6 +77,53 @@ macro_rules! main {
     };
 }
 
+/// Declare the test that a drive of every scenario of an app reaches every
+/// action it publishes (`framework::testing::check_scenarios_reach_every_action`,
+/// built with `test-support`): none is advertised yet handled only by a
+/// click. The scenarios stage fixtures; the app someone opens acts on this
+/// machine (its files, its processes), so it is not walked.
+///
+/// `reach_tests!(Shell)` declares one test. An app whose scenarios take
+/// long to walk names one test per share, `shares: [share_0, share_1]`,
+/// which run side by side and together walk every scenario; `long:
+/// ["scenario"]` names scenarios publishing so many actions (one set per
+/// row of a long list) that every share asks its own part of them.
+#[macro_export]
+macro_rules! reach_tests {
+    ($app:ty) => {
+        $crate::reach_tests!($app, shares: [a_drive_of_every_scenario_reaches_every_published_action]);
+    };
+    ($app:ty, shares: [$($test:ident),+ $(,)?] $(, long: [$($long:literal),* $(,)?])? $(,)?) => {
+        #[cfg(test)]
+        mod reach_tests {
+            #[allow(unused_imports, reason = "the app type may be named by a path")]
+            use super::*;
+
+            const SHARES: &[&str] = &[$(stringify!($test)),+];
+            const LONG: &[&str] = &[$($($long),*)?];
+
+            $(
+                #[test]
+                fn $test() {
+                    let share = SHARES
+                        .iter()
+                        .position(|test| *test == stringify!($test))
+                        .unwrap_or_default();
+                    if let Err(failures) =
+                        $crate::framework::testing::check_scenarios_reach_every_action::<$app>(
+                            share,
+                            SHARES.len(),
+                            LONG,
+                        )
+                    {
+                        panic!("{failures}");
+                    }
+                }
+            )+
+        }
+    };
+}
+
 /// Export the entry points every platform's host enters the app library by.
 ///
 /// Invoke it once at the root of the app library, naming the [`framework::ResourceApp`]

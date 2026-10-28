@@ -5,6 +5,51 @@
 use super::HeadlessApp;
 use crate::framework::app::ResourceApp;
 
+/// Drive every `shares`th scenario `A` stages from the `share`th, and each
+/// of the `long` ones, and ask each drive for the actions it could not
+/// invoke ([`unreachable_actions`]). A `long` scenario is walked by every
+/// share, each asking its own part of what it publishes
+/// ([`unreachable_actions_in_share`]); the shares together ask everything.
+///
+/// # Errors
+/// Each scenario that did not open, or whose drive left published actions
+/// unreachable, with those actions.
+pub fn check_scenarios_reach_every_action<A: ResourceApp>(
+    share: usize,
+    shares: usize,
+    long: &[&str],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for (index, scenario) in A::scenarios().iter().enumerate() {
+        let long = long.contains(scenario);
+        if !long && index.checked_rem(shares) != Some(share) {
+            continue;
+        }
+        let mut app = match HeadlessApp::<A>::drive(scenario) {
+            Ok(app) => app,
+            Err(error) => {
+                failures.push(format!("{scenario}: {error}"));
+                continue;
+            }
+        };
+        let unreachable = if long {
+            unreachable_actions_in_share(&mut app, share, shares)
+        } else {
+            unreachable_actions(&mut app)
+        };
+        if !unreachable.is_empty() {
+            failures.push(format!(
+                "{scenario}: published actions a drive cannot invoke: {unreachable:#?}"
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
 /// Invoke every action `app` publishes, one after another, as a headless
 /// drive's `invoke` steps do (`FrameHarness::invoke_action`: the door's own
 /// resolution, availability, confirmation and strict binding), each with
