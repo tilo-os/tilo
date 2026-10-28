@@ -1447,6 +1447,48 @@ fn a_bound_resources_effect_still_answers_with_its_picture_address() {
     });
 }
 
+/// The same bound resource as an ordinary caller reaches it: the MCP door
+/// names the revision it invokes at (a confirmed action, a retried one), and
+/// the class is then asked where the host answers for what it publishes. An
+/// id a window bound a resource under names no action, so an answer that does
+/// not say what ran (`agent.kind`) must not be read as a refusal to show the
+/// picture: silence is not "effect".
+#[test]
+fn a_bound_resource_invoked_at_a_revision_shows_its_picture() {
+    let bound = "tilo-ui-bound:v1:pubb:aabb:746573742e6e6f74653a31";
+    let host = StubHost {
+        catalogue_only: true,
+        ..StubHost::default()
+    };
+    *host.output.lock().unwrap() = tilo_actions::ActionOutput {
+        value: Some(json!({"url":"https://site.test/","message":"Found canvas"})),
+        resources: vec!["tilo.content:look".into()],
+    };
+    let server = crate::mcp::McpServer::new(host, "room".into(), "owner".into())
+        .with_media(Some(Arc::new(StoredByTestApp)));
+    let images = |reply: &Value| {
+        reply["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|block| block["type"] == "image")
+            .count()
+    };
+    run(async {
+        let reply = tool(
+            &server,
+            "tilo_invoke",
+            json!({"peer_id":71,"resource":bound,"action":tilo_resource::APPLY,"revision":"1"}),
+        )
+        .await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "succeeded",
+            "{reply}"
+        );
+        assert_eq!(images(&reply), 1, "{reply}");
+    });
+}
+
 /// A look at an unchanged picture costs a line, not an image: the answer
 /// names the invocation that showed it, whose `tilo_status` shows it again.
 /// Each session keeps its own record.

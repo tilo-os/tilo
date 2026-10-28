@@ -385,7 +385,17 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
 
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
         self.attach_dispatcher(cx.dispatcher());
-        self.service_cx = Some(cx.clone());
+        // A picture of the page is content: the store keeps its bytes, and the
+        // answer names them, so the reader who can see it does. It is the
+        // store the host lent this window (`SurfaceCx::content`), not the one
+        // `tilo_resource::content::current()` answers: that answers for the
+        // wake scope entered now, and an action applying outside the window's
+        // own scope found none — so a capture was kept by a store the
+        // runtime's content service never held, and the answer's picture was
+        // an address that read back empty.
+        if let Some(content) = cx.content() {
+            self.page_mut().attach_content(content);
+        }
         if cx.mode().is_live() {
             if !cx.is_private()
                 && cx
@@ -487,11 +497,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             }
         }
         let invocation = cx.invocation().unwrap_or_default();
-        // A picture of the page is content: the store keeps its bytes, and the
-        // answer names them, so the reader who can see it does.
-        if let Some(content) = ui::tilo_resource::content::current() {
-            self.page_mut().attach_content(content);
-        }
         match self.page_mut().admit(invocation, effect.operation())? {
             Effected::Pending => {
                 let reply = cx.reply();
