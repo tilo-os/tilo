@@ -9,15 +9,15 @@
 
 use std::path::Path;
 
-use libvirt_domain::{vsock_device_xml, xml_path, xml_text};
+use libvirt_domain::{metadata_xml, vsock_device_xml, xml_path, xml_text};
 use thiserror::Error;
 
 use crate::config::VmConfig;
 use crate::grants::HostShare;
 use crate::transport::{QEMU_NAMESPACE, VsockBackend, hybrid_commandline_xml};
 
-/// Marks a domain as Tilo's; a same-named domain without it is not touched.
-pub const METADATA_ELEMENT: &str = "<tilo:legacy-vm";
+/// The kind in the metadata marker that makes a domain Tilo's legacy VM.
+const METADATA_KIND: &str = "legacy-vm";
 
 /// Empty PCI Express root ports for live-attached shares.
 const HOTPLUG_PORTS: usize = 8;
@@ -32,12 +32,12 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
     let disk = xml_path(&config.paths.disk()).ok_or(DomainError::NonUtf8Path)?;
     let console = xml_path(&config.paths.console_log()).ok_or(DomainError::NonUtf8Path)?;
     let name = xml_text(&config.domain_name);
-    let guest = config.guest.as_str();
+    let metadata = metadata_xml(METADATA_KIND, &[("guest", config.guest.as_str())]);
     let (namespace, vsock, commandline) = match backend {
-        VsockBackend::Kernel => (String::new(), vsock_device_xml(None), String::new()),
+        VsockBackend::Kernel => (String::new(), vsock_device_xml(), String::new()),
         VsockBackend::Hybrid => (
             format!(" xmlns:qemu='{QEMU_NAMESPACE}'"),
-            String::new(),
+            "",
             hybrid_commandline_xml(&config.paths.vsock_vhost_user()),
         ),
     };
@@ -53,7 +53,7 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
     Ok(format!(
         "<domain type='kvm'{namespace}>\
 <name>{name}</name>\
-<metadata><tilo:legacy-vm xmlns:tilo='https://tilo.sh/vm/1' guest='{guest}'/></metadata>\
+{metadata}\
 <memory unit='MiB'>{max}</memory><currentMemory unit='MiB'>{base}</currentMemory>\
 <memoryBacking><source type='memfd'/><access mode='shared'/></memoryBacking>\
 <vcpu placement='static'>{vcpus}</vcpu>\
@@ -90,14 +90,14 @@ pub fn filesystem_xml(share: &HostShare, socket: &Path) -> Result<String, Domain
     ))
 }
 
-/// Whether a defined domain carries Tilo's marker.
+/// Whether a defined domain carries Tilo's marker for this guest.
 #[must_use]
 pub fn is_ours(domain_xml: &str, config: &VmConfig) -> bool {
-    // libvirt re-serialises metadata with double quotes.
-    let guest = config.guest.as_str();
-    domain_xml.contains(METADATA_ELEMENT)
-        && (domain_xml.contains(&format!("guest='{guest}'"))
-            || domain_xml.contains(&format!("guest=\"{guest}\"")))
+    libvirt_domain::is_ours(
+        domain_xml,
+        METADATA_KIND,
+        &[("guest", config.guest.as_str())],
+    )
 }
 
 #[must_use]

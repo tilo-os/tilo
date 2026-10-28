@@ -155,7 +155,7 @@ fn live_vm_delegate() -> Result<Arc<dyn VmDelegate>, String> {
     let appliance = WindowsAppliance::new(
         configuration,
         ProvisioningStore::new(format!("{ROOT}/session/state.json")),
-        LibvirtBackend::new(runner),
+        LibvirtBackend::new(),
         bridge,
         SharedSessionCapabilityBroker::new(
             PortalRailCapabilityBroker::new(Arc::clone(&portal_documents)),

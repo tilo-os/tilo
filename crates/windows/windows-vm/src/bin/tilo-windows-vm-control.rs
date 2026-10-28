@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use windows_vm::{
     ApplianceConfig, DomainState, EgressLease, EgressPurpose, GraphicsAssignment,
-    GraphicsCapabilities, LibvirtBackend, StdCommandRunner, VmBackend,
+    GraphicsCapabilities, LibvirtBackend, VmBackend,
 };
 
 const ROOT: &str = "/var/lib/tilo/windows";
@@ -777,14 +777,14 @@ fn unix_now() -> Result<u64, String> {
     tilo_clock::try_unix_now().ok_or_else(|| "system clock is before the Unix epoch".to_string())
 }
 
-fn appliance() -> Result<(ApplianceConfig, LibvirtBackend<StdCommandRunner>), String> {
+fn appliance() -> Result<(ApplianceConfig, LibvirtBackend), String> {
     require_regular_file(Path::new(UUID_FILE), "domain identity")?;
     require_regular_file(Path::new(SYSTEM_DISK), "system disk")?;
     let domain_uuid = fs::read_to_string(UUID_FILE)
         .map_err(|error| format!("cannot read the protected domain identity: {error}"))?;
     Ok((
         ApplianceConfig::recommended(domain_uuid.trim(), SYSTEM_DISK, NVRAM),
-        LibvirtBackend::new(StdCommandRunner),
+        LibvirtBackend::new(),
     ))
 }
 

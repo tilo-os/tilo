@@ -11,7 +11,9 @@ name = "libvirt_domain"
 path = "src/lib.rs"
 
 [dependencies]
+bounded-command = { path = "../bounded-command" }
 quick-xml.workspace = true
+thiserror.workspace = true
 workspace-hack = { version = "0.1" }
 
 [lints]

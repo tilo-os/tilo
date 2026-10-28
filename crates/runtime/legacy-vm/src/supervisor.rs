@@ -19,7 +19,7 @@ use legacy_agent_protocol::client;
 use legacy_agent_protocol::link::AgentLink;
 use legacy_agent_protocol::window::GUEST_ENV;
 use legacy_agent_protocol::{AGENT_PORT, GuestMessage, GuestShare, HostMessage};
-use libvirt_domain::{DomainState, vsock_cid};
+use libvirt_domain::{Connection, DomainState, Virsh, VirshError, vsock_cid};
 use thiserror::Error;
 
 use crate::config::VmConfig;
@@ -31,7 +31,6 @@ use crate::grants::{Grants, HostShare};
 use crate::lifecycle::{Action, Lifecycle, Phase};
 use crate::memory::actual_mib;
 use crate::transport::{VsockBackend, hybrid_link, vhost_device_vsock_argv};
-use crate::virsh::{Virsh, VirshError};
 use crate::{image, virtiofs};
 
 /// How often a running VM is asked what runs and how much memory it has.
@@ -99,7 +98,7 @@ impl Supervisor {
     #[must_use]
     pub fn new(config: VmConfig, image_override: Option<PathBuf>, self_exe: PathBuf) -> Self {
         Self {
-            virsh: Virsh::new(config.domain_name.clone()),
+            virsh: Virsh::new(Connection::Session, config.domain_name.clone()),
             life: Lifecycle::new(config.idle_suspend.as_secs()),
             config,
             image_override,
@@ -404,7 +403,10 @@ impl Supervisor {
             let _ = daemon.wait();
             return Err(SupervisorError::ShareDaemon(share.path.clone()));
         }
-        if let Err(error) = self.virsh.attach_live(&filesystem_xml(share, &socket)?) {
+        if let Err(error) = self
+            .virsh
+            .attach_device(&filesystem_xml(share, &socket)?, &["--live"])
+        {
             let _ = daemon.kill();
             let _ = daemon.wait();
             return Err(error.into());
@@ -425,7 +427,7 @@ impl Supervisor {
         };
         let socket = self.config.paths.share_socket(tag);
         if let Ok(xml) = filesystem_xml(&daemon.share, &socket) {
-            let _ = self.virsh.detach_live(&xml);
+            let _ = self.virsh.detach_device(&xml, &["--live"]);
         }
         let _ = daemon.daemon.kill();
         let _ = daemon.daemon.wait();

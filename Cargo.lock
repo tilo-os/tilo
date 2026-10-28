@@ -19154,7 +19154,9 @@ dependencies = [
 name = "tilo-libvirt-domain"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "quick-xml 0.41.0",
+ "thiserror 2.0.21",
  "workspace-hack",
 ]
 
@@ -25184,7 +25186,6 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
- "quick-xml 0.41.0",
  "rand 0.10.1",
  "reqwest 0.13.4",
  "rustix 1.1.4",

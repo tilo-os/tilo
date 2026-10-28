@@ -3,11 +3,49 @@
 //! The Windows appliance (`windows-vm`, `qemu:///system`) and the per-user
 //! legacy VMs (`legacy-vm`, `qemu:///session`) drive libvirt through `virsh`
 //! with typed arguments and never through a shell. What they have in common
-//! lives here: which daemon a command talks to, how `virsh domstate` is read,
-//! and the XML of the devices both domains carry.
+//! lives here: which daemon a command talks to, running `virsh` ([`Virsh`]),
+//! how `virsh domstate` is read, the marker that makes a domain Tilo's, and
+//! the XML of the devices both domains carry.
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::Path;
+
+mod virsh;
+
+pub use virsh::{
+    BoundedVirsh, Virsh, VirshError, VirshOutput, VirshRunner, managed_save_in_dominfo,
+};
+
+/// The namespace of the `<metadata>` element that marks a domain as Tilo's.
+pub const METADATA_NAMESPACE: &str = "https://tilo.sh/vm/1";
+
+/// The `<metadata>` block marking a domain as Tilo's `kind` (`legacy-vm`,
+/// `windows-appliance`), with `attributes` telling instances apart.
+#[must_use]
+pub fn metadata_xml(kind: &str, attributes: &[(&str, &str)]) -> String {
+    let mut marker = format!("<metadata><tilo:{kind} xmlns:tilo='{METADATA_NAMESPACE}'");
+    for (name, value) in attributes {
+        let _ = write!(marker, " {name}='{}'", xml_text(value));
+    }
+    marker + "/></metadata>"
+}
+
+/// Whether a defined domain carries the marker [`metadata_xml`] wrote. A
+/// same-named domain without it is someone else's and is never touched.
+/// libvirt re-serialises metadata with double quotes, so either quote matches.
+#[must_use]
+pub fn is_ours(domain_xml: &str, kind: &str, attributes: &[(&str, &str)]) -> bool {
+    let Some(marker) = domain_xml.split(&format!("<tilo:{kind}")).nth(1) else {
+        return false;
+    };
+    let marker = marker.split('>').next().unwrap_or_default();
+    attributes.iter().all(|(name, value)| {
+        let value = xml_text(value);
+        marker.contains(&format!("{name}='{value}'"))
+            || marker.contains(&format!("{name}=\"{value}\""))
+    })
+}
 
 /// Which libvirt daemon a domain belongs to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,15 +124,12 @@ impl DomainState {
     }
 }
 
-/// The virtio-vsock device. `None` lets libvirt pick a free context id, which
-/// is what an unprivileged domain must do: context ids are host-global, and a
-/// fixed one would collide with another user's VM.
+/// The virtio-vsock device. libvirt picks a free context id, which is what an
+/// unprivileged domain must do: context ids are host-global, and a fixed one
+/// would collide with another user's VM.
 #[must_use]
-pub fn vsock_device_xml(cid: Option<u32>) -> String {
-    match cid {
-        Some(cid) => format!("<vsock model='virtio'><cid auto='no' address='{cid}'/></vsock>"),
-        None => "<vsock model='virtio'><cid auto='yes'/></vsock>".to_string(),
-    }
+pub const fn vsock_device_xml() -> &'static str {
+    "<vsock model='virtio'><cid auto='yes'/></vsock>"
 }
 
 /// The context id of a running domain, read from its live `virsh dumpxml`.
@@ -164,19 +199,41 @@ mod tests {
         }
         // phase: the vsock cid round-trips through live XML
         {
-            assert_eq!(
-                vsock_device_xml(None),
-                "<vsock model='virtio'><cid auto='yes'/></vsock>"
-            );
             let live = "<devices><vsock model='virtio'><cid auto='yes' address='17'/><alias name='vsock0'/></vsock></devices>";
             assert_eq!(vsock_cid(live), Some(17));
-            assert_eq!(vsock_cid(&vsock_device_xml(Some(9))), Some(9));
             assert_eq!(
-                vsock_cid("<vsock model='virtio'><cid auto='yes'/></vsock>"),
-                None
+                vsock_cid("<vsock model='virtio'><cid auto='no' address='9'/></vsock>"),
+                Some(9)
             );
+            assert_eq!(vsock_cid(vsock_device_xml()), None);
             assert_eq!(vsock_cid("<vsock><cid address='2'/></vsock>"), None);
             assert_eq!(xml_text("a'b<c"), "a&apos;b&lt;c");
+        }
+        // phase: the marker is found again, also as libvirt re-serialises it
+        {
+            let marker = metadata_xml("legacy-vm", &[("guest", "linux")]);
+            assert_eq!(
+                marker,
+                "<metadata><tilo:legacy-vm xmlns:tilo='https://tilo.sh/vm/1' guest='linux'/></metadata>"
+            );
+            assert!(is_ours(&marker, "legacy-vm", &[("guest", "linux")]));
+            assert!(is_ours(
+                "<tilo:legacy-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/>",
+                "legacy-vm",
+                &[("guest", "linux")]
+            ));
+            assert!(!is_ours(&marker, "legacy-vm", &[("guest", "windows")]));
+            assert!(!is_ours(&marker, "windows-appliance", &[]));
+            assert!(!is_ours(
+                "<tilo:legacy-vm/><x guest='linux'/>",
+                "legacy-vm",
+                &[("guest", "linux")]
+            ));
+            assert!(is_ours(
+                &metadata_xml("windows-appliance", &[]),
+                "windows-appliance",
+                &[]
+            ));
         }
     }
 }

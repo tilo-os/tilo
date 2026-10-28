@@ -293,10 +293,12 @@ REMOTE_APP="$VM_ROOT/src/remote_app.rs"
 COMMAND_RUNNER="$VM_ROOT/src/command.rs"
 PRESENTATION="$VM_ROOT/src/presentation.rs"
 LIBVIRT="$VM_ROOT/src/libvirt.rs"
+VIRSH="$VM_ROOT/../../system/libvirt-domain/src/virsh.rs"
 SESSION_WIRING="$VM_ROOT/../../../crates/session/shell/src/shell/windows_compat.rs"
 need "$REMOTE_APP"
 need "$PRESENTATION"
 need "$LIBVIRT"
+need "$VIRSH"
 need "$COMMAND_RUNNER"
 need "$SESSION_WIRING"
 has "$REMOTE_APP" 'OsString::from("xfreerdp")' 'RAIL uses the upstream FreeRDP client'
@@ -305,7 +307,7 @@ has "$REMOTE_APP" 'AppFocusedSpiceLauncher' 'SPICE is an explicit app-focused fa
 has "$REMOTE_APP" 'qemu:///system' 'SPICE attaches through local libvirt only'
 has "$COMMAND_RUNNER" 'bounded_command::run_prepared(' 'VM and RemoteApp helpers have bounded execution'
 lacks "$COMMAND_RUNNER" 'wait_with_output()' 'VM broker cannot allocate unbounded helper output'
-has "$LIBVIRT" 'Duration::from_secs(300)' 'libvirt control operations have a short hard deadline'
+has "$VIRSH" 'Duration::from_secs(300)' 'libvirt control operations have a short hard deadline'
 has "$REMOTE_APP" '/clipboard:direction-to:all,files-to:off' 'clipboard needs an explicit grant without ambient file exposure'
 has "$REMOTE_APP" '"-home-drive"' 'RAIL never redirects the owner home directory'
 has "$REMOTE_APP" '/cert:fingerprint:sha256:' 'RAIL pins the authenticated guest certificate'
@@ -318,8 +320,7 @@ has "$LIBVIRT" 'retire_installation_media' 'authenticated enrollment retires set
 has "$LIBVIRT" "<clipboard copypaste='no'/>" 'SPICE clipboard stays disabled independently of guest state'
 has "$LIBVIRT" "<filetransfer enable='no'/>" 'SPICE file transfer stays disabled independently of guest state'
 has "$LIBVIRT" "name='com.redhat.spice.0'" 'SPICE exposes the bounded resize/cursor agent channel'
-has "$LIBVIRT" '"--live",' 'setup media is removed from the running guest'
-has "$LIBVIRT" '"--config",' 'setup media is removed from persistent configuration'
+has "$LIBVIRT" '"detach-disk", &[target, "--live", "--config"]' 'setup media is removed from the running guest and persistent configuration'
 has "$SESSION_WIRING" 'LiveVmDelegate::with_shared_session_tracker' 'session composes the live singleton VM delegate'
 has "$SESSION_WIRING" 'HttpsGuestBridge::new' 'session uses the authenticated HTTPS guest bridge'
 lacks "$SESSION_WIRING" '        UnavailableVmDelegate,' 'session does not hardcode VM unavailability'

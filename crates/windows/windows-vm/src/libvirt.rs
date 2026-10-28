@@ -1,18 +1,16 @@
-use std::ffi::OsString;
 use std::path::Path;
 
-use libvirt_domain::Connection;
 pub use libvirt_domain::DomainState;
+use libvirt_domain::{BoundedVirsh, Connection, Virsh, VirshError, VirshRunner};
 use thiserror::Error;
 
 use crate::{
-    APPLIANCE_DOMAIN_NAME, ApplianceConfig, CommandError, CommandOutput, CommandRequest,
-    CommandRunner, ConfigError, CpuMode, FirmwareConfig, GraphicsAssignment,
+    APPLIANCE_DOMAIN_NAME, ApplianceConfig, ConfigError, CpuMode, FirmwareConfig,
+    GraphicsAssignment,
 };
 
-const LIBVIRT_URI: &str = Connection::System.uri();
-const METADATA_MARKER: &str = "<tilo:windows-appliance xmlns:tilo='https://tilo.sh/vm/1'/>";
-const METADATA_ELEMENT: &str = "<tilo:windows-appliance";
+/// The kind in the metadata marker that makes a domain Tilo's appliance.
+const METADATA_KIND: &str = "windows-appliance";
 const INSTALL_MEDIA: &str = "/var/lib/tilo/windows/install-media.iso";
 const GUEST_TOOLS_MEDIA: &str = "/var/lib/tilo/windows/tilo-guest-tools.iso";
 /// Fedora's virtio-win package is shipped by Tilo as a host-owned, read-only
@@ -102,50 +100,33 @@ pub trait VmBackend: Send + Sync {
 }
 
 #[derive(Clone, Debug)]
-pub struct LibvirtBackend<R> {
-    runner: R,
-    virsh: OsString,
+pub struct LibvirtBackend<R = BoundedVirsh> {
+    virsh: Virsh<R>,
+}
+
+impl LibvirtBackend {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_runner(BoundedVirsh)
+    }
+}
+
+impl Default for LibvirtBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<R> LibvirtBackend<R> {
     #[must_use]
-    pub fn new(runner: R) -> Self {
+    pub fn with_runner(runner: R) -> Self {
         Self {
-            runner,
-            virsh: OsString::from("virsh"),
+            virsh: Virsh::with_runner(runner, Connection::System, APPLIANCE_DOMAIN_NAME),
         }
     }
 }
 
-impl<R: CommandRunner> LibvirtBackend<R> {
-    fn virsh<I, S>(&self, args: I) -> Result<CommandOutput, VmBackendError>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        let request = CommandRequest::new(self.virsh.clone())
-            .timeout(std::time::Duration::from_secs(300))
-            .args(["--connect", LIBVIRT_URI])
-            .args(args);
-        self.runner.run(&request).map_err(Into::into)
-    }
-
-    fn successful<I, S>(&self, args: I) -> Result<CommandOutput, VmBackendError>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        let output = self.virsh(args)?;
-        if output.success {
-            Ok(output)
-        } else {
-            Err(VmBackendError::Virsh {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            })
-        }
-    }
-
+impl<R: VirshRunner> LibvirtBackend<R> {
     /// Persistently attach one already-prepared GPU partition. The VM must be
     /// off; the caller has separately proved this exact VF/mdev through the
     /// read-only capability probe and an owner-authorised boundary.
@@ -154,32 +135,8 @@ impl<R: CommandRunner> LibvirtBackend<R> {
         config: &ApplianceConfig,
         assignment: &GraphicsAssignment,
     ) -> Result<(), VmBackendError> {
-        self.ensure_singleton(config)?;
-        if self.state(config)? != DomainState::ShutOff {
-            return Err(VmBackendError::GraphicsRequiresShutoff);
-        }
-        let xml = assignment
-            .domain_xml()
-            .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
-        let request = CommandRequest::new(self.virsh.clone())
-            .timeout(std::time::Duration::from_secs(300))
-            .args([
-                "--connect",
-                LIBVIRT_URI,
-                "attach-device",
-                APPLIANCE_DOMAIN_NAME,
-                "/dev/stdin",
-                "--config",
-            ])
-            .stdin_secret(xml.as_bytes());
-        let output = self.runner.run(&request)?;
-        if output.success {
-            return Ok(());
-        }
-        Err(VmBackendError::Virsh {
-            code: output.code,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        })
+        let xml = self.graphics_change(config, assignment)?;
+        Ok(self.virsh.attach_device(&xml, &["--config"])?)
     }
 
     /// Detach only the exact partition recorded by Tilo at attachment time.
@@ -188,52 +145,30 @@ impl<R: CommandRunner> LibvirtBackend<R> {
         config: &ApplianceConfig,
         assignment: &GraphicsAssignment,
     ) -> Result<(), VmBackendError> {
+        let xml = self.graphics_change(config, assignment)?;
+        Ok(self.virsh.detach_device(&xml, &["--config"])?)
+    }
+
+    fn graphics_change(
+        &self,
+        config: &ApplianceConfig,
+        assignment: &GraphicsAssignment,
+    ) -> Result<String, VmBackendError> {
         self.ensure_singleton(config)?;
         if self.state(config)? != DomainState::ShutOff {
             return Err(VmBackendError::GraphicsRequiresShutoff);
         }
-        let xml = assignment
+        assignment
             .domain_xml()
-            .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
-        let request = CommandRequest::new(self.virsh.clone())
-            .timeout(std::time::Duration::from_secs(300))
-            .args([
-                "--connect",
-                LIBVIRT_URI,
-                "detach-device",
-                APPLIANCE_DOMAIN_NAME,
-                "/dev/stdin",
-                "--config",
-            ])
-            .stdin_secret(xml.as_bytes());
-        let output = self.runner.run(&request)?;
-        if output.success {
-            return Ok(());
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr)
-            .trim()
-            .to_ascii_lowercase();
-        if stderr.contains("not found") || stderr.contains("no matching") {
-            return Ok(());
-        }
-        Err(VmBackendError::Virsh {
-            code: output.code,
-            stderr,
-        })
+            .ok_or(VmBackendError::InvalidGraphicsAssignment)
     }
 }
 
-impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
+impl<R: VirshRunner> VmBackend for LibvirtBackend<R> {
     fn ensure_singleton(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
         config.validate()?;
-        let domains = self.successful(["list", "--all", "--name"])?;
-        let names = String::from_utf8(domains.stdout)?;
-        let exists = names
-            .lines()
-            .any(|name| name.trim() == APPLIANCE_DOMAIN_NAME);
-        if exists {
-            let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
-            let xml = String::from_utf8(xml.stdout)?;
+        if self.virsh.exists()? {
+            let xml = self.virsh.dumpxml()?;
             let expected_uuid = format!("<uuid>{}</uuid>", config.domain_uuid);
             let expected_smbios_serial =
                 format!("<entry name='serial'>{}</entry>", config.domain_uuid);
@@ -243,57 +178,31 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
                 || !xml.contains(&expected_smbios_uuid)
                 || !xml.contains("<serial>tilo-windows-system</serial>")
                 || !xml.contains("<mac address='52:54:00:71:4f:53'/>")
-                || !xml.contains(METADATA_ELEMENT)
+                || !libvirt_domain::is_ours(&xml, METADATA_KIND, &[])
             {
                 return Err(VmBackendError::ForeignDomainCollision);
             }
             return Ok(());
         }
-
-        let xml = render_domain_xml(config)?;
-        let request = CommandRequest::new(self.virsh.clone())
-            .timeout(std::time::Duration::from_secs(300))
-            .args(["--connect", LIBVIRT_URI, "define", "/dev/stdin"])
-            .stdin_secret(xml.as_bytes());
-        let output = self.runner.run(&request)?;
-        if !output.success {
-            return Err(VmBackendError::Virsh {
-                code: output.code,
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-            });
-        }
-        Ok(())
+        Ok(self.virsh.define(&render_domain_xml(config)?)?)
     }
 
     fn state(&self, config: &ApplianceConfig) -> Result<DomainState, VmBackendError> {
         config.validate()?;
-        let domains = self.successful(["list", "--all", "--name"])?;
-        let names = String::from_utf8(domains.stdout)?;
-        if !DomainState::listed(&names, &config.domain_name) {
-            return Ok(DomainState::Absent);
-        }
-        let state = self.successful(["domstate", APPLIANCE_DOMAIN_NAME])?;
-        Ok(DomainState::from_domstate(&String::from_utf8(
-            state.stdout,
-        )?))
+        Ok(self.virsh.state()?)
     }
 
     fn start(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
         self.ensure_singleton(config)?;
         match self.state(config)? {
             DomainState::Running => Ok(()),
-            DomainState::ShutOff => self
-                .successful(["start", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
+            DomainState::ShutOff | DomainState::Crashed => Ok(self.virsh.start()?),
             DomainState::Absent => Err(VmBackendError::DomainDisappeared),
             DomainState::Paused
             | DomainState::Suspended
             | DomainState::Starting
             | DomainState::ShuttingDown
             | DomainState::Other => Err(VmBackendError::UnsafeDomainState),
-            DomainState::Crashed => self
-                .successful(["start", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
         }
     }
 
@@ -304,9 +213,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             | DomainState::ShutOff
             | DomainState::ShuttingDown
             | DomainState::Crashed => Ok(()),
-            DomainState::Running => self
-                .successful(["shutdown", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
+            DomainState::Running => Ok(self.virsh.shutdown()?),
             DomainState::Paused
             | DomainState::Suspended
             | DomainState::Starting
@@ -322,9 +229,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             | DomainState::ShuttingDown
             | DomainState::Starting
             | DomainState::Paused
-            | DomainState::Suspended => self
-                .successful(["destroy", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
+            | DomainState::Suspended => Ok(self.virsh.destroy()?),
             DomainState::Other => Err(VmBackendError::UnsafeDomainState),
         }
     }
@@ -333,9 +238,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         self.ensure_singleton(config)?;
         match self.state(config)? {
             DomainState::ShutOff | DomainState::Absent | DomainState::Crashed => self.start(config),
-            DomainState::Running => self
-                .successful(["reboot", APPLIANCE_DOMAIN_NAME, "--mode", "acpi"])
-                .map(|_| ()),
+            DomainState::Running => Ok(self.virsh.on_domain("reboot", &["--mode", "acpi"])?),
             DomainState::ShuttingDown | DomainState::Starting => Ok(()),
             DomainState::Paused | DomainState::Suspended | DomainState::Other => {
                 Err(VmBackendError::UnsafeDomainState)
@@ -347,9 +250,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         self.ensure_singleton(config)?;
         match self.state(config)? {
             DomainState::Paused | DomainState::Suspended => Ok(()),
-            DomainState::Running => self
-                .successful(["suspend", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
+            DomainState::Running => Ok(self.virsh.on_domain("suspend", &[])?),
             _ => Err(VmBackendError::UnsafeDomainState),
         }
     }
@@ -358,9 +259,9 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         self.ensure_singleton(config)?;
         match self.state(config)? {
             DomainState::Running => Ok(()),
-            DomainState::Paused | DomainState::Suspended => self
-                .successful(["resume", APPLIANCE_DOMAIN_NAME])
-                .map(|_| ()),
+            DomainState::Paused | DomainState::Suspended => {
+                Ok(self.virsh.on_domain("resume", &[])?)
+            }
             _ => Err(VmBackendError::UnsafeDomainState),
         }
     }
@@ -381,17 +282,18 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         }
         // Live-only attachment is deliberately not `--config`: a crash or
         // restart cannot accidentally make egress persistent.
-        self.successful([
+        self.virsh.on_domain(
             "attach-interface",
-            APPLIANCE_DOMAIN_NAME,
-            "network",
-            EGRESS_NETWORK,
-            "--model",
-            "virtio",
-            "--mac",
-            EGRESS_MAC,
-            "--live",
-        ])?;
+            &[
+                "network",
+                EGRESS_NETWORK,
+                "--model",
+                "virtio",
+                "--mac",
+                EGRESS_MAC,
+                "--live",
+            ],
+        )?;
         let id = format!("egress-{}-{}", purpose.as_str(), now_unix_seconds);
         Ok(EgressLease {
             id,
@@ -412,47 +314,32 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         // `--live` means cleanup does not alter the persistent default-deny
         // domain. libvirt reports an absent device as an error; treat that as
         // success to make timeout/retry cleanup safe.
-        let output = self.virsh([
+        match self.virsh.on_domain(
             "detach-interface",
-            APPLIANCE_DOMAIN_NAME,
-            "network",
-            "--mac",
-            EGRESS_MAC,
-            "--live",
-        ])?;
-        if !output.success {
-            let error = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-            if error.contains("not found")
-                || error.contains("no matching")
-                || error.contains("detached")
+            &["network", "--mac", EGRESS_MAC, "--live"],
+        ) {
+            Err(VirshError::Failed { stderr, .. })
+                if ["not found", "no matching", "detached"]
+                    .iter()
+                    .any(|absent| stderr.to_ascii_lowercase().contains(absent)) =>
             {
-                return Ok(());
+                Ok(())
             }
-            return Err(VmBackendError::Virsh {
-                code: output.code,
-                stderr: error,
-            });
+            result => Ok(result?),
         }
-        Ok(())
     }
 
     fn retire_installation_media(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
         config.validate()?;
         for target in ["sdb", "sdc", "sdd"] {
-            let xml = self.successful(["dumpxml", APPLIANCE_DOMAIN_NAME])?;
-            let xml = String::from_utf8(xml.stdout)?;
+            let xml = self.virsh.dumpxml()?;
             let single_quoted = format!("dev='{target}'");
             let double_quoted = format!("dev=\"{target}\"");
             if !xml.contains(&single_quoted) && !xml.contains(&double_quoted) {
                 continue;
             }
-            self.successful([
-                "detach-disk",
-                APPLIANCE_DOMAIN_NAME,
-                target,
-                "--live",
-                "--config",
-            ])?;
+            self.virsh
+                .on_domain("detach-disk", &[target, "--live", "--config"])?;
         }
         Ok(())
     }
@@ -508,14 +395,13 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         }
         FirmwareConfig::Arm64Variables { .. } => "",
     };
-    let network = quick_xml::escape::escape(&config.host_only_network);
+    let network = libvirt_domain::xml_text(&config.host_only_network);
     let cpu_attributes = match config.performance.cpu_mode {
         CpuMode::HostPassthrough => "mode='host-passthrough' check='none' migratable='off'",
         CpuMode::HostModel => "mode='host-model' check='partial'",
     };
     // Keep the appliance within Windows client socket limits. Without an
     // explicit topology, libvirt can expose each allocated vCPU as a socket.
-    let vsock = libvirt_domain::vsock_device_xml(Some(config.guest_cid));
     let cpu = format!(
         "<cpu {cpu_attributes}><topology sockets='1' cores='{}' threads='1'/></cpu>",
         config.performance.vcpus,
@@ -523,7 +409,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
     Ok(format!(
         "<domain type='kvm'>\
 <name>{}</name><uuid>{}</uuid>\
-<metadata>{METADATA_MARKER}</metadata>\
+{}\
 <!-- Stable SMBIOS identity is part of the activation device identity. -->\
 <sysinfo type='smbios'><system><entry name='manufacturer'>Tilo</entry>\
 <entry name='product'>Windows compatibility appliance</entry><entry name='serial'>{}</entry>\
@@ -547,7 +433,6 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>\
-{vsock}\
 <tpm model='{tpm}'><backend type='emulator' version='2.0'/></tpm>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <!-- Windows virtio-gpu is a paravirtual 2D fallback; do not infer a Linux virgl 3D path. -->\
@@ -558,6 +443,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <memballoon model='virtio'/></devices></domain>",
         config.domain_name,
         config.domain_uuid,
+        libvirt_domain::metadata_xml(METADATA_KIND, &[]),
         config.domain_uuid,
         config.domain_uuid,
         config.performance.memory_mib,
@@ -568,8 +454,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 }
 
 fn xml_path(path: &Path) -> Result<String, VmBackendError> {
-    let text = path.to_str().ok_or(VmBackendError::NonUtf8Path)?;
-    Ok(quick_xml::escape::escape(text).into_owned())
+    libvirt_domain::xml_path(path).ok_or(VmBackendError::NonUtf8Path)
 }
 
 #[derive(Debug, Error)]
@@ -577,11 +462,7 @@ pub enum VmBackendError {
     #[error(transparent)]
     Config(#[from] ConfigError),
     #[error(transparent)]
-    Command(#[from] CommandError),
-    #[error("virsh failed with code {code:?}: {stderr}")]
-    Virsh { code: Option<i32>, stderr: String },
-    #[error("libvirt returned non-UTF-8 output")]
-    InvalidUtf8(#[from] std::string::FromUtf8Error),
+    Virsh(#[from] VirshError),
     #[error("an existing domain named tilo-windows-appliance is not the configured Tilo appliance")]
     ForeignDomainCollision,
     #[error("the appliance domain disappeared while it was being started")]
@@ -609,9 +490,16 @@ mod tests {
 
     use super::*;
 
+    use libvirt_domain::VirshOutput as CommandOutput;
+
+    struct Request {
+        args: Vec<std::ffi::OsString>,
+        stdin: Vec<u8>,
+    }
+
     struct Runner {
         replies: Mutex<VecDeque<CommandOutput>>,
-        requests: Mutex<Vec<CommandRequest>>,
+        requests: Mutex<Vec<Request>>,
     }
 
     impl Runner {
@@ -623,9 +511,16 @@ mod tests {
         }
     }
 
-    impl CommandRunner for Runner {
-        fn run(&self, request: &CommandRequest) -> Result<CommandOutput, CommandError> {
-            self.requests.lock().unwrap().push(request.clone());
+    impl VirshRunner for Runner {
+        fn run(
+            &self,
+            args: &[std::ffi::OsString],
+            stdin: &[u8],
+        ) -> Result<CommandOutput, VirshError> {
+            self.requests.lock().unwrap().push(Request {
+                args: args.to_vec(),
+                stdin: stdin.to_vec(),
+            });
             Ok(self.replies.lock().unwrap().pop_front().unwrap())
         }
     }
@@ -742,7 +637,7 @@ mod tests {
                     "<domain><name>tilo-windows-appliance</name><uuid>ffffffff-ffff-ffff-ffff-ffffffffffff</uuid></domain>",
                 ),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             assert!(matches!(
                 backend.ensure_singleton(&config()),
                 Err(VmBackendError::ForeignDomainCollision)
@@ -756,7 +651,7 @@ mod tests {
                 CommandOutput::successful("tilo-windows-appliance\n"),
                 CommandOutput::successful(domain),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             backend.ensure_singleton(&config()).unwrap();
         }
         {
@@ -764,9 +659,9 @@ mod tests {
                 CommandOutput::successful(""),
                 CommandOutput::successful("Domain defined"),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             backend.ensure_singleton(&config()).unwrap();
-            let requests = backend.runner.requests.lock().unwrap();
+            let requests = backend.virsh.runner().requests.lock().unwrap();
             assert_eq!(requests.len(), 2);
             assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
             assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
@@ -781,7 +676,7 @@ mod tests {
                 CommandOutput::successful("shut off\n"),
                 CommandOutput::successful("Device attached\n"),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             backend
                 .attach_graphics(
                     &config(),
@@ -790,18 +685,13 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let attach = backend
-                .runner
-                .requests
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .clone();
+            let requests = backend.virsh.runner().requests.lock().unwrap();
+            let attach = requests.last().unwrap();
             assert!(attach.args.iter().any(|arg| arg == "attach-device"));
             assert!(attach.args.iter().any(|arg| arg == "--config"));
             assert!(!attach.args.iter().any(|arg| arg == "--live"));
             assert!(String::from_utf8_lossy(&attach.stdin).contains("managed='no'"));
+            drop(requests);
         }
         {
             let domain = render_domain_xml(&config()).unwrap();
@@ -811,7 +701,7 @@ mod tests {
                 CommandOutput::successful("tilo-windows-appliance\n"),
                 CommandOutput::successful("running\n"),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             assert!(matches!(
                 backend.attach_graphics(
                     &config(),
@@ -831,9 +721,9 @@ mod tests {
                 CommandOutput::successful("<disk><target dev='sdd'/></disk>"),
                 CommandOutput::successful("Disk detached"),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             backend.retire_installation_media(&config()).unwrap();
-            let requests = backend.runner.requests.lock().unwrap();
+            let requests = backend.virsh.runner().requests.lock().unwrap();
             assert_eq!(requests.len(), 6);
             for index in [1, 3, 5] {
                 assert!(requests[index].args.iter().any(|arg| arg == "--live"));
@@ -847,9 +737,9 @@ mod tests {
                 CommandOutput::successful("<domain/>"),
                 CommandOutput::successful("<domain/>"),
             ]);
-            let backend = LibvirtBackend::new(runner);
+            let backend = LibvirtBackend::with_runner(runner);
             backend.retire_installation_media(&config()).unwrap();
-            assert_eq!(backend.runner.requests.lock().unwrap().len(), 3);
+            assert_eq!(backend.virsh.runner().requests.lock().unwrap().len(), 3);
         }
     }
 }

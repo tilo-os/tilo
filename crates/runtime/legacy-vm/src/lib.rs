@@ -10,9 +10,9 @@
 //! (`waypipe` over vsock, see [`legacy_agent_protocol::waypipe`]). Installed
 //! apps get search entries and environment shims ([`apps`]).
 //!
-//! The `windows` guest is the Windows appliance in `windows-vm`; it shares
-//! [`libvirt_domain`] with this crate and will move onto the same agent
-//! protocol once its guest side speaks vsock.
+//! Windows is not a legacy VM: the Windows appliance in `windows-vm` is a
+//! separate VM type (one owner-managed system domain, `RemoteApp` windows and
+//! an HTTPS guest bridge). The two share only [`libvirt_domain`].
 
 #![allow(
     clippy::missing_errors_doc,
@@ -34,5 +34,4 @@ pub mod memory;
 pub mod stream;
 pub mod supervisor;
 pub mod transport;
-pub mod virsh;
 pub mod virtiofs;

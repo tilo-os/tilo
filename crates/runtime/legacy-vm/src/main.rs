@@ -541,7 +541,7 @@ fn status(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
         return Ok(ExitCode::SUCCESS);
     }
     let config = config(options, paths.clone());
-    let virsh = legacy_vm::virsh::Virsh::new(config.domain_name);
+    let virsh = libvirt_domain::Virsh::new(libvirt_domain::Connection::Session, config.domain_name);
     let state = virsh.state().map_err(|e| e.to_string())?;
     let saved =
         state != libvirt_domain::DomainState::Absent && virsh.has_managed_save().unwrap_or(false);
@@ -571,7 +571,7 @@ fn suspend(paths: &Paths) -> Result<ExitCode, String> {
 
 fn stop(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
     let config = config(options, paths.clone());
-    let virsh = legacy_vm::virsh::Virsh::new(config.domain_name);
+    let virsh = libvirt_domain::Virsh::new(libvirt_domain::Connection::Session, config.domain_name);
     if virsh.state().map_err(|e| e.to_string())? == libvirt_domain::DomainState::Running {
         virsh.shutdown().map_err(|e| e.to_string())?;
     }

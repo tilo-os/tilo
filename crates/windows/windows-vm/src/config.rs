@@ -59,8 +59,6 @@ pub struct ApplianceConfig {
     /// A libvirt network with forwarding disabled. Guest internet access is
     /// opened by the Tilo capability broker, never by changing this NIC.
     pub host_only_network: String,
-    /// Fixed `AF_VSOCK` context identifier used only by the authenticated guest bridge.
-    pub guest_cid: u32,
 }
 
 impl ApplianceConfig {
@@ -109,7 +107,6 @@ impl ApplianceConfig {
                 cpu_mode: CpuMode::HostPassthrough,
             },
             host_only_network: "tilo-windows-hostonly".to_string(),
-            guest_cid: 7,
         }
     }
 
@@ -149,9 +146,6 @@ impl ApplianceConfig {
         }
         if !is_libvirt_name(&self.host_only_network) {
             return Err(ConfigError::InvalidNetworkName);
-        }
-        if self.guest_cid < 3 {
-            return Err(ConfigError::ReservedGuestCid);
         }
         Ok(())
     }
@@ -193,8 +187,6 @@ pub enum ConfigError {
     InvalidIoThreadCount,
     #[error("the host-only libvirt network name is invalid")]
     InvalidNetworkName,
-    #[error("AF_VSOCK context identifiers 0, 1, and 2 are reserved")]
-    ReservedGuestCid,
 }
 
 #[cfg(test)]
