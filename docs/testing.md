@@ -22,15 +22,24 @@ It compiles the compositor, filesystem driver, and system apps, builds
 
 ### 2. Running the Test VM
 
-Once the test image is built, you can boot it in QEMU to see the results.
+Once the test image is built, boot it in a QEMU window with `tilo-vm`
+(`cargo install --locked --path crates/dev/tilo-vm --bin tilo-vm`):
 
 ```bash
-./os/test-vm.sh os/output-test/qcow2/disk.qcow2
+tilo-vm qemu run --disk os/output-test/qcow2/disk.qcow2 --overlay --display window --timeout 0
+```
+
+Or headless, passing when the serial console reports the test service's
+success and failing after two minutes without it:
+
+```bash
+tilo-vm qemu run --disk os/output-test/qcow2/disk.qcow2 --overlay --display none \
+  --ready 'All QuickFS tests passed!' --timeout 120 --serial-log os/test-results.log
 ```
 
 **Requirements:**
--   **UEFI Support**: The VM requires `OVMF` (Open Virtual Machine Firmware). The script searches for it in common paths like `/usr/share/edk2/ovmf/`.
--   **KVM**: Hardware acceleration is highly recommended (`/dev/kvm`).
+-   **UEFI Support**: The VM requires `OVMF` (Open Virtual Machine Firmware); `tilo-vm qemu firmware` prints the build it found.
+-   **KVM**: Hardware acceleration is highly recommended (`/dev/kvm`); without it the boot runs under TCG emulation.
 
 ### 3. Checking Automated Test Results
 
@@ -67,7 +76,7 @@ To ensure the window manager logic (2D clustering, non-overlapping constraints, 
 If you want to test the production image manually:
 
 1.  **Build**: Run `./os/build.sh`.
-2.  **Launch**: Run `./os/test-vm.sh`.
+2.  **Launch**: Run `tilo-vm qemu run --disk os/output/qcow2/disk.qcow2 --overlay --display window --timeout 0`.
 3.  **Login**: Use the default credentials:
     -   **User**: `tester`
     -   **Password**: `tilo`

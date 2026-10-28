@@ -24,6 +24,7 @@ pub mod hypervisor;
 pub mod image;
 pub mod imageup;
 mod local_layer;
+pub mod qemu;
 pub mod reach;
 pub mod receipt;
 pub mod remote;

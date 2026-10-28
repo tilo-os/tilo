@@ -117,6 +117,9 @@ pub enum Command {
     /// Build this worktree's dev image (and dev disk) into a directory, for vm upgrade --image and vm create --image.
     #[command(subcommand)]
     Image(ImageCommand),
+    /// Boot a disk under QEMU: the one command line every headless boot, gate and boot-time measurement uses.
+    #[command(subcommand)]
+    Qemu(Box<QemuCommand>),
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
@@ -465,6 +468,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                 | Command::AppPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
+                | Command::Qemu(_)
                 | Command::Logs { .. }
                 | Command::Vm(
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
@@ -1138,6 +1142,64 @@ pub enum ImageCommand {
         /// The OCI layout image build wrote.
         #[arg(long, default_value = "target/tilo-vm/image")]
         image: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum QemuCommand {
+    /// Start a VM in the background and return once its monitor answers.
+    #[command(
+        after_help = "Examples:\n  tilo-vm qemu boot --run \"$XDG_RUNTIME_DIR/tilo-vm\" --disk os/output/qcow2/disk.qcow2 --ssh-port 2222 --console\n  tilo-vm qemu boot --run /run/user/1000/c1 --tpm --keep-vars \\\n      --disk work.qcow2,backing=installer.qcow2,serial=tilo-installer-medium \\\n      --disk target.qcow2,create=40G,serial=tilo-install-target\n\nThe run directory holds mon.sock (HMP monitor), serial.log, console.sock,\nqemu.pid, qemu.log, the variable store and tpm/. os/dev/vm.sh drives a VM\nstarted this way; `tilo-vm qemu stop --run DIR` powers it off."
+    )]
+    Boot {
+        #[command(flatten)]
+        machine: crate::qemu::MachineArgs,
+        /// Seconds QEMU may take to open its monitor before the boot fails.
+        #[arg(long, default_value_t = 120)]
+        start_timeout: u64,
+    },
+    /// Boot in the foreground until the serial line says ready or failed (or QEMU exits), then power off.
+    #[command(
+        after_help = "Examples:\n  tilo-vm qemu run --disk os/output/qcow2/disk.qcow2 --overlay --timeout 180 --kernel-time \\\n      --ready 'Reached target [^-]*(multi-user|graphical)\\.target' --fail 'Kernel panic' \\\n      --serial-log target/perf/boot.log --report target/perf/boot.json\n  tilo-vm qemu run --disk os/output/qcow2/disk.qcow2 --display window --timeout 0   # interactive window\n\nExits 0 when a --ready pattern matched (or, with none, when QEMU exited 0). The\nJSON report has state (ready, failed, missing-timing, exited, timeout), the\nmatching line, elapsed_ms (wall clock from start) and kernel_ms (the kernel's\nown timestamp at that line)."
+    )]
+    Run {
+        #[command(flatten)]
+        machine: crate::qemu::MachineArgs,
+        #[command(flatten)]
+        wait: crate::qemu::RunArgs,
+    },
+    /// Print the firmware, variable store and measurement support the settings resolve to.
+    #[command(
+        after_help = "Examples:\n  tilo-vm qemu firmware --tpm\n  tilo-vm qemu firmware --arch aarch64 --aavmf-dir /opt/homebrew/share/qemu\n\nRefuses (exit 1, with the remedy) where a boot would be refused, e.g. a TPM\non a firmware that cannot measure into it."
+    )]
+    Firmware {
+        #[command(flatten)]
+        machine: crate::qemu::MachineArgs,
+    },
+    /// Print the QEMU command line for these settings without starting anything.
+    #[command(
+        after_help = "Examples:\n  tilo-vm qemu args --disk disk.qcow2 --tpm --console --run /run/user/1000/tilo-vm"
+    )]
+    Args {
+        #[command(flatten)]
+        machine: crate::qemu::MachineArgs,
+    },
+    /// Power off the VM a qemu boot started, at once, and stop its software TPM.
+    #[command(after_help = "Examples:\n  tilo-vm qemu stop --run \"$XDG_RUNTIME_DIR/tilo-vm\"")]
+    Stop {
+        /// The VM's run directory, as given to qemu boot.
+        #[arg(long)]
+        run: PathBuf,
+        /// The TPM state directory, when not <run>/tpm.
+        #[arg(long)]
+        tpm_dir: Option<PathBuf>,
+    },
+    /// Print `running (pid N)` or `stopped` for the VM in a run directory.
+    #[command(after_help = "Examples:\n  tilo-vm qemu status --run \"$XDG_RUNTIME_DIR/tilo-vm\"")]
+    Status {
+        /// The VM's run directory, as given to qemu boot.
+        #[arg(long)]
+        run: PathBuf,
     },
 }
 

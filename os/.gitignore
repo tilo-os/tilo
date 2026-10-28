@@ -20,7 +20,7 @@
 /output/
 /output-*/
 
-# QEMU + first-boot artifacts produced by ./test-vm.sh / ./verify-test.sh
+# QEMU + first-boot artifacts of test-image boots (./verify-test.sh)
 /qemu-*.log
 /test-boot*.log
 /test-results.log

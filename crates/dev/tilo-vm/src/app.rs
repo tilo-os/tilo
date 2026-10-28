@@ -23,8 +23,8 @@ use crate::ci;
 use crate::cicache;
 use crate::cli::{
     AddArgs, Builder, Command, CreateArgs, DeviceCommand, FlightCommand, GamepadCommand,
-    ImageCommand, InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand,
-    SlotCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
+    ImageCommand, InputCommand, PenCommand, QemuCommand, ScenarioCommand, SeatCommand,
+    SlotAppsCommand, SlotCommand, TouchCommand, TouchpadCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -272,6 +272,22 @@ impl Outcome {
     fn next(mut self, commands: &[&str]) -> Self {
         self.next.extend(commands.iter().map(|c| (*c).to_owned()));
         self
+    }
+}
+
+fn qemu_command(command: &QemuCommand) -> Result<Outcome, CliError> {
+    match command {
+        QemuCommand::Boot {
+            machine,
+            start_timeout,
+        } => crate::qemu::boot_command(machine, *start_timeout),
+        QemuCommand::Run { machine, wait } => crate::qemu::run_command(machine, wait),
+        QemuCommand::Firmware { machine } => crate::qemu::firmware_command(machine),
+        QemuCommand::Args { machine } => crate::qemu::args_command(machine),
+        QemuCommand::Stop { run, tpm_dir } => {
+            Ok(crate::qemu::stop_command(run, tpm_dir.as_deref()))
+        }
+        QemuCommand::Status { run } => Ok(crate::qemu::status_command(run)),
     }
 }
 
@@ -966,6 +982,7 @@ impl App {
             }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
+            Some(Command::Qemu(command)) => qemu_command(&command),
             Some(Command::Gc {
                 dry_run,
                 keep,

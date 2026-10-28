@@ -114,7 +114,7 @@ echo "--- [4/4] Compositor wayland-N binding ---"
 # needs a display server. In QEMU without a graphical session we
 # only assert the binary *starts* and exits cleanly when given a
 # bad CLI — proving the binary isn't corrupted. Real binding
-# verification happens in the graphical smoke test (test-vm.sh).
+# verification happens in a graphical boot of the test image.
 if timeout 5 /usr/bin/shell --version >/dev/null 2>&1 ||
    timeout 5 /usr/bin/shell --help     >/dev/null 2>&1; then
     echo "PASS: shell binary executes (CLI surface reachable)"
