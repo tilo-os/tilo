@@ -20350,6 +20350,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-lock",
+ "tilo-paths",
  "workspace-hack",
 ]
 

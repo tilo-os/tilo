@@ -558,6 +558,25 @@ pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
     }
 }
 
+/// A fresh temporary directory kept in memory where the platform has one
+/// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), else
+/// [`tempfile::tempdir`].
+///
+/// For a test whose stores sync every write as they do for a person and
+/// whose crashes it simulates by reopening, not by losing power: the code
+/// still syncs, but a sync then costs nothing instead of waiting on a disk
+/// shared with every other job's writes.
+///
+/// # Errors
+///
+/// Returns the I/O error if the directory cannot be created.
+pub fn memory_tempdir() -> io::Result<tempfile::TempDir> {
+    match tilo_paths::memory_temp_dir() {
+        Some(memory) => tempfile::tempdir_in(memory),
+        None => tempfile::tempdir(),
+    }
+}
+
 /// An executable fixture script written by [`script`].
 #[derive(Debug, Clone)]
 pub struct Script {
