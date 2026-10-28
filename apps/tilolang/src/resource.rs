@@ -278,10 +278,8 @@ impl Resource for Room {
         let host = Host::new(
             doc,
             tilolang_tilo::runtime::Principal::new("reader"),
-            |_: &tilolang_tilo::runtime::Principal, _: &tilolang_tilo::runtime::ActionInfo| {
-                // A read runs no action.
-                tilolang_tilo::runtime::Decision::Deny
-            },
+            // A read runs no action.
+            tilolang_tilo::authority::holding_nothing("reader"),
         )
         .map_err(|error| error.to_string())?;
         crate::app::load(&host);

@@ -21843,6 +21843,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-actions",
  "tilo-app-state",
  "tilo-automerge",

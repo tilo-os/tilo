@@ -68,11 +68,15 @@ Each entry is the closest working design to `docs/designs/app-language` (impleme
   verbs through `HostHandle::with_caller`. The runtime's principal is that delegate. What an effect
   commits is queued under the effect's invocation, so the framework applies it for that invoker in
   the context it carries (group, on behalf of): history and undo group it by task.
-- **Rights of agents.** Before anyone chooses, reading and undoable changes are allowed to an
-  agent and outside effects ask first; `Host::set_agent_answer` narrows that per app and kind, and
-  an agent's code is trusted as far as that goes. What asks is a suggestion: a recorded
-  `Invocation` (a block, a verb) or a suspended run (a flow), decided by a person, through the
-  Ask bar or the door's `resolve`, never by an agent.
+- **One policy.** What the runtime invokes is decided by `tilo_action_policy`, as every door
+  decides: the person's standing in the room (the window's, from its host), bounded by an agent's
+  delegation and the answers the person gave that agent in the room, and by each author of the
+  code that led to the action (`tilo_action_policy::authorship`: a package's code is its app,
+  `Subject::App`; a block's is its writer). Installed and built-in packages are trusted, an
+  admitted agent's code as far as its standing goes. Without a standing the person's own part is
+  the door's to decide, as for a native window's detached dispatcher; the bounds still apply.
+  What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a suspended run (a
+  flow), decided by a person, through the Ask bar or the door's `resolve`, never by an agent.
 - **Item verbs are published.** Items of collections are child resources
   (`doc/field:item`) carrying the verbs whose subject is their type, and every resource offers
   `open`, a view action search hits invoke.

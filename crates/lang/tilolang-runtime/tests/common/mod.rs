@@ -7,8 +7,104 @@ use std::fmt::Write as _;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::abi::IMPORTS;
 use tilolang_runtime::{
-    AmStore, EngineLimits, Meta, PackageId, Principal, Runtime, SimpleAuthority, Value,
+    ActionInfo, AmStore, Authority, Decision, EngineLimits, Meta, ModuleHash, PackageId, Principal,
+    Runtime, SimpleAuthority, Value,
 };
+
+#[derive(Default)]
+struct Overrides {
+    denied_modules: std::collections::HashSet<ModuleHash>,
+    denied_actions: std::collections::HashSet<String>,
+    denied_invokers: std::collections::HashSet<Principal>,
+    granted_outside: std::collections::HashSet<String>,
+}
+
+/// The authorship rule ([`SimpleAuthority`]) with what a platform's policy would add on top,
+/// stood in for: denials of a module, an action or an invoker, and a grant of an outside action.
+/// Only for seeing how the runtime takes each answer; the platform's policy is
+/// `tilo_action_policy`'s.
+#[derive(Clone, Default)]
+pub struct TestAuthority {
+    authorship: SimpleAuthority,
+    overrides: std::rc::Rc<std::cell::RefCell<Overrides>>,
+}
+
+impl TestAuthority {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn trust(&self, module: &ModuleHash) {
+        self.authorship.trust(module);
+    }
+
+    pub fn revoke(&self, module: &ModuleHash) {
+        self.authorship.revoke(module);
+    }
+
+    pub fn trust_principal(&self, id: &str) {
+        self.authorship.trust_principal(id);
+    }
+
+    pub fn revoke_principal(&self, id: &str) {
+        self.authorship.revoke_principal(id);
+    }
+
+    pub fn deny_module(&self, module: &ModuleHash) {
+        self.overrides
+            .borrow_mut()
+            .denied_modules
+            .insert(module.clone());
+    }
+
+    pub fn deny_action(&self, action: &str) {
+        self.overrides
+            .borrow_mut()
+            .denied_actions
+            .insert(action.to_owned());
+    }
+
+    pub fn deny_invoker(&self, who: &Principal) {
+        self.overrides
+            .borrow_mut()
+            .denied_invokers
+            .insert(who.clone());
+    }
+
+    pub fn allow_invoker(&self, who: &Principal) {
+        self.overrides.borrow_mut().denied_invokers.remove(who);
+    }
+
+    pub fn grant_outside(&self, action: &str) {
+        self.overrides
+            .borrow_mut()
+            .granted_outside
+            .insert(action.to_owned());
+    }
+
+    pub fn revoke_outside(&self, action: &str) {
+        self.overrides.borrow_mut().granted_outside.remove(action);
+    }
+}
+
+impl Authority for TestAuthority {
+    fn decide(&self, invoker: &Principal, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        let overrides = self.overrides.borrow();
+        if overrides.denied_actions.contains(&action.action)
+            || overrides.denied_invokers.contains(invoker)
+            || chain.iter().any(|m| overrides.denied_modules.contains(m))
+        {
+            return Decision::Deny;
+        }
+        if action.class == tilolang_runtime::meta::EffectClass::Outside
+            && overrides.granted_outside.contains(&action.action)
+            && chain.iter().all(|m| self.authorship.is_trusted(m))
+        {
+            return Decision::Allow;
+        }
+        self.authorship.decide(invoker, chain, action)
+    }
+}
 
 /// Builds a module: named string literals become `$L_<name>` functions returning a text
 /// handle, and every `$tl_<import>` a function mentions is imported with its ABI signature.
@@ -260,7 +356,7 @@ pub fn counter_meta() -> Meta {
 pub struct World {
     pub rt: Runtime,
     pub store: AmStore,
-    pub auth: SimpleAuthority,
+    pub auth: TestAuthority,
     pub counter: PackageId,
     pub me: Principal,
 }
@@ -271,7 +367,7 @@ impl World {
     }
 
     pub fn with(store: &AmStore, limits: EngineLimits) -> Self {
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::with_limits(store.clone(), auth.clone(), limits).unwrap();
         let counter = rt.load_package(&counter_wasm(), counter_meta()).unwrap();
         Self {
