@@ -8,6 +8,7 @@ fields = [
   { path = "period", type = "String" },
   { path = "author", type = "String" },
   { path = "lens", type = "String" },
+  { path = "query", type = "String" },
 ]
 
 [[resources.verbs]]
