@@ -2087,10 +2087,6 @@ suite = "scripts/test-local.sh"
 reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
 
 [[unrequired]]
-suite = "scripts/tests/test_runtime_auto_attach_proof.py"
-reason = "needs procps (ps), absent from the ci-fast image"
-
-[[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
 reason = "manual smoke test across two hosts on a LAN"
 
