@@ -57,8 +57,10 @@ stamp() { date -u +%s; }
 # picked up again where the log was. Exits with the job's status.
 builder_job() {
   local name=$1 dir=$scratch/jobs/$key-$1 seen=0 copy status
+  # Each line of the log carries the seconds the job had run when it was written, so a slow
+  # step of a build (podman prints no times of its own) shows itself in the log.
   on_builder "set -e; rm -rf $dir; mkdir -p $dir; cat > $dir/run.sh
-    setsid nohup bash -c 'bash $dir/run.sh > $dir/log 2>&1; echo \$? > $dir/status' < /dev/null > /dev/null 2>&1 &"
+    setsid nohup bash -c 'set -o pipefail; bash $dir/run.sh 2>&1 | awk -v t0=\$(date +%s) \"{ printf \\\"%5ds %s\\n\\\", systime() - t0, \\\$0; fflush() }\" > $dir/log; echo \$? > $dir/status' < /dev/null > /dev/null 2>&1 &"
   copy=$(mktemp)
   while :; do
     on_builder "until [ -e $dir/log ]; do sleep 1; done; tail -c +$((seen + 1)) -f $dir/log & t=\$!
@@ -139,11 +141,19 @@ cmd_image() {
   # jobs are bounded: the build counts the node's cores (377), not the builder's share of
   # them, and that many compilers at once fail to spawn; neither container limits its
   # processes, as podman's default of 2048 does, which a compile of 32 jobs outgrows.
+  # Every worktree's build shares the store's images and layers, but keeps its containers
+  # (the compile's, the image build's steps) in its own run directory (transient_store): a
+  # podman starting in another worktree's build container takes the shared container
+  # database for one left from before a reboot and resets it, which unmounted the running
+  # compile of this one ("Failed to create temp dir", a linker killed mid-link).
   builder_job image <<<"set -e
     mkdir -p $scratch/store/tmp $scratch/store/tilo-external-assets $out
     printf '[containers]\npids_limit = 0\n' > $scratch/store/containers.conf
+    printf '[storage]\ndriver = \"overlay\"\ngraphroot = \"/var/lib/containers/storage\"\nrunroot = \"/run/containers/storage\"\ntransient_store = true\n[storage.options]\nadditionalimagestores = [\"/usr/lib/containers/storage\"]\n' \
+      > $scratch/store/storage.conf
     podman run --rm --name bvm-image-$key --label $label=image --label $label.tree=$key --pids-limit=-1 \
       -e CONTAINERS_CONF_OVERRIDE=/var/lib/containers/containers.conf \
+      -e CONTAINERS_STORAGE_CONF=/var/lib/containers/storage.conf \
       --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt unmask=ALL --device /dev/fuse \
       -v $scratch/store:/var/lib/containers -v /srv/rcargo/ci-cache:/srv/rcargo/ci-cache:ro \
       -v $src:'$local_path' -v $out:/out -v $bin:/usr/local/bin/tilo-vm:ro \

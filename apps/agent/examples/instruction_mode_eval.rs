@@ -23,6 +23,7 @@
     clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
     reason = "see the note above"
 )]
 
@@ -61,6 +62,10 @@ struct Case {
 
 /// One decision the agent made about an instruction.
 #[derive(Debug, Deserialize, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the record's field names are the JSON keys a recording is read back by"
+)]
 struct Decision {
     /// The profile and model that decided, as the gateway names them.
     model: String,

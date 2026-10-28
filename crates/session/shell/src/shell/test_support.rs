@@ -124,6 +124,8 @@ impl PopulatedShellFixture {
         theme: ui::theme::Theme,
         tree: crate::shell::state::WorkspaceTree,
     ) -> Self {
+        // The installed apps are read at startup, as the compositor does.
+        crate::shell::launcher::load_installed_apps();
         let parent = tempfile::tempdir().expect("private populated shell fixture parent");
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
             ui::font_catalog::checkout_root(),

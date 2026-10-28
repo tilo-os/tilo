@@ -1120,7 +1120,11 @@ impl Channels {
         else {
             return;
         };
-        if steward == self.device {
+        // Only the own room is stewarded by a page. Elsewhere a governor
+        // that is this device stewards through its own governor (a host's
+        // room actions run under the host's certificate), and this session
+        // takes part as a member.
+        if steward == self.device && route.document.cluster_id == self.own_room {
             let saved = self.stewarded.get(&channel).cloned();
             let Some(route) = self.routes.get_mut(&channel) else {
                 return;
@@ -1534,6 +1538,33 @@ mod tests {
         let changes = own.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
         assert_eq!(requests(&changes), 1);
         assert_eq!(steward_of(&own, &note), Some(device(&laptop)));
+    }
+
+    /// A session of the governing host's own device (its room actions)
+    /// starts no group of its own for a room it does not hold as its own
+    /// room: the host's channel steward holds the group and hands this
+    /// session its keys. A group started here sealed the session off from
+    /// everything the governor wrote, so the host's actions saw no record.
+    #[test]
+    fn the_governing_hosts_own_session_stewards_no_room_channel() {
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let server = SigningKey::from_bytes(&[5; 32]);
+        let note = route("note-1");
+        let mut host = Channels::new(device(&server), device(&owner), [4; 32]);
+        host.govern_by_host(&cert(
+            &owner,
+            &server,
+            tilo_user_identity::cloud_enrollment::host_capabilities(),
+        ));
+        let changes = host.open(&note, 0);
+        assert!(
+            !changes
+                .steward
+                .iter()
+                .any(|change| matches!(change, StewardChange::Take { .. })),
+            "the session takes over none of the room's channels"
+        );
+        assert!(!host.routes[&Channels::channel(&note)].stewarded);
     }
 
     /// A room whose governor has not shown up is not ungoverned: a genesis

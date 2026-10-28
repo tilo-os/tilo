@@ -5208,8 +5208,20 @@ impl InstallerPreview {
                     next_focus.set(true);
                 }
             })
-        } else if submit_enabled {
+        } else if submit_enabled && self.password_continue_enabled() {
             submits(self.actions.as_ref(), input, continues())
+        } else if submit_enabled {
+            // The page refuses this form itself, with the copy beside the
+            // field whose correction unblocks it. Enter asks for that answer
+            // rather than invoking Continue: an invocation the page refuses
+            // would be said over the window as a refused action, and the
+            // announcement would take the focus the field needs.
+            let commands = self.commands.clone();
+            input.on_submit(move |_| {
+                commands
+                    .borrow_mut()
+                    .push(InstallerPreviewEffect::ContinuePreview);
+            })
         } else {
             input.with_enter_submits(true)
         };
@@ -6030,7 +6042,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn belongings_source_location_is_explicit_and_retires_with_details() {
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", source.path().join("state"));
         environment.set("XDG_CONFIG_HOME", source.path().join("config"));
@@ -6121,7 +6133,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn live_profile_starts_empty_and_remains_explicitly_editable() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         let mut original = fixture();
@@ -7247,7 +7259,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -7424,7 +7436,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let state_home = root.join("state");
@@ -7483,7 +7495,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let state_home = root.join("state");
@@ -7582,7 +7594,7 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let state_home = root.join("state");
@@ -7616,7 +7628,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let custody = root.join("identity");
@@ -7748,7 +7760,7 @@ mod tests {
 
     #[test]
     fn browser_choices_remain_available_when_files_and_accounts_are_off() {
-        let temporary = tempfile::tempdir().unwrap();
+        let temporary = crate::setup::test_support::qualified_tempdir();
         let home = temporary.path().canonicalize().unwrap();
         let config = home.join(".config");
         let profile = config.join("chromium/Default");
@@ -7885,7 +7897,7 @@ mod tests {
     #[test]
     fn belongings_lists_saved_tilo_connections_without_projecting_configuration() {
         use super::super::account_transfer::{SourceRoots, discover};
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let config = source.path().join(".config");
         let mut store = ::accounts::AccountStore::new();
         let mut account = ::accounts::Account::new("work-files", "webdav");
@@ -7937,7 +7949,7 @@ mod tests {
     fn final_review_shows_independent_browser_and_selected_session_choices() {
         use super::super::account_transfer::{SourceRoots, discover};
         use std::os::unix::fs::PermissionsExt;
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let profile = source.path().join(".config/chromium/Default");
         std::fs::create_dir_all(&profile).unwrap();
@@ -8205,7 +8217,7 @@ mod tests {
     fn flatpak_custom_access_details_follow_selection_and_never_publish_private_values() {
         use super::super::flatpak_transfer::{self, Installation};
         use std::os::unix::fs::PermissionsExt;
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let root = source.path().join("installation");
         std::fs::create_dir_all(root.join("overrides")).unwrap();
         let file = root.join("overrides/org.tilo.Settings");
@@ -8323,7 +8335,7 @@ mod tests {
     #[test]
     fn named_app_action_drives_canonical_portable_selection_review() {
         use super::super::flatpak_transfer::{self, portable::PortableFlatpakSource};
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -8395,7 +8407,7 @@ mod tests {
             portable::{PortableFlatpakSource, StageGrant},
         };
         use std::os::unix::fs::PermissionsExt;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -8509,7 +8521,7 @@ mod tests {
                 }
             }
         }
-        let home = tempfile::tempdir().unwrap();
+        let home = crate::setup::test_support::qualified_tempdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_STATE_HOME", home.path().join("state"));
         env.set("XDG_CONFIG_HOME", home.path().join("config"));
@@ -8732,7 +8744,7 @@ mod tests {
                 }
             }
         }
-        let home = tempfile::tempdir().unwrap();
+        let home = crate::setup::test_support::qualified_tempdir();
         let inventory = flatpak_transfer::discover(&Discovery, home.path()).unwrap();
         let mut app = fixture();
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -8914,7 +8926,7 @@ mod tests {
             }
         }
         let _restore = RestoreScale(ui::offscreen::capture_device_scale());
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let root = source.path().join("installation");
         std::fs::create_dir_all(root.join("overrides")).unwrap();
         std::fs::write(root.join("overrides/global"), "[Context]\nfilesystems=/private/never-visible;\n[Environment]\nSECRET=never-visible-value\n").unwrap();
@@ -9087,7 +9099,7 @@ mod tests {
     #[test]
     fn belongings_review_uses_detected_profiles_without_exposing_credentials() {
         use super::super::account_transfer::{SourceRoots, discover};
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
             "XDG_STATE_HOME",
@@ -9182,7 +9194,7 @@ mod tests {
     #[test]
     fn discovered_belongings_keep_unavailable_apps_and_foreign_logins_out_of_the_main_choices() {
         use super::super::account_transfer::{SourceRoots, discover};
-        let source = tempfile::tempdir().unwrap();
+        let source = crate::setup::test_support::qualified_tempdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
             "XDG_STATE_HOME",
@@ -9415,7 +9427,7 @@ mod tests {
     #[test]
     fn same_computer_permission_back_retires_queued_grant_and_retains_identity_accounts() {
         use std::os::unix::fs::PermissionsExt as _;
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
@@ -9525,7 +9537,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn another_computer_belongings_requires_actual_home_consent_before_advancing() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("original"), b"untouched").unwrap();
@@ -9694,7 +9706,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn belongings_grant_refuses_unreviewed_home_and_keeps_the_user_on_review() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         let home = root.path().join("home");
         let wrong = root.path().join("wrong");
         std::fs::create_dir(&home).unwrap();
@@ -9736,7 +9748,7 @@ mod tests {
     #[test]
     fn user_transfer_actions_review_then_copy_real_home_without_launching_apps() {
         use std::os::unix::{ffi::OsStringExt as _, fs::PermissionsExt};
-        let volume = tempfile::tempdir().unwrap();
+        let volume = crate::setup::test_support::qualified_tempdir();
         let source = volume.path().join("source");
         let destination = volume.path().join("target");
         let journals = volume.path().join("receipts");
@@ -9994,7 +10006,7 @@ mod tests {
     #[test]
     fn belongings_preparation_and_export_use_real_owned_work_without_install_admission() {
         use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -10170,7 +10182,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -10359,7 +10371,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -10570,7 +10582,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));
@@ -11697,7 +11709,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         env.set("XDG_STATE_HOME", root.join("state"));

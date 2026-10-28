@@ -1,6 +1,10 @@
 //! What a room's file says it published when the process is killed: only
 //! changes the relay has made durable, so the next start publishes the rest
 //! again instead of losing them.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay and the owner's record handle are this test's subject until its last assertion"
+)]
 use super::tests::{governor, test_host};
 use super::*;
 

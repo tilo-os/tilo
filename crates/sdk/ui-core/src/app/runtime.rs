@@ -624,9 +624,11 @@ pub(super) struct ContinuationRuntime {
     /// The document this window shows has left its workspace, and the
     /// window knows: it stopped editing and told its desktop once.
     pub(super) retired: bool,
-    /// What this route last published to the session's persistent search
-    /// index, so only changes cross again.
+    /// What the primary route last published to the session's persistent
+    /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
+    /// The primary route [`Self::search_index`] published on.
+    pub(super) search_index_route: Option<crate::collaboration::PrimaryRouteWitness>,
 }
 
 impl ContinuationRuntime {
@@ -641,6 +643,7 @@ impl ContinuationRuntime {
             private_instance: None,
             retired: false,
             search_index: crate::search::index_publication::Publisher::default(),
+            search_index_route: None,
         }
     }
 }

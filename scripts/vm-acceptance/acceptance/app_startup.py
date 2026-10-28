@@ -27,6 +27,11 @@ PROBE = ("for f in " + " ".join(f'"{log}"' for log in LOGS) + "; do "
          "[ -f \"$f\" ] && grep -a -E 'stderr\\] (APP-STARTUP|HISTORY-OPEN|tilo-gpu: window adapter) ' "
          "\"$f\"; done; true")
 
+# Run like PROBE: the compositor's line for each Tilo app it spawned this session, which
+# tells a session that launched no Tilo app from one whose apps logged no startup line.
+TILO_SPAWNS = ("for f in " + " ".join(f'"{log}"' for log in LOGS) + "; do "
+               "[ -f \"$f\" ] && grep -a -E 'app-spawn: package=so\\.tilo\\.' \"$f\"; done; true")
+
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 STARTUP = re.compile(r"\[app (?P<pkg>\S+) stderr\] APP-STARTUP app=(?P<app>\S+) "
                      r"total_ms=(?P<total>\d+) phases=(?P<phases>\S*)")

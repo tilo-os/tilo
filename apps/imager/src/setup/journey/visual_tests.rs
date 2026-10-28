@@ -542,7 +542,7 @@ fn pairing_name_app(viewport: (u32, u32), theme: Theme) -> TestApp<GuidedInstall
 #[cfg(target_os = "linux")]
 #[test]
 fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::setup::test_support::qualified_tempdir();
     let root = directory.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_STATE_HOME", root.join("state"));
@@ -603,7 +603,7 @@ fn pairing_name_and_approval_code_paint_at_all_host_scales_in_both_themes() {
 #[test]
 #[cfg(unix)]
 fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let root = custody.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -945,7 +945,7 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
 #[test]
 #[cfg(unix)]
 fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1103,7 +1103,7 @@ fn personal_pages_keep_navigation_fixed_and_scroll_errors_above_it() {
 #[test]
 #[cfg(unix)]
 fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1190,7 +1190,7 @@ fn personal_pages_keep_control_scale_and_rasterize_forward_and_back_motion() {
 #[test]
 #[cfg(unix)]
 fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1464,7 +1464,7 @@ pub(super) fn paint_native_flatpak_inventory(
 #[test]
 #[cfg(unix)]
 fn destination_discloses_usb_route_before_personal_setup() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1557,7 +1557,7 @@ fn live_migration_choice_does_not_inspect_sources_before_profile() {
 #[test]
 #[cfg(unix)]
 fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = crate::setup::test_support::qualified_tempdir();
     let home = fixture.path().join("home");
     let config = home.join(".config");
     std::fs::create_dir_all(config.join("Nextcloud")).unwrap();
@@ -1752,7 +1752,7 @@ fn migration_route_consequences_are_present_in_the_semantic_choice() {
 #[test]
 #[cfg(unix)]
 fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1811,7 +1811,7 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
 #[test]
 #[cfg(unix)]
 fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1862,7 +1862,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
 #[test]
 #[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -1968,7 +1968,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
 #[test]
 #[cfg(unix)]
 fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -2036,7 +2036,7 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
 #[test]
 #[cfg(unix)]
 fn password_policy_feedback_explains_the_actual_requirement_through_public_effects() {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -2167,7 +2167,7 @@ fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
 
 #[cfg(unix)]
 fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
@@ -2754,7 +2754,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
             node.name.as_deref() == Some(t("installer-preview-password-hint").as_str())
         }) || root.children().into_iter().any(has_guidance)
     }
-    let custody = tempfile::tempdir().unwrap();
+    let custody = crate::setup::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));

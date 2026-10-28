@@ -141,8 +141,10 @@ while True:
         clients.append(client)
         if not own:
             continue
+        # A walk that failed (the app's tree still arriving) is looked at again on the
+        # next pass; it is what is reported only if the deadline comes first.
         found = client
-        if found["root"] and entries:
+        if found.get("root") and found.get("entries"):
             report(found)
     if time.monotonic() >= deadline:
         report(found or {"error": f"no AT-SPI connection belongs to a {program} process",
@@ -654,6 +656,9 @@ def every_launch(ctx, res):
     apps = sorted({s["app"] for s in startups})
     res.metrics.update(launches=len(startups), apps=apps, history_opens=opens)
     if not startups:
+        if not ctx.vm.exec(app_startup.TILO_SPAWNS, timeout=90, check=False).strip():
+            # A part of the suite that opens only other toolkits' apps (foreign-apps).
+            raise Skipped("this session launched no Tilo app, so no launch is there to judge")
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
     over = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
     # A failed check keeps no files, so the slowest late launch's own phases go into the
