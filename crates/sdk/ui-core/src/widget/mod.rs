@@ -2440,7 +2440,7 @@ pub trait Widget {
 
     /// Carry out a [`StructureChange::Children`] this widget or one under it
     /// reported, in the retained layout tree, through `remount` (see
-    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// [`remount`]). Returns `false` when it cannot be
     /// carried out in place: the host then rebuilds its tree, and the change
     /// is carried out by [`Self::build_layout`]. A widget reports such a
     /// change until either has carried it out. The default carries out its

@@ -1,7 +1,7 @@
 //! Shared helpers for the setup tests.
 //!
 //! [`isolated`] runs a merged test phase on its own thread. On Linux,
-//! [`qualified_tempdir`] provides temporary directories for the native
+//! `qualified_tempdir` provides temporary directories for the native
 //! internal-cache tests: the cache refuses filesystems without Linux
 //! ext4/XFS/Btrfs semantics, so its fixtures cannot use a tmpfs `/tmp`. They
 //! are created below `TILO_IMAGER_TEST_CACHE_ROOT` when set (CI points it at

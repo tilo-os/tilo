@@ -1,6 +1,6 @@
 //! Private person conversations, kept by the room's governor and reached
 //! through the host: the native broker's authenticated Chat channel, or the
-//! page's own session with the room ([`install_transport`]). Reads on the UI
+//! page's own session with the room (`install_transport`). Reads on the UI
 //! sync path use a bounded, revocable local snapshot; an operation answers
 //! with a [`Pending`] reply that a page fills later, never by waiting on the
 //! UI thread. There is no standalone store, room-document fallback, or
@@ -66,7 +66,7 @@ pub type WatchDone = Box<dyn FnOnce(Result<u64, String>) + Send>;
 
 /// A host's door to the room governor's private conversations, for a
 /// process without the native broker: the page installs its session with
-/// the room ([`install_transport`]). It never blocks; it answers through
+/// the room (`install_transport`). It never blocks; it answers through
 /// the callbacks, on the thread that runs the app.
 pub trait Transport: Send + Sync {
     /// Carry out `request` as the authenticated device of this process.

@@ -7,7 +7,7 @@
 //! actions on the issue ([`run`]), so every step is a permission in the one
 //! action system and an entry in the issue's history.
 //!
-//! A project or an area ([`tracker_area`]) is an ordinary resource of the
+//! A project or an area (`tracker_area`) is an ordinary resource of the
 //! tracker: it has a name, a kind and the people involved. The tasks it
 //! holds are the issues that name it as what they work towards, and the
 //! documents it holds are the links those issues carry, so one task reads in

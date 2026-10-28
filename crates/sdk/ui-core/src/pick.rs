@@ -515,7 +515,7 @@ const MAX_SENSITIVE: usize = 512;
 /// Where a picture of the node at `path` (whose bounds are `whole`) must
 /// be masked: every text that is not the app's own interface copy, every
 /// image and every protected field under it. Unlike [`capture`] nothing
-/// is left out for length: past [`MAX_SENSITIVE`] areas, or where the node
+/// is left out for length: past `MAX_SENSITIVE` areas, or where the node
 /// is gone, the whole part is masked.
 #[must_use]
 pub fn sensitive_areas(root: &dyn Widget, path: &str, whole: Rect) -> Vec<Rect> {

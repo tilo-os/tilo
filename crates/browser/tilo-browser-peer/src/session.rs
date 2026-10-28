@@ -1056,7 +1056,7 @@ impl PeerHandle {
 
     /// The network is back (the browser is online again, or the host just
     /// answered on another connection): a session waiting out its backoff
-    /// tries again now instead of up to [`MAX_BACKOFF`] later. A connected
+    /// tries again now instead of up to `MAX_BACKOFF` later. A connected
     /// session is left as it is.
     pub fn retry_now(&self) -> Result<(), String> {
         self.send(Command::Retry)

@@ -21,7 +21,7 @@
 //!   the resource line, fields, notice and its own Cancel and primary
 //!   buttons, no title or sheet.
 //! - [`Presentation::DialogBody`]: the body of a retained
-//!   [`ModalDialog`](super::ModalDialog), which draws the title and the
+//!   [`ModalDialog`], which draws the title and the
 //!   actions; [`SecretPrompt::into_dialog`] wires them.
 //!
 //! The secret lives only in the fields' zeroizing buffers and in the

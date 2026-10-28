@@ -3990,7 +3990,7 @@ impl Widget for TabBar {
     }
     /// A bar at rest whose own state, theme, placement and the people on
     /// its tabs are as when it was last drawn shows that drawing again
-    /// ([`TabBar::replays`]); anything else draws it afresh.
+    /// (`TabBar::replays`); anything else draws it afresh.
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -4570,7 +4570,7 @@ impl Widget for TabBar {
     }
 
     /// The bar's curves while they run, and busy arcs while they turn
-    /// ([`TabBar::busy_needs_frame`]).
+    /// (`TabBar::busy_needs_frame`).
     fn needs_animation_frame(&self) -> bool {
         self.layout_curves_in_flight() || self.busy_needs_frame(crate::motion::frame_now())
     }

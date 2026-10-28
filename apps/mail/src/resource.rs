@@ -170,7 +170,7 @@ pub struct DraftState {
     #[model(readonly)]
     pub shown_as: Option<String>,
     /// What `draft-message` or `draft-reply` wrote, as a fingerprint
-    /// ([`DraftState::fingerprint`]): while the draft still matches it,
+    /// (`DraftState::fingerprint`): while the draft still matches it,
     /// nobody took it up and those verbs may write over it.
     #[model(readonly)]
     pub drafted: Option<String>,

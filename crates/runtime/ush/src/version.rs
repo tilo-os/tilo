@@ -6,7 +6,7 @@
 //! bounded attributes (`fs_protocol::files::FileHistoryReadQueryV1` for the
 //! versions and their contents, `CHECKED_HISTORY_*` for a checked restore).
 //! The History view in the file manager reads exactly those, and
-//! [`apps/file-explorer/src/framework_history.rs`] is the same transport this
+//! `apps/file-explorer/src/framework_history.rs` is the same transport this
 //! module speaks. So `version log` and the History view cannot disagree about
 //! what a revision is: there is one list, one set of ids, and one restore.
 //!
@@ -229,7 +229,7 @@ impl History {
 }
 
 /// Read the history of one mounted file, the way
-/// [`apps/file-explorer/src/framework_history.rs`] does.
+/// `apps/file-explorer/src/framework_history.rs` does.
 ///
 /// A descriptor is held for the whole command so that a later replacement of
 /// the path cannot retarget a queued restore: the history a caller reviewed
@@ -268,7 +268,7 @@ impl MountedFile {
     /// Every revision of the file, oldest first, read by following the
     /// page cursor to its end.
     ///
-    /// A single page holds at most [`MAX_HISTORY_PAGE_VERSIONS`] versions, and
+    /// A single page holds at most `MAX_HISTORY_PAGE_VERSIONS` versions, and
     /// a real document has more, so a caller that stopped at page one would
     /// silently see a truncated log.
     ///
