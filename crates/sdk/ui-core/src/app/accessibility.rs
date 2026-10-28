@@ -139,6 +139,7 @@ impl App {
         let _entry = self.enter_wake_scope();
         match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
+                self.accessibility.parting_screen_reader = None;
                 self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
@@ -155,6 +156,95 @@ impl App {
 
     pub fn screen_reader_enabled(&self) -> bool {
         self.accessibility.screen_reader.is_some()
+    }
+
+    /// Let the host keep the screen reader state the chord sets (a login
+    /// screen keeps the device's, not a person's). Without one, the chord
+    /// writes the person's `accessibility.screen_reader` setting when this
+    /// window follows the settings file, so the chord and Settings agree.
+    pub fn on_screen_reader_chord(&mut self, observer: impl FnMut(bool) + 'static) {
+        self.accessibility.on_screen_reader_chord = Some(Box::new(observer));
+    }
+
+    /// Feed a key event to the screen reader chord. `true` when it toggled
+    /// the screen reader, which then consumes the event.
+    #[cfg(feature = "native")]
+    fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
+        use crate::screen_reader_chord::{ChordEvent, ChordKey, ChordModifiers};
+        match event {
+            WindowEvent::Focused(false) => {
+                // Releases arrive at whoever has focus next.
+                self.accessibility.screen_reader_chord.reset();
+                false
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let toggled = self.accessibility.screen_reader_chord.key(ChordEvent {
+                    key: ChordKey::from_winit(key),
+                    modifiers: ChordModifiers::from_winit(self.input.modifiers.state()),
+                    pressed: key.state == winit::event::ElementState::Pressed,
+                    repeat: key.repeat,
+                    at: crate::time::now(),
+                });
+                if toggled {
+                    self.toggle_screen_reader_by_chord();
+                }
+                toggled
+            }
+            _ => false,
+        }
+    }
+
+    /// When the volume-key hold toggles the screen reader if both keys stay
+    /// down; the runner wakes then and calls [`Self::tick_screen_reader_chord`].
+    pub fn screen_reader_chord_deadline(&self) -> Option<crate::time::Instant> {
+        self.accessibility.screen_reader_chord.deadline()
+    }
+
+    /// Toggle the screen reader when the volume-key hold is due. `true` when
+    /// it toggled.
+    pub fn tick_screen_reader_chord(&mut self, now: crate::time::Instant) -> bool {
+        let toggled = self.accessibility.screen_reader_chord.tick(now);
+        if toggled {
+            self.toggle_screen_reader_by_chord();
+        }
+        toggled
+    }
+
+    /// Turn the screen reader on or off as the chord does, saying which.
+    /// Turning it off is heard too: the narrator that says so is kept, not
+    /// stopped, until the reader is turned on again.
+    pub fn toggle_screen_reader_by_chord(&mut self) {
+        let _entry = self.enter_wake_scope();
+        let on = !self.screen_reader_enabled();
+        if on {
+            // The new state first, then what has focus.
+            let mut reader = Self::configured_screen_reader();
+            reader.announce(
+                crate::screen_reader_chord::state_words(true),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = None;
+            self.accessibility.screen_reader = Some(reader);
+            self.announce_current_focus();
+        } else if let Some(mut reader) = self.accessibility.screen_reader.take() {
+            reader.announce(
+                crate::screen_reader_chord::state_words(false),
+                tts::Priority::Important,
+                true,
+            );
+            self.accessibility.parting_screen_reader = Some(reader);
+            self.accessibility.live_region_last.clear();
+        }
+        self.accessibility.a11y.screen_reader = on;
+        if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
+            observer(on);
+        } else if self.watch_system_settings {
+            let origin = settings_store::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            if let Err(error) = settings_store::accessibility::SCREEN_READER.set_by(on, &origin) {
+                tracing::warn!(%error, "the screen reader chord could not save its setting");
+            }
+        }
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -1849,6 +1939,9 @@ impl App {
         Ok(true)
     }
 }
+
+/// The change origin the screen reader chord records in the settings file.
+const SCREEN_READER_CHORD_ORIGIN: &str = "screen-reader-chord";
 
 /// What a handled input asks [`App::commit_action_with`] to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

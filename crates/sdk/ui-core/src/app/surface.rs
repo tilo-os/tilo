@@ -182,6 +182,12 @@ impl App {
             _ => {}
         }
         self.restore_physical_configuration();
+        // The chord that turns the screen reader on and off answers on every
+        // screen, whatever the window shows and binds.
+        if self.handle_screen_reader_chord(&event) {
+            window.request_redraw();
+            return true;
+        }
         if self.close_admission.dialog.is_some()
             || self
                 .history
