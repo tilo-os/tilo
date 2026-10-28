@@ -2033,7 +2033,11 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
             let preset = *preset;
             driver.with_chrome(|st: &mut ChromeState| {
                 use tilo_quick_settings::{QsLevel, QsSection, WifiNetwork, WifiPasswordPrompt};
-                st.overlays.quick_settings = true;
+                // The machine Quick Settings shows: a radio present and on,
+                // or the Wi-Fi tile is not offered and the section it opens —
+                // where the passphrase is asked — has nowhere to stand
+                // (`Root::anchor` needs `radios.wifi_available`).
+                ShellDriver::seed_laptop_quick_settings(st);
                 st.quick_settings.nav_stack = vec![QsLevel::Root];
                 st.quick_settings.section = Some(QsSection::Wifi);
                 st.quick_settings.wifi_networks = vec![
@@ -4084,10 +4088,12 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(4),
                 Action::Snapshot("05-status-chip"),
                 Action::Key(Key::Named(NamedKey::Escape)),
+                // Seeding the invited person opens the roster itself
+                // (`overlays.collaborators`), so a click on the avatar stack
+                // here would close it again — four frames of it leaving at
+                // 10 % read in the sweep as "no popover at all".
                 Action::SeedInvitePending,
-                Action::Wait(3),
-                Action::ClickNamed("topbar_avatar_stack"),
-                Action::Wait(4),
+                Action::Wait(24),
                 Action::Snapshot("06-people-with-pending-invite"),
             ],
         },
@@ -5447,13 +5453,15 @@ fn build_scenarios() -> Vec<Scenario> {
             description: "Quick settings' Wi-Fi pane asking for a passphrase, empty / typed / rejected.",
             actions: vec![
                 Action::SeedWifiPrompt("empty"),
-                Action::Wait(8),
+                // The section opens in place on the disclosure motion; the
+                // passphrase is drawn once it has arrived.
+                Action::Wait(24),
                 Action::Snapshot("01-asking"),
                 Action::SeedWifiPrompt("typed"),
-                Action::Wait(4),
+                Action::Wait(8),
                 Action::Snapshot("02-typed"),
                 Action::SeedWifiPrompt("rejected"),
-                Action::Wait(4),
+                Action::Wait(8),
                 Action::Snapshot("03-rejected"),
             ],
         },

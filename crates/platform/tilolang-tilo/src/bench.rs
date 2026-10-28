@@ -12,6 +12,9 @@
 //!   has read the room; `load`, loading the room's record from its saved bytes;
 //!   `index_build`, building the package's index from the record, as a room opened for the
 //!   first time (or with an index it cannot trust) does off the frame.
+//! * `search`: a typed query (the title of the room's middle resource) found across the room's
+//!   texts and read back as hits; the first query after opening, which may take in the room's
+//!   texts, is recorded beside it as `first_ms`.
 //! * `first_frame`: from the saved room to the first frame, the record loading on a thread of
 //!   its own while the window opens over the index; `first_write`, the first change right
 //!   after that frame, which waits for the record.
@@ -1223,7 +1226,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
-        for record in open(&sized)? {
+        for record in open(&sized)?.into_iter().chain(search(&sized)?) {
             out.push(record);
         }
         if config.workloads.cold {
@@ -1544,6 +1547,42 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
         sized.record("first_frame", "ms", frames, extra),
         sized.record("first_write", "ms", writes, Json::Null),
     ])
+}
+
+/// A typed query on the room as it opened: the title of its middle resource, found among every
+/// resource's texts. `None` for a room without text.
+fn search(sized: &Sized<'_>) -> Result<Option<Record>, String> {
+    let mut room = sized.open()?;
+    room.settle();
+    let mut titles = Vec::new();
+    for (package, _, doc) in room.host.records() {
+        if let Ok(record) = room.host.store().record(&doc) {
+            titles.extend(
+                crate::search::hits(&package.meta, &record, &doc)
+                    .into_iter()
+                    .map(|hit| hit.title),
+            );
+        }
+    }
+    titles.sort();
+    let Some(query) = titles.get(titles.len() / 2).cloned() else {
+        return Ok(None);
+    };
+    let start = Instant::now();
+    let first = crate::search::find(&room.host, &query, 20);
+    let first_ms = ms(start.elapsed());
+    let mut samples = Vec::new();
+    for _ in 0..sized.config.samples {
+        let start = Instant::now();
+        std::hint::black_box(crate::search::find(&room.host, &query, 20));
+        samples.push(ms(start.elapsed()));
+    }
+    Ok(Some(sized.record(
+        "search",
+        "ms",
+        samples,
+        json!({"first_ms": first_ms, "query": query, "hits": first.len()}),
+    )))
 }
 
 /// What the window did on every change before search and publication were incremental:

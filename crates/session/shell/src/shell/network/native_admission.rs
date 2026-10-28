@@ -11,9 +11,9 @@
 //! replay) are one admission: each is authorized alone, in order, and the
 //! state file is published once for them all.
 use super::ShellNetwork;
-use crate::network::actor::{HostIdentity, native_ingress};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use tilo_lock::MutexRecover as _;
+use tilo_network_actor::{HostIdentity, native_ingress};
 
 #[derive(Default)]
 pub(super) struct State {

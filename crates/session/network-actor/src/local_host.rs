@@ -7,7 +7,7 @@
 //! (`room_host::deferred_protocols`): they refuse every connection
 //! until a host is installed, then hand each to it. Nothing runs for them
 //! before then. The host itself opens only once this device hosts a room
-//! (`crate::shell::network::embedded_host`).
+//! (the shell's `embedded_host`).
 //!
 //! The device's native owner is a member of every room it holds, these
 //! included: for a room hosted here its session goes to this host over an
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub use room_host::Protocols;
 use room_host::{HostSlot, RoomHost};
 /// Where the room host lives: the one place its path is named.
-pub(crate) use tilo_room_host::host as room_host;
+pub use tilo_room_host::host as room_host;
 
 /// This device's room host, once it is open: shared by the network (which
 /// opens it) and the actor (which joins its rooms through it).

@@ -47,8 +47,7 @@ pub mod person;
 pub mod transfer;
 pub mod workspace;
 
-/// Key, in a record's own document, of the map holding its identity.
-const META: &str = "tilo:record";
+use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
 /// Key in a record document for the room that owns this local replica.
 /// `RecordId` is a user/application name; it is not an authority boundary.
 const ROOM: &str = "room";
@@ -63,66 +62,12 @@ const FORMERLY: &str = "formerly";
 pub const MAX_DISCOVERED_ROOM_RECORDS: usize = 64;
 const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
 
-enum ObjectAt {
-    Missing,
-    Object(ObjId),
-    Invalid,
-}
-
-enum StringAt {
-    Missing,
-    String(String),
-    Invalid,
-}
-
-fn object_at(doc: &AutoCommit, object: &ObjId, key: &str, kind: ObjType) -> ObjectAt {
-    let Ok(mut values) = doc.get_all(object, key) else {
-        return ObjectAt::Invalid;
-    };
-    if values.is_empty() {
-        return ObjectAt::Missing;
-    }
-    if values.len() != 1 {
-        return ObjectAt::Invalid;
-    }
-    match values.pop() {
-        Some((Value::Object(found), id)) if found == kind => ObjectAt::Object(id),
-        _ => ObjectAt::Invalid,
-    }
-}
-
-fn string_at(doc: &AutoCommit, object: &ObjId, key: &str) -> StringAt {
-    let Ok(mut values) = doc.get_all(object, key) else {
-        return StringAt::Invalid;
-    };
-    if values.is_empty() {
-        return StringAt::Missing;
-    }
-    if values.len() != 1 {
-        return StringAt::Invalid;
-    }
-    match values.pop() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            ScalarValue::Str(value) => StringAt::String(value.to_string()),
-            _ => StringAt::Invalid,
-        },
-        _ => StringAt::Invalid,
-    }
-}
-
 /// Select the document's metadata map, or create it only when it is absent.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     match object_at(doc, &ROOT, META, ObjType::Map) {
         ObjectAt::Missing => doc.put_object(&ROOT, META, ObjType::Map).ok(),
         ObjectAt::Object(object) => Some(object),
         ObjectAt::Invalid => None,
-    }
-}
-
-fn meta_ro(doc: &AutoCommit) -> Option<ObjId> {
-    match object_at(doc, &ROOT, META, ObjType::Map) {
-        ObjectAt::Object(object) => Some(object),
-        ObjectAt::Missing | ObjectAt::Invalid => None,
     }
 }
 

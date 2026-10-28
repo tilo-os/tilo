@@ -23,7 +23,7 @@ use crate::shell::device_fabric::{
     WakeInterfaceKind, WakeOutcome, WakeRoute,
 };
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// The discard port Wake-on-LAN senders conventionally use.
 pub const MAGIC_PACKET_PORT: u16 = 9;
@@ -813,8 +813,9 @@ mod tests {
     use super::*;
     use crate::shell::device_fabric::{
         DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-        FabricCapabilities, FabricStamp, OwnerSession,
+        FabricCapabilities, OwnerSession,
     };
+    use tilo_network_actor::fabric::FabricStamp;
 
     fn id(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()

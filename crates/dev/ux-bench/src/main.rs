@@ -220,6 +220,7 @@ fn execute() -> Result<bool, String> {
     Ok(report.passed)
 }
 
+#[cfg(target_os = "macos")]
 #[allow(
     unused_imports,
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."

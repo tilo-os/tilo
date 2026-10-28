@@ -22,6 +22,18 @@ fn fixture_tagged(
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
+    fixture_with(tags, Vec::new())
+}
+
+/// [`fixture_tagged`], the action taking `params`.
+fn fixture_with(
+    tags: Vec<String>,
+    params: Vec<tilo_actions::ActionParam>,
+) -> (
+    Arc<CapnpBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
     let room = workspace.room().to_string();
@@ -50,7 +62,7 @@ fn fixture_tagged(
             icon: None,
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
-            params: Vec::new(),
+            params,
             contract: tilo_actions::ActionContract {
                 execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                 result: tilo_actions::ResultSpec::Job,
@@ -227,6 +239,69 @@ fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it
         PendingPoll::Ready(Ok(_))
     ));
     assert!(app.try_recv().is_ok(), "the person at the device runs it");
+}
+
+/// The person's sheet: each question, with where its answer goes.
+struct Sheet(
+    tokio::sync::mpsc::UnboundedSender<(
+        crate::app_actions::AppActionConsentRequest,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionConsent>,
+    )>,
+);
+
+impl crate::app_actions::AppActionConsentPrompter for Sheet {
+    fn ask(
+        &self,
+        request: crate::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+        let (answer, receive) = tokio::sync::oneshot::channel();
+        self.0.send((request, answer)).ok()?;
+        Some(receive)
+    }
+}
+
+/// What an agent asks its person to confirm is put to them as the draft a
+/// run's question shows: the invocation field by field, as it would run.
+#[tokio::test]
+async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
+    let (state, person, mut app) = fixture_with(
+        vec![tilo_actions::ATTENDED_TAG.to_owned()],
+        vec![tilo_actions::ActionParam::required(
+            "text",
+            tilo_actions::ParamType::Text,
+            "Text",
+        )],
+    );
+    let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
+    state.set_app_action_consent(Arc::new(Sheet(sheet)));
+    let agent = Caller::local_agent("scribe")
+        .acting_for("a1".repeat(32))
+        .in_room(person.room().unwrap().to_owned())
+        .in_new_execution();
+    let mut invoke = request();
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".into(), "Buy milk".into());
+    invoke.argument = InvokeArgument::Json(arguments);
+    let witness = state.request_witness(&agent, None, &invoke);
+    let (question, answer) = asked.recv().await.expect("the person is asked");
+    let draft = question.draft.expect("the question carries the draft");
+    assert_eq!(draft.action_label, "Update");
+    assert_eq!(draft.fields.len(), 1, "{draft:?}");
+    assert_eq!(draft.fields[0].path, vec!["text".to_owned()]);
+    assert_eq!(draft.fields[0].value.line(), "Buy milk");
+    assert!(draft.fields[0].editable, "{draft:?}");
+    answer
+        .send(crate::app_actions::AppActionConsent::Once)
+        .unwrap();
+    let witnessed = witness.await.expect("answered").expect("witnessed");
+    invoke.confirmation = Some(witnessed);
+    assert!(matches!(
+        state
+            .action_invoke(&agent, None, None, &invoke)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    assert!(app.try_recv().is_ok(), "it runs on the person's answer");
 }
 
 #[test]

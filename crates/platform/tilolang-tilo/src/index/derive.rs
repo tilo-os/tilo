@@ -16,7 +16,6 @@ use super::columns::{
     self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
 };
 use super::lists::Entry;
-use super::text::{NAMING, OTHER, words};
 use super::{IndexError, KEY, TYPE, Writer};
 use crate::reads::{default_value, field_of_slot, locate_ref, map_at, type_at};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
@@ -97,7 +96,7 @@ pub trait Sink {
     /// It cannot be written.
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError>;
 
-    /// Drop `resource` and everything inside it: fields, lists, postings.
+    /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
     ///
     /// # Errors
     /// It cannot be written.
@@ -146,20 +145,11 @@ pub trait Sink {
     /// It cannot be written.
     fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError>;
 
-    /// The words of a text of `resource` changed from `old` to `new`.
-    ///
-    /// # Errors
-    /// It cannot be written.
-    fn words(
-        &mut self,
-        resource: &str,
-        old: Option<&str>,
-        new: Option<&str>,
-        weight: u8,
-    ) -> Result<(), IndexError>;
+    /// A text of `resource` changed: what search finds it by.
+    fn text_changed(&mut self, resource: &str);
 
-    /// Whether it keeps filter columns and postings, or (the store's open writes) fields and
-    /// membership alone.
+    /// Whether it keeps filter columns and what search reads, or (the store's open writes)
+    /// fields and membership alone.
     fn keeps_columns(&self) -> bool;
 }
 
@@ -217,13 +207,9 @@ impl Sink for Writer<'_> {
                 }
             }
         }
-        for (held, field, bytes) in held_fields {
-            if !field.starts_with('$')
-                && let Ok(FieldValue::Text(text)) = super::codec::get_value(&bytes)
-            {
-                for word in words(&text) {
-                    self.unpost(&word, &held)?;
-                }
+        for (held, field, _) in held_fields {
+            if field == TYPE {
+                Writer::text_changed(self, &held);
             }
             self.remove_field(&held, &field)?;
         }
@@ -268,22 +254,8 @@ impl Sink for Writer<'_> {
         Writer::drop_lists(self, prefix)
     }
 
-    fn words(
-        &mut self,
-        resource: &str,
-        old: Option<&str>,
-        new: Option<&str>,
-        weight: u8,
-    ) -> Result<(), IndexError> {
-        let before = old.map(words).unwrap_or_default();
-        let after = new.map(words).unwrap_or_default();
-        for gone in before.difference(&after) {
-            self.unpost(gone, resource)?;
-        }
-        for word in &after {
-            self.post(word, resource, weight)?;
-        }
-        Ok(())
+    fn text_changed(&mut self, resource: &str) {
+        Writer::text_changed(self, resource);
     }
 
     fn keeps_columns(&self) -> bool {
@@ -365,22 +337,6 @@ fn field_value(
         .unwrap_or_else(|| default_value(field)))
 }
 
-/// The weight of the words of the text field `field` of `schema`: the text that names a
-/// resource is its first text field, in id order.
-fn weight_of(schema: &TypeSchema, field: &FieldSchema) -> u8 {
-    let first = schema
-        .fields
-        .iter()
-        .filter(|f| f.kind == MergeKind::Text)
-        .map(|f| f.id.as_str())
-        .min();
-    if first == Some(field.id.as_str()) {
-        NAMING
-    } else {
-        OTHER
-    }
-}
-
 impl<'d> Derive<'d> {
     pub fn new(doc: &'d Doc, docs: &'d BTreeMap<DocId, (AppId, TypeId)>) -> Self {
         Self {
@@ -456,10 +412,8 @@ impl<'d> Derive<'d> {
                 MergeKind::Record => {}
                 _ => {
                     let value = self.value(obj, field);
-                    if field.kind == MergeKind::Text
-                        && let FieldValue::Text(text) = &value
-                    {
-                        sink.words(path, None, Some(text), weight_of(schema, field))?;
+                    if field.kind == MergeKind::Text {
+                        sink.text_changed(path);
                     }
                     sink.put_field(path, &field.id, &value)?;
                 }
@@ -970,15 +924,7 @@ impl<'d> Derive<'d> {
                     return Ok(());
                 }
                 if spec.kind == MergeKind::Text {
-                    let old = match &before {
-                        Some(FieldValue::Text(text)) => Some(text.as_str()),
-                        _ => None,
-                    };
-                    let new = match &now {
-                        FieldValue::Text(text) => Some(text.as_str()),
-                        _ => None,
-                    };
-                    sink.words(path, old, new, weight_of(schema, spec))?;
+                    sink.text_changed(path);
                 }
                 sink.put_field(path, field, &now)?;
                 // The columns reading the field, in the collection the resource is in and across

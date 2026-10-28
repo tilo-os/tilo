@@ -45,6 +45,7 @@ jobs:
       CARGO_BUILD_JOBS: "8"
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: never
+      TILO_SCCACHE_KEY_PREFIX: tilo/site-publish/v1/x86_64
       T_REF: main
       T_COMMIT: ${{ github.sha }}
       OUT: ${{ github.workspace }}/out
@@ -57,6 +58,11 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Prepare Rust build
         uses: ./.forgejo/actions/prepare-rust-build
+      - name: Prepare compiler cache
+        # The runner offers sccache; a job only uses it once this sets
+        # RUSTC_WRAPPER and starts the server. Without it every publish
+        # compiled the room service and the web desktop from nothing.
+        run: bash tools/ci/sccache.sh prepare
       - name: Fetch fonts as on t
         # The download cache step turns font fetching off for hermetic test
         # suites; the scripts here fetch and verify the fonts they ship.
@@ -89,6 +95,10 @@ jobs:
           mkdir -p /var/tmp/buildah-scratch
           mount -t tmpfs -o size=12g tmpfs /var/tmp/buildah-scratch
           echo TMPDIR=/var/tmp/buildah-scratch >> "$GITHUB_ENV"
+
+      - name: Report the compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report
 
       - name: Build and test the room service image
         run: |

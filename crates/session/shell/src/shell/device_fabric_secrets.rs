@@ -18,10 +18,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_seal::{Label, PublicKey, SealedBox, SecretKey};
 
-use crate::shell::device_fabric::{
-    FabricStamp, MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential,
-};
-use crate::shell::personal_continuity::DeviceId;
+use crate::shell::device_fabric::{MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential};
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::FabricStamp;
 
 const WIFI_ENVELOPE_VERSION: u8 = 2;
 const WIFI_KEY_DOMAIN: &[u8] = b"tilo-personal-fabric-wifi-envelope-v1\0";

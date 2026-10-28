@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::{NetCmd, ShellNetwork, room_topic_id};
-use crate::network::actor::RosterDevice;
+use tilo_network_actor::RosterDevice;
 
 /// The rosters last told to the actor, and the room epoch they were read at.
 #[derive(Default)]

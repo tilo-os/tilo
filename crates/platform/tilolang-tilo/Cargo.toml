@@ -24,20 +24,40 @@ tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # The patch protocol an instance sends its window over.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# Tilo's search layer: what search finds resources by their texts through.
+tilo-search = { version = "0.1.0", path = "../../sdk/search" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # The collab client an instance commits to its room through, without the toolkit.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
+# The room record's on-disk copy and its writer, and who wrote a step (`instance::room`).
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
+durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
+collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
+# The platform's history sentences, which the host's history verbs speak in.
+tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history", optional = true }
 
 [features]
 # The instance's commit path to its room through the collab client
 # (`instance::room`), without the toolkit.
-room = ["dep:collaboration"]
+room = [
+    "dep:collaboration",
+    "collaboration/native",
+    "dep:tilo-app-state",
+    "dep:durable-store",
+    "dep:collab-types",
+    "dep:tilo-history",
+]
 # Lets `tilolang bench --engine cranelift|winch` run on wasmtime (docs/tilolang-engines.md).
 wasmtime = ["tilolang-runtime/wasmtime"]
 
 [dev-dependencies]
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+# The fake broker a room's committed read is served from in the tests.
+collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
+durable-store = { version = "0.1.0", path = "../../system/durable-store" }
+tempfile.workspace = true
 uuid.workspace = true
 
 [[test]]

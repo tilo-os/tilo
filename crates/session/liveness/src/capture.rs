@@ -15,7 +15,6 @@
 //! its slot.
 
 use std::ffi::c_void;
-use std::fmt::Write as _;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -210,22 +209,28 @@ impl Ask {
         }
     }
 
-    /// `tid`'s stack where the signal interrupted it, innermost frame first,
-    /// symbolized; `None` when it has not answered.
-    pub(super) fn frames(&self, tid: i32) -> Option<String> {
+    /// `tid`'s return addresses where the signal interrupted it, innermost
+    /// frame first; `None` when it has not answered.
+    pub(super) fn ips(&self, tid: i32) -> Option<Vec<usize>> {
         let slot = self
             .slot(tid)
             .filter(|slot| slot.answered.load(Ordering::Acquire) == self.generation)?;
         let len = slot.len.load(Ordering::Relaxed).min(FRAMES);
         let start = slot.start.load(Ordering::Relaxed).min(len);
-        let ips: Vec<usize> = slot
-            .frames
-            .iter()
-            .take(len)
-            .skip(start)
-            .map(|cell| cell.load(Ordering::Relaxed))
-            .collect();
-        Some(symbolize(&ips))
+        Some(
+            slot.frames
+                .iter()
+                .take(len)
+                .skip(start)
+                .map(|cell| cell.load(Ordering::Relaxed))
+                .collect(),
+        )
+    }
+
+    /// [`Self::ips`], named ([`crate::symtab`]).
+    pub(super) fn frames(&self, tid: i32) -> Option<String> {
+        let ips = self.ips(tid)?;
+        crate::symtab::render_all(&[&ips]).pop()
     }
 }
 
@@ -255,32 +260,6 @@ fn slots_for(threads: usize) -> &'static [Slot] {
     TABLE.store(grown, Ordering::Release);
     // SAFETY: just leaked, and never freed.
     unsafe { (*grown).as_slice() }
-}
-
-/// `  N: symbol` lines, each followed by `             at file:line` where
-/// the debug information says, as `std::backtrace` prints them.
-fn symbolize(ips: &[usize]) -> String {
-    let mut out = String::new();
-    let mut index = 0usize;
-    for &ip in ips {
-        let mut resolved = false;
-        backtrace::resolve(std::ptr::without_provenance_mut::<c_void>(ip), |symbol| {
-            resolved = true;
-            let name = symbol
-                .name()
-                .map_or_else(|| "<unknown>".to_string(), |name| format!("{name:#}"));
-            let _ = writeln!(out, "{index:>4}: {name}");
-            if let (Some(file), Some(line)) = (symbol.filename(), symbol.lineno()) {
-                let _ = writeln!(out, "             at {}:{line}", file.display());
-            }
-            index = index.saturating_add(1);
-        });
-        if !resolved {
-            let _ = writeln!(out, "{index:>4}: <unknown> {ip:#x}");
-            index = index.saturating_add(1);
-        }
-    }
-    out
 }
 
 /// The thread whose answer a test holds mid-write; 0 when none is held.

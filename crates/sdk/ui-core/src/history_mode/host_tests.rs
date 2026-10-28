@@ -1650,6 +1650,7 @@ fn history_host_messages_exist_in_every_shipped_language() {
         ("count", 2.into()),
         ("intent", "i1".into()),
         ("mapping", "m".into()),
+        ("reason", "refused".into()),
     ];
     for (locale, catalog) in [("en-US", TOOLKIT_EN), ("de-DE", TOOLKIT_DE)] {
         crate::i18n::I18nManager::install(locale, locale, &[(locale, catalog)]).unwrap();

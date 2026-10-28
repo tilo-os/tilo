@@ -18,12 +18,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, se
 use thiserror::Error;
 
 use crate::shell::state::{RoomId, TileContent, WorkspaceTree};
+use tilo_network_actor::fabric::{DeviceId, InvalidDeviceId, valid_identifier};
 
 /// Wire schema for [`DeviceContinuationSnapshot`].
 pub const CONTINUITY_SCHEMA_VERSION: u16 = 2;
 /// Resume data is intentionally small: it is metadata, never an app backup.
 pub const MAX_RESUME_BYTES: usize = 32 * 1024;
-const MAX_DEVICE_ID_BYTES: usize = 128;
 const MAX_APP_ID_BYTES: usize = 256;
 const MAX_RECORD_ID_BYTES: usize = 256;
 const MAX_WORKSPACES_PER_DEVICE: usize = 256;
@@ -33,42 +33,6 @@ const MAX_DEVICES: usize = 256;
 /// Leave framing/headroom below the transport's 4 MiB ceiling.
 const MAX_TOTAL_RESUME_BYTES: usize = 3 * 1024 * 1024;
 const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
-
-/// A stable, human-identity-certified device identifier.
-///
-/// The network layer will supply this from an authenticated device key. It is
-/// kept textual here so the pure model does not depend on a transport crate.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId(String);
-
-impl DeviceId {
-    pub fn new(value: impl Into<String>) -> Result<Self, ContinuityError> {
-        let value = value.into();
-        if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
-            return Err(ContinuityError::InvalidDeviceId);
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Serialize for DeviceId {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        DeviceId::new(self.0.clone())
-            .map_err(S::Error::custom)?
-            .0
-            .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for DeviceId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        DeviceId::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
 
 /// Stable logical identity for an app instance. A shell tab id is already
 /// durable and peer-salted, so it is suitable for scratch-record continuity.
@@ -1023,6 +987,12 @@ pub enum ContinuityError {
     InvalidCheckpoint,
 }
 
+impl From<InvalidDeviceId> for ContinuityError {
+    fn from(InvalidDeviceId: InvalidDeviceId) -> Self {
+        Self::InvalidDeviceId
+    }
+}
+
 fn snapshot_resume_bytes(snapshot: &DeviceContinuationSnapshot) -> usize {
     snapshot
         .workspaces
@@ -1060,27 +1030,8 @@ fn focus_from_tree(
         })
 }
 
-fn valid_identifier(value: &str, max: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max
-        && !looks_like_local_path(value)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
-}
-
 fn valid_app_id(value: &str) -> bool {
     valid_identifier(value, MAX_APP_ID_BYTES) && value.contains('.')
-}
-
-fn looks_like_local_path(value: &str) -> bool {
-    value.starts_with('/')
-        || value.starts_with('~')
-        || value.starts_with("file:")
-        || value.starts_with("\\\\")
-        || value.as_bytes().get(1) == Some(&b':')
-        || value.contains('/')
-        || value.contains('\\')
 }
 
 fn has_local_path_marker(bytes: &[u8]) -> bool {

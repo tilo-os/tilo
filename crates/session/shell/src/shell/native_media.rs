@@ -295,7 +295,7 @@ struct Consent {
 type PrivacyListener = Arc<dyn Fn(&crate::portal::lockdown::LockdownPolicy) + Send + Sync>;
 struct Shared {
     lifecycle: LocalSessionLifecycle,
-    target: super::personal_continuity::DeviceId,
+    target: tilo_network_actor::fabric::DeviceId,
     capture: Arc<Mutex<CaptureBroker>>,
     consent: OnceLock<Consent>,
     factory: OnceLock<Arc<dyn MediaFactory>>,
@@ -337,7 +337,7 @@ impl NativeMediaService {
     pub(crate) fn new(
         lifecycle: LocalSessionLifecycle,
         capture: Arc<Mutex<CaptureBroker>>,
-        target: super::personal_continuity::DeviceId,
+        target: tilo_network_actor::fabric::DeviceId,
     ) -> Self {
         let shared = Arc::new(Shared {
             lifecycle,

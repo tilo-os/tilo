@@ -4,13 +4,13 @@
 //! route per enrolled room, dials it again when its pin changes and runs
 //! the connected session's pump beside every other host session. A room
 //! hosted on this device is not dialled: its session goes to this device's
-//! own host in process ([`super::super::local_host`]), through the same
+//! own host in process ([`crate::local_host`]), through the same
 //! handshake and session code.
 use super::{
     ActorState, Arc, DeviceCert, HashMap, HostRuntime, InternalEvent, RelayCoeditSession,
     spawn_host_pump,
 };
-use crate::network::local_host::LocalHost;
+use crate::local_host::LocalHost;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 pub use tilo_joined_room::session::{Connect, Input, Scope};
 use tilo_peer_state::join::TransportHint;
@@ -30,7 +30,7 @@ struct Route {
     local: bool,
 }
 /// A governed room's relay session is not up (yet): the caller may retry.
-pub(crate) const NOT_CONNECTED: &str = "the governed room is not connected";
+pub const NOT_CONNECTED: &str = "the governed room is not connected";
 
 impl Drop for Route {
     fn drop(&mut self) {
@@ -50,7 +50,7 @@ impl Routes {
     }
     pub(super) fn remove(&mut self, ws: u64) {
         if self.entries.remove(&ws).is_some() {
-            crate::shell::room_sync::forget(ws);
+            crate::room_sync::forget(ws);
         }
     }
     /// Whether a route goes to a host on another machine: routes to this
@@ -312,7 +312,7 @@ impl ActorState {
     }
 
     pub(super) fn native_connect(&mut self, connect: Connect, https: Option<super::HttpsRoute>) {
-        let ws = crate::shell::network::room_topic_id(connect.room());
+        let ws = crate::room_topic_id(connect.room());
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
@@ -332,11 +332,11 @@ impl ActorState {
                 .is_some_and(|identity| connect.hosted_here(identity))
         {
             self.native_routes.remove(ws);
-            crate::shell::room_sync::forget(ws);
+            crate::room_sync::forget(ws);
             return;
         }
         // Apps in the room say they are connecting until its first sync.
-        crate::shell::room_sync::connecting(ws);
+        crate::room_sync::connecting(ws);
         self.native_routes.entries.insert(
             ws,
             Route {
@@ -366,7 +366,7 @@ impl ActorState {
             // It became pinned to this device, which runs no host, since it
             // was connected (the identity arrived after it): nothing to dial.
             self.native_routes.remove(ws);
-            crate::shell::room_sync::forget(ws);
+            crate::room_sync::forget(ws);
         }
         for (&ws, route) in &mut self.native_routes.entries {
             let material = route.connect.material(identity);
@@ -838,8 +838,8 @@ fn dial_refused(
                 ours = neighbour_wire::PEER_PROTOCOL_VERSION,
                 "the room's host speaks another peer protocol version"
             );
-            crate::shell::collaborator_versions::note(host.to_string(), String::new(), theirs);
-            crate::shell::room_sync::other_version(ws, theirs);
+            crate::services::peer_version(host.to_string(), String::new(), theirs);
+            crate::room_sync::other_version(ws, theirs);
         }
         // The room removed this device's person: dialing again changes
         // nothing until they join again, which the shell does through the
@@ -855,7 +855,7 @@ fn dial_refused(
         // this device has. The route dials again on the next heartbeat.
         error => {
             tracing::debug!(%error, ws, "native host dial failed; retrying");
-            crate::shell::room_sync::unreachable(ws);
+            crate::room_sync::unreachable(ws);
         }
     }
 }
@@ -876,12 +876,12 @@ pub enum ChannelTraffic {
 /// The queue [`ChannelTraffic`] waits in for the broker's drain.
 pub struct ChannelQueue {
     traffic: std::sync::Mutex<std::collections::VecDeque<ChannelTraffic>>,
-    wake: Arc<crate::idle_wake::DrainPark>,
+    wake: crate::Wake,
 }
 
 impl ChannelQueue {
-    /// A queue whose drain parks on `wake`.
-    pub(crate) fn new(wake: Arc<crate::idle_wake::DrainPark>) -> Arc<Self> {
+    /// A queue whose drain `wake` rouses.
+    pub fn new(wake: crate::Wake) -> Arc<Self> {
         Arc::new(Self {
             traffic: std::sync::Mutex::default(),
             wake,
@@ -889,15 +889,15 @@ impl ChannelQueue {
     }
 
     /// Queue `traffic` and wake the drain.
-    pub(crate) fn push(&self, traffic: ChannelTraffic) {
+    pub fn push(&self, traffic: ChannelTraffic) {
         if let Ok(mut queued) = self.traffic.lock() {
             queued.push_back(traffic);
         }
-        self.wake.poke();
+        (self.wake)();
     }
 
     /// Everything queued, oldest first.
-    pub(crate) fn take(&self) -> std::collections::VecDeque<ChannelTraffic> {
+    pub fn take(&self) -> std::collections::VecDeque<ChannelTraffic> {
         self.traffic
             .lock()
             .map(|mut queued| std::mem::take(&mut *queued))
@@ -908,127 +908,5 @@ impl ChannelQueue {
 impl std::fmt::Debug for ChannelQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChannelQueue").finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::network::actor::HostIdentity;
-    #[test]
-    fn native_custody_missing_disk_never_uses_retained_certificate() {
-        let (directory, owner, room, _, key) =
-            crate::shell::native_workspace_owner::test_enrolled_owner();
-        let certificate = owner
-            .with_current(room, |view| Ok(view.device().clone()))
-            .unwrap();
-        let mut identity = HostIdentity {
-            device_cert: certificate,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::default(),
-            workspace_revocations: HashMap::default(),
-            identity_paths: None,
-        };
-        let topic = crate::shell::network::room_topic_id(room);
-        assert!(identity.current_native_material(topic).is_ok());
-        identity.identity_paths = Some(tilo_user_identity::IdentityPaths::under(
-            directory.path().join("missing-custody"),
-        ));
-        assert!(identity.current_native_material(topic).is_err());
-        assert!(
-            Connect::new(owner, room)
-                .unwrap()
-                .material(&identity)
-                .is_err()
-        );
-    }
-
-    /// A room this device hosts itself is dialled nowhere and its apps'
-    /// empty states are their own; a room whose host cannot be reached says
-    /// so once the try failed, rather than connecting forever.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
-        use crate::shell::room_sync;
-        use ui::room_sync::RoomSyncState;
-        const HOSTED_HERE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        let (_directory, owner, room, _, key) =
-            crate::shell::native_workspace_owner::test_enrolled_owner();
-        let certificate = owner
-            .with_current(room, |view| Ok(view.device().clone()))
-            .unwrap();
-        let identity = HostIdentity {
-            device_cert: certificate,
-            device_signing_key: key.clone(),
-            workspace_device_certs: HashMap::default(),
-            workspace_revocations: HashMap::default(),
-            identity_paths: None,
-        };
-        let elsewhere = Connect::new(owner, room).unwrap();
-        assert!(
-            !elsewhere.hosted_here(&identity),
-            "the enrollment pins another device as the room's host"
-        );
-
-        // A room placed on this device's own host: the host its enrollment
-        // pins is this very device.
-        let governed_directory = tempfile::tempdir().unwrap();
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        tree.persist_path = Some(governed_directory.path().join("state.json"));
-        let workspace = tree.desktop.active;
-        let governed = crate::shell::state::RoomId::parse(HOSTED_HERE).expect("room");
-        assert!(tree.stand_in_room(workspace, governed));
-        let tree = tree.shared();
-        let governed_owner = crate::shell::native_workspace_owner::open(tree).unwrap();
-        let governor = tilo_joined_room::testing::certificate(
-            &ed25519_dalek::SigningKey::from_bytes(&[72; 32]),
-            &key,
-            "Desktop",
-        );
-        tilo_joined_room::testing::enroll_interactive_governor_in(
-            &governed_owner,
-            &key,
-            &governor,
-            HOSTED_HERE,
-        )
-        .unwrap();
-        let here = Connect::new(governed_owner, governed).unwrap();
-        assert!(here.hosted_here(&identity), "this device hosts it");
-
-        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
-        let (commands, actor) = super::super::Actor::spawn_reporting_addrs(
-            endpoint,
-            iroh::address_lookup::memory::MemoryLookup::new(),
-            Some(identity),
-            Arc::new(std::sync::Mutex::new(Vec::new())),
-        );
-        // In this order: once the second room has an answer, the actor has
-        // handled the first.
-        for connect in [here, elsewhere] {
-            commands
-                .send(super::super::NetCmd::NativeConnect(connect, None))
-                .await
-                .unwrap();
-        }
-        let topic = crate::shell::network::room_topic_id(room);
-        tilo_test_env::within("the room to say its host cannot be reached", async {
-            while room_sync::state(topic) != Some(RoomSyncState::Unreachable) {
-                tokio::task::yield_now().await;
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await;
-        assert_eq!(
-            room_sync::state(crate::shell::network::room_topic_id(governed)),
-            None,
-            "a room hosted here is not waiting for anyone"
-        );
-        actor.abort();
     }
 }

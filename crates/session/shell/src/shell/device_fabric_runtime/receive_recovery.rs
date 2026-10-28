@@ -3,7 +3,7 @@
 use super::{NearbyDropState, NearbyTransferHistory};
 use crate::shell::device_fabric::PersonalFabricAction;
 use crate::shell::nearby_transfer::NearbyTransferStore;
-use crate::shell::personal_continuity::DeviceId;
+use tilo_network_actor::fabric::DeviceId;
 
 /// Discard only the selected recovered receive. Files has already authenticated
 /// the workspace/connection-bound handle and checked continuity policy. Cleanup

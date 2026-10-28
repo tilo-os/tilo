@@ -4,7 +4,6 @@ use super::{
     devices, observer, video,
 };
 use crate::{
-    network::NetCmd,
     portal::{CaptureBroker, capture_broker::BorrowedCaptureHandle},
     shell::native_media::{MediaFactory, MediaSession, Prepare},
 };
@@ -18,6 +17,7 @@ use runtime_collab::native_media::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
+use tilo_network_actor::NetCmd;
 use tilo_relay_protocol::voice::HEARTBEAT;
 use tokio::sync::mpsc;
 
@@ -212,7 +212,9 @@ pub(super) async fn command(
     let (reply, receive) = tokio::sync::oneshot::channel();
     tokio::time::timeout(Duration::from_secs(3), async {
         commands
-            .send(NetCmd::NativeMedia(Command { operation, reply }))
+            .send(NetCmd::NativeMedia(
+                tilo_network_actor::services::ServiceCommand::new(Command { operation, reply }),
+            ))
             .await
             .map_err(|_| "native actor stopped".to_string())?;
         receive

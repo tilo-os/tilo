@@ -2304,6 +2304,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "click-test-client"
+version = "0.1.0"
+dependencies = [
+ "smithay-client-toolkit",
+ "wayland-client",
+ "workspace-hack",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15385,7 +15394,6 @@ dependencies = [
  "emoji",
  "file-explorer",
  "flate2",
- "fnv",
  "fs-protocol",
  "futures-util",
  "gbm",
@@ -15397,7 +15405,6 @@ dependencies = [
  "image",
  "iroh",
  "iroh-base",
- "iroh-gossip",
  "launcher",
  "legacy-agent-protocol",
  "libc",
@@ -15507,6 +15514,7 @@ dependencies = [
  "tilo-moq",
  "tilo-net",
  "tilo-net-answers",
+ "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-ntfs-mount",
@@ -19190,7 +19198,9 @@ dependencies = [
  "calloop",
  "durable-store",
  "libc",
+ "object 0.39.1",
  "parking_lot",
+ "rustc-demangle",
  "serde",
  "serde_json",
  "tilo-test-env",
@@ -19511,6 +19521,60 @@ dependencies = [
  "tokio",
  "wire-frame",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-network-actor"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "fnv",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "neighbour-wire",
+ "postcard",
+ "runtime-collab",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-action-broker",
+ "tilo-actions",
+ "tilo-clock",
+ "tilo-delivery-protocol",
+ "tilo-desktop-model",
+ "tilo-device-vpn",
+ "tilo-endpoint-reachability",
+ "tilo-files",
+ "tilo-identity-host",
+ "tilo-joined-room",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-messaging",
+ "tilo-peer-state",
+ "tilo-relay-client",
+ "tilo-relay-protocol",
+ "tilo-relay-session",
+ "tilo-room-host",
+ "tilo-rt",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-unlock-protocol",
+ "tilo-user-identity",
+ "tilo-window-share",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -21773,15 +21837,20 @@ dependencies = [
  "collab-types",
  "collaboration",
  "crc32fast",
+ "durable-store",
  "redb",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "tilo-actions",
+ "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-search",
  "tilolang",
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
@@ -23254,6 +23323,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e1d7ccff5e453092983b2a5ec27ebdd52745f40bef229e92051a054a37c662b"
 dependencies = [
  "getrandom 0.4.3",
+]
+
+[[package]]
+name = "ux-bench"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "shell",
+ "tilo-ui",
+ "tilo-winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -26967,6 +27049,7 @@ dependencies = [
  "tilo-net",
  "tilo-net-answers",
  "tilo-net-p2p",
+ "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-notify",

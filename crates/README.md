@@ -27,6 +27,8 @@ while `system/fs/` owns the collaborative filesystem service.
 
 - `dev/collab-link`: standalone latency/throughput proxy for collaboration sockets.
 - `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
+- `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
+- `dev/ux-bench`: runs the `scripts/ux-bench` journeys against the native shell tree (macOS).
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/sandboxed-app-collab.py`.
 - `dev/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::{DisplayEdge, DisplayRect};
-use crate::shell::personal_continuity::DeviceId;
+use crate::shell::device_fabric::DisplayEdge;
+use tilo_network_actor::fabric::DeviceId;
+use tilo_network_actor::fabric::DisplayRect;
 
 pub const MAX_CALIBRATION_PROPOSALS: usize = 16;
 pub const MAX_EVIDENCE_AGE_MS: u64 = 5_000;

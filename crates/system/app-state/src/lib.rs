@@ -243,6 +243,16 @@ pub fn validate_record_identity(package: &str, room: &str, record: &str) -> Resu
     validate_record_key(record)
 }
 
+/// Validate the identifiers of a room's index document, as
+/// [`validate_record_identity`] does a record's.
+///
+/// # Errors
+/// Rejects any identifier that is not a single, non-traversing name.
+pub fn validate_room_identity(package: &str, room: &str) -> Result<(), StoreError> {
+    validate_package_id(package)?;
+    validate_record_key(room)
+}
+
 /// One Automerge document handled by hand: load it, save or append it, and
 /// hand it to a [`DocWriter`] for debounced background writes. A thin policy
 /// layer over a [`DocOwner`] on a [`DurableStore`]; it owns no file

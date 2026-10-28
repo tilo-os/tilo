@@ -29,7 +29,7 @@ Semantic geometry is evidence about declared targets; unresolved overlaps need c
 On macOS, from the repository root:
 
 ```sh
-cargo build --locked -p shell --bin ux-bench --no-default-features
+cargo build --locked -p ux-bench
 python3 scripts/ux-bench/run-suite.py --out target/ux-bench/my-review
 python3 scripts/ux-bench/run-suite.py --matrix --out target/ux-bench/my-matrix
 ```

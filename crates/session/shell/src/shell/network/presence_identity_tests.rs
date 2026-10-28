@@ -11,14 +11,14 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use ui::presence::{PresenceCtx, PresenceKey};
 
 use super::{NeighbourMsg, ShellNetwork, room_topic_id, shell_network_for_test};
-use crate::network::actor::MembershipEpoch;
 use crate::shell::peer_presence::PeerPresence;
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_network_actor::MembershipEpoch;
 
 const TAB: u64 = 0x5eed;
 
 fn handle_of(device: &iroh::SecretKey) -> u64 {
-    crate::network::behaviour::peer_liveness_handle(&device.public())
+    tilo_network_actor::behaviour::peer_liveness_handle(&device.public())
 }
 
 /// `device` proves it belongs to `root`, as its identity hello does on
