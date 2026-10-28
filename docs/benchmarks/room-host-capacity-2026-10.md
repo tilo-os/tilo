@@ -9,7 +9,7 @@ caps, memory request and limit and its capacity alerts.
 p99 1.2 s) and 100 acceptably (join p99 9.9 s, chat p99 5.5 s). Past about
 250 members it stops admitting: joins time out after 60 s at 20 and at 5
 arrivals a second alike, chat commits stall, and the host never uses more
-than about 3 of its 40 cores, with no single thread busy. eu1's cap of 500
+than about 3 cores, with no single thread busy. eu1's cap of 500
 guests is unreachable on this relay; its 6 GiB limit is five times the most
 memory any run used (1.1 GiB at 4050 offered sessions). Spectators on the
 homepage embed's path are refused outright (every page is "not in workspace
@@ -59,6 +59,16 @@ Every run uses production's allocator setting (`MALLOC_ARENA_MAX=2`, which the
 room service sets for its relay) and the image's build (thin LTO, 16 codegen
 units, the relay's `agents` feature, as `room-service-image.yml` builds it).
 Production eu1 was never loaded.
+
+**Worker threads.** These runs did not exercise the host's core count. Every
+report's `host_threads` reads `all`, and `tilo_rt::daemon` then chose the
+worker count itself: the available parallelism capped at
+`Daemon::DEFAULT_MAX_WORKERS`, so **4 async workers** on `runner-large`'s 40-
+CPU cgroup as on eu1's node. `bench --host-threads` sets
+`TOKIO_WORKER_THREADS` on the host, but until `tilo_rt::daemon` read that
+variable the setting did not reach the runtime, so a run given
+`--host-threads` still ran with 4 workers too. No run here varied the worker
+count; a host with more workers is untested (see "Where it stops").
 
 **Machine.** `runner-large`, Perf / room host capacity run 112979 at
 `261677a92b`, 2026-10-14: AMD EPYC 9R14 (Zen 4) in a KVM guest, a cgroup quota
@@ -114,10 +124,14 @@ shape: 300 guests joined there with join p99 55.6 s, 500 and 800 stopped at
   past 300, and redemptions start failing with "join challenge is expired".
 * **Commits stall.** At 100 guests every chat change was committed (97 of
   97); at 300, 10 of 186, and delivered chat p99 is 55 s.
-* **It is not CPU.** The host's process tree levels off at about 3 cores of
-  the 40 it may use, the busiest thread at under half a core, and the driver
-  at about one core. Something serial in the room's path (its commit and
-  replay owner, or its storage) is what every guest waits on.
+* **It is not CPU saturation.** The host's process tree levels off at about
+  3 cores, its busiest thread stays under half a core, and the driver runs at
+  about one core. The host had only 4 async workers to run on, so this does
+  not say the room's path could not use more cores: it says no thread was
+  busy. Something serial in the room's path (its commit and replay owner, or
+  its storage) is what every guest waits on, and until a run with more
+  workers (`--host-threads`, now that the runtime honours it) shows otherwise,
+  that is where to look.
 
 ### Storage
 
@@ -189,7 +203,9 @@ marginal cost today is a share of a node it already pays for.
   times every measured peak and than 100 guests plus 2000 admitted spectators
   at a guest's 0.98 MiB each (about 2.1 GiB).
 * **CPU:** request **1500m** (100 guests at 13.7 millicores, rounded up); no
-  limit, which the room could not use anyway past about 3 cores.
+  limit, which the room could not use anyway past about 3 cores — measured on
+  a host with 4 async workers, so re-run a 100-guest point with
+  `--host-threads` before relying on that for a larger relay.
 * **Spectators:** keep 2000 until the embed path admits them, then re-run
   `spect-*`, `embed-s100` and `caps` and size from those.
 * **Alerts:** guests and spectators above 80 % of their caps
