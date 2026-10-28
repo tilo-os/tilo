@@ -264,7 +264,7 @@ fn a_kept_workspace_does_its_apps_woken_work_while_another_is_shown() {
         let mut tree = state.tree_mut();
         let mut group = stub_group(910);
         group.tabs[0].tile = TileContent::AppPlaceholder {
-            kind: AppKind::Other(notes.app_id.into()),
+            kind: AppKind::Other(notes.app_id.clone().into()),
             label: "Notes".into(),
         };
         tree.desktop
