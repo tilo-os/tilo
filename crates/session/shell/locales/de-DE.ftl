@@ -1704,7 +1704,6 @@ onboarding-snapshot-create-error = Die Identität konnte nicht gespeichert werde
 # Identitätseinrichtung: Identität bereit
 
 # Einrichtung: mehr Video- und Audioformate
-onboarding-codecs-progress = Fortschritt: { $percent } %
 onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
 
 # Desktop-Tour

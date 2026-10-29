@@ -167,6 +167,17 @@ impl Hosted {
     pub(super) fn needs_redraw(&self) -> bool {
         self.app.as_ref().is_some_and(|app| app.needs_redraw())
     }
+
+    /// The app's own root widget, as its last frame composed it: what a test
+    /// reaches into, as the app's own tests would in its window.
+    #[cfg(test)]
+    pub(super) fn root_mut(&mut self) -> Option<&mut dyn Widget> {
+        self.app
+            .as_mut()?
+            .as_any_mut()?
+            .downcast_mut::<ui::app::EmbeddedApp>()?
+            .component_root_mut()
+    }
 }
 
 impl OnboardingView {

@@ -1725,7 +1725,6 @@ onboarding-snapshot-create-error = The identity could not be saved. Nothing was 
 # First-login identity setup: identity ready
 
 # First-login setup: more video and audio formats
-onboarding-codecs-progress = Progress: { $percent }%
 onboarding-codecs-installer-failed = The download could not start: { $error }
 
 # Desktop tour

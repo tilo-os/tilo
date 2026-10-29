@@ -1061,23 +1061,38 @@ impl OnboardingView {
 
     /// The names the setup app gives what it shows, in tree order.
     #[cfg(test)]
+    /// From the page's title on: each control's name, then what it adds
+    /// (a banner's message, a progress bar's percentage).
     pub(crate) fn codec_page_lines(&mut self) -> Vec<String> {
         fn names(widget: &dyn Widget, out: &mut Vec<String>) {
-            if let Some(name) = widget.accessibility().and_then(|node| node.name) {
-                out.push(name);
+            if let Some(node) = widget.accessibility() {
+                out.extend(node.name);
+                out.extend(node.description);
+                out.extend(node.value);
             }
             for child in widget.children() {
                 names(child, out);
             }
         }
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = self.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let _ = crate::shell::test_support::lay_out_as_root_with_text(
+            self, 1280.0, 800.0, &theme, &mut text,
+        );
+        self.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
         let mut lines = Vec::new();
-        if let Some(app) = self.app.widget() {
+        if let Some(app) = self.app.root_mut() {
             names(app, &mut lines);
         }
-        lines
+        let title = tilo_onboarding::copy::codecs_title();
+        let start = lines.iter().position(|line| *line == title).unwrap_or(0);
+        lines.split_off(start)
     }
 
     /// Setup's total step count: the codecs step adds one.
@@ -3096,7 +3111,7 @@ mod tests {
             .unwrap();
         assert!(view.migration.as_mut().unwrap().poll());
         let actions = laid_out(&mut view);
-        let retry = accessibility_for_id(&*actions, "onboarding.migration.next.button").unwrap();
+        let retry = accessibility_for_id(actions, "onboarding.migration.next.button").unwrap();
         assert!(!retry.state.disabled);
         assert_eq!(
             retry.name.as_deref(),
@@ -3311,7 +3326,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::shell::test_support::{LaidOut, lay_out_as_root};
+    use crate::shell::test_support::LaidOut;
     use automerge::transaction::Transactable as _;
     use os_actions::codec_pack::PackState;
     use std::os::unix::process::CommandExt as _;
@@ -3459,18 +3474,18 @@ mod tests {
         );
         let composition = laid_out(&mut view);
         assert!(
-            accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+            accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
             "a failed pairing offers Try again"
         );
         assert!(
-            accessibility_for_id(&*composition, "onboarding.nearby.code").is_none(),
+            accessibility_for_id(composition, "onboarding.nearby.code").is_none(),
             "the stale code is gone"
         );
         // What went wrong is the error's accessible name, not only its
         // description: a screen reader speaks it first, and the generic
         // outcome alone would hide that the commit was refused.
         let mut names = Vec::new();
-        accessible_names(&*composition, &mut names);
+        accessible_names(composition, &mut names);
         assert!(
             names.iter().any(|name| name.contains("Permission denied")),
             "the cause is named: {names:?}"
@@ -3557,14 +3572,13 @@ mod tests {
         );
         let composition = laid_out(&mut view);
         let mut names = Vec::new();
-        accessible_names(&*composition, &mut names);
+        accessible_names(composition, &mut names);
         assert!(
             names.contains(&tilo_onboarding::t("onboarding-done-title")),
             "the joined device ends on the ready screen: {names:?}"
         );
         assert!(
-            accessibility_for_id(&*composition, "onboarding.backup.skip-acknowledged.box")
-                .is_none(),
+            accessibility_for_id(composition, "onboarding.backup.skip-acknowledged.box").is_none(),
             "a joined device is not asked to back up an identity it does not hold"
         );
         let joined_guidance = |names: &[String]| {
@@ -3590,9 +3604,8 @@ mod tests {
         resumed.identity_dir = Some(identity_dir);
         resumed.restore_pending_progress_from_disk();
         assert_eq!(resumed.flow.screen(), Screen::Done);
-        let composition = laid_out(&mut resumed);
         let mut names = Vec::new();
-        accessible_names(&*composition, &mut names);
+        accessible_names(laid_out(&mut resumed), &mut names);
         joined_guidance(&names);
     }
 
@@ -4553,9 +4566,11 @@ mod tests {
             assert!(!view.take_focus_reset(), "the focus edge is one-shot");
 
             let theme = Theme::dark().with_reduce_motion(true);
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            // Mounting setup takes its first frame and one to settle it; an
+            // entrance animation would keep asking for more.
+            for _ in 0..2 {
+                let _ = lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
+            }
             assert!(
                 !view.needs_animation_frame(),
                 "restoring a tour must not restart entrance animation under reduced motion"
@@ -4573,7 +4588,11 @@ mod tests {
                 view.take_focus_reset(),
                 "keyboard navigation must move focus into the newly restored stage"
             );
-            assert!(!view.needs_animation_frame());
+            let _ = lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
+            assert!(
+                !view.needs_animation_frame(),
+                "the next stage arrives in one frame under reduced motion"
+            );
         }
     }
 
@@ -4596,11 +4615,11 @@ mod tests {
                 "Connected. Your workspaces will appear automatically.",
             ] {
                 view.nearby_status = Some(status.into());
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let node = accessibility_for_id(&view, "onboarding.nearby.status")
-                    .expect("nearby status accessibility node");
+                let node = accessibility_for_id(
+                    laid_out_themed(&mut view, &theme),
+                    "onboarding.nearby.status",
+                )
+                .expect("nearby status accessibility node");
 
                 assert_eq!(node.role, ui::a11y::Role::StaticText);
                 assert_eq!(node.name.as_deref(), Some(status));
@@ -4608,11 +4627,9 @@ mod tests {
             }
 
             view.nearby_code = Some("123456".into());
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let code = accessibility_for_id(&view, "onboarding.nearby.code")
-                .expect("the verification code is shown on its own");
+            let code =
+                accessibility_for_id(laid_out_themed(&mut view, &theme), "onboarding.nearby.code")
+                    .expect("the verification code is shown on its own");
             assert_eq!(code.name.as_deref(), Some("123 456"));
         }
         // Phase `nearby_steps_say_this_device_waits_for_the_other_one`.
@@ -4743,12 +4760,9 @@ mod tests {
                 Screen::Existing,
                 "recovery flows still return to their choice"
             );
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = recovery.build_layout(&mut taffy, &theme, &mut node_map);
             assert!(
-                accessibility_for_id(&recovery, "onboarding.connect.retry.button").is_some(),
+                accessibility_for_id(laid_out(&mut recovery), "onboarding.connect.retry.button")
+                    .is_some(),
                 "recovery must expose a keyring retry action"
             );
         }
@@ -5441,8 +5455,8 @@ mod tests {
         );
         let theme = Theme::dark();
         let composition = laid_out_themed(&mut view, &theme);
-        assert!(accessibility_for_id(&*composition, "onboarding.backup.passphrase").is_none());
-        assert!(accessibility_for_id(&*composition, "onboarding.backup.button").is_none());
+        assert!(accessibility_for_id(composition, "onboarding.backup.passphrase").is_none());
+        assert!(accessibility_for_id(composition, "onboarding.backup.button").is_none());
         assert_eq!(
             load_progress(&directory).unwrap(),
             Some(PersistedStage::ReadyToEnter)
@@ -5574,7 +5588,7 @@ mod tests {
             let theme = Theme::dark();
             let composition = laid_out_themed(&mut view, &theme);
             assert!(
-                accessibility_for_id(&*composition, "onboarding.backup.button").is_some(),
+                accessibility_for_id(composition, "onboarding.backup.button").is_some(),
                 "the existing identity route must expose the same shell-owned export control"
             );
         }
@@ -5671,61 +5685,122 @@ mod tests {
         }
     }
 
+    /// `view` laid out in a `width`×`height` window and drawn, as a frame
+    /// shows it: the setup app has composed and laid out the page the
+    /// ceremony stands on. Every rect is in the window's space.
+    fn lay_out_as_root(
+        view: &mut OnboardingView,
+        width: f32,
+        height: f32,
+        theme: &Theme,
+    ) -> LaidOut {
+        fn collect(widget: &mut dyn Widget, out: &mut Vec<*mut dyn Widget>) {
+            let pointer: *mut (dyn Widget + '_) = std::ptr::from_mut(widget);
+            // SAFETY: only the pointer's lifetime bound changes; the map is
+            // read while the tree it was taken from stands, as every
+            // `build_layout` map is.
+            #[allow(
+                clippy::transmute_ptr_to_ptr,
+                reason = "a cast cannot widen a trait object's lifetime bound"
+            )]
+            out.push(unsafe {
+                std::mem::transmute::<*mut (dyn Widget + '_), *mut dyn Widget>(pointer)
+            });
+            for child in widget.children_mut() {
+                collect(child, out);
+            }
+        }
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut laid = crate::shell::test_support::lay_out_as_root_with_text(
+            view, width, height, theme, &mut text,
+        );
+        view.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+        // The app lays out its own tree in its own frame: its widgets join
+        // the map under nodes of their own, at the window's origin as the
+        // app is.
+        let mut widgets = Vec::new();
+        if let Some(root) = view.app.root_mut() {
+            collect(root, &mut widgets);
+        }
+        for (index, widget) in (0_u64..).zip(widgets) {
+            laid.nodes
+                .insert(NodeId::from(u64::MAX.wrapping_sub(index)), widget);
+        }
+        laid
+    }
+
+    /// The setup app's root, as its last frame composed it.
+    fn ceremony(view: &mut OnboardingView) -> &dyn Widget {
+        view.app.root_mut().expect("the setup app is mounted")
+    }
+
+    /// The first widget under `widget` that `matches`, depth first.
+    fn find_widget<'a>(
+        widget: &'a dyn Widget,
+        matches: &dyn Fn(&dyn Widget) -> bool,
+    ) -> Option<&'a dyn Widget> {
+        if matches(widget) {
+            return Some(widget);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_widget(child, matches))
+    }
+
     fn layout(view: &mut OnboardingView) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let _ = lay_out_as_root(view, 1280.0, 800.0, &Theme::dark());
+    }
+
+    /// The first scroll region under `widget`.
+    fn scroller(widget: &mut dyn Widget) -> Option<&mut Scrollable> {
+        if widget.name() == "Scrollable" {
+            return widget.as_any_mut()?.downcast_mut::<Scrollable>();
+        }
+        widget.children_mut().into_iter().find_map(scroller)
     }
 
     /// The setup card's own rect, inside the app's surface.
-    fn panel_rect(view: &OnboardingView) -> Rect {
-        fn card(widget: &dyn Widget) -> Option<Rect> {
-            if widget.name() == "Onboarding" {
-                return widget.children().first().map(|card| card.get_rect());
-            }
-            widget.children().into_iter().find_map(card)
-        }
-        view.app
-            .widget()
-            .and_then(card)
+    fn panel_rect(view: &mut OnboardingView) -> Rect {
+        ui::widget::find_test_id(ceremony(view), "onboarding")
+            .and_then(|root| root.children().first().map(|card| card.get_rect()))
             .expect("the setup card is laid out")
     }
 
     /// The setup app's own layout of the page in `theme`.
-    fn laid_out_themed<'a>(view: &'a mut OnboardingView, theme: &Theme) -> &'a OnboardingView {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = view.build_layout(&mut taffy, theme, &mut node_map);
-        view
+    fn laid_out_themed<'a>(view: &'a mut OnboardingView, theme: &Theme) -> &'a dyn Widget {
+        let _ = lay_out_as_root(view, 1280.0, 800.0, theme);
+        ceremony(view)
     }
 
     /// The setup app's viewport gutter and the intro card's height cap.
     const VIEWPORT_GUTTER: f32 = 24.0;
     const INTRO_PANEL_HEIGHT: f32 = 520.0;
 
-    /// The view with the setup app composing the page it stands on.
-    fn laid_out(view: &mut OnboardingView) -> &OnboardingView {
-        layout(view);
-        view
+    /// The setup app composing the page the view stands on.
+    fn laid_out(view: &mut OnboardingView) -> &dyn Widget {
+        laid_out_themed(view, &Theme::dark())
     }
 
     /// The label of the control a focus reset lands on.
-    fn default_focus_label(view: &OnboardingView) -> Option<String> {
-        fn find(widget: &dyn Widget) -> Option<String> {
-            if widget.is_default_keyboard_focus() {
-                return widget.accessibility().and_then(|node| node.name);
-            }
-            widget.children().into_iter().find_map(find)
-        }
-        view.app.widget().and_then(find)
+    #[allow(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method path is not general over the widget's lifetime"
+    )]
+    fn default_focus_label(view: &mut OnboardingView) -> Option<String> {
+        find_widget(ceremony(view), &|widget| widget.is_default_keyboard_focus())
+            .and_then(|widget| widget.accessibility())
+            .and_then(|node| node.name)
     }
 
-    fn stage_label(view: &OnboardingView) -> Option<String> {
-        view.app
-            .widget()
-            .and_then(|app| accessibility_for_id(app, "onboarding.progress.stage"))
-            .and_then(|node| node.name)
+    fn stage_label(view: &mut OnboardingView) -> Option<String> {
+        accessibility_for_id(ceremony(view), "onboarding.progress.stage").and_then(|node| node.name)
     }
 
     #[test]
@@ -5737,13 +5812,10 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         assert!(view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5"));
+        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 5"));
         let lines = view.codec_page_lines();
-        let note = accessibility_for_id(
-            view.app.widget().expect("rendered codecs page"),
-            "onboarding.codecs.note",
-        )
-        .expect("the formats source explanation must be accessible");
+        let note = accessibility_for_id(ceremony(&mut view), "onboarding.codecs.note")
+            .expect("the formats source explanation must be accessible");
         assert_eq!(note.name.as_deref(), Some(codecs_note().as_str()));
         assert_eq!(
             lines,
@@ -5756,7 +5828,7 @@ mod tests {
             "a title, one short line, the Install button and a way past it; no essay"
         );
         assert_eq!(
-            default_focus_label(&view).as_deref(),
+            default_focus_label(&mut view).as_deref(),
             Some("Install"),
             "Enter is the same deliberate press as clicking Install"
         );
@@ -5803,7 +5875,7 @@ mod tests {
         view.sync(&doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5"));
+        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 5 of 5"));
         press(&view, &mut doc, KEY_FINISH);
         view.sync(&doc, &automerge::ROOT);
         assert!(view.finished());
@@ -5866,7 +5938,7 @@ mod tests {
         let lines = view.codec_page_lines();
         assert_eq!(view.codec_status().state, PackState::Installing);
         assert!(lines.contains(&"Installing more formats".to_string()));
-        assert!(lines.contains(&"Progress: 29%".to_string()), "{lines:?}");
+        assert!(lines.contains(&"29%".to_string()), "{lines:?}");
         assert!(
             lines.iter().any(|line| line.contains("Setup can continue")),
             "{lines:?}"
@@ -5945,7 +6017,7 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         assert!(!view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 4"));
+        assert_eq!(stage_label(&mut view).as_deref(), Some("Step 4 of 4"));
     }
 
     #[test]
@@ -6015,7 +6087,7 @@ mod tests {
             let (mut view, _) = view();
             let theme = Theme::dark();
             lay_out_as_root(&mut view, 420.0, 640.0, &theme);
-            let panel = panel_rect(&view);
+            let panel = panel_rect(&mut view);
             assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
             assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
         }
@@ -6024,7 +6096,7 @@ mod tests {
             let (mut view, _) = view();
             let theme = Theme::dark();
             lay_out_as_root(&mut view, 1600.0, 900.0, &theme);
-            let panel = panel_rect(&view);
+            let panel = panel_rect(&mut view);
             assert!(
                 panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
                 "intro should not inherit the taller recovery panel: {panel:?}"
@@ -6117,7 +6189,7 @@ mod tests {
                 let LaidOut {
                     nodes: node_map, ..
                 } = lay_out_as_root(&mut view, width, height, &theme);
-                let panel = panel_rect(&view);
+                let panel = panel_rect(&mut view);
                 assert!(
                     panel.x0 >= f64::from(VIEWPORT_GUTTER) - 0.5
                         && panel.x1 <= f64::from(width - VIEWPORT_GUTTER) + 0.5
@@ -6360,7 +6432,7 @@ mod tests {
                 let LaidOut {
                     nodes: node_map, ..
                 } = lay_out_as_root(&mut view, width, height, &theme);
-                let panel = panel_rect(&view);
+                let panel = panel_rect(&mut view);
                 let scroll = node_map
                     .values()
                     .find_map(|&pointer| unsafe {
@@ -6394,7 +6466,8 @@ mod tests {
                         assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
                     }
                     previous = Some(rect);
-                    let node = accessibility_for_id(&view, id).expect("row semantics");
+                    let node =
+                        accessibility_for_id(ceremony(&mut view), id).expect("row semantics");
                     assert_eq!(node.role, ui::a11y::Role::ListItem);
                     assert!(
                         node.value.as_deref().is_some_and(|value| !value.is_empty()),
@@ -6413,7 +6486,7 @@ mod tests {
             let theme = Theme::dark();
             let composition = laid_out_themed(&mut view, &theme);
             assert!(
-                accessibility_for_id(&*composition, "onboarding.connect.path.field").is_none(),
+                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
                 "the choice screen is not the restore form"
             );
 
@@ -6421,9 +6494,9 @@ mod tests {
             view.sync(&document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Restore);
             let composition = laid_out_themed(&mut view, &theme);
-            assert!(accessibility_for_id(&*composition, "onboarding.connect.path.field").is_some());
+            assert!(accessibility_for_id(composition, "onboarding.connect.path.field").is_some());
             assert!(
-                accessibility_for_id(&*composition, "onboarding.nearby.status").is_none(),
+                accessibility_for_id(composition, "onboarding.nearby.status").is_none(),
                 "restore does not carry the nearby flow"
             );
             press(&view, &mut document, KEY_BACK);
@@ -6442,11 +6515,11 @@ mod tests {
             );
             let composition = laid_out_themed(&mut view, &theme);
             assert!(
-                accessibility_for_id(&*composition, "onboarding.connect.path.field").is_none(),
+                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
                 "nearby does not carry the restore form"
             );
             assert!(
-                accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
                 "a failed start offers Try again"
             );
             press(&view, &mut document, KEY_BACK);
@@ -6467,13 +6540,13 @@ mod tests {
             let theme = Theme::dark();
             let composition = laid_out_themed(&mut view, &theme);
             assert!(
-                accessibility_for_id(&*composition, "onboarding.connect.cancel.button").is_some()
+                accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some()
             );
             assert!(
-                accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_none()
+                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none()
             );
             assert_eq!(
-                accessibility_for_id(&*composition, "onboarding.nearby.code")
+                accessibility_for_id(composition, "onboarding.nearby.code")
                     .and_then(|node| node.name),
                 Some("482 913".to_string())
             );
@@ -6499,11 +6572,11 @@ mod tests {
                 node,
                 nodes: node_map,
             } = lay_out_as_root(&mut view, 800.0, 600.0, &theme);
-            let (row_node, row) = node_map
-                .iter()
-                .find_map(|(&node, &pointer)| unsafe {
+            let row = node_map
+                .values()
+                .find_map(|&pointer| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (node, (*pointer).get_rect()))
+                        .then(|| (*pointer).get_rect())
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6535,13 +6608,15 @@ mod tests {
                     );
                 } else {
                     assert!(handled, "the labelled checkbox row must handle {event:?}");
-                    assert_eq!(
-                        focus,
-                        Some(row_node),
-                        "the label press must focus the acknowledgement checkbox"
-                    );
                 }
             }
+            assert!(
+                ui::widget::find_test_id(ceremony(&mut view), "onboarding.understood.row")
+                    .is_some_and(Widget::is_focused),
+                "the label press must focus the acknowledgement checkbox"
+            );
+            // What the person ticked reaches the ceremony on its next frame.
+            view.sync(&document, &automerge::ROOT);
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
@@ -6680,9 +6755,7 @@ mod tests {
                 let (mut view, _) = view();
                 view.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
                 let LaidOut {
-                    taffy,
-                    node,
-                    nodes: node_map,
+                    nodes: node_map, ..
                 } = lay_out_as_root(&mut view, width, height, &theme);
                 let rect = |id: &str| {
                     node_map
@@ -6712,7 +6785,7 @@ mod tests {
                     "backup heading must not be clipped: heading={heading:?}, viewport={viewport:?}"
                 );
                 assert!(
-                    viewport.height() >= panel_rect(&view).height() * 0.45,
+                    viewport.height() >= panel_rect(&mut view).height() * 0.45,
                     "backup viewport must not collapse around its title: {viewport:?}"
                 );
                 let passphrase = rect("onboarding.backup.passphrase");
@@ -6771,23 +6844,34 @@ mod tests {
                     viewport.y1 <= skip.y0,
                     "scrolling recovery content must remain separate from anchored acknowledgment at {width}x{height}: viewport={viewport:?}, skip={skip:?}"
                 );
-                // Exercise the real shared scroller's reveal and layout, rather
-                // than treating an off-clip widget rectangle as visible.
-                unsafe {
-                    let scroll = (*scroll_pointer)
-                        .as_any_mut()
-                        .unwrap()
-                        .downcast_mut::<Scrollable>()
-                        .unwrap();
-                    scroll.scroll_into_view(
-                        ui::num::f32_of_f64(save.x0 - viewport.x0),
-                        ui::num::f32_of_f64(save.y0 - viewport.y0),
-                        ui::num::f32_of_f64(save.width()),
-                        ui::num::f32_of_f64(save.height()),
-                    );
+                // Tab to Save as a person does, rather than treating an
+                // off-clip widget rectangle as visible: the app's next frame
+                // brings the focused control into the shared scroller.
+                let mut document = AutoCommit::new();
+                let save_focused = |view: &mut OnboardingView| {
+                    ui::widget::find_test_id(ceremony(view), "onboarding.backup.button")
+                        .is_some_and(Widget::is_focused)
+                };
+                for _ in 0..16 {
+                    if save_focused(&mut view) {
+                        break;
+                    }
+                    ui::testing::Dispatch::new()
+                        .doc(&mut document)
+                        .send(&mut view, &ui::synthetic_input::named_key(NamedKey::Tab));
+                    let _ = lay_out_as_root(&mut view, width, height, &theme);
                 }
-                view.apply_layout(&taffy, node, Point::ZERO);
-                let revealed_save = rect("onboarding.backup.button");
+                assert!(save_focused(&mut view), "Tab reaches Save");
+                let revealed_save =
+                    ui::widget::find_test_id(ceremony(&mut view), "onboarding.backup.button")
+                        .expect("Save")
+                        .get_rect();
+                let viewport = view
+                    .app
+                    .root_mut()
+                    .and_then(scroller)
+                    .expect("the shared scroller")
+                    .content_viewport_rect();
                 assert!(
                     revealed_save.y0 >= viewport.y0 - 0.5 && revealed_save.y1 <= viewport.y1 + 0.5,
                     "actual reveal must bring the whole Save target into the same clip: save={revealed_save:?}, viewport={viewport:?}"
@@ -6885,7 +6969,7 @@ mod tests {
             // The ready hand-off owns only the height its content needs
             // (61034652be); at large text it must still fit the viewport
             // and hold its actions whole rather than clip them.
-            let panel = panel_rect(&view);
+            let panel = panel_rect(&mut view);
             assert!(
                 panel.y0 >= 0.0 && panel.y1 <= 720.0 && panel.height() > 0.0,
                 "large-text ready screen must fit the laptop-height viewport: {panel:?}",
