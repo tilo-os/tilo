@@ -940,11 +940,8 @@ impl App {
                 super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
             )
             .map_err(|error| format!("History is unavailable: {error:?}"))?;
-        let resource = resources
-            .iter()
-            .find(|resource| resource.kind == "tilo.host.history.session")
+        let address = crate::standalone_history_host::session_action_address(&resources, "select")
             .ok_or("History is not open")?;
-        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "select");
         let arguments = serde_json::json!({"entries": entries.iter().map(crate::widget::history_group::hex16).collect::<Vec<_>>()});
         let encoded = crate::bound_dispatch::encode_resource_invocation(
             &resources,
@@ -963,16 +960,12 @@ impl App {
         ) else {
             return;
         };
-        if let Some(resource) = resources
-            .iter()
-            .find(|resource| resource.kind == "tilo.host.history.session")
-        {
-            let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "close");
-            if let Ok(encoded) =
+        if let Some(address) =
+            crate::standalone_history_host::session_action_address(&resources, "close")
+            && let Ok(encoded) =
                 crate::bound_dispatch::encode_resource_action(&resources, &address, None, None)
-            {
-                let _ = self.invoke_history_local(&encoded);
-            }
+        {
+            let _ = self.invoke_history_local(&encoded);
         }
     }
 }
