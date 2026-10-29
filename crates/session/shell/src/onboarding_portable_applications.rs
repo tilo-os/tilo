@@ -249,7 +249,7 @@ pub(crate) mod tests {
         assert_eq!(pending.status()["state"], "complete");
         assert!(!pending.pending());
         assert!(!pending.holds_password());
-        let reopened =
+        let mut reopened =
             Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
         assert!(!reopened.pending());
         let mut changed = declaration.clone();

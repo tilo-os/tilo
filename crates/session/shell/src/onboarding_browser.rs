@@ -679,7 +679,8 @@ pub(crate) mod tests {
         assert!(!reopened.pending());
         assert_eq!(reopened.verified_projection(), Some(projection.as_path()));
         assert_eq!(
-            std::fs::read(root(home.path()).join(&pending.declaration.payload.filename)).unwrap(),
+            std::fs::read(root(home.path()).join(&pending.context().declaration.payload.filename))
+                .unwrap(),
             b"fixture ciphertext"
         );
     }

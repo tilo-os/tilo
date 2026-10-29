@@ -273,9 +273,9 @@ pub(crate) mod tests {
         pending.invoke("later", &[]).unwrap();
         assert!(!pending.holds_password());
         let mut reopened = Pending::open(
-            pending.home.clone(),
-            pending.identity.clone(),
-            pending.declaration.clone(),
+            pending.context().home.clone(),
+            pending.context().identity.clone(),
+            pending.context().declaration.clone(),
         )
         .unwrap();
         reopened.invoke("resume", &[]).unwrap();
