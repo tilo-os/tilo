@@ -580,8 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_when_the_cap_is_refused_or_forced_off() {
-        // Phase `cap_refused`: an old driver.
+    fn legacy_when_an_old_driver_refuses_the_cap() {
         let mut card = MockCard::new();
         card.atomic = Err(libc::EOPNOTSUPP);
         let mut flip = KmsFlip::probe(&card, target(), None);
@@ -592,7 +591,10 @@ mod tests {
         assert_eq!(flip.plane(), None);
         flip.queue(&card, fb(1)).expect("flipped");
         assert_eq!(card.calls(), [Call::EnableAtomic, Call::Legacy(fb(1))]);
+    }
 
+    #[test]
+    fn legacy_when_no_primary_plane_shows_the_crtc() {
         let mut card = MockCard::new();
         card.plane = Err("no primary plane shows this CRTC".to_owned());
         let mut flip = KmsFlip::probe(&card, target(), None);
@@ -602,8 +604,11 @@ mod tests {
         );
         flip.queue(&card, fb(1)).expect("flipped");
         assert_eq!(card.calls(), [Call::EnableAtomic, Call::Legacy(fb(1))]);
+    }
 
-        // Phase `forced_off`: TILO_KMS_ATOMIC=0 does not touch the cap.
+    /// `TILO_KMS_ATOMIC=0` does not touch the cap.
+    #[test]
+    fn legacy_when_forced_off() {
         let card = MockCard::new();
         let reason = format!("forced by {KMS_ATOMIC_ENV}=0");
         let mut flip = KmsFlip::probe(&card, target(), Some(reason.clone()));

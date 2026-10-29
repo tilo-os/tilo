@@ -224,83 +224,112 @@ mod tests {
 
     #[test]
     fn only_a_region_holding_every_pixel_covers_the_surface() {
-        // Phase `the_whole_surface`: what Chromium and GTK send fullscreen.
-        assert!(covers(
-            Some(&region(&[(ADD, rect(0, 0, 1920, 1080))])),
-            SURFACE
-        ));
-        assert!(
-            covers(Some(&region(&[(ADD, rect(-10, -10, 4000, 4000))])), SURFACE),
-            "a region larger than the surface covers it"
-        );
-        // Phase `no_region`: the default is "potentially transparent".
-        assert!(!covers(None, SURFACE));
-        assert!(!covers(Some(&region(&[])), SURFACE));
-        assert!(covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 960, 1080)),
-                (ADD, rect(960, 0, 960, 1080)),
-            ])),
-            SURFACE
-        ));
-        assert!(
-            covers(
-                Some(&region(&[
+        let cases: [(&str, Option<Vec<_>>, (i32, i32), bool); 13] = [
+            (
+                "the whole surface, what Chromium and GTK send fullscreen",
+                Some(vec![(ADD, rect(0, 0, 1920, 1080))]),
+                SURFACE,
+                true,
+            ),
+            (
+                "a region larger than the surface",
+                Some(vec![(ADD, rect(-10, -10, 4000, 4000))]),
+                SURFACE,
+                true,
+            ),
+            (
+                "no region: the default is potentially transparent",
+                None,
+                SURFACE,
+                false,
+            ),
+            ("an empty region", Some(vec![]), SURFACE, false),
+            (
+                "two halves",
+                Some(vec![
+                    (ADD, rect(0, 0, 960, 1080)),
+                    (ADD, rect(960, 0, 960, 1080)),
+                ]),
+                SURFACE,
+                true,
+            ),
+            (
+                "a centre added last leaves a frame on every side for the others",
+                Some(vec![
                     (ADD, rect(0, 0, 1920, 400)),
                     (ADD, rect(0, 680, 1920, 400)),
                     (ADD, rect(0, 400, 500, 280)),
                     (ADD, rect(1420, 400, 500, 280)),
                     (ADD, rect(500, 400, 920, 280)),
-                ])),
-                SURFACE
+                ]),
+                SURFACE,
+                true,
             ),
-            "a centre added last leaves a frame on every side for the others"
-        );
-        assert!(!covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 1920, 400)),
-                (ADD, rect(0, 680, 1920, 400)),
-                (ADD, rect(1420, 400, 500, 280)),
-                (ADD, rect(500, 400, 920, 280)),
-            ])),
-            SURFACE
-        ));
-        // Phase `one_pixel_short`: a rounded corner or shadow left out.
-        assert!(!covers(
-            Some(&region(&[(ADD, rect(0, 0, 1920, 1079))])),
-            SURFACE
-        ));
-        assert!(!covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 960, 1080)),
-                (ADD, rect(961, 0, 959, 1080)),
-            ])),
-            SURFACE
-        ));
-        assert!(!covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 1920, 1080)),
-                (SUB, rect(100, 100, 1, 1)),
-            ])),
-            SURFACE
-        ));
-        // Phase `a_hole_filled_again`: the last rectangle holding a pixel wins.
-        assert!(covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 1920, 1080)),
-                (SUB, rect(100, 100, 50, 50)),
-                (ADD, rect(100, 100, 50, 50)),
-            ])),
-            SURFACE
-        ));
-        assert!(covers(
-            Some(&region(&[
-                (ADD, rect(0, 0, 1920, 1080)),
-                (SUB, rect(1920, 0, 100, 100)),
-            ])),
-            SURFACE
-        ));
-        assert!(!covers(Some(&region(&[(ADD, rect(0, 0, 1, 1))])), (0, 0)));
+            (
+                "a frame missing its left side",
+                Some(vec![
+                    (ADD, rect(0, 0, 1920, 400)),
+                    (ADD, rect(0, 680, 1920, 400)),
+                    (ADD, rect(1420, 400, 500, 280)),
+                    (ADD, rect(500, 400, 920, 280)),
+                ]),
+                SURFACE,
+                false,
+            ),
+            (
+                "one pixel short: a rounded corner or shadow left out",
+                Some(vec![(ADD, rect(0, 0, 1920, 1079))]),
+                SURFACE,
+                false,
+            ),
+            (
+                "a one-pixel gap between halves",
+                Some(vec![
+                    (ADD, rect(0, 0, 960, 1080)),
+                    (ADD, rect(961, 0, 959, 1080)),
+                ]),
+                SURFACE,
+                false,
+            ),
+            (
+                "a one-pixel hole",
+                Some(vec![
+                    (ADD, rect(0, 0, 1920, 1080)),
+                    (SUB, rect(100, 100, 1, 1)),
+                ]),
+                SURFACE,
+                false,
+            ),
+            (
+                "a hole filled again: the last rectangle holding a pixel wins",
+                Some(vec![
+                    (ADD, rect(0, 0, 1920, 1080)),
+                    (SUB, rect(100, 100, 50, 50)),
+                    (ADD, rect(100, 100, 50, 50)),
+                ]),
+                SURFACE,
+                true,
+            ),
+            (
+                "a hole outside the surface",
+                Some(vec![
+                    (ADD, rect(0, 0, 1920, 1080)),
+                    (SUB, rect(1920, 0, 100, 100)),
+                ]),
+                SURFACE,
+                true,
+            ),
+            (
+                "an empty surface",
+                Some(vec![(ADD, rect(0, 0, 1, 1))]),
+                (0, 0),
+                false,
+            ),
+        ];
+        for (case, rects, surface, expected) in cases {
+            let region = rects.as_deref().map(region);
+            assert_eq!(covers(region.as_ref(), surface), expected, "{case}");
+        }
     }
 
     #[test]
