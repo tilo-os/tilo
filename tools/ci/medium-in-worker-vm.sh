@@ -3,7 +3,8 @@
 # its kernel has no EROFS for composefs and no btrfs, and its rootless podman no loop devices.
 # The check's own script, tools/ci/publish/dev-installer-medium.sh, runs unchanged in the
 # project's builder image, as t's micro-VM ran it, inside a worker VM booted from main's
-# published development disk (tilo-vm-disk-latest), which has all three.
+# newest published development disk (the generic package tilo-vm-disk-candidate), which has all
+# three.
 #
 #   medium-in-worker-vm.sh ARCH IMAGE_DIR OUT
 #
@@ -107,23 +108,43 @@ vm_bin=${TILO_VM_BIN:?TILO_VM_BIN names the tilo-vm binary (tilo-vm-binary-<arch
 [[ -z $(git status --porcelain --untracked-files=no) ]] \
   || { echo "the checkout has uncommitted changes; the medium is of a commit" >&2; exit 2; }
 
-# The worker's disk: main's published development disk, checked against its candidate record.
+# The worker's disk: the newest development disk main published for this architecture (a
+# tilo-vm-disk-candidate version named <commit>-<tooling>-<run>-<attempt>-<arch>; board disks
+# add a suffix), checked against its candidate record. tilo-vm-disk-latest is not used: its
+# x86_64 disk lags weeks behind, with a tilo-vmd too old for today's tilo-vm.
 cache=${TILO_WORKER_DISK_CACHE:-/var/tmp/tilo-worker-disk}/$arch
 mkdir -p "$cache"
-feed=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/$arch
-curl -fsSL --retry 3 -o "$cache/candidate.json.new" "$feed/candidate.json"
-read -r disk_file disk_sha < <(python3 -c '
-import json, sys
-disk = next(f for f in json.load(open(sys.argv[1]))["files"] if f["role"] == "disk")
-print(disk["file"], disk["sha256"])' "$cache/candidate.json.new")
+read -r disk_file disk_sha disk_url < <(python3 - "$arch" <<'EOF'
+import json, sys, urllib.request
+arch = sys.argv[1]
+api = "https://code.tilo.so/api/v1/packages/tilo?type=generic&q=tilo-vm-disk-candidate&limit=50&page={}"
+newest = None
+for page in range(1, 41):
+    with urllib.request.urlopen(api.format(page), timeout=60) as reply:
+        packages = json.load(reply)
+    if not packages:
+        break
+    for p in packages:
+        parts = p["version"].split("-")
+        if p["name"] == "tilo-vm-disk-candidate" and len(parts) == 5 and parts[4] == arch:
+            if newest is None or p["created_at"] > newest["created_at"]:
+                newest = p
+if newest is None:
+    sys.exit(f"no published development disk for {arch}")
+base = f"https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-candidate/{newest['version']}"
+with urllib.request.urlopen(f"{base}/candidate.json", timeout=60) as reply:
+    disk = next(f for f in json.load(reply)["files"] if f["role"] == "disk")
+print(disk["file"], disk["sha256"], disk["url"])
+EOF
+)
+[[ -n ${disk_url:-} ]] || { echo "medium-in-worker-vm: found no worker disk for $arch" >&2; exit 1; }
 if [[ $(cat "$cache/disk.sha256" 2>/dev/null) != "$disk_sha  $cache/$disk_file" ]]; then
   rm -f "$cache"/*.qcow2 "$cache/disk.sha256"
-  echo "medium-in-worker-vm: fetching the worker's disk $disk_file"
-  curl -fsSL --retry 3 -o "$cache/$disk_file" "$feed/$disk_file"
+  echo "medium-in-worker-vm: fetching the worker's disk $disk_url"
+  curl -fsSL --retry 3 -o "$cache/$disk_file" "$disk_url"
   echo "$disk_sha  $cache/$disk_file" | sha256sum -c --quiet
   echo "$disk_sha  $cache/$disk_file" > "$cache/disk.sha256"
 fi
-rm -f "$cache/candidate.json.new"
 
 # The host container: Fedora with libvirt and QEMU, tagged by what it installs.
 host_dir=$(mktemp -d)
