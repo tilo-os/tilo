@@ -211,7 +211,7 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     // The person's id is their key, as a real room's ids are.
     let ada = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
     let mut session = Session::new("so.tilo.lang.signed", "tests/signed", ada, |presence| {
-        presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada Lovelace");
+        presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada");
     });
     let root = session
         .hosted()
@@ -230,6 +230,12 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
         .rect;
     session.window.click_at(x + w / 2.0, y + h / 2.0);
     session.window.type_text("Plan");
+    session.settle();
+    // The person's name changes, as a roster renames them: the page follows.
+    session.window.update_presence(|presence| {
+        presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada Lovelace");
+        true
+    });
     session.settle();
     let shown = session.shown();
     assert!(
