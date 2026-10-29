@@ -934,7 +934,10 @@ mod tests {
         let mut link = OutputLink::new();
         link.service(crtc, false);
         link.complete(at, crtc);
-        assert_eq!(link.complete(at + 1, crtc), Completion::Link(LinkStep::Up));
+        assert_eq!(
+            link.complete(at.wrapping_add(1), crtc),
+            Completion::Link(LinkStep::Up)
+        );
         link
     }
 
