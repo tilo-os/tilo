@@ -159,6 +159,21 @@ files = [
   { from = "tilo-audio", to = "/usr/libexec/tilo-audio", mode = "0755" },
 ]
 
+# The person's messaging accounts: Signal, WhatsApp, SMS and Tilo enrollment
+# and the running accounts, started by the compositor with the session and
+# serving Messages over the session's `messaging` socket, so the compositor
+# holds no account, provider or vault key itself.
+[[component]]
+name = "messaging-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-messaging-service"]
+bins = ["tilo-messaging"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-messaging", to = "/usr/libexec/tilo-messaging", mode = "0755" },
+]
+
 # The control-socket CLI, the one way agents and scripts drive a running
 # desktop (AGENTS.md): the action model over the device admin's control socket
 # in every image, plus synthetic input over a dev session's test-control

@@ -325,8 +325,8 @@ pub struct MailState {
     /// The framework dispatcher every change of the mailbox (mark
     /// read/unread, star, move/archive/delete-to-trash) goes through, so it
     /// is checked, one undo step, replayed on peers and the same field edit
-    /// or verb the palette and agents invoke. `None` until the surface is
-    /// attached; edits before then change nothing.
+    /// or verb the palette and agents invoke. `None` until the view
+    /// attaches it; edits before then change nothing.
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
 
     intents: Vec<Intent>,

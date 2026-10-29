@@ -22,6 +22,8 @@ serde.workspace = true
 serde_json.workspace = true
 # The person's and the device's settings documents.
 automerge.workspace = true
+# Changes another process made, taken whole or not at all.
+tilo-automerge = { version = "0.1.0", path = "../../doc/tilo-automerge" }
 tracing.workspace = true
 unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else

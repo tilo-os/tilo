@@ -76,6 +76,9 @@ pub struct Core {
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
+    /// How many seconds the person's clock is ahead of UTC, which `dated` reads a day and a
+    /// time typed against; UTC until the host says.
+    pub zone: RefCell<Option<Box<dyn Fn() -> i64>>>,
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
@@ -83,6 +86,15 @@ pub struct Core {
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
     pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
+    /// Where a task's programs send what they change, in a host that runs no app's code
+    /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
+    pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// Where a task's programs ask each app what they read of it (`grep`, `find`, `read`,
+    /// `describe`), while they run: a host that holds no records; `None` where the runtime
+    /// answers what it holds itself.
+    pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
+    /// Whether the invocation being made is a `try`'s, whose failure the program handles.
+    pub trying: std::cell::Cell<bool>,
     /// The resources of apps this runtime does not hold that programs read, as they print.
     pub foreign: RefCell<crate::reads::Foreign>,
 }
@@ -181,9 +193,13 @@ impl Core {
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
+            zone: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
+            invoker: RefCell::new(None),
+            reader: RefCell::new(None),
+            trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::reads::Foreign::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
@@ -258,8 +274,8 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
-            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, EnumGetF, EnumGetH,
-            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
+            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated, EnumGetF,
+            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
             FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
             IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
             ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
@@ -319,12 +335,13 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
-            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
+            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase | Dated => {
                 self.platform_import(imp, a)
             }
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
+            Imp::EditField => self.flow_edit(a),
             Imp::Print
             | Imp::Find
             | Imp::ReadText

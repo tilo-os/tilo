@@ -66,7 +66,7 @@ impl Referent for PhotosApp {
     /// The photograph this window shows, addressed as the library publishes
     /// it, so a remark about it reaches the actions it offers.
     fn selection_reference(&self, _doc: &AutoCommit) -> Option<ResourceRef> {
-        self.shown_photo().as_ref().map(photo_reference)
+        self.state().shown_photo().as_ref().map(photo_reference)
     }
 }
 

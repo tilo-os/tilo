@@ -1,19 +1,20 @@
-//! Agents' query words on the tilolang host (agents.md, "Querying", "Reading and describing",
+//! Agents' query words in a task's programs (agents.md, "Querying", "Reading and describing",
 //! "Errors that teach"): `grep`, `find`, the chaining functions, `read`, `describe` and `print`,
-//! over the app the program runs in and, through another host, over apps it does not hold.
+//! over every app the task may read.
 //!
-//! Two hosts as the door sees them: one runs Tasks, where the programs run, the other holds
-//! Notes, Chat and Board with their scenarios. [`run`] plays the door: what a program asks to
-//! read of the other apps is answered by the other host's `read-for-program`, and the program
-//! runs again with the answers.
+//! Two app hosts as the door reaches them: one runs Tasks and a journal, the other Notes, Chat
+//! and Board with their scenarios. The task's programs run in a host of the task's own, which
+//! holds no records: what a program asks of an app is answered by that app's host
+//! (`read-for-program`) while it runs.
 
-use automerge::AutoCommit;
-use serde_json::{Value as Json, json};
+use std::fmt::Write as _;
+use std::rc::Rc;
+
+use serde_json::Value as Json;
 use tilolang_runtime::Principal;
-use tilolang_tilo::HostEffect;
-use tilolang_tilo::publish::Caller;
+use tilolang_tilo::task::TaskSession;
 
-use crate::fixtures::Replica;
+use crate::task_door::Apps;
 
 macro_rules! app {
     ($name:literal) => {
@@ -50,36 +51,30 @@ action write(all: Entries, title: Text, body: Text) -> Entry {
 }
 "#;
 
-const TODO: &str = "so.tilo.lang.todo";
-const NOTES: &str = "so.tilo.lang.notes";
-const CHAT: &str = "so.tilo.lang.chat";
-const BOARD: &str = "so.tilo.lang.board";
+const TODO: &str = "so.tilo.lang.tasks";
 
-fn agent() -> Caller {
-    Caller {
-        actor: "task-1".to_owned(),
-        agent: true,
-        on_behalf_of: Some("ada".to_owned()),
+/// The task's world: Tasks and the journal in one host, Notes, Chat and Board in another, each
+/// filled by its first scenario, and a task of them all whose programs run in a host of its own.
+struct World {
+    task: TaskSession,
+}
+
+fn world() -> World {
+    let apps = Apps::new(&[
+        &[app!("tasks"), (JOURNAL, "")],
+        &[app!("notes"), app!("chat"), app!("board")],
+    ]);
+    {
+        let todo = apps.replica(TODO);
+        todo.host.set_clock(tilolang_tilo::host::system_time);
     }
-}
-
-/// The host programs run in: Tasks, with its list.
-fn worker() -> Replica {
-    let (mut todo, _) = Replica::new("ada", AutoCommit::new(), &[app!("tasks"), (JOURNAL, "")]);
-    todo.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
-    todo.host.root_of(TODO).unwrap();
-    todo.host.root_of("so.test.journal").unwrap();
-    todo.commit();
-    todo
-}
-
-/// The host of the other apps, each filled by its first scenario.
-fn holder() -> Replica {
-    let packages = [app!("notes"), app!("chat"), app!("board")];
-    let (mut other, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
-    for package in &loaded {
-        other.host.root_of(&package.meta.app).unwrap();
-        other.commit();
+    for app in [
+        "so.tilo.lang.notes",
+        "so.tilo.lang.chat",
+        "so.tilo.lang.board",
+    ] {
+        let mut other = apps.replica(app);
+        let package = other.host.package(app).unwrap();
         let scenario = package.meta.scenarios.first().unwrap().action.clone();
         other
             .host
@@ -88,48 +83,18 @@ fn holder() -> Replica {
             .unwrap();
         other.commit();
     }
-    other
+    let apps = Rc::new(apps);
+    let task = apps.task();
+    // The task reads times as they are: what an app wrote just now was changed within any recent window.
+    task.set_clock(tilolang_tilo::host::system_time);
+    World { task }
 }
 
-/// Run `source` in `at` as the agent's program, reading the other apps of `other` as the door
-/// does; its answer.
-fn run(at: &mut Replica, other: &Replica, source: &str) -> Json {
-    let apps = json!({"todo": TODO, "notes": NOTES, "chat": CHAT, "board": BOARD}).to_string();
-    let mut reads: Vec<Json> = Vec::new();
-    for _round in 0..8 {
-        let answer = at
-            .host
-            .answer(
-                HostEffect::RunProgram {
-                    source: source.to_owned(),
-                    session: None,
-                    confirm: Some(true),
-                    apps: Some(apps.clone()),
-                    reads: Some(Json::Array(reads.clone()).to_string()),
-                },
-                Some(&agent()),
-            )
-            .unwrap()
-            .value
-            .unwrap();
-        at.commit();
-        if answer["state"] != "reads" {
-            return answer;
-        }
-        for request in answer["requests"].as_array().unwrap() {
-            let read = other
-                .host
-                .answer(
-                    HostEffect::ReadForProgram {
-                        request: request.to_string(),
-                    },
-                    Some(&agent()),
-                )
-                .map_or_else(|why| json!({"unavailable": why}), |out| out.value.unwrap());
-            reads.push(json!([request, read]));
-        }
+impl World {
+    /// Run `source` as the task's program, confirmed; its answer.
+    fn run(&self, source: &str) -> Json {
+        self.task.run(source, true)
     }
-    panic!("the program kept asking to read");
 }
 
 /// What a program that ran to its end printed.
@@ -152,13 +117,8 @@ fn refused(answer: &Json) -> String {
 
 #[test]
 fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
-    let other = holder();
-    let mut todo = worker();
-    let out = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/\bChen\b/, in: notes).count_by(.doc)",
-    ));
+    let w = world();
+    let out = printed(&w.run(r"grep(/\bChen\b/, in: notes).count_by(.doc)"));
     let lines: Vec<&str> = out.lines().collect();
     assert!(
         lines[0]
@@ -175,13 +135,8 @@ fn grep_counts_matches_per_resource_in_an_app_the_host_does_not_hold() {
 
 #[test]
 fn grep_reads_several_apps_and_each_match_says_where_it_is() {
-    let other = holder();
-    let mut todo = worker();
-    let out = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/(?i)release/, in: notes + board)",
-    ));
+    let w = world();
+    let out = printed(&w.run(r"grep(/(?i)release/, in: notes + board)"));
     assert!(out.contains("(notes 14, board "), "{out}");
     assert!(
         out.lines()
@@ -193,63 +148,38 @@ fn grep_reads_several_apps_and_each_match_says_where_it_is() {
 
 #[test]
 fn grep_knows_block_kinds_groups_times_and_writers() {
-    let other = holder();
-    let mut todo = worker();
-    let body = r#"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist"#;
-    let wrote = run(
-        &mut todo,
-        &other,
-        &format!("journal.write(journal.entries, \"Launch\", \"{body}\")"),
-    );
+    let w = world();
+    let body = r"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist";
+    let wrote = w.run(&format!(
+        "journal.write(journal.entries, \"Launch\", \"{body}\")"
+    ));
     assert_eq!(wrote["state"], "done", "{wrote:#}");
 
-    let all = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/\bTide\b/, in: journal).len()",
-    ));
+    let all = printed(&w.run(r"grep(/\bTide\b/, in: journal).len()"));
     assert!(all.ends_with("\n3"), "{all}");
-    let unquoted = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/\bTide\b/, in: journal, not: .quote).map(.anchor)",
-    ));
+    let unquoted = printed(&w.run(r"grep(/\bTide\b/, in: journal, not: .quote).map(.anchor)"));
     assert!(
         unquoted.ends_with("\n¶2\n¶3.1"),
         "a list prints a line per item: {unquoted}"
     );
 
-    let tasks = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).map(t -> t.group(1))",
-    ));
+    let tasks = printed(
+        &w.run(r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).map(t -> t.group(1))"),
+    );
     assert!(
         tasks.ends_with("\nrecord the launch video for Tide"),
         "{tasks}"
     );
-    let stale = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/launch/, in: journal, changed: ..2026-01-01).len()",
-    ));
+    let stale = printed(&w.run(r"grep(/launch/, in: journal, changed: ..2026-01-01).len()"));
     assert!(stale.ends_with("\n0"), "{stale}");
 
-    let writers = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/Tide/, in: journal).count_by(.written_by)",
-    ));
+    let writers = printed(&w.run(r"grep(/Tide/, in: journal).count_by(.written_by)"));
     assert!(
         writers.ends_with("task-1  3"),
         "the one who wrote it: {writers}"
     );
 
-    let mentions = printed(&run(
-        &mut todo,
-        &other,
-        r"grep(/Tide/, in: journal, mentions: me).len()",
-    ));
+    let mentions = printed(&w.run(r"grep(/Tide/, in: journal, mentions: me).len()"));
     assert!(
         mentions.contains("plain text, which records no mentions"),
         "what it could not cover: {mentions}"
@@ -258,59 +188,42 @@ fn grep_knows_block_kinds_groups_times_and_writers() {
 
 #[test]
 fn a_grep_result_feeds_actions_in_the_same_program() {
-    let other = holder();
-    let mut todo = worker();
-    let answer = run(
-        &mut todo,
-        &other,
-        r"grep(/^Two blockers (.*)/, in: notes).each(m -> todo.add(todo.tasks, m.group(1)))",
+    let w = world();
+    let answer = w.run(
+        r"grep(/^Two blockers (.*)/, in: notes).each(m -> tasks.add(tasks.tasks, m.group(1)))",
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 1, "{answer:#}");
-    let titles = printed(&run(&mut todo, &other, "todo.tasks.items.map(.title)"));
+    let titles = printed(&w.run("tasks.tasks.items.map(.title)"));
     assert_eq!(titles, "left. Chen is out on Friday.");
 }
 
 #[test]
 fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
-    let other = holder();
-    let mut todo = worker();
-    let words = printed(&run(&mut todo, &other, r#"find("standup chen")"#));
+    let w = world();
+    let words = printed(&w.run(r#"find("standup chen")"#));
     assert_eq!(words.lines().count(), 2, "{words}");
     assert!(
         words.lines().all(|l| l.starts_with("@notes.Note:")),
         "{words}"
     );
 
-    // In the host that holds Notes, typed, chained by key paths.
-    let mut notes = holder();
-    let pinned = printed(&run(
-        &mut notes,
-        &other,
-        "find(Note, pinned: true).sort_by(.title).map(.title)",
-    ));
+    // Typed, chained by key paths.
+    let pinned = printed(&w.run("find(Note, pinned: true).sort_by(.title).map(.title)"));
     assert_eq!(pinned, "Groceries\nQ3 plan\nRunning plan");
-    let grouped = printed(&run(
-        &mut notes,
-        &other,
-        r#"find("standup").of(Note).group(.pinned).map(g -> g.items.len())"#,
-    ));
+    let grouped =
+        printed(&w.run(r#"find("standup").of(Note).group(.pinned).map(g -> g.items.len())"#));
     assert_eq!(grouped, "5", "one group: no standup is pinned");
-    let taken = printed(&run(
-        &mut notes,
-        &other,
-        r#"find(Note, pinned: false).take(2).len()"#,
-    ));
+    let taken = printed(&w.run(r"find(Note, pinned: false).take(2).len()"));
     assert_eq!(taken, "2");
 }
 
 #[test]
 fn single_is_one_result_or_an_error_listing_the_candidates() {
-    let other = holder();
-    let mut todo = worker();
-    let one = printed(&run(&mut todo, &other, r#"find("groceries").single()"#));
+    let w = world();
+    let one = printed(&w.run(r#"find("groceries").single()"#));
     assert!(one.contains("\"Groceries\""), "{one}");
-    let several = refused(&run(&mut todo, &other, r#"find("standup").single()"#));
+    let several = refused(&w.run(r#"find("standup").single()"#));
     assert!(
         several.contains("single: 5 match, not one; say which:"),
         "{several}"
@@ -323,22 +236,15 @@ fn single_is_one_result_or_an_error_listing_the_candidates() {
 
 #[test]
 fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
-    let other = holder();
-    let mut todo = worker();
+    let w = world();
     let body = (1..=50)
         .map(|n| format!("Line {n} of the plan"))
         .collect::<Vec<_>>()
         .join("\\n");
-    run(
-        &mut todo,
-        &other,
-        &format!("journal.write(journal.entries, \"Long plan\", \"{body}\")"),
-    );
-    let first = printed(&run(
-        &mut todo,
-        &other,
-        r#"read(journal.entries.items.single())"#,
+    w.run(&format!(
+        "journal.write(journal.entries, \"Long plan\", \"{body}\")"
     ));
+    let first = printed(&w.run(r"read(journal.entries.items.single())"));
     let mut lines = first.lines();
     let head = lines.next().unwrap();
     assert!(
@@ -354,20 +260,14 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
         "{first}"
     );
     assert!(first.lines().last().unwrap().contains("page: 2"), "{first}");
-    let matching = printed(&run(
-        &mut todo,
-        &other,
-        r"read(journal.entries.items.single(), matching: /Line 4[0-2]\b/, around: 1)",
-    ));
+    let matching = printed(
+        &w.run(r"read(journal.entries.items.single(), matching: /Line 4[0-2]\b/, around: 1)"),
+    );
     assert!(matching.contains("3 paragraphs match"), "{matching}");
     assert_eq!(matching.lines().count(), 1 + 5, "{matching}");
 
     // A resource of an app this host does not hold reads through its own host.
-    let foreign = printed(&run(
-        &mut todo,
-        &other,
-        r"read(grep(/Chen is out/, in: notes).single().doc)",
-    ));
+    let foreign = printed(&w.run(r"read(grep(/Chen is out/, in: notes).single().doc)"));
     assert!(
         foreign.contains("\"Standup, Thursday\"  Note: 2 paragraphs"),
         "{foreign}"
@@ -381,80 +281,69 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
 
 #[test]
 fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
-    let other = holder();
-    let mut todo = worker();
-    let app = printed(&run(&mut todo, &other, "describe(notes)"));
+    let w = world();
+    let app = printed(&w.run("describe(notes)"));
     assert!(app.starts_with("app notes \"Notes\""), "{app}");
     assert!(app.contains("type Note { title: Text, body: Text"), "{app}");
     assert!(
         app.contains("action notes.pin(n: Note, pinned: Bool = not n.pinned)"),
         "{app}"
     );
-    let ty = printed(&run(&mut todo, &other, "describe(Task)"));
-    assert!(ty.contains("type todo.Task {"), "{ty}");
+    let ty = printed(&w.run("describe(Task)"));
+    assert!(ty.contains("type tasks.Task {"), "{ty}");
     assert!(ty.contains("    done: Bool\n"), "{ty}");
     assert!(
         ty.contains("filters: inbox, today, upcoming, done, due, project, priority"),
         "{ty}"
     );
-    let action = printed(&run(&mut todo, &other, "describe(todo.add)"));
+    let action = printed(&w.run("describe(tasks.add)"));
     assert!(action.starts_with("/// "), "its doc first: {action}");
     assert!(
-        action.contains("action todo.add(tasks: Tasks, title: Text) -> Task"),
+        action.contains("action tasks.add(tasks: Tasks, title: Text) -> Task"),
         "{action}"
     );
-    let field = printed(&run(&mut todo, &other, "describe(Task.done)"));
-    assert!(field.starts_with("todo.Task.done: Bool"), "{field}");
-    let root = printed(&run(&mut todo, &other, "describe(todo.tasks)"));
-    assert_eq!(root, "root todo.tasks: Tasks");
-    let resource = printed(&run(
-        &mut todo,
-        &other,
-        "let list = todo.tasks\ndescribe(list)",
-    ));
-    assert!(resource.starts_with("@todo.Tasks:"), "{resource}");
+    let field = printed(&w.run("describe(Task.done)"));
+    assert!(field.starts_with("tasks.Task.done: Bool"), "{field}");
+    let root = printed(&w.run("describe(tasks.tasks)"));
+    assert_eq!(root, "root tasks.tasks: Tasks");
+    let resource = printed(&w.run("let list = tasks.tasks\ndescribe(list)"));
+    assert!(resource.starts_with("@tasks.Tasks:"), "{resource}");
     assert!(resource.contains("  a Tasks\n"), "{resource}");
 }
 
 #[test]
 fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
-    let other = holder();
-    let mut todo = worker();
-    run(&mut todo, &other, "todo.add(todo.tasks, \"Milk\")");
-    let asked = printed(&run(
-        &mut todo,
-        &other,
-        "print(todo.tasks.items, fields: [.title, .done])",
-    ));
-    assert!(asked.starts_with("@todo.Task:"), "{asked}");
+    let w = world();
+    w.run("tasks.add(tasks.tasks, \"Milk\")");
+    let asked = printed(&w.run("print(tasks.tasks.items, fields: [.title, .done])"));
+    assert!(asked.starts_with("@tasks.Task:"), "{asked}");
     assert!(
         asked.ends_with("\"Milk\"  title: Milk  done: false"),
         "{asked}"
     );
-    let filters = printed(&run(&mut todo, &other, "todo.tasks.items"));
+    let filters = printed(&w.run("tasks.tasks.items"));
     assert!(filters.contains("done: false"), "{filters}");
 }
 
 #[test]
 fn errors_teach_what_is_valid() {
-    let other = holder();
-    let mut todo = worker();
-    let filter = refused(&run(&mut todo, &other, "find(Task, completed: true)"));
+    let w = world();
+    let filter = refused(&w.run("find(Task, completed: true)"));
     assert!(
         filter.contains("has no filter `completed`; did you mean `done`?"),
         "{filter}"
     );
-    let source = refused(&run(&mut todo, &other, "grep(/x/, in: notez)"));
+    let source = refused(&w.run("grep(/x/, in: notez)"));
     assert!(
         source.contains("`notez` is no app this program may read; did you mean `notes`?"),
         "{source}"
     );
-    let method = refused(&run(&mut todo, &other, "todo.tasks.items.cout_by(.done)"));
+    let method = refused(&w.run("tasks.tasks.items.cout_by(.done)"));
     assert!(method.contains("did you mean `count_by`?"), "{method}");
-    let kind = refused(&run(&mut todo, &other, "grep(/x/, not: .quotes)"));
+    let kind = refused(&w.run("grep(/x/, not: .quotes)"));
     assert!(kind.contains("did you mean `quote`?"), "{kind}");
     // A `/` after a value still divides.
-    let divided = printed(&run(&mut todo, &other, "10 / 2"));
+    let divided = printed(&w.run("10 / 2"));
     assert_eq!(divided, "5");
 }
 
@@ -463,16 +352,15 @@ fn errors_teach_what_is_valid() {
 /// runs to its end or fails with its error; none keeps asking to read.
 #[test]
 fn a_session_of_the_agents_doc_examples() {
-    let other = holder();
-    let mut todo = worker();
+    let w = world();
     let entries = [
         r#"journal.write(journal.entries, "Launch", "> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist")"#,
         r"grep(/\bChen\b/, in: notes + chat).count_by(.doc)",
         r"grep(/\bTide\b/, in: journal, not: .quote)",
         r"grep(/(?i)release/).count_by(.written_by)",
         r"grep(/Tide/, in: journal, mentions: me).len()",
-        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> todo.add(todo.todos, t.group(1)))",
-        "print(todo.todos.items, fields: [.title, .done])",
+        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> tasks.add(tasks.todos, t.group(1)))",
+        "print(tasks.todos.items, fields: [.title, .done])",
         r#"find("standup chen")"#,
         r#"find("standup").take(2)"#,
         r#"find("standup").single()"#,
@@ -481,18 +369,18 @@ fn a_session_of_the_agents_doc_examples() {
         r"read(grep(/Chen is out/, in: notes).single().doc, matching: /Chen/)",
         "describe(notes)",
         "describe(Todo)",
-        "describe(todo.add)",
+        "describe(tasks.add)",
         "describe(Todo.done)",
-        "let list = todo.todos\ndescribe(list)",
+        "let list = tasks.todos\ndescribe(list)",
         "find(Todo, completed: true)",
         "grep(/x/, in: docs)",
-        "todo.todos.items.cout_by(.done)",
+        "tasks.todos.items.cout_by(.done)",
         "grep(/x/, not: .quotes)",
     ];
     let mut transcript = String::new();
     for entry in entries {
-        let answer = run(&mut todo, &other, entry);
-        transcript.push_str(&format!("tl> {}\n", entry.replace('\n', "\n... ")));
+        let answer = w.run(entry);
+        let _ = writeln!(transcript, "tl> {}", entry.replace('\n', "\n... "));
         for line in answer["output"].as_array().into_iter().flatten() {
             transcript.push_str(line.as_str().unwrap_or_default());
             transcript.push('\n');
@@ -501,17 +389,20 @@ fn a_session_of_the_agents_doc_examples() {
             Some("done") => {}
             Some("rejected") => {
                 for line in answer["detail"].as_array().into_iter().flatten() {
-                    transcript.push_str(&format!("error: {}\n", line.as_str().unwrap_or_default()));
+                    let _ = writeln!(transcript, "error: {}", line.as_str().unwrap_or_default());
                 }
             }
-            _ => transcript.push_str(&format!(
-                "error: {}\n",
-                answer["detail"].as_str().unwrap_or("the program failed")
-            )),
+            _ => {
+                let _ = writeln!(
+                    transcript,
+                    "error: {}",
+                    answer["detail"].as_str().unwrap_or("the program failed")
+                );
+            }
         }
         let changed = answer["changed"].as_u64().unwrap_or(0);
         if changed > 0 {
-            transcript.push_str(&format!("({changed} changed)\n"));
+            let _ = writeln!(transcript, "({changed} changed)");
         }
     }
     println!("{transcript}");

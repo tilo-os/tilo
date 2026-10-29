@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
-use ui::tilo_resource::{self, Atom, Counter, Model, Refusal, resource};
+use ui::tilo_resource::{self, Atom, Counter, Model, NonBlank, Refusal, resource};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
@@ -434,12 +434,12 @@ impl BrowsingHistory {
     #[action(housekeeping)]
     pub fn visit(
         &mut self,
-        #[param("The page's address")] url: String,
+        #[param("The page's address")] url: NonBlank,
         #[param("The page's title; blank keeps the one known")] title: String,
         #[param("When it finished loading, in Unix seconds")] at: u64,
     ) -> Result<(), Refusal> {
-        let url = url.trim();
-        if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
+        let url = url.as_str();
+        if url.len() > MAX_HISTORY_URL_BYTES {
             return Err(Refusal::new("a visit names one page's URL"));
         }
         let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
@@ -583,12 +583,9 @@ impl BrowsingHistory {
     pub fn name_visit(
         &mut self,
         #[param("The page's address")] url: String,
-        #[param("The page's title")] title: String,
+        #[param("The page's title")] title: NonBlank,
     ) -> Result<(), Refusal> {
         let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
-        if title.trim().is_empty() {
-            return Err(Refusal::new("a page is named by a title"));
-        }
         if let Some(visit) = self.visits.get_mut(url.trim())
             && visit.title.0.trim().is_empty()
         {
@@ -945,7 +942,7 @@ mod tests {
         use ui::tilo_resource::Replica;
         let visit = |url: &str, title: &str, at: u64| {
             BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: url.into(),
+                url: url.parse().unwrap(),
                 title: title.into(),
                 at,
             })

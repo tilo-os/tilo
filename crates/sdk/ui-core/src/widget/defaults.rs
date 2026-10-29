@@ -41,16 +41,6 @@ pub(super) fn visit_components(
     Ok(())
 }
 
-pub(super) fn visit_resource_owners_mut(
-    children: ChildrenMut<'_>,
-    request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-) -> Result<(), tilo_actions::DoorError> {
-    for child in children {
-        request.visit(child)?;
-    }
-    Ok(())
-}
-
 pub(super) fn mount_native_views(
     children: ChildrenMut<'_>,
     host: &crate::widget::native_view::NativeViewHost<'_>,
@@ -300,6 +290,12 @@ pub(super) fn take_app_activation(
     children
         .into_iter()
         .find_map(|child| child.take_app_activation())
+}
+
+pub(super) fn take_focus_request(children: ChildrenMut<'_>) -> Option<String> {
+    children
+        .into_iter()
+        .find_map(|child| child.take_focus_request())
 }
 
 pub(super) fn dev_route(children: Vec<&dyn Widget>) -> Option<super::router::RouteSnapshot> {

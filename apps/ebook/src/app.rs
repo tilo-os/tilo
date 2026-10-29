@@ -3616,7 +3616,11 @@ impl BooksApp {
             self.query = query_view::BookQuery::live(cx.waker(), std::sync::Arc::clone(&catalogue));
             self.catalogue = Some(catalogue);
             self.follow_catalogue_setting();
-            self.local_library = LocalLibrary::load(cx.storage().settings());
+            if let (Some(record), Some(device)) =
+                (cx.person::<crate::local_library::BookFiles>(), cx.device())
+            {
+                self.local_library = LocalLibrary::load(record, device.to_owned());
+            }
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);

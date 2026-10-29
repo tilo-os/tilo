@@ -5,10 +5,11 @@
 use super::{
     Arc, AuthenticatedPeer, Envelope, EnvelopeV2, PeerError, RemoteActionRoute, ReplayCatchup,
     ReplayHandle, ReplayTicket, SessionCtx, Subscription, enable_actions, enable_broker_client,
-    handle_commit, handle_compaction, handle_delta, handle_live, handle_live_join,
-    handle_live_leave, handle_open_record, handle_peer_relay_hello, handle_presence,
-    handle_remote_action, handle_subscribe, handle_sync_request, handle_unsubscribe, handle_voice,
-    register_broker, route_private, route_record_content, route_signed_directed,
+    handle_commit, handle_compaction, handle_delta, handle_host_action, handle_live,
+    handle_live_join, handle_live_leave, handle_open_record, handle_peer_relay_hello,
+    handle_presence, handle_remote_action, handle_subscribe, handle_sync_request,
+    handle_unsubscribe, handle_voice, register_broker, route_private, route_record_content,
+    route_signed_directed,
 };
 #[cfg(test)]
 use super::{ReplayWrite, finish_replay_write, mpsc};
@@ -147,6 +148,10 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         env @ Envelope::OpenRecord { .. } => {
             handle_open_record(peer, session, subscribed, env).await
+        }
+        Envelope::HostAction { frame } => {
+            handle_host_action(peer, session, &frame);
+            Ok(None)
         }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.

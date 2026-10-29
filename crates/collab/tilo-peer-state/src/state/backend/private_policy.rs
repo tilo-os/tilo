@@ -1,42 +1,5 @@
 //! Actual core metadata adapter to the one strict private policy engine.
-use super::{BoundedNative, PeerCore, StatePeer};
-use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
-pub(in crate::state) fn bounded(
-    core: &PeerCore<BoundedNative>,
-    limits: PeerLimits,
-) -> Result<crate::room::private_policy::NativeBasis, BoundedPeerError> {
-    use crate::room::private_policy::{Error, Limits, Metadata};
-    let room = core
-        .room_doc
-        .as_ref()
-        .ok_or(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))?;
-    let read = room.read();
-    crate::room::private_policy::native(
-        &read,
-        Metadata {
-            room: &core.room,
-            authority: &core.authority,
-            certificates: core
-                .certificates
-                .map()
-                .values()
-                .map(std::convert::AsRef::as_ref),
-            revocations: core.revocations.iter(),
-        },
-        Limits {
-            collections: limits.governance_collection_bytes,
-            json: crate::resources::json::JsonLimits {
-                allocation_bytes: limits.governance_json.allocation_bytes,
-                collection_entries: limits.governance_json.collection_entries,
-            },
-        },
-    )
-    .map_err(|error| match error {
-        Error::Capacity => BoundedPeerError::Capacity,
-        Error::Decode(error) => BoundedPeerError::Decode(error),
-        _ => BoundedPeerError::Invalid(BoundedPeerInvalid::Governance),
-    })
-}
+use super::StatePeer;
 
 // These existing StatePeer surfaces remain explicitly allocating and unqualified.
 // They supply metadata from their own core, never caller-selected policy rows.

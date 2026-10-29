@@ -92,6 +92,9 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// The role of the action being checked (`primary`, `destructive`, `migration`): a
+    /// migration reads `(previously)` fields.
+    role: Option<String>,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
     /// Set while checking an action's requirements where it is presented: `invoker` is the
@@ -441,6 +444,7 @@ impl Checker<'_> {
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
         self.st.scenario = c.scenario;
+        self.st.role.clone_from(&c.present.role);
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
             // A body that ends in an expression returns its value.
@@ -948,6 +952,11 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if f.role.as_deref() == Some("previously") && self.st.role.as_deref() != Some("migration") {
+            self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
+            let _ = self.expr(value, None);
+            return;
+        }
         if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
             && let Some(of) = kind.field(&field.name)
             && !of.people
@@ -967,6 +976,10 @@ impl Checker<'_> {
                     }
                 ),
             );
+        }
+        if self.st.program {
+            self.program_edit(base, &key, &f, op, value, span);
+            return;
         }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();

@@ -4,7 +4,7 @@
 //! genesis, and the app's first state reaches the record as the member's own
 //! change, which every replica admits.
 use super::governance_actions::{
-    admitted, ask, host_operation, invocation, outcome, subscribed, try_ask,
+    admitted, ask, ask_host_of, host_operation, invocation, outcome, subscribed, try_ask,
 };
 use super::*;
 use tilo_actions::remote::ActionHostError;
@@ -84,7 +84,7 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     let outsider = dave.enrol("private-outsider", DeviceCapabilities::member());
     let scratch = tempfile::tempdir().unwrap();
     let relay = start(scratch.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Private app records").await;
+    let room = create_and_enter(&relay, &laptop, "Private app records").await;
     let workspace = room.workspace_id;
     members::admit(&relay, &host, &member, &room.room).await;
     admit_viewer(&relay, &host, &viewer, &room.room).await;
@@ -99,10 +99,8 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     );
     let owner = subscribed(&relay, &laptop, workspace).await;
     outcome(
-        ask(
+        ask_host_of(
             &owner,
-            &host,
-            workspace,
             host_operation(
                 GRANT_APP_AUTHORSHIP,
                 serde_json::json!({ "room": room.room, "app": OPENED }),

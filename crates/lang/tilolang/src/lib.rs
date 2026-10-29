@@ -53,6 +53,7 @@ pub mod ids;
 pub mod ir;
 pub mod lexer;
 pub mod meta;
+pub mod natural;
 pub mod origin;
 mod package;
 pub mod parser;

@@ -14,15 +14,15 @@ use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, DateIndexMarker, DateIndexMarkerKind, ModalAction, ModalSpec,
-    PropertyListFace, PropertyRow, ScrollMetrics, Widget,
+    Button, ButtonFace, ButtonRole, DateIndexMarker, DateIndexMarkerKind, EmptyState, ModalAction,
+    ModalSpec, PropertyListFace, PropertyRow, ScrollMetrics, Widget,
 };
 use ui::widget::{ListRowFace, MediaCardFace, StatTileFace};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 
 use super::{
-    COLLECTION_PAGE_SIZE, CollectionPageHit, LibraryAnalysisHit, LibraryDestination, PhotosApp,
+    COLLECTION_PAGE_SIZE, CollectionPageHit, LibraryAnalysisHit, LibraryDestination, Photos,
     PlaceItem, PlacesHit, SELECTION_ALBUMS_PER_PAGE, SelectionHit, ViewerDetails, captured_label,
     card_action_controls, displayed_image_rect, thumbnail_key, timeline_date_label,
     timeline_row_height,
@@ -105,7 +105,7 @@ pub(super) const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
     ],
 ];
 
-impl PhotosApp {
+impl Photos {
     /// The photograph's shared details as label/value rows: when and where
     /// it was taken, who and what is in it. The name and size are already
     /// in the header and the status bar.
@@ -197,15 +197,15 @@ impl PhotosApp {
     }
 
     /// Nothing to show in the content column: the shared empty state the
-    /// app keeps mounted while the column is empty.
+    /// window keeps mounted while the column is empty.
     pub(super) fn draw_empty_state(
-        &mut self,
+        empty: Option<&mut EmptyState>,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if let Some(empty) = &mut self.empty_state {
+        if let Some(empty) = empty {
             empty.draw(
                 scene,
                 transform,
@@ -237,6 +237,7 @@ impl PhotosApp {
     )]
     pub(super) fn build_canvas_node(
         &mut self,
+        empty: Option<&mut EmptyState>,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
@@ -324,7 +325,7 @@ impl PhotosApp {
                     &children,
                 )
                 .unwrap()
-        } else if let Some(empty) = &mut self.empty_state {
+        } else if let Some(empty) = empty {
             empty.build_layout(taffy, theme, node_map)
         } else {
             match self.viewer.as_mut() {
@@ -483,6 +484,7 @@ impl PhotosApp {
     )]
     pub(super) fn draw_albums(
         &mut self,
+        empty: Option<&mut EmptyState>,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -499,7 +501,7 @@ impl PhotosApp {
 
         let content = self.content_frame(theme);
         if self.library_albums.is_empty() {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
+            Self::draw_empty_state(empty, scene, transform, text_renderer, theme);
             return;
         }
 
@@ -915,6 +917,7 @@ impl PhotosApp {
     )]
     pub(super) fn draw_library(
         &mut self,
+        empty: Option<&mut EmptyState>,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -930,7 +933,7 @@ impl PhotosApp {
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
+            Self::draw_empty_state(empty, scene, transform, text_renderer, theme);
             return;
         }
         let frame = self.content_frame(theme);
@@ -1216,6 +1219,7 @@ impl PhotosApp {
     )]
     pub(super) fn draw_places(
         &mut self,
+        empty: Option<&mut EmptyState>,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -1228,7 +1232,7 @@ impl PhotosApp {
         let place_clusters =
             crate::places::clusters(self.places_items.iter().map(|item| &item.photo));
         if self.places_items.is_empty() {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
+            Self::draw_empty_state(empty, scene, transform, text_renderer, theme);
             return;
         }
         if self.places_list_mode {

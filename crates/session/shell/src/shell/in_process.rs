@@ -26,7 +26,8 @@ mod feedback_native;
 mod feedback_review;
 #[cfg(test)]
 mod feedback_tests;
-pub mod messaging;
+#[cfg(target_os = "linux")]
+mod messaging;
 
 /// The apps the shell mounts in-process, with the store their records and
 /// views live in, as one person on one device.
@@ -48,36 +49,22 @@ pub struct InProcessApps {
     /// How an app mounted here reaches the session's broker, as an app the
     /// session launched; `None` keeps them off any broker.
     broker: Option<SessionBroker>,
-    messaging: Option<tilo_messaging::MessagingClient>,
+    /// The person's messaging accounts, in their own service.
     #[cfg(target_os = "linux")]
-    first_accounts: Option<Rc<dyn messaging::first_account::FirstAccounts>>,
-    messaging_registry: Option<std::sync::Arc<dyn tilo_messaging::MessagingRegistry>>,
+    messaging: Option<messaging::MessagingService>,
+    /// Where the messaging service keeps the accounts' private state.
+    #[cfg(target_os = "linux")]
+    messaging_profile: Option<std::path::PathBuf>,
+    /// Messages shown in this process reaches the service as the app would.
+    #[cfg(target_os = "linux")]
+    messaging_connection: Option<std::sync::Arc<tilo_messaging_service::client::Connection>>,
     credential_owner: Option<accounts::CredentialOwner>,
     /// The person's records the session keeps (their accounts and contacts
     /// among them), held on this thread where its settings are: the apps
     /// open the person's records of other apps there.
     person_records: crate::shell::settings_records::Holder,
-    messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
-    messaging_record_wake: Option<crate::session_runtime::Wake>,
-    messaging_transport:
-        Option<tokio::sync::oneshot::Receiver<tilo_network_actor::private_messages::Transport>>,
-    native_messaging_transport: Option<tilo_network_actor::private_messages::Transport>,
-    messaging_starts: Option<Rc<dyn messaging::activation::PendingAccounts>>,
-    #[cfg(target_os = "linux")]
-    messaging_lifetime: std::sync::Arc<()>,
-    #[cfg(target_os = "linux")]
-    messaging_network_prompts: Option<crate::portal::PromptQueueHandle>,
-    #[cfg(target_os = "linux")]
-    messaging_providers: Vec<launcher::owned_service::ServiceCancellation>,
-    messaging_native_accounts: Vec<std::sync::Arc<dyn messaging::NativeAccountCustody>>,
-    native_messaging_peers: Option<crate::network::PeerIdentityStore>,
-    native_messaging_root: Option<std::path::PathBuf>,
+    session_wake: Option<crate::session_runtime::Wake>,
     native_broker_socket: Option<std::path::PathBuf>,
-    receivers: Vec<tilo_messaging_protocol::signal_broker::ReceiveGuard>,
-    messaging_services: Vec<(
-        tilo_messaging::ServiceAccount,
-        tilo_messaging::MessagingClient,
-    )>,
     /// The window each mounted tab is shown in, as lent to its app: the
     /// slots it declares for its bar and its asks to close its tab.
     windows: HashMap<u64, ui::hosted_window::HostedWindow>,
@@ -119,11 +106,10 @@ impl InProcessApps {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn bind_messaging_network_prompts(
-        &mut self,
-        prompts: crate::portal::PromptQueueHandle,
-    ) {
-        self.messaging_network_prompts = Some(prompts);
+    pub(crate) fn bind_messaging_network_prompts(&self, prompts: crate::portal::PromptQueueHandle) {
+        if let Some(service) = &self.messaging {
+            service.bind_prompts(prompts);
+        }
     }
 
     /// Apps keeping their records in `store`, mounted for `author` on
@@ -147,29 +133,16 @@ impl InProcessApps {
             device_id: device_id.to_owned(),
             author: UserId(author.to_owned()),
             broker: None,
+            #[cfg(target_os = "linux")]
             messaging: None,
             #[cfg(target_os = "linux")]
-            first_accounts: None,
-            messaging_registry: None,
+            messaging_profile: None,
+            #[cfg(target_os = "linux")]
+            messaging_connection: None,
             credential_owner: None,
             person_records,
-            messaging_records: None,
-            messaging_record_wake: None,
-            messaging_transport: None,
-            native_messaging_transport: None,
-            messaging_starts: None,
-            #[cfg(target_os = "linux")]
-            messaging_lifetime: std::sync::Arc::new(()),
-            #[cfg(target_os = "linux")]
-            messaging_network_prompts: None,
-            #[cfg(target_os = "linux")]
-            messaging_providers: Vec::new(),
-            messaging_native_accounts: Vec::new(),
-            native_messaging_peers: None,
-            native_messaging_root: None,
+            session_wake: None,
             native_broker_socket: None,
-            receivers: Vec::new(),
-            messaging_services: Vec::new(),
             windows: HashMap::new(),
             window_routes: None,
             capture_protected: DeclaredProtected::default(),
@@ -183,7 +156,7 @@ impl InProcessApps {
         let window = self.windows.entry(tab).or_default().clone();
         // An app asking from its own thread (a shell that exited) wakes the
         // loop, which looks at its window.
-        if let Some(wake) = self.messaging_record_wake.clone() {
+        if let Some(wake) = self.session_wake.clone() {
             window.set_wake(move || wake());
         }
         window
@@ -203,153 +176,48 @@ impl InProcessApps {
         self.windows.remove(&tab);
     }
 
-    /// Bind the existing compositor wake once; this opens no metadata/custody.
-    pub(crate) fn bind_messaging_record_wake(&mut self, wake: crate::session_runtime::Wake) {
-        if self.messaging_record_wake.is_none() {
-            if let Some(owner) = &self.credential_owner {
-                owner.bind_request_wake(wake.clone());
-            }
-            self.messaging_record_wake = Some(wake);
+    /// Bind the session loop's wake once, and start the messaging service
+    /// with it.
+    pub(crate) fn bind_session_wake(&mut self, wake: crate::session_runtime::Wake) {
+        if self.session_wake.is_some() {
+            return;
         }
+        if let Some(owner) = &self.credential_owner {
+            owner.bind_request_wake(wake.clone());
+        }
+        #[cfg(target_os = "linux")]
+        if let (Some(profile), Some(socket)) = (&self.messaging_profile, &self.native_broker_socket)
+        {
+            self.messaging = messaging::MessagingService::start(
+                &self.author.0,
+                &self.device_id,
+                profile,
+                socket.clone(),
+                wake.clone(),
+            );
+        }
+        self.session_wake = Some(wake);
     }
 
+    /// Carry the messaging service's private Tilo texts on `network`.
     pub(crate) fn bind_private_messages_network(
         &mut self,
         network: &crate::shell::network::ShellNetwork,
     ) {
-        if self.native_messaging_transport.is_some() || self.messaging_transport.is_some() {
-            return;
-        }
-        self.native_messaging_peers = Some(network.private_message_identities());
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        if network
-            .cmd_tx
-            .try_send(tilo_network_actor::NetCmd::PrivateMessages(reply))
-            .is_ok()
-        {
-            self.messaging_transport = Some(receiver);
-        }
-    }
-
-    /// Service bounded worker reads on the actual UI owner, without a window.
-    pub(crate) fn pump_messaging_records(&mut self) {
-        if let Some(receiver) = self.messaging_transport.as_mut() {
-            match receiver.try_recv() {
-                Ok(transport) => {
-                    self.native_messaging_transport = Some(transport);
-                    self.messaging_transport = None;
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    self.messaging_transport = None;
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-            }
-        }
-        if let Some(records) = &self.messaging_records {
-            records.pump();
-        }
-        if let Some(starts) = &self.messaging_starts {
-            starts.pump();
-        }
         #[cfg(target_os = "linux")]
-        if let Some(first) = self.first_accounts.clone() {
-            first.pump(self);
+        if let Some(service) = self.messaging.as_mut() {
+            service.bind_network(network);
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = network;
     }
 
-    /// Install an already authenticated, device-owned Signal service. No
-    /// metadata record creates this authority and another persona is refused.
-    /// # Errors
-    /// Refuses a broker owned by another person/device or a duplicate service/account installation.
-    pub fn install_signal(
-        &mut self,
-        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
-        if owner.principal != self.author.0 || owner.device != self.device_id {
-            return Err(LaunchError::BindingMismatch);
+    /// Answer what the messaging service asks of the session's loop.
+    pub(crate) fn pump_messaging_records(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(service) = self.messaging.as_mut() {
+            service.pump(&self.person_records);
         }
-        let mut services = self.messaging_services.clone();
-        services.push((
-            tilo_messaging::ServiceAccount::new("signal", &owner.account),
-            broker.client(),
-        ));
-        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        if let Some(registry) = &self.messaging_registry {
-            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
-            registry
-                .register(identity.clone(), client.clone())
-                .map_err(|_| LaunchError::BindingMismatch)?;
-            self.messaging = Some(registry.clone().client());
-        } else {
-            self.messaging = Some(router.client());
-        }
-        self.messaging_services = services;
-        Ok(())
-    }
-
-    /// Lend the lifecycle-aware service while its owned native account is
-    /// linking, locked or offline. Metadata never installs a usable adapter.
-    /// # Errors
-    /// Refuses another persona/device or duplicate exact service/account.
-    pub fn install_messaging_supervisor(
-        &mut self,
-        supervisor: &std::sync::Arc<tilo_messaging_protocol::supervisor::AccountSupervisor>,
-    ) -> Result<(), LaunchError> {
-        let owner = supervisor.owner();
-        if owner.principal != self.author.0 || owner.device != self.device_id {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let service = match owner.service {
-            tilo_messaging_protocol::Service::Whatsapp => "whatsapp",
-            tilo_messaging_protocol::Service::Signal => "signal",
-            tilo_messaging_protocol::Service::Sms => "sms",
-            tilo_messaging_protocol::Service::Tilo => "tilo",
-        };
-        let mut services = self.messaging_services.clone();
-        services.push((
-            tilo_messaging::ServiceAccount::new(service, &owner.account),
-            supervisor.client(),
-        ));
-        let router = tilo_messaging::MessagingRouter::new(&self.author.0, services.clone())
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        if let Some(registry) = &self.messaging_registry {
-            let (identity, client) = services.last().ok_or(LaunchError::BindingMismatch)?;
-            registry
-                .register(identity.clone(), client.clone())
-                .map_err(|_| LaunchError::BindingMismatch)?;
-            self.messaging = Some(registry.clone().client());
-        } else {
-            self.messaging = Some(router.client());
-        }
-        self.messaging_services = services;
-        Ok(())
-    }
-
-    /// Install sending and independent inbound persistence as one host setup.
-    /// # Errors
-    /// Refuses another owner/device, failed receive setup or duplicate service/account installation.
-    pub fn install_signal_receiving(
-        &mut self,
-        broker: &tilo_messaging_protocol::signal_broker::SignalBroker,
-        receiver: tilo_messaging_protocol::signal_runtime::SignalReceiver,
-    ) -> Result<(), LaunchError> {
-        let owner = broker.owner().map_err(|_| LaunchError::BindingMismatch)?;
-        if owner.principal != self.author.0
-            || owner.device != self.device_id
-            || self.messaging_services.iter().any(|(identity, _)| {
-                identity.service == "signal" && identity.account == owner.account
-            })
-        {
-            return Err(LaunchError::BindingMismatch);
-        }
-        let guard = broker
-            .start_receiver(receiver)
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        self.install_signal(broker)?;
-        self.receivers.push(guard);
-        Ok(())
     }
 
     /// Reach the session's broker through `broker` for every app mounted
@@ -473,7 +341,7 @@ impl InProcessApps {
         {
             return Err(LaunchError::BindingMismatch);
         }
-        if let Some(wake) = &self.messaging_record_wake {
+        if let Some(wake) = &self.session_wake {
             owner.bind_request_wake(wake.clone());
         }
         self.credential_owner = Some(owner);
@@ -501,10 +369,10 @@ impl InProcessApps {
             }));
         apps.native_broker_socket = Some(socket);
         apps.feedback_destination = feedback_native::configured_destination(profile)?;
-        apps.native_messaging_root = Some(profile.join("private-messages"));
-        let registry = tilo_messaging::messaging_registry(&apps.author.0)
-            .map_err(|_| LaunchError::BindingMismatch)?;
-        apps.messaging_registry = Some(registry);
+        #[cfg(target_os = "linux")]
+        {
+            apps.messaging_profile = Some(profile.to_path_buf());
+        }
         Ok(apps)
     }
 
@@ -565,19 +433,6 @@ impl InProcessApps {
                 }
                 None => tilo_desktop::feedback::unconfigured(&self.device_id, &self.author.0, tab),
             };
-        }
-        #[cfg(target_os = "linux")]
-        if definition.app_id() == "so.tilo.messages" {
-            if self.first_accounts.is_none()
-                && self.native_broker_socket.is_some()
-                && let Some(wake) = &self.messaging_record_wake
-            {
-                self.first_accounts = Some(messaging::first_account::new(
-                    self.author.0.clone(),
-                    wake.clone(),
-                ));
-            }
-            self.prepare_default_messaging();
         }
         let records = self
             .owners
@@ -640,18 +495,14 @@ impl InProcessApps {
             room.to_owned(),
             self.author.clone(),
         ));
-        if definition.app_id() == "so.tilo.messages" {
-            #[cfg(target_os = "linux")]
-            if let Some(first) = &self.first_accounts {
-                context.lend(first.client());
-            }
-            if let Some(service) = &self.messaging {
-                context.lend(service.clone());
-            } else if let Some(registry) = &self.messaging_registry {
-                // Empty routing/setup lifetime, not an admitted account or a
-                // ready provider. Protected admission still publishes neither.
-                context.lend(registry.clone().client());
-            }
+        // Messages shown here reaches the messaging service as it would in
+        // its own process: the same enrollment and accounts.
+        #[cfg(target_os = "linux")]
+        if definition.app_id() == tilo_messaging_service::MESSAGES_APP
+            && let Some(connection) = self.messaging_connection()
+        {
+            context.lend(connection.enrollment());
+            context.lend(connection.messaging());
         }
         if definition.app_id() == "so.tilo.passwords"
             && let Some(owner) = &self.credential_owner
@@ -660,6 +511,21 @@ impl InProcessApps {
         }
         lend(&mut context);
         definition.instantiate(context, target, RestoreInput::None)
+    }
+
+    /// A connection to the messaging service, made once it runs.
+    #[cfg(target_os = "linux")]
+    fn messaging_connection(
+        &mut self,
+    ) -> Option<std::sync::Arc<tilo_messaging_service::client::Connection>> {
+        if self.messaging_connection.is_none() && self.messaging.is_some() {
+            self.messaging_connection = tilo_messaging_service::client::Connection::connect(
+                &launcher::services::socket_for(tilo_messaging_service::SERVICE),
+                tilo_messaging_service::MESSAGES_APP,
+            )
+            .ok();
+        }
+        self.messaging_connection.clone()
     }
 
     /// The apps mounted here that declare their windows capture-protected.

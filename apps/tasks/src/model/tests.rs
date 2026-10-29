@@ -1186,9 +1186,9 @@ fn a_projects_people_carry_their_role_and_its_documents_are_its_tasks_links() {
     person
         .apply(Tracker::LINK.with(tracker::Link {
             issue: notes,
-            app: "so.tilo.notes".into(),
+            app: "so.tilo.notes".parse().unwrap(),
             kind: "notes.note".into(),
-            resource: "notes/launch".into(),
+            resource: "notes/launch".parse().unwrap(),
             label: "The launch plan".into(),
             record: None,
         }))

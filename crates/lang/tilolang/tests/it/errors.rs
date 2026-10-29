@@ -438,3 +438,48 @@ fn diagnostics_carry_positions_and_json() {
     let json = tilolang::diagnostics_json(&err);
     assert!(json.contains("\"code\": \"E014\""));
 }
+
+const MIGRATED: &str = "type Item {\n    title: Text (title)\n    shelf: Text (previously)\n}\n\ntype Shelf {\n    name: Text (title)\n    items: Collection<Item>\n}\n\ntype Store {\n    shelves: Collection<Shelf>\n    items: Collection<Item> (previously)\n}\n";
+
+#[test]
+fn only_a_migration_reads_what_a_type_held_previously() {
+    let migration = "/// Puts each item on the first shelf.\nmigration action shelve(s: Store) {\n    if let first = s.shelves.first() {\n        for i in s.items {\n            first.items.move(i, to: first.items.len())\n        }\n    }\n}\n";
+    let compiled = crate::common::compile_body(&format!("{MIGRATED}\n{migration}"));
+    let shelve = compiled
+        .meta
+        .actions
+        .iter()
+        .find(|a| a.name == "shelve")
+        .unwrap();
+    assert!(shelve.is_migration());
+    assert!(
+        compiled.meta.offered_actions().all(|a| a.name != "shelve"),
+        "a migration is never offered"
+    );
+    assert_eq!(compiled.meta.migrations().count(), 1);
+    let elsewhere = "action count(s: Store) -> Int {\n    s.items.len()\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{elsewhere}")),
+        ["E114"]
+    );
+    let in_a_fn = "fn shelf_of(i: Item) -> Text {\n    i.shelf\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{in_a_fn}")),
+        ["E114"]
+    );
+}
+
+#[test]
+fn nothing_writes_what_a_type_held_previously() {
+    let assigned = "action reshelve(i: Item) {\n    i.shelf = \"top\"\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{assigned}")),
+        ["E115"]
+    );
+    let created =
+        "action stock(s: Shelf) {\n    s.items.insert(Item(title: \"x\", shelf: \"top\"))\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{created}")),
+        ["E115"]
+    );
+}

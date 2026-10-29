@@ -234,9 +234,9 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "app", required = true, schema = { type = "string" } },
+  { name = "app", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "kind", required = true, schema = { type = "string" } },
-  { name = "resource", required = true, schema = { type = "string" } },
+  { name = "resource", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "label", required = true, schema = { type = "string" } },
   { name = "record", required = false, schema = { type = ["string", "null"] } },
 ]

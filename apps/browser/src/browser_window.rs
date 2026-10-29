@@ -9,9 +9,15 @@
 //! restoring those tabs is the desktop's, not the Browser's.
 
 use crate::BrowserWidget;
+use crate::browser_widget::PagePublication;
+use crate::effects::BrowserEffect;
+use crate::resource::Browser;
 use automerge::{AutoCommit, ObjId};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::framework::{EffectAnswer, EffectCx, Effected, Live};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -36,13 +42,46 @@ enum ExitState {
     Ready,
 }
 
+/// What the view's publications and stage hook share with the window: what
+/// the window last published of its page, and a screenshot scenario to
+/// stage on its next sync.
+#[derive(Default)]
+pub(crate) struct WindowStore {
+    staged: Option<Staged>,
+    published: Option<PagePublication>,
+}
+
+/// A screenshot scenario to stage, `None` for the plain window.
+struct Staged(Option<String>);
+
+impl WindowStore {
+    /// Stage the screenshot `scenario` on the window's next sync.
+    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+        self.staged = Some(Staged(scenario.map(str::to_owned)));
+    }
+
+    /// What the window last published of its page.
+    pub(crate) fn published(&self) -> Option<&PagePublication> {
+        self.published.as_ref()
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "layout invalidation, address focus, close admission and native fullscreen observations are independent flags; exit admission already uses ExitState"
 )]
 pub struct BrowserWindow {
     page: Box<BrowserWidget>,
-    pub(crate) service_cx: Option<ui::framework::SurfaceCx<crate::resource::Browser>>,
+    store: Rc<RefCell<WindowStore>>,
+    /// The document as it changes; `None` for a window outside the
+    /// framework.
+    live: Option<Live<Browser>>,
+    /// The `(revision, loads)` of the document last presented.
+    presented: Option<(u64, u64)>,
+    /// Who opens the person's signed-in website accounts here.
+    person: Option<[u8; 32]>,
+    /// Wakes the window when an account's custody answers.
+    waker: Option<ui::WakeHandle>,
     rect: Rect,
     dirty: bool,
     /// A window opened without a page starts in the address field.
@@ -79,7 +118,11 @@ impl BrowserWindow {
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
             page: Box::new(page),
-            service_cx: None,
+            store: Rc::default(),
+            live: None,
+            presented: None,
+            person: None,
+            waker: None,
             rect: Rect::ZERO,
             dirty: true,
             focus_address,
@@ -101,17 +144,120 @@ impl BrowserWindow {
         self.page.engine_handle()
     }
 
-    /// Present the document's bookmarks, preferences and site exceptions.
-    pub(crate) fn present_state(&mut self, state: &crate::resource::Browser) {
-        self.page.present_state(state);
+    /// What the window shares with the view's publications and stage
+    /// hook.
+    pub(crate) fn shared(&self) -> Rc<RefCell<WindowStore>> {
+        Rc::clone(&self.store)
+    }
+
+    /// Follow the document: the page shows its bookmarks, preferences and
+    /// site exceptions as it holds them, from now on.
+    pub(crate) fn follow(&mut self, live: Live<Browser>) {
+        self.live = Some(live);
+        self.follow_document();
+    }
+
+    /// Present the document as it is now, when it changed since; whether it
+    /// did.
+    fn follow_document(&mut self) -> bool {
+        let Some(state) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return false;
+        };
+        self.page.present_state(&state);
+        true
+    }
+
+    /// Open the person's signed-in website accounts as `person`, waking
+    /// the window through `waker` as their custody answers.
+    pub(crate) fn attach_services(&mut self, person: Option<[u8; 32]>, waker: ui::WakeHandle) {
+        self.person = person;
+        self.waker = Some(waker);
     }
 
     /// Submit the page's bookmark and preference edits through `dispatcher`.
-    pub(crate) fn attach_dispatcher(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Browser>,
-    ) {
+    pub(crate) fn attach_dispatcher(&mut self, dispatcher: ui::framework::Dispatcher<Browser>) {
         self.page.attach_dispatcher(dispatcher);
+    }
+
+    /// Keep what the page publishes now for the view's publications.
+    pub(crate) fn publish(&self) {
+        self.store.borrow_mut().published = Some(self.page.publication());
+    }
+
+    /// Stage the scenario a capture asked for since the last sync.
+    fn stage_asked(&mut self) {
+        let staged = self.store.borrow_mut().staged.take();
+        if let Some(Staged(scenario)) = staged {
+            self.stage_scenario(scenario.as_deref());
+        }
+    }
+
+    /// Every effect acts on the window's page; one that waits (a page
+    /// loading, the engine answering) is answered once it settles.
+    pub(crate) fn effect(
+        &mut self,
+        effect: BrowserEffect,
+        cx: &mut EffectCx<Browser>,
+    ) -> EffectAnswer {
+        let answer = self.carry_out(effect, cx);
+        // Publications read what the effect changed before the next sync.
+        self.publish();
+        answer
+    }
+
+    fn carry_out(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser>) -> EffectAnswer {
+        match &effect {
+            BrowserEffect::ListServiceSessions => {
+                let waker = self.waker.clone().ok_or("Account custody is unavailable")?;
+                self.page.begin_service_list(cx.reply(), waker)?;
+                return Ok(Effected::Pending);
+            }
+            BrowserEffect::OpenServiceSession { session_id } => {
+                let waker = self
+                    .waker
+                    .clone()
+                    .ok_or("This account could not be opened")?;
+                let person = self
+                    .person
+                    .ok_or("This account needs to be connected again")?;
+                self.page.begin_service_session(session_id, person, waker)?;
+                return Ok(Effected::value(
+                    serde_json::json!({"status":"opening", "authenticated":false}),
+                ));
+            }
+            BrowserEffect::RetryForgetServiceSession { session_id }
+            | BrowserEffect::ForgetServiceSession { session_id } => {
+                let waker = self
+                    .waker
+                    .clone()
+                    .ok_or("This account could not be forgotten")?;
+                let person = self
+                    .person
+                    .ok_or("This account needs to be connected again")?;
+                self.page
+                    .begin_forget_service_session(session_id, person, cx.reply(), waker)?;
+                return Ok(Effected::Pending);
+            }
+            _ => {}
+        }
+        let invocation = cx.invocation().unwrap_or_default();
+        match self.page.admit(invocation, effect.operation())? {
+            Effected::Pending => {
+                let reply = cx.reply();
+                // The window keeps the answer, not a job of this effect, so
+                // the reply's own job is what hears the caller give up: a
+                // page action nobody waits for any more is stopped rather
+                // than left holding its tab.
+                cx.cancel_by(reply.progress().cancellation_signal());
+                self.page.answer_later(invocation, reply);
+                Ok(Effected::Pending)
+            }
+            Effected::Done(output) => Ok(Effected::Done(output)),
+        }
     }
 
     /// Keep the page's downloads in this device's settings.
@@ -154,6 +300,7 @@ impl BrowserWindow {
     }
 
     /// The page this window shows.
+    #[cfg(test)]
     pub(crate) fn page(&self) -> &BrowserWidget {
         &self.page
     }
@@ -164,7 +311,7 @@ impl BrowserWindow {
     }
 
     /// Stage a screenshot scenario on the page.
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+    fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.page.stage(scenario);
         self.dirty = true;
     }
@@ -269,7 +416,23 @@ impl Widget for BrowserWindow {
         dyn ui::widget::controls::ActionControls,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = self.follow_document();
+        changed |= self.store.borrow().staged.is_some();
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.stage_asked();
         if let Some(cancel) = self.exit_choice.get() {
             self.exit_choice.set(None);
             if cancel {
@@ -284,10 +447,10 @@ impl Widget for BrowserWindow {
         }
         self.page.sync(state, path);
         if let Some(anchor) = self.page.take_service_redirect()
-            && let Some(cx) = &self.service_cx
+            && let Some(waker) = self.waker.clone()
             && let Some((id, _)) = crate::service_destinations::parse_anchor(&anchor)
-            && let Some(person) = cx.me().and_then(crate::service_sessions::identity)
-            && let Err(error) = self.page.begin_service_session(&id, person, cx.waker())
+            && let Some(person) = self.person
+            && let Err(error) = self.page.begin_service_session(&id, person, waker)
         {
             tracing::warn!(%error, "Approved account could not be opened");
         }
@@ -324,6 +487,7 @@ impl Widget for BrowserWindow {
             }
             self.dirty = true;
         }
+        self.publish();
     }
     fn build_layout(
         &mut self,

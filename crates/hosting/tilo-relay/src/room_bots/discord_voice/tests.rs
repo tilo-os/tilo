@@ -289,7 +289,7 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
                     doc,
                     &owner,
                     chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                        name: "hangout".into(),
+                        name: "hangout".parse().unwrap(),
                         category: None,
                         kind: Some(chat::model::ChannelKind::Voice),
                         topic: None,

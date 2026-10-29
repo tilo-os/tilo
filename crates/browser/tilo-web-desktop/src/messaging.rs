@@ -140,7 +140,6 @@ mod service {
             records
                 .of_package(ACCOUNTS_OWNER)
                 .map_err(|error| error.to_string())?,
-            None,
         );
         let accounts = settings
             .shared::<PersonAccounts>()

@@ -53,6 +53,15 @@ pub enum ReadRequest {
     Find { app: String, words: String },
     /// One resource's text and fields, by its type's name and id.
     Read { app: String, ty: String, id: String },
+    /// The resources of the type `ty` (its id) anywhere in the app that `pred` holds of, in
+    /// the order `order`: a typed query that looks inside no one resource, by their ids.
+    Select {
+        app: String,
+        ty: String,
+        pred: crate::store::Pred,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        order: Option<crate::query::Order>,
+    },
     /// The app, or one of its declarations (`name`: a type, an action, a root), or a field of
     /// a type.
     Describe {
@@ -72,6 +81,7 @@ impl ReadRequest {
             Self::Grep { app, .. }
             | Self::Find { app, .. }
             | Self::Read { app, .. }
+            | Self::Select { app, .. }
             | Self::Describe { app, .. } => app,
         }
     }
@@ -622,6 +632,21 @@ impl Core {
                 let target = ResourceRef::parse_id(id, ty_id)
                     .ok_or_else(|| format!("`{id}` is no resource id"))?;
                 Ok(to_json(&self.read_local(&target)?))
+            }
+            ReadRequest::Select {
+                ty, pred, order, ..
+            } => {
+                let found = self
+                    .store
+                    .borrow()
+                    .select(ty, pred, order.as_ref())
+                    .map_err(|error| error.to_string())?;
+                Ok(Json::Array(
+                    found
+                        .iter()
+                        .map(|at| Json::String(at.id_string()))
+                        .collect(),
+                ))
             }
             ReadRequest::Describe { app, name, field } => Ok(Json::String(self.describe_local(
                 app,

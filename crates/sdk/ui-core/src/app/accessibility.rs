@@ -423,19 +423,17 @@ impl App {
             self.hand_focus_to(node);
             return;
         }
+        // Focus travels the laid out tree: a widget can lay its children out
+        // under nodes of its own (a shell's columns), and a component or
+        // History lays out nodes no widget lists as a child, so a walk of the
+        // widgets beside the layout pairs controls with the wrong nodes.
         if self.close_admission.dialog.is_none() {
             let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if crate::focus_navigation::walks_layout_map(
-                self.root_widget.as_ref(),
-                self.history.is_some(),
-                &restrictions,
-            ) {
-                self.update_history_focus_order(&restrictions);
-                return;
-            }
+            self.update_history_focus_order(&restrictions);
+            return;
         }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
@@ -556,7 +554,6 @@ impl App {
                 sweep.nodes.iter().copied(),
                 &self.bindings,
                 &self.collaboration.local_author,
-                &self.permission_ctx,
             )
         };
         // What the whole view says about history is read once per sweep, not
@@ -618,15 +615,6 @@ impl App {
                         .history_request(&mut self.state.doc, request)
                         .ok()
                         .flatten()
-                } else if let Some(owner) = self.bindings.legacy_for(node) {
-                    crate::bound_dispatch::legacy_history_request(
-                        &owner,
-                        request,
-                        &self.permission_ctx,
-                        &self.collaboration.local_author,
-                    )
-                    .ok()
-                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => self.state.undo_as(
@@ -657,23 +645,17 @@ impl App {
             }
             // Bound histories intentionally keep completed-action labels warm
             // across pending edits and dynamically mounted controls.
-            let bound_status = binding
-                .as_ref()
-                .map(|binding| {
-                    if let Some((_, status)) = bound_statuses
-                        .iter()
-                        .find(|(seen, _)| seen.same_component(binding))
-                    {
-                        return status.clone();
-                    }
-                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
-                    bound_statuses.push((binding.clone(), status.clone()));
-                    status
-                })
-                .or_else(|| {
-                    self.bindings
-                        .legacy_status(node, &self.collaboration.local_author)
-                });
+            let bound_status = binding.as_ref().map(|binding| {
+                if let Some((_, status)) = bound_statuses
+                    .iter()
+                    .find(|(seen, _)| seen.same_component(binding))
+                {
+                    return status.clone();
+                }
+                let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                bound_statuses.push((binding.clone(), status.clone()));
+                status
+            });
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
@@ -865,6 +847,26 @@ impl App {
             self.focused_node = Some(node);
             self.layout.layout_dirty = true;
             self.needs_sync = true;
+        }
+    }
+
+    /// Give the keyboard to the control a widget asked for
+    /// ([`Widget::take_focus_request`]), in the tree just built: as a press
+    /// focuses it, so no other control keeps drawing or typing as focused.
+    /// A dialog holding the keyboard keeps it.
+    pub(super) fn apply_focus_request(&mut self) {
+        let Some(id) = self.root_widget.take_focus_request() else {
+            return;
+        };
+        if self.accessibility.focus_trap_active {
+            return;
+        }
+        let target = self.focusable_order.iter().copied().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
+                .unwrap_or(false)
+        });
+        if target.is_some() {
+            self.set_focused_node(target);
         }
     }
 
@@ -1418,7 +1420,7 @@ impl App {
             })
             .flatten();
         let handled = self
-            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     crate::a11y_child_route::perform(
                         widget,
@@ -1768,7 +1770,7 @@ impl App {
                         crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
                     };
                     return Ok(self.open_ordinary_confirmation(
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                             target.clone(),
                         ),
                         target.address.address.clone(),

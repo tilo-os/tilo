@@ -534,9 +534,57 @@ impl NativeWorkspaceOwner {
         self.publish_room(room, candidate, None)?;
         Ok(reports)
     }
+    /// Take `changes`, the whole history of `room` as this device's own
+    /// host holds it, when this device's replica diverged from it
+    /// ([`tilo_peer_state::StatePeer::adopt_governor_history`]). A room
+    /// this device's host governs is signed under this device's key, and its
+    /// host is the one writer under that key: a replica that wrote under it
+    /// too (a build before the host wrote its membership changes for it)
+    /// refused the host's history from then on, and with it every app's
+    /// authorship. The replica stops publishing itself as the room's
+    /// governance as well.
+    ///
+    /// `None` when the replica was on the host's history already; else the
+    /// membership changes its own history made that the host's lacks, for
+    /// the caller to have the host commit again as they were made: an
+    /// invitation given here is the person's, never let go.
+    ///
+    /// # Errors
+    /// The room is not this device's own host's, is fenced, the host's
+    /// history does not admit, or the result cannot be published.
+    pub fn adopt_own_host_history(
+        &self,
+        room: RoomId,
+        changes: &[Vec<u8>],
+        now: SystemTime,
+    ) -> Result<Option<Vec<tilo_action_policy::Change>>, String> {
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let device = candidate.device().device_public_key;
+        if candidate.device() != candidate.governor()
+            || !session::hosted_by(candidate.transport_hint()?, &device)
+        {
+            return Err("the room is not governed by this device's own host".into());
+        }
+        let Some(beyond) = candidate.peer.adopt_governor_history(changes, now)? else {
+            return Ok(None);
+        };
+        publication::withdraw_governance_checkpoint(&mut candidate)?;
+        candidate.record.peer = candidate.peer.durable()?;
+        candidate.record.generation = candidate
+            .record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_room(room, candidate, None)?;
+        Ok(Some(beyond))
+    }
     /// The room changes `message` carries when one of the owner's devices,
-    /// other than this one, sent it: the room's governance, which retires
-    /// what this member published once it carries it.
+    /// other than this one, sent it, or this device's own room host: the
+    /// room's governance, which retires what this member published once it
+    /// carries it. This device's host signs with this device's key; what it
+    /// sends is told from this replica's own writes by the host's actor its
+    /// changes are made under ([`tilo_peer_state::room_host_actor`]).
     fn governance_changes(
         candidate: &NativeCommittedView,
         origin: TransportOrigin,
@@ -550,7 +598,16 @@ impl NativeWorkspaceOwner {
         let NeighbourMsg::SyncResp { changes, .. } = message else {
             return None;
         };
-        (author != candidate.device().device_public_key && candidate.peer.signed_by_owner(&author))
+        let from_governance = if author == candidate.device().device_public_key {
+            let host = tilo_peer_state::room_host_actor(&author);
+            changes.iter().any(|bytes| {
+                automerge::Change::from_bytes(bytes.clone())
+                    .is_ok_and(|change| change.actor_id() == &host)
+            })
+        } else {
+            candidate.peer.signed_by_owner(&author)
+        };
+        from_governance
             .then(|| publication::change_hashes(changes).ok())
             .flatten()
     }

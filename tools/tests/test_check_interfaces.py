@@ -267,11 +267,11 @@ class RepositoryTests(unittest.TestCase):
     def test_every_committed_interface_matches_its_code(self):
         self.assertEqual(interfaces.check(), [])
 
-    def test_the_five_interfaces_each_have_one_number(self):
+    def test_the_six_interfaces_each_have_one_number(self):
         names = sorted(
             interfaces.load_spec(path)[0].name for path in interfaces.interface_files()
         )
-        self.assertEqual(names, ["app-host", "package", "peer", "runtime", "shell-ui"])
+        self.assertEqual(names, ["app-host", "messaging", "package", "peer", "runtime", "shell-ui"])
 
 
 class EnvRuntimeFormatTests(unittest.TestCase):

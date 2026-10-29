@@ -314,8 +314,8 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
     assert!(
         sentences
             .iter()
-            .any(|sentence| sentence == "New note: Notes"),
-        "the person's action reads by its label: {sentences:?}"
+            .any(|sentence| sentence == "New note: Untitled"),
+        "the person's action reads by its label, on the note it made by its title: {sentences:?}"
     );
     for sentence in &sentences {
         assert!(

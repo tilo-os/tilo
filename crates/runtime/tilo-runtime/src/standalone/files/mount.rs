@@ -30,6 +30,7 @@ pub(super) fn available_in(dev_fuse: &Path, path: Option<&OsStr>) -> bool {
 /// A mounted workspace; unmounted when dropped.
 pub(super) struct Mount {
     session: Option<fuser::BackgroundSession>,
+    at: std::path::PathBuf,
     stop: Option<mpsc::Sender<()>>,
     persist: Option<JoinHandle<()>>,
 }
@@ -60,6 +61,7 @@ impl Mount {
             })?;
         Ok(Self {
             session: Some(session),
+            at: at.to_path_buf(),
             stop: Some(stop),
             persist: Some(persist),
         })
@@ -70,7 +72,7 @@ impl Drop for Mount {
     /// Unmounts first, so no write lands after the last save.
     fn drop(&mut self) {
         if let Some(session) = self.session.take()
-            && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session)
+            && let Err(error) = tilo_fs::fuse_session::unmount_and_join(session, &self.at)
         {
             tracing::warn!(%error, "the workspace did not unmount cleanly");
         }

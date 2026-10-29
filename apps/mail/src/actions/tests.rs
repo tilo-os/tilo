@@ -807,7 +807,8 @@ fn mailbox_publishes_bounded_stable_places() {
         let mut app = sample_window();
         let unread = app
             .with_surface::<MailApp, _>(|mail| {
-                mail.shared_mailbox()
+                mail.state()
+                    .shared_mailbox()
                     .messages
                     .values()
                     .find(|message| message.folder == Folder::Inbox && !message.read)
@@ -916,7 +917,7 @@ fn mailbox_publishes_bounded_stable_places() {
         // A loaded thread stays addressable though the tree does not list it.
         let thread = app
             .with_surface::<MailApp, _>(|mail| {
-                mail.shared_mailbox().threads_in(Folder::Inbox)[0].clone()
+                mail.state().shared_mailbox().threads_in(Folder::Inbox)[0].clone()
             })
             .expect("the window is Mail");
         let resolved = resolve(&mut app, &format!("mail.thread:inbox:{}", thread.id))
@@ -985,7 +986,9 @@ fn mailbox_publishes_bounded_stable_places() {
     {
         let mut app = sample_window();
         let threads = app
-            .with_surface::<MailApp, _>(|mail| mail.shared_mailbox().threads_in(Folder::Inbox))
+            .with_surface::<MailApp, _>(|mail| {
+                mail.state().shared_mailbox().threads_in(Folder::Inbox)
+            })
             .expect("the window is Mail");
         assert!(threads.len() > 1, "the sample inbox has several threads");
         let mut seen = std::collections::HashSet::new();

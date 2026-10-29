@@ -843,6 +843,25 @@ fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
         registry.find("so.tilo.tasks").unwrap().publisher_key_hex,
         hex::encode(publisher.public_key_bytes())
     );
+    assert_eq!(
+        registry.taken_over_by("so.tilo.todo"),
+        Some("so.tilo.tasks")
+    );
+
+    // The earlier id is not installed again beside the app that took its place.
+    let again = store
+        .install(full_tapp(&todo).as_slice(), admit_all, None)
+        .unwrap_err();
+    assert!(matches!(again, StoreError::Refused(_)), "{again:?}");
+    assert!(store.registry().unwrap().find("so.tilo.todo").is_none());
+    // An update of the renamed app keeps what it took over.
+    store
+        .install(full_tapp(&tasks).as_slice(), admit_all, None)
+        .unwrap();
+    assert_eq!(
+        store.registry().unwrap().taken_over_by("so.tilo.todo"),
+        Some("so.tilo.tasks")
+    );
 
     // Where the earlier id was never installed there is nothing to check against.
     let fresh = scratch();

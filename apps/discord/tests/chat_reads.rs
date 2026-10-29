@@ -70,7 +70,7 @@ fn a_verb_answers_the_ids_it_created() {
         .unwrap(),
     );
     let held = app
-        .with_surface::<chat::ChatApp, _>(|surface| surface.held_messages())
+        .with_surface::<chat::ChatWindow, _>(|window| window.state().held_messages())
         .unwrap();
     assert_eq!(held.get(&Id::from_raw(&message)).unwrap().text, "hello");
 }

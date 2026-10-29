@@ -15,17 +15,9 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 
 use super::*;
 
-/// A workspace the relay's own person holds on it before any room: their
-/// continuity workspace, as far as the relay can tell.
-pub(super) const HOME_WORKSPACE: u64 = 0x686f_6d65;
-
-/// A session of `device` subscribed to `workspace_id`.
-pub(super) async fn subscribed(
-    relay: &Relay,
-    device: &TestDevice,
-    workspace_id: u64,
-) -> RelayClient {
-    let client = RelayClient::connect_to_pinned_host(
+/// A session of `device` with the relay, subscribed to nothing.
+pub(super) async fn connected(relay: &Relay, device: &TestDevice) -> RelayClient {
+    RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
         device.cert.clone(),
@@ -33,7 +25,16 @@ pub(super) async fn subscribed(
         RevocationList::new(),
     )
     .await
-    .unwrap();
+    .unwrap()
+}
+
+/// A session of `device` subscribed to `workspace_id`.
+pub(super) async fn subscribed(
+    relay: &Relay,
+    device: &TestDevice,
+    workspace_id: u64,
+) -> RelayClient {
+    let client = connected(relay, device).await;
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     tilo_test_env::within("the room admits the device", async {
         while !matches!(
@@ -107,6 +108,29 @@ pub(super) async fn try_ask(
     .await
 }
 
+/// What the relay answers `message`, one of its own operations, asked of it
+/// directly by `client`.
+pub(super) async fn ask_host_of(
+    client: &RelayClient,
+    message: RemoteActionMessage,
+) -> RemoteActionMessage {
+    client
+        .send(Envelope::HostAction {
+            frame: RemoteActionFrame::new(message).encode().unwrap(),
+        })
+        .unwrap();
+    tilo_test_env::within("the relay answers its own operation", async {
+        loop {
+            if let Envelope::HostAction { frame } =
+                client.recv().await.expect("the session stays open")
+            {
+                break RemoteActionFrame::decode(&frame).unwrap().message;
+            }
+        }
+    })
+    .await
+}
+
 /// What the relay answers `message`, sent by `client` to the relay's own
 /// device `host` about `workspace_id`.
 pub(super) async fn ask(
@@ -171,15 +195,13 @@ pub(super) fn outcome(answer: RemoteActionMessage) -> Result<serde_json::Value, 
 }
 
 /// What the relay produced for the host operation `action` with
-/// `argument`, asked by `client` on `workspace_id`, read as `T`.
+/// `argument`, asked of it by `client`, read as `T`.
 pub(super) async fn host_action<T: serde::de::DeserializeOwned>(
     client: &RelayClient,
-    host: &TestDevice,
-    workspace_id: u64,
     action: &str,
     argument: serde_json::Value,
 ) -> T {
-    let answer = ask(client, host, workspace_id, host_operation(action, argument)).await;
+    let answer = ask_host_of(client, host_operation(action, argument)).await;
     serde_json::from_value(outcome(answer).unwrap()).unwrap()
 }
 
@@ -286,14 +308,12 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
 
-    // Before it holds any room, Alice's laptop asks her relay on a workspace
-    // it holds there: it creates the room with Bob's invitation, finds it
-    // listed and enters it, answered the invitation it redeems itself.
-    let home = subscribed(&relay, &laptop, HOME_WORKSPACE).await;
+    // Before it holds any room, Alice's laptop asks her relay directly: it
+    // creates the room with Bob's invitation, finds it listed and enters it,
+    // answered the invitation it redeems itself.
+    let home = connected(&relay, &laptop).await;
     let created: CreatedRoom = host_action(
         &home,
-        &host,
-        HOME_WORKSPACE,
         CREATE_ROOM,
         serde_json::json!({
             "name": "Design review",
@@ -303,19 +323,10 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
     )
     .await;
     assert_eq!(created.room.name, "Design review");
-    let listed: Vec<RoomListing> = host_action(
-        &home,
-        &host,
-        HOME_WORKSPACE,
-        LIST_ROOMS,
-        serde_json::json!({}),
-    )
-    .await;
+    let listed: Vec<RoomListing> = host_action(&home, LIST_ROOMS, serde_json::json!({})).await;
     assert!(listed.iter().any(|room| room.room == created.room.room));
     let entered: EnteredRoom = host_action(
         &home,
-        &host,
-        HOME_WORKSPACE,
         ENTER_ROOM,
         serde_json::json!({ "room": created.room.room }),
     )
@@ -359,15 +370,13 @@ async fn the_relays_person_shares_through_its_host_actions_and_a_member_cannot()
         (ENTER_ROOM, serde_json::json!({ "room": created.room.room })),
     ] {
         assert_eq!(
-            outcome(ask(&member, &host, workspace, host_operation(action, argument)).await),
+            outcome(ask_host_of(&member, host_operation(action, argument)).await),
             Err(ActionHostError::UnknownAction),
             "{action}"
         );
     }
-    let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
+    let RemoteActionMessage::CatalogueResponse { result, .. } = ask_host_of(
         &member,
-        &host,
-        workspace,
         RemoteActionMessage::CatalogueRequest {
             correlation: 2,
             query: CatalogueQuery {

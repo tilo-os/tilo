@@ -73,6 +73,13 @@ impl Widget for ShellOverlayHost {
         }
         self.content.sync(s, p);
         self.palette.sync(s, p);
+        // Mounted before the first layout, so search's place in the tree
+        // never changes under the keyboard focus that opens it.
+        self.mount_launcher();
+        // The launcher runs while closed too: an agent may open it.
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.app.sync(s, p);
+        }
         self.agent_quick_composer.sync(s, p);
         self.person_quick_composer.sync(s, p);
         if self.peer_sync_overlay.visible() {
@@ -97,6 +104,7 @@ impl Widget for ShellOverlayHost {
         if self.onboarding.is_none() {
             self.settle_launchpad(edits, path);
             self.retry_pending_launchpad_app(edits, path);
+            self.settle_launcher(edits, path);
         }
     }
 
@@ -308,7 +316,11 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         steps.mark("harvest-requests");
-        let palette_dirty = self.palette.update(doc, path);
+        let palette_dirty = self.palette.update(doc, path)
+            | self.launcher.as_mut().is_some_and(|launcher| {
+                let woken = launcher.take_woken();
+                launcher.app.update(doc, path) | woken
+            });
         if search_rows_stale {
             // A worker published an index, or artwork arrived, after the
             // rows were built. Force one normal fanout this frame so the
@@ -405,7 +417,9 @@ impl Widget for ShellOverlayHost {
         if !self.layers.power_menu.is_mounted() {
             self.mount_power_menu();
         }
-        let power_menu_dirty = self.pump_power_menu(doc, path);
+        let power_menu_dirty = self.pump_power_menu(doc, path)
+            | self.pump_display_confirmation(doc, path)
+            | self.pump_shortcut_guide(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -513,8 +527,9 @@ impl Widget for ShellOverlayHost {
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
         self.resolve_overview_layout(theme);
-        self.shortcut_navigation_step = shortcut_navigation_step(theme);
         self.onboarding_node = None;
+        // A pass that lays out the guide has it up as the flag asks.
+        self.follow_shortcut_guide();
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
@@ -556,7 +571,7 @@ impl Widget for ShellOverlayHost {
         if self.overlay_area().height() > 0.0 {
             self.palette.set_max_list_height(palette_list_max);
         }
-        let palette_node = self.palette.build_layout(taffy, theme, node_map);
+        let palette_node = self.build_search_layout(taffy, theme, node_map, palette_list_max);
         // Match children(): a closed composer has no live controls to measure
         // or query. Visibility changes retire/rebuild the map below.
         self.agent_quick_composer_node = self.agent_quick_composer.is_open().then(|| {
@@ -572,6 +587,20 @@ impl Widget for ShellOverlayHost {
         if app_sheet_window.is_none() {
             self.app_sheet_nodes = None;
         }
+        let display_confirm_window = self.layers.display_confirm.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.rect,
+            self.rect.origin(),
+        );
+        let shortcut_guide_window = self.layers.shortcut_guide.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
+            self.rect.origin(),
+        );
         let power_menu_window = self.layers.power_menu.build_layout(
             taffy,
             theme,
@@ -679,6 +708,8 @@ impl Widget for ShellOverlayHost {
         children.extend(self.peer_sync_node);
         children.extend(app_sheet_window);
         children.extend(power_menu_window);
+        children.extend(display_confirm_window);
+        children.extend(shortcut_guide_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -777,8 +808,19 @@ impl Widget for ShellOverlayHost {
                 .apply_layout(taffy, content_child, Point::new(self.rect.x0, self.rect.y0));
         }
         if let Some(&palette_child) = children.get(1) {
-            self.palette
-                .apply_layout(taffy, palette_child, Point::new(self.rect.x0, self.rect.y0));
+            let origin = Point::new(self.rect.x0, self.rect.y0);
+            match self.launcher.as_mut() {
+                Some(launcher) => {
+                    launcher.app.apply_layout(taffy, palette_child, origin);
+                    // Search's own state keeps the card's geometry, so a
+                    // press is told inside the card from one outside it.
+                    let card = launcher.app.get_rect();
+                    let height = self.palette.desired_size().1.min(card.height());
+                    self.palette
+                        .set_rect(Rect::new(card.x0, card.y0, card.x1, card.y0 + height));
+                }
+                None => self.palette.apply_layout(taffy, palette_child, origin),
+            }
         }
         if let Some(capture_node) = self.capture_node {
             self.capture_studio.apply_layout(
@@ -814,6 +856,12 @@ impl Widget for ShellOverlayHost {
         self.apply_app_sheet_layout(taffy);
         self.layers
             .power_menu
+            .apply_layout(taffy, self.rect.origin());
+        self.layers
+            .display_confirm
+            .apply_layout(taffy, self.rect.origin());
+        self.layers
+            .shortcut_guide
             .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
@@ -939,33 +987,6 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        // The shortcut guide's rows and its Done: a reader reaches exactly
-        // what the pointer and the keyboard reach.
-        if matches!(action, ui::a11y::Action::Activate) {
-            if let Some(index) = target
-                .strip_prefix("guide:chord:")
-                .and_then(|index| index.parse::<usize>().ok())
-                && let Some((action, _)) = self.shortcut_binding_rects.get(index).copied()
-            {
-                self.shortcut_rebind = Some(action);
-                self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
-                self.bump_chrome();
-                return true;
-            }
-            if target == "guide:done" {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.shortcut_help = false;
-                    st.bump();
-                }
-                self.shortcut_rebind = None;
-                self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus = None;
-                self.bump_chrome();
-                return true;
-            }
-        }
         if target.starts_with("desk.widget:") {
             return self.desk_semantic_action(action, target);
         }
@@ -1041,7 +1062,10 @@ impl Widget for ShellOverlayHost {
     /// command-palette layer with the host's filter band inside it; its widget
     /// (the [`Self::children`] entry after the content) is not exported again.
     fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        self.onboarding.is_none() && self.palette_visible && child_index == 1
+        self.onboarding.is_none()
+            && self.palette_visible
+            && child_index == 1
+            && !self.launcher_shown()
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
@@ -1064,6 +1088,21 @@ impl Widget for ShellOverlayHost {
         targets
     }
 
+    /// What is laid out: every child, and the launcher while it is closed,
+    /// which keeps its place without being one.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for child in self.children() {
+            visitor(child);
+        }
+        if !self.palette_visible
+            && self.onboarding.is_none()
+            && let Some(launcher) = self.launcher.as_ref()
+        {
+            visitor(launcher.app.as_ref());
+        }
+        true
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_deref() {
             return vec![onboarding, &self.capture_studio];
@@ -1072,7 +1111,10 @@ impl Widget for ShellOverlayHost {
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_ref());
         if self.palette_visible {
-            out.push(&self.palette);
+            match self.launcher.as_ref() {
+                Some(launcher) => out.push(launcher.app.as_ref()),
+                None => out.push(&self.palette),
+            }
         }
         out.push(&self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_ref() {
@@ -1107,6 +1149,8 @@ impl Widget for ShellOverlayHost {
             out.push(sheet.dialog());
         }
         out.extend(self.layers.power_menu.widget());
+        out.extend(self.layers.display_confirm.widget());
+        out.extend(self.layers.shortcut_guide.widget());
         out
     }
 
@@ -1118,7 +1162,10 @@ impl Widget for ShellOverlayHost {
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_mut());
         if self.palette_visible {
-            out.push(&mut self.palette);
+            match self.launcher.as_mut() {
+                Some(launcher) => out.push(launcher.app.as_mut()),
+                None => out.push(&mut self.palette),
+            }
         }
         out.push(&mut self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_mut() {
@@ -1153,6 +1200,8 @@ impl Widget for ShellOverlayHost {
             out.push(sheet.dialog_mut());
         }
         out.extend(self.layers.power_menu.widget_mut());
+        out.extend(self.layers.display_confirm.widget_mut());
+        out.extend(self.layers.shortcut_guide.widget_mut());
         out
     }
 
@@ -1221,9 +1270,15 @@ impl Widget for ShellOverlayHost {
         let ws_swapped = self.resync_workspace_content();
         self.follow_brought_forward();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
+        // The guide comes up on the frame that asks for it.
+        self.follow_shortcut_guide();
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
-        let palette = std::mem::take(&mut self.palette_layout_dirty);
+        let palette = std::mem::take(&mut self.palette_layout_dirty)
+            | self
+                .launcher
+                .as_mut()
+                .is_some_and(|launcher| launcher.app.take_structure_dirty());
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
         let pairing = self.pairing.take_structure_dirty();
         content
@@ -1240,6 +1295,8 @@ impl Widget for ShellOverlayHost {
             | self.peer_sync_overlay.take_structure_dirty()
             | self.take_app_sheet_changed()
             | self.layers.power_menu.structure_changed()
+            | self.layers.display_confirm.structure_changed()
+            | self.layers.shortcut_guide.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
@@ -1435,6 +1492,13 @@ impl ShellOverlayHost {
             event,
             &mut ctx.reborrow(ctx.path, ctx.node_id),
         ) {
+            return;
+        }
+        // The shortcut guide is modal while it is up: it takes every key
+        // and press, and the chord it waits for is the shell's to check.
+        if self.onboarding.is_none()
+            && self.route_shortcut_guide(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
             return;
         }
         // A compositor-owned sheet raised during first-use setup (an

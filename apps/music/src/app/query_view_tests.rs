@@ -6,7 +6,7 @@ use super::*;
 use ui::widget::Queryable as _;
 
 /// The sample library, with the hermetic catalogue a capture uses.
-fn searching_app() -> (MusicApp, AutoCommit) {
+fn searching_app() -> (Music, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.disconnect();
     app.search = render::SearchView::hermetic();
@@ -14,7 +14,7 @@ fn searching_app() -> (MusicApp, AutoCommit) {
 }
 
 /// Type `text` into the window bar's field, as the bar carries it.
-fn type_query(app: &mut MusicApp, doc: &mut AutoCommit, text: &str) {
+fn type_query(app: &mut Music, doc: &mut AutoCommit, text: &str) {
     app.query_opened();
     app.set_query_text(text);
     app.settle_query();
@@ -27,7 +27,7 @@ fn ctrl() -> winit::event::Modifiers {
 }
 
 /// Ctrl-click the row of song `id`: it joins the selection.
-fn ctrl_click(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
+fn ctrl_click(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
     let at = cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y));
     send_with(app, &at, ctrl(), doc);
@@ -35,8 +35,9 @@ fn ctrl_click(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
     send_with(app, &released(MouseButton::Left), ctrl(), doc);
 }
 
-fn selected_songs(app: &MusicApp) -> Vec<String> {
-    app.track_tables
+fn selected_songs(app: &Music) -> Vec<String> {
+    app.page
+        .track_tables
         .first()
         .map(|slot| slot.table.selected_ids())
         .unwrap_or_default()
@@ -54,6 +55,7 @@ fn liking_a_song_in_search_shows_it_liked_in_the_library() {
         "typing turned the view into a search"
     );
     let song = app
+        .page
         .track_tables
         .first()
         .and_then(|slot| slot.table.rows().iter().find(|row| !row.liked).cloned())
@@ -68,6 +70,7 @@ fn liking_a_song_in_search_shows_it_liked_in_the_library() {
     draw_once(&mut app, &mut doc);
     assert_eq!(app.view, View::Songs);
     let row = app
+        .page
         .track_tables
         .first()
         .and_then(|slot| {
@@ -152,6 +155,7 @@ fn dragging_selected_results_onto_a_playlist_adds_them_all() {
         .map(|list| list.id.clone())
         .expect("a sample playlist");
     let songs: Vec<String> = app
+        .page
         .track_tables
         .first()
         .map(|slot| {
@@ -289,7 +293,7 @@ fn a_kept_search_sits_beside_the_designed_views_and_survives_a_restart() {
     }
     app.settle();
     {
-        let music = app.surface_mut::<MusicApp>();
+        let mut music = app.surface_mut::<MusicApp>().state();
         music.query_opened();
         music.set_query_text("light");
         music.on_keep_query();
@@ -302,7 +306,7 @@ fn a_kept_search_sits_beside_the_designed_views_and_survives_a_restart() {
 
     let mut app = app.reopen().unwrap();
     app.settle();
-    let music = app.surface_mut::<MusicApp>();
+    let music = app.surface_mut::<MusicApp>().state();
     assert!(
         music.kept_views().get(&id).is_some(),
         "the kept view is still there after a restart"

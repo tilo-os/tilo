@@ -6,7 +6,7 @@
 //! places, searches, route and transit options are the resource's own, so a
 //! scenario writes them with the same actions a person's edits take. The view
 //! state a scenario shows (an open panel, a menu, a detached navigation card)
-//! is staged by the surface once those actions are laid out.
+//! is staged by the window once those actions are laid out.
 
 use ui::framework::Fixture;
 use ui::tilo_resource::Invoke;

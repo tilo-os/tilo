@@ -290,6 +290,17 @@ pub fn room_dir(base: &Path, room: &str) -> PathBuf {
     base.join("rooms").join(name)
 }
 
+/// The directory of the indexes of the record `record` of the room `room` under `base`: the
+/// room's ([`room_dir`]) for the workspace's record of an app, and one of its own for another
+/// record (a member's own), so what one record holds is never shown as another's.
+#[must_use]
+pub fn record_dir(base: &Path, room: &str, record: Option<&str>) -> PathBuf {
+    match record {
+        None => room_dir(base, room),
+        Some(record) => room_dir(base, &format!("{room}~{record}")),
+    }
+}
+
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
     txn.open_table(META)?;
     txn.open_table(DOCS)?;

@@ -270,6 +270,14 @@ pub trait SettingsSource: Send + Sync {
     /// a change wakes at once instead of looking again and again.
     fn changes(&self) -> &ChangeSignal;
 
+    /// The profile's documents themselves, where this source is them: what
+    /// a change that needs the document's history (a section's undo) is
+    /// made through. `None` for a source that keeps only the values (an
+    /// app's channel to the session's settings).
+    fn store(&self) -> Option<&crate::Store> {
+        None
+    }
+
     /// Host-owned personal vocabulary. App/profile sources provide no host
     /// authority; the authenticated settings capability projects scoped reads.
     fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
@@ -281,6 +289,10 @@ pub trait SettingsSource: Send + Sync {
 impl<T: SettingsSource + ?Sized> SettingsSource for Arc<T> {
     fn load(&self) -> Map<String, Value> {
         (**self).load()
+    }
+
+    fn store(&self) -> Option<&crate::Store> {
+        (**self).store()
     }
 
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {

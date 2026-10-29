@@ -105,7 +105,7 @@ impl Runtime {
                     txn,
                     &owner,
                     &Mutation::CollInsert {
-                        field: field.clone(),
+                        field,
                         item: new,
                         index: None,
                     },

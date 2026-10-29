@@ -26,6 +26,20 @@ done
 
 case ":${TILO_THIN_BIN_CRATES:-}:" in
     *":${crate_name}:"*)
+        # An app whose code is its engine library (Settings) names that
+        # library itself (`#[link]`): the engine depends on the app's package,
+        # so Cargo cannot hand it over as a crate. The linker finds it where
+        # Cargo writes every dylib; build-thin-apps.sh links the engines
+        # before the apps.
+        engine_dirs=()
+        previous=""
+        for argument in "$@"; do
+            case "$previous:$argument" in
+                -L:dependency=*) engine_dirs+=(-L "native=${argument#dependency=}") ;;
+                *:-Ldependency=*) engine_dirs+=(-L "native=${argument#-Ldependency=}") ;;
+            esac
+            previous="$argument"
+        done
         link_map=()
         if [ -n "${TILO_THIN_LINK_MAP_DIR:-}" ]; then
             mkdir -p "$TILO_THIN_LINK_MAP_DIR"
@@ -54,7 +68,8 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # optimisation and parallel codegen, and links without the size passes.
         if [ "${TILO_THIN_OPTIMIZE:-size}" = speed ]; then
             exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
-                -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"}
+                -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"} \
+                ${engine_dirs[@]+"${engine_dirs[@]}"}
         fi
         folding=()
         target=""
@@ -78,9 +93,28 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            "${folding[@]}" "${link_map[@]}"
+            "${folding[@]}" "${link_map[@]}" ${engine_dirs[@]+"${engine_dirs[@]}"}
         ;;
 esac
+
+# The runtime and its engines link through runtime-dylib-lazy-link.py, which
+# runs the linker cargo chose (the last `-C linker=`, else cc) for the real
+# link. The flavor stays the target's default, as it is for any linker name
+# rustc does not recognise.
+dylib_link=()
+if [ "$(uname -s)" = Linux ]; then
+    chosen=""
+    previous=""
+    for argument in "$@"; do
+        case "$previous:$argument" in
+            -C:linker=*) chosen="${argument#linker=}" ;;
+            *:-Clinker=*) chosen="${argument#-Clinker=}" ;;
+        esac
+        previous="$argument"
+    done
+    export TILO_LAZY_LINK_CC="${chosen:-cc}"
+    dylib_link=(-C "linker=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime-dylib-lazy-link.py")
+fi
 
 if [ "$crate_name" = "runtime_dylib" ]; then
     # Every app process applies this library's dynamic relocations before
@@ -97,41 +131,35 @@ if [ "$crate_name" = "runtime_dylib" ]; then
     #
     # GLib and GStreamer load on first use, not at every app's exec:
     # runtime-dylib-lazy-link.py links them out of DT_NEEDED and in
-    # through hidden trampolines. It runs the linker cargo chose (the last
-    # `-C linker=`, else cc) for the real link. The flavor stays the target's
-    # default, as it is for any linker name rustc does not recognise. The
-    # same link drops the code no app can reach (sections nothing exported
-    # uses, and the macro-only crates syn, quote and proc-macro2).
-    lazy_link=()
-    if [ "$(uname -s)" = Linux ]; then
-        chosen=""
-        previous=""
-        for argument in "$@"; do
-            case "$previous:$argument" in
-                -C:linker=*) chosen="${argument#linker=}" ;;
-                *:-Clinker=*) chosen="${argument#-Clinker=}" ;;
-            esac
-            previous="$argument"
-        done
-        export TILO_LAZY_LINK_CC="${chosen:-cc}"
-        lazy_link=(-C "linker=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/runtime-dylib-lazy-link.py")
-    fi
+    # through hidden trampolines. The same link drops the code no app can
+    # reach (sections nothing exported uses, and the macro-only crates syn,
+    # quote and proc-macro2).
+    export TILO_LAZY_LINK_ROLE=runtime
     exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
         -C link-arg=-Wl,-z,pack-relative-relocs \
         -C link-arg=-Wl,-Bsymbolic \
-        ${lazy_link[@]+"${lazy_link[@]}"}
+        ${dylib_link[@]+"${dylib_link[@]}"}
 fi
 
 # A runtime engine (crates/runtime/engines/*) is a Rust dylib
 # chained on the runtime: one app maps it beside libruntime_dylib.so. It
 # needs prefer-dynamic to link against the runtime at all (a dylib that links
 # another Rust dylib otherwise carries a second libstd), and the runtime's
-# relocation flags for the same reasons.
+# relocation flags for the same reasons. Its link drops the code nothing it
+# exports reaches. An engine no crate compiles against
+# (TILO_THIN_ENTRY_ENGINES, which build-thin-apps.sh reads from the
+# workspace) exports only its unmangled entry points: rustc would export
+# every item of every crate linked into it, Settings' whole library included.
 case "$crate_name" in
     tilo_*_engine)
+        case ":${TILO_THIN_ENTRY_ENGINES:-}:" in
+            *":${crate_name}:"*) export TILO_LAZY_LINK_ROLE=entry-engine ;;
+            *) export TILO_LAZY_LINK_ROLE=engine ;;
+        esac
         exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            -C link-arg=-Wl,-Bsymbolic
+            -C link-arg=-Wl,-Bsymbolic \
+            ${dylib_link[@]+"${dylib_link[@]}"}
         ;;
 esac
 exec "${compiler_command[@]}" "$@"

@@ -177,6 +177,12 @@ impl App {
                 | WindowEvent::Ime(winit::event::Ime::Commit(_))
         ) {
             self.take_over_owner_view();
+            // What the person does lands on the controls the app shows now.
+            // A change of the app's structure since its last frame (what it
+            // took in while the person typed) left the layout map behind: a
+            // press would name a control the map no longer reaches, and the
+            // control it leaves would keep the keyboard.
+            self.build_tree_before_input();
         }
         match &event {
             WindowEvent::KeyboardLayoutChanged(layout) => {
@@ -1018,6 +1024,40 @@ impl App {
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;
+    }
+
+    /// Build the app's tree from its model without laying it out or painting
+    /// it: for a host that hands the app focus or input before its first
+    /// frame, or between a change of the app's structure and the frame that
+    /// shows it, so both find the app's controls. Returns whether a tree was
+    /// built; the next frame then repaints whole, as `damage` cannot say what
+    /// the tree it replaced painted.
+    pub fn surface_build_tree(&mut self, damage: &mut SurfaceDamage) -> bool {
+        let _entry = self.enter_wake_scope();
+        self.sync_model(false);
+        if self.layout.root_node.is_none() {
+            self.init_layout();
+        } else if !self.build_tree_before_input() {
+            return false;
+        }
+        damage.repaint("a tree built between frames");
+        true
+    }
+
+    /// Rebuild the app's tree when its structure changed since it was last
+    /// built, so input or focus handed to it between frames finds the
+    /// controls it shows now. Whether it rebuilt.
+    fn build_tree_before_input(&mut self) -> bool {
+        if self.layout.root_node.is_none() {
+            return false;
+        }
+        let changed = self.take_root_structure_dirty();
+        self.layout.structure_dirty |= changed;
+        if !self.layout.structure_dirty {
+            return false;
+        }
+        self.rebuild_structure();
+        true
     }
 
     /// Run one frame of the app on `surface` and paint it into `scene`, in

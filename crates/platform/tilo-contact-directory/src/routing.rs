@@ -14,7 +14,7 @@ pub struct SenderAccount {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Route {
     pub person: Id,
     pub association: Id,

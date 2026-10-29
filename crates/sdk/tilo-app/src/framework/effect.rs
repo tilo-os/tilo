@@ -28,6 +28,7 @@ use std::rc::{Rc, Weak};
 
 mod causal;
 mod job;
+mod window;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -2240,6 +2241,8 @@ trait ViewHandler {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String>;
     fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate>;
 }
@@ -2255,10 +2258,14 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        _view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let handle = &mut self.handle;
+        // The handler reads the document as it stands
+        // ([`EffectCx::document`]), as a hosted surface's does.
         self.runner
-            .start(op, &mut (), None, |(), effect, cx| handle(effect, cx))
+            .start(op, &mut (), Some(doc), |(), effect, cx| handle(effect, cx))
     }
 
     fn poll(&mut self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
@@ -2708,6 +2715,24 @@ impl<R: Resource> Effects<R> {
         });
     }
 
+    pub(crate) fn handle_in_window<E: Effect, W: 'static>(
+        &self,
+        alive: Weak<()>,
+        handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) {
+        let Some(env) = self.env.clone() else {
+            return;
+        };
+        self.inner.borrow_mut().handlers.push(Registered {
+            alive,
+            operation: E::OPERATION,
+            handler: Box::new(window::WindowHandler {
+                runner: EffectRunner::<R, (), E>::new(env),
+                handle: Box::new(handle),
+            }),
+        });
+    }
+
     pub(crate) fn outbox<T, O>(
         &self,
         alive: Weak<()>,
@@ -2815,8 +2840,10 @@ impl<R: Resource> Effects<R> {
     pub(crate) fn start(
         &self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner.borrow_mut().start(op)
+        self.inner.borrow_mut().start(op, doc, view)
     }
 
     pub(crate) fn poll(&self, invocation: InvocationId, cancel: bool) -> Option<InvocationUpdate> {
@@ -2885,11 +2912,13 @@ impl Inner {
     fn start(
         &mut self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.prune();
         for entry in &mut self.handlers {
             if op.with_custody().0.type_id == entry.operation
-                && let Some(started) = entry.handler.start(op)?
+                && let Some(started) = entry.handler.start(op, doc, view)?
             {
                 return Ok(Some(started));
             }

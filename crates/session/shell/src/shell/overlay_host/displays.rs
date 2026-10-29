@@ -29,7 +29,7 @@ use crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 /// What a display that doesn't touch the desktop's top edge keeps along its
 /// own top edge: its top bar and the margin the workspace column puts under
 /// the full bar.
-fn own_top_band() -> f64 {
+pub(super) fn own_top_band() -> f64 {
     let top = match crate::shell::WORK_AREA {
         tilo_desktop::composition::WorkArea::Flush { top, .. } => top,
         tilo_desktop::composition::WorkArea::Framed => 0.0,
@@ -43,7 +43,7 @@ fn own_top_band() -> f64 {
 /// tile edge to edge and never overlap; so an output overlapping one already
 /// taken shows that one's image and is not another display. The first
 /// output of a mirror set stands for it.
-fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
+pub(super) fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
     let mut distinct: Vec<&OutputGeometry> = Vec::with_capacity(outputs.len());
     for output in outputs.iter().filter(|o| o.width > 0.0 && o.height > 0.0) {
         let copies = |kept: &&OutputGeometry| {
@@ -78,19 +78,25 @@ pub(super) fn focused_connector_in(
         .filter(|connector| !connector.is_empty())
 }
 
+/// The stable identity of `output`'s monitor, as the partition and the
+/// desk widgets key a display by: its EDID token, or `output:N` for an
+/// output whose monitor the backend can't name.
+pub(super) fn monitor_key(output: &OutputGeometry) -> String {
+    if output.monitor.is_empty() {
+        format!("output:{}", output.id)
+    } else {
+        output.monitor.clone()
+    }
+}
+
 /// The displays as the partition knows them, primary first, a mirror set as
-/// one (see [`distinct_outputs`]). An output whose monitor
-/// the backend can't name is known by its id.
+/// one (see [`distinct_outputs`]).
 fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
     distinct_outputs(outputs)
         .into_iter()
         .map(|o| Display {
             id: o.id,
-            monitor: if o.monitor.is_empty() {
-                format!("output:{}", o.id)
-            } else {
-                o.monitor.clone()
-            },
+            monitor: monitor_key(o),
             x: o.x,
             y: o.y,
             width: o.width,

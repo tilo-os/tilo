@@ -73,6 +73,10 @@ pub struct PlayerSnapshot {
     pub bus_name: String,
     /// The application's own name for itself (`Identity`).
     pub identity: String,
+    /// Which app's windows are this player's: the package the launcher
+    /// verified behind its process, else the desktop entry it names. What
+    /// a tap on its song finds the window by.
+    pub app: Option<String>,
     pub status: PlaybackStatus,
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -624,6 +628,7 @@ pub(crate) mod tests {
         PlayerSnapshot {
             bus_name: format!("org.mpris.MediaPlayer2.{bus}"),
             identity: identity.into(),
+            app: Some(bus.into()),
             status,
             title: Some(format!("{identity} track")),
             artist: Some("An Artist".into()),

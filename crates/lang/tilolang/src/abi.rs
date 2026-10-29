@@ -135,6 +135,7 @@ imports! {
     ReadText = "read_text" ([H] -> [H]);
     OfType = "of_type" ([H, H] -> [H]);
     Keep = "keep" ([H, H] -> []);
+    EditField = "edit_field" ([H, H, H] -> []);
     Grep = "grep" ([H, H, H] -> [H]);
     Describe = "describe" ([H] -> [H]);
     DescribeRef = "describe_ref" ([H] -> [H]);
@@ -183,6 +184,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
+    Dated = "dated" ([H, H] -> [H]);
     UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);

@@ -303,7 +303,7 @@ impl MapsApp {
         }
     }
 
-    /// Hosted as the resource's surface: edits go through `dispatch`, and the
+    /// Attached to the view: edits go through `dispatch`, and the
     /// offline areas are this device's in the `offline_areas` record.
     pub(crate) fn attach_framework(
         &mut self,

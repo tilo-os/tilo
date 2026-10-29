@@ -112,6 +112,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -585,6 +586,18 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
+            if f.role.as_deref() == Some("previously") {
+                self.err(
+                    "E115",
+                    a.value.span,
+                    format!(
+                        "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
+                        f.name, key.name
+                    ),
+                );
+                let _ = self.expr(&a.value, None);
+                continue;
+            }
             if f.ty.is_container() {
                 self.err(
                     "E033",

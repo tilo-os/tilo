@@ -133,18 +133,6 @@ impl App {
                 .history_request(&mut self.state.doc, request)
                 .ok()
                 .flatten()
-        } else if let Some(owner) = self
-            .focused_node
-            .and_then(|node| self.bindings.legacy_for(node))
-        {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                request,
-                &self.permission_ctx,
-                &self.collaboration.local_author,
-            )
-            .ok()
-            .flatten()
         } else {
             let author = Some(&self.collaboration.local_author);
             match request {
@@ -183,12 +171,6 @@ impl App {
             .or_else(|| self.root_widget.callback_binding())
         {
             return binding.undo_status(&mut self.state.doc).unwrap_or_default();
-        }
-        if let Some(status) = focused.and_then(|node| {
-            self.bindings
-                .legacy_status(node, &self.collaboration.local_author)
-        }) {
-            return status;
         }
         self.state
             .undo_status_snapshot(Some(&self.collaboration.local_author))

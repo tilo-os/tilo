@@ -16,7 +16,7 @@
 
 use tilo_ui_graph::component::{Catalogue, Description, Type};
 
-use super::{Binding, Event, Node, Patch, RowChange, ToApp, ToUi, Value, Words};
+use super::{Binding, Event, Node, Patch, ResourceRef, RowChange, ToApp, ToUi, Value, Words};
 
 /// Why a batch was refused: what was wrong, and where.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -169,9 +169,12 @@ impl<'a> Validator<'a> {
 
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
-            ToUi::Loading | ToUi::Close | ToUi::Front(_) | ToUi::Ask(None) | ToUi::Activate => {
-                Ok(())
-            }
+            ToUi::Loading
+            | ToUi::Close
+            | ToUi::Front(_)
+            | ToUi::Ask(None)
+            | ToUi::Activate
+            | ToUi::Took { .. } => Ok(()),
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
@@ -547,6 +550,11 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
+    fn resource(&self, resource: &ResourceRef) -> Result<(), Refused> {
+        self.key(&resource.id)?;
+        self.key(&resource.ty)
+    }
+
     fn string(&self, text: &str) -> Result<(), Refused> {
         if text.len() > self.limits.string_bytes as usize {
             return Err(Refused::invalid(concat!(
@@ -580,23 +588,36 @@ impl<'a> Validator<'a> {
                         self.value(value, 0)?;
                     }
                 }
-                ToApp::Toggle { key, .. } | ToApp::Resolve { key, .. } => self.key(key)?,
-                ToApp::Splice { key, insert, .. } => {
+                ToApp::Toggle { target, key, .. } => {
+                    self.resource(target)?;
+                    self.key(key)?;
+                }
+                ToApp::Resolve { key, .. } => self.key(key)?,
+                ToApp::Splice {
+                    target,
+                    key,
+                    insert,
+                    ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.string(insert)?;
                 }
-                ToApp::Edit { key, text, .. } => {
+                ToApp::Edit {
+                    target, key, text, ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.string(text)?;
                 }
-                ToApp::EditRich { key, rich, .. } => {
+                ToApp::EditRich {
+                    target, key, rich, ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.value(&Value::Rich(rich.clone()), 0)?;
                 }
-                ToApp::Open { resource } => {
-                    self.key(&resource.id)?;
-                    self.key(&resource.ty)?;
-                }
+                ToApp::Open { resource } => self.resource(resource)?,
                 ToApp::OpenReference { reference } => self.string(reference)?,
                 ToApp::Rows {
                     list, start, end, ..
@@ -612,6 +633,19 @@ impl<'a> Validator<'a> {
                 ToApp::Focus { at } => {
                     if let Some((_, key)) = at {
                         self.key(key)?;
+                    }
+                }
+                ToApp::Names { me, others } => {
+                    self.string(me)?;
+                    if others.len() > self.limits.messages as usize {
+                        return Err(Refused::invalid(concat!(
+                            "over the limit of ",
+                            "names in a message"
+                        )));
+                    }
+                    for (id, name) in others {
+                        self.key(id)?;
+                        self.string(name)?;
                     }
                 }
                 ToApp::Back | ToApp::Answer(_) | ToApp::Undo | ToApp::Composing(_) => {}
@@ -691,7 +725,7 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Lane, ResourceRef};
+    use super::super::Lane;
     use super::*;
 
     fn validator() -> Validator<'static> {

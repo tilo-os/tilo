@@ -5,9 +5,13 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::{
+    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, PeerTransport, RouteSpec,
+    TransportCommand, TransportError, TransportStatus,
+};
 use tilo_render_protocol::patch::local::{End, pair};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::room::RoomRecord;
@@ -72,23 +76,8 @@ impl PeerTransport for Relay {
                 self.joined = Some(self.route.clone());
             }
             CollabRequest::Document { mutation, .. } => {
-                let record = self.route.record.as_deref().unwrap_or("");
-                let room = self.route.cluster_id.to_string();
-                let mut envelope = collab_types::SignedOp::new_unsigned(
-                    mutation.encode().map_err(|error| error.to_string())?,
-                    collab_types::document_artifact_id(&self.route.app_id, &room, record),
-                    collab_types::Ed25519PublicKey::from_bytes([0; 32]),
-                    collab_types::document_attestation_id(&self.route.app_id, &room, record),
-                    collab_types::OpKind::Change,
-                    std::time::SystemTime::UNIX_EPOCH,
-                    0,
-                );
-                envelope.signature = collab_types::Signature::from_bytes([0; 64]);
-                self.theirs.borrow_mut().push_back(CollabEvent::Document {
-                    envelope: Box::new(envelope),
-                    from_user_id: self.me.clone(),
-                    decrypted_payload: None,
-                });
+                let delivered = delivered(&self.route, &self.me, &mutation)?;
+                self.theirs.borrow_mut().push_back(delivered);
             }
             _ => {}
         }
@@ -101,6 +90,83 @@ impl PeerTransport for Relay {
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
+    }
+}
+
+/// `mutation`, sent by `me` on `route`, as the signed document envelope the broker delivers to
+/// the route's other replicas.
+fn delivered(
+    route: &RouteSpec,
+    me: &str,
+    mutation: &collab_types::DocumentMutation,
+) -> Result<CollabEvent, String> {
+    let record = route.record.as_deref().unwrap_or("");
+    let room = route.cluster_id.to_string();
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().map_err(|error| error.to_string())?,
+        collab_types::document_artifact_id(&route.app_id, &room, record),
+        collab_types::Ed25519PublicKey::from_bytes([0; 32]),
+        collab_types::document_attestation_id(&route.app_id, &room, record),
+        collab_types::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        0,
+    );
+    envelope.signature = collab_types::Signature::from_bytes([0; 64]);
+    Ok(CollabEvent::Document {
+        envelope: Box::new(envelope),
+        from_user_id: me.to_owned(),
+        decrypted_payload: None,
+    })
+}
+
+type Queue = Arc<Mutex<VecDeque<CollabEvent>>>;
+
+/// One end of a room's route whose collab client fills up: while `busy`, it takes no document
+/// change (`TransportError::Busy`, as the broker transport's queue says under fast typing); what
+/// it takes reaches the other replica as [`Relay`] relays it.
+struct Crowded {
+    route: RouteSpec,
+    me: String,
+    mine: Queue,
+    theirs: Queue,
+    busy: Arc<AtomicBool>,
+    joined: Option<RouteSpec>,
+}
+
+impl CollabTransport for Crowded {
+    fn status(&self) -> TransportStatus {
+        TransportStatus::Ready
+    }
+
+    fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
+        match command {
+            TransportCommand::Primary(CollabRequest::Hello { .. }) => {
+                self.joined = Some(self.route.clone());
+            }
+            TransportCommand::Primary(CollabRequest::Document { mutation, .. }) => {
+                if self.busy.load(Ordering::SeqCst) {
+                    return Err(TransportError::Busy);
+                }
+                let delivered = delivered(&self.route, &self.me, &mutation).unwrap();
+                self.theirs.lock().unwrap().push_back(delivered);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn drain(&mut self, out: &mut Vec<CollabEvent>) {
+        out.extend(self.mine.lock().unwrap().drain(..));
+    }
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.joined.take().map(Ok)
+    }
+
+    fn take_action_directory_requests(
+        &mut self,
+        _: &mut Vec<collaboration::ActionDirectoryRequest>,
+    ) {
     }
 }
 
@@ -119,13 +185,25 @@ fn window(
     platform: &Rc<Counter>,
     doc: automerge::AutoCommit,
 ) -> Window {
-    let mut manager = CollaborationManager::with_peer_transport(Relay {
+    let manager = CollaborationManager::with_peer_transport(Relay {
         route: route.clone(),
         me: me.to_owned(),
         mine: Rc::clone(mine),
         theirs: Rc::clone(theirs),
         joined: None,
     });
+    window_over(manager, me, route, platform, doc)
+}
+
+/// A window of the counter for `me`, its instance over `doc`, committing on `route` through
+/// `manager`.
+fn window_over(
+    mut manager: CollaborationManager,
+    me: &str,
+    route: &RouteSpec,
+    platform: &Rc<Counter>,
+    doc: automerge::AutoCommit,
+) -> Window {
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
@@ -218,6 +296,118 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     assert_eq!(
         grace_root, ada_root,
         "grace's window reads the root ada's made"
+    );
+}
+
+/// `who` adds one to the counter at `root` in their window: the runtime plans it and the room
+/// path commits it.
+fn add_one(window: &mut Window, root: &tilolang_tilo::runtime::ResourceRef, who: &str) {
+    let host = window.instance.host().unwrap();
+    let increment = host
+        .package(APP)
+        .unwrap()
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "increment")
+        .unwrap()
+        .id
+        .clone();
+    let first = host.next_ticket();
+    host.runtime()
+        .invoke_action(
+            &tilolang_tilo::runtime::Principal::new(who),
+            (
+                increment.as_str(),
+                vec![tilolang_tilo::runtime::Value::resource(root)],
+            ),
+        )
+        .unwrap();
+    let queued =
+        tilolang_tilo::instance::queue_commits(&host, &window.instance.outgoing(), first, None);
+    assert!(!queued.is_empty(), "the edit is queued for the room");
+    let committed = window.room.commit(&mut window.instance).unwrap();
+    assert_eq!(committed, queued, "the edit is committed, never refused");
+    window.instance.update();
+}
+
+#[test]
+fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_room_once_it_can() {
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let (ada_inbox, grace_inbox): (Queue, Queue) = (Queue::default(), Queue::default());
+    let (full, never) = (Arc::new(AtomicBool::new(false)), Arc::default());
+    let platform = Rc::new(Counter {
+        ids: RefCell::new(String::new()),
+    });
+    let crowded = |me: &str, mine: &Queue, theirs: &Queue, busy: &Arc<AtomicBool>| {
+        CollaborationManager::with_transport(Box::new(Crowded {
+            route: route.clone(),
+            me: me.to_owned(),
+            mine: Arc::clone(mine),
+            theirs: Arc::clone(theirs),
+            busy: Arc::clone(busy),
+            joined: None,
+        }))
+    };
+    let mut ada = window_over(
+        crowded("ada", &ada_inbox, &grace_inbox, &full),
+        "ada",
+        &route,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+    let mut grace = window_over(
+        crowded("grace", &grace_inbox, &ada_inbox, &never),
+        "grace",
+        &route,
+        &platform,
+        automerge::AutoCommit::new(),
+    );
+    for _ in 0..100 {
+        ada.instance.sync(Some(ada.room.doc()));
+        ada.instance.update();
+        if !ada.room.commit(&mut ada.instance).unwrap().is_empty() {
+            break;
+        }
+    }
+    let root = ada.instance.host().unwrap().root_of(APP).unwrap();
+    assert!(grace.room.receive(&mut grace.instance));
+    grace.instance.update();
+
+    // Ada's collab client is full: what she does is committed to her record all the same, and
+    // waits there for the room.
+    full.store(true, Ordering::SeqCst);
+    add_one(&mut ada, &root, "ada");
+    add_one(&mut ada, &root, "ada");
+    assert_eq!(value_at(&ada.instance, &root), 2, "ada's window keeps both");
+    assert!(ada.room.unsent(), "both wait for the room");
+    assert!(grace_inbox.lock().unwrap().is_empty(), "nothing went out");
+
+    // Meanwhile grace's change reaches ada: what ada made still waits to go, never taken for
+    // sent.
+    add_one(&mut grace, &root, "grace");
+    assert!(ada.room.receive(&mut ada.instance));
+    assert!(
+        ada.room.unsent(),
+        "what ada made still waits for the room after grace's change came in"
+    );
+
+    // The client has room again: ada's next frame hands the room all of it, as one change.
+    full.store(false, Ordering::SeqCst);
+    assert!(ada.room.commit(&mut ada.instance).unwrap().is_empty());
+    assert!(!ada.room.unsent(), "everything went out");
+    assert_eq!(grace_inbox.lock().unwrap().len(), 1, "as one change");
+    assert!(grace.room.receive(&mut grace.instance));
+    grace.instance.update();
+    ada.instance.update();
+    assert_eq!(
+        grace.room.doc().clone().get_heads(),
+        ada.room.doc().clone().get_heads(),
+        "grace holds everything ada made while her client was full"
+    );
+    assert_eq!(
+        value_at(&grace.instance, &root),
+        value_at(&ada.instance, &root)
     );
 }
 

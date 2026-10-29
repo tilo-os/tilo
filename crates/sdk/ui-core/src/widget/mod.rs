@@ -1396,11 +1396,6 @@ pub trait Widget {
     fn resets_callback_binding(&self) -> bool {
         false
     }
-    /// A legacy owner's actual live layout boundary, never framework chrome.
-    #[doc(hidden)]
-    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
-        None
-    }
     /// Drawn live content whose input is suspended by a framework surface.
     #[doc(hidden)]
     fn inactive_callback_boundary(&self) -> Option<NodeId> {
@@ -1498,20 +1493,9 @@ pub trait Widget {
     )]
     fn visit_resource_owners(
         &self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         request.visit(self)
-    }
-    #[doc(hidden)]
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners_mut(
-        &mut self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
-        defaults::visit_resource_owners_mut(self.children_mut(), request)
     }
 
     /// Answer a request for a capability this widget takes part in (see
@@ -1938,6 +1922,17 @@ pub trait Widget {
     /// found among the children.
     fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
         defaults::take_app_activation(self.children_mut())
+    }
+
+    /// One-shot (reading MUST clear it): the test id of the control this
+    /// subtree asks to take the keyboard once the runner laid it out, such as
+    /// the first field of a view a person's press just opened, so what they
+    /// type next lands there. The runner focuses it as a press focuses a
+    /// control, blurring any other; a control it does not find (or that takes
+    /// no focus) leaves focus where it is. Default forwards the first request
+    /// found among the children.
+    fn take_focus_request(&mut self) -> Option<String> {
+        defaults::take_focus_request(self.children_mut())
     }
 
     /// Role, name/description/value, and

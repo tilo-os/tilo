@@ -806,8 +806,12 @@ fn prompt_host(
         })
         .collect();
     host.set_output_geometry(&geometry);
-    let layout = crate::support::host::layout_host(&mut host);
     host.show_display_confirmation(confirmation.transaction, confirmation.tool);
+    // The question is an app: laid out once it is up, then drawn.
+    let _ = crate::support::host::layout_host(&mut host);
+    crate::support::host::paint(&mut host);
+    let layout = crate::support::host::layout_host(&mut host);
+    crate::support::host::paint(&mut host);
     (host, layout)
 }
 
@@ -820,10 +824,10 @@ fn key(host: &mut ShellOverlayHost, layout: &(TaffyTree<()>, NodeId), key: Named
 fn settle_prompt(host: &mut ShellOverlayHost) {
     let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
+        frame(host);
         host.poll_display_confirmation();
         if !host.display_confirmation_visible()
-            || prompt_dialog(host)
-                .children
+            || prompt_buttons(&prompt_dialog(host))
                 .iter()
                 .all(|node| !node.state.disabled)
         {
@@ -834,20 +838,32 @@ fn settle_prompt(host: &mut ShellOverlayHost) {
     panic!("display answer completion did not reach its prompt");
 }
 
+/// One frame of the host: the question's app carries out what it was
+/// asked, then draws.
+fn frame(host: &mut ShellOverlayHost) {
+    use ui::widget::Widget as _;
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+    crate::support::host::paint(host);
+}
+
 fn prompt_dialog(host: &ShellOverlayHost) -> AccessNode {
-    use ui::widget::Widget;
-    host.accessibility()
-        .expect("the host publishes a semantic tree")
-        .children
-        .into_iter()
-        .find(|node| {
-            node.role == Role::Dialog
-                && node
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Keep the display change"))
-        })
-        .expect("the prompt is in the semantic tree")
+    host.display_confirmation_accessibility()
+        .expect("the question is in the semantic tree")
+}
+
+/// The question's buttons, in reading order.
+fn prompt_buttons(dialog: &AccessNode) -> Vec<AccessNode> {
+    fn collect(node: &AccessNode, out: &mut Vec<AccessNode>) {
+        if node.role == Role::Button {
+            out.push(node.clone());
+        }
+        for child in &node.children {
+            collect(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    collect(dialog, &mut out);
+    out
 }
 
 fn state_now() -> DisplayTransactionState {
@@ -1016,11 +1032,15 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
     let (mut host, layout) = prompt_host(&harness, confirmation);
 
     assert!(host.display_confirmation_visible());
-    let cards = host.display_confirmation_cards();
-    assert_eq!(cards.len(), harness.outputs.len(), "one card per display");
-    for (card, output) in cards.iter().zip(&harness.outputs) {
+    let displays = host.display_confirmation_displays();
+    assert_eq!(
+        displays.len(),
+        harness.outputs.len(),
+        "one card per display"
+    );
+    for (display, output) in displays.iter().zip(&harness.outputs) {
         let (x, y) = output.logical_position;
-        let centre = card.card.center();
+        let centre = display.center();
         assert!(
             centre.x >= f64::from(x)
                 && centre.x <= f64::from(x) + f64::from(output.size.0)
@@ -1035,8 +1055,8 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
         Some("Keep the display change from kanshi?")
     );
     assert!(dialog.state.modal);
-    let buttons: Vec<&str> = dialog
-        .children
+    let buttons = prompt_buttons(&dialog);
+    let buttons: Vec<&str> = buttons
         .iter()
         .filter_map(|node| node.name.as_deref())
         .collect();
@@ -1049,6 +1069,11 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
     settle_prompt(&mut host);
     assert_eq!(state_now(), DisplayTransactionState::ConfirmRequested);
     assert!(!host.display_confirmation_visible());
+    let _ = crate::support::host::layout_host(&mut host);
+    assert!(
+        host.display_confirmation_accessibility().is_none(),
+        "the answered question is no longer drawn"
+    );
     assert!(
         !TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)),
         "Keep answers for this change only"
@@ -1067,14 +1092,24 @@ fn replaced_physical_always_keep_cannot_answer_or_trust_another_transaction() {
     replacement.id = replacement.id.checked_add(1).unwrap();
     replacement.save().unwrap();
     key(&mut host, &layout, NamedKey::Enter);
-    shell::shell::durable_writer::global().flush();
-    assert!(host.display_confirmation_visible());
-    assert!(
-        prompt_dialog(&host)
-            .description
-            .as_deref()
-            .is_some_and(|description| description.contains("replaced"))
-    );
+    // The answer reaches the shell through the session, and the question
+    // follows the transaction on its own clock: it either says why the
+    // answer failed or closes once it sees the replacement.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        frame(&mut host);
+        shell::shell::durable_writer::global().flush();
+        if !host.display_confirmation_visible()
+            || prompt_dialog(&host)
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("replaced"))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the answer was carried out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
     assert_eq!(DisplayTransaction::load(), Some(replacement));
     assert!(!TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
 }
@@ -1142,9 +1177,9 @@ fn always_keep_trusts_the_tool_and_its_next_change_is_kept_without_asking() {
     let (mut host, layout) = prompt_host(&harness, confirmation.expect("asked"));
     key(&mut host, &layout, NamedKey::Tab);
     key(&mut host, &layout, NamedKey::Tab);
+    frame(&mut host);
     assert!(
-        prompt_dialog(&host)
-            .children
+        prompt_buttons(&prompt_dialog(&host))
             .iter()
             .any(|node| node.state.focused
                 && node.name.as_deref() == Some("Keep, and don't ask again for kanshi")),

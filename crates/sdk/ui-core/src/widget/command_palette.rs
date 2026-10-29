@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
-use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -23,12 +22,12 @@ use crate::icons::{self, Icon};
 use crate::paint::PaintCtx;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
+use crate::search::{CommandRow, SearchGroup, SearchResult, SearchRow};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{ControlSize, SearchField, TextInputKind, Widget};
+use crate::widget::{ControlSize, SearchField, SearchResultsView, TextInputKind, Widget};
 use tilo_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -128,49 +127,7 @@ pub enum ArgumentKind {
     },
 }
 
-/// A modifier held while a row is activated, choosing an alternative
-/// activation the row offers ([`CommandEntry::alternate`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ActivationModifier {
-    Shift,
-    Ctrl,
-    Alt,
-}
-
-impl ActivationModifier {
-    /// The one modifier `state` holds, or `None` for none or a mix: a chord
-    /// of two is not one of the alternatives.
-    pub fn of(state: winit::keyboard::ModifiersState) -> Option<Self> {
-        match (
-            state.shift_key(),
-            state.control_key() || state.super_key(),
-            state.alt_key(),
-        ) {
-            (true, false, false) => Some(Self::Shift),
-            (false, true, false) => Some(Self::Ctrl),
-            (false, false, true) => Some(Self::Alt),
-            _ => None,
-        }
-    }
-
-    /// The key's name, as the shared keycap legends spell it.
-    fn key(self) -> &'static str {
-        match self {
-            Self::Shift => "Shift",
-            Self::Ctrl => "Ctrl",
-            Self::Alt => "Alt",
-        }
-    }
-}
-
-/// What a row does when it is activated with `modifier` held, in the words
-/// the selected row shows while that modifier is down ("Opens as a tab
-/// here").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alternate {
-    pub modifier: ActivationModifier,
-    pub label: String,
-}
+pub use crate::search::{ActivationModifier, Alternate, RowFace};
 
 /// The result of pressing Enter on an entry: its `id` plus the free-text
 /// `argument` (only `Some` for entries built with
@@ -195,19 +152,6 @@ pub enum PaletteMode {
 /// The action target of the scope token when it is a control
 /// ([`CommandPalette::set_scope_token_action`]).
 const SCOPE_TOKEN_TARGET: &str = "command-palette:scope-token";
-
-/// One person in a row's face stack ([`CommandEntry::faces`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct RowFace {
-    pub name: String,
-    /// Their stable id: picks their picture.
-    pub identity: String,
-    /// Their presence colour, as every other surface draws them.
-    pub colour: Color,
-    pub is_agent: bool,
-    /// Idle or away: the face dims.
-    pub dimmed: bool,
-}
 
 #[derive(Clone)]
 pub struct CommandEntry {
@@ -559,42 +503,15 @@ impl CommandEntry {
     }
 }
 
-/// Shorten `text` by eating its middle, keeping both ends readable — for
-/// paths, where the head (root) and tail (own folder) both carry more
-/// information than the middle. Trailing-ellipsis case is
-/// [`TextRenderer::elide_to_width`].
-fn elide_middle(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> String {
-    if max_w <= 0.0 || f64::from(tr.measure_style(text, None, style).0) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    for drop in 1..n {
-        let keep = n.saturating_sub(drop);
-        let tail = keep.saturating_mul(2) / 3;
-        let head = keep.saturating_sub(tail);
-        let Some(head_chars) = chars.get(..head) else {
-            continue;
-        };
-        let Some(tail_chars) = chars.get(n.saturating_sub(tail)..) else {
-            continue;
-        };
-        let candidate: String = head_chars.iter().collect::<String>()
-            + "\u{2026}"
-            + &tail_chars.iter().collect::<String>();
-        if f64::from(tr.measure_style(&candidate, None, style).0) <= max_w {
-            return candidate;
-        }
-    }
-    "\u{2026}".to_string()
-}
-
 /// While `Some`, the field collects the step's value instead of the query
 /// (which is kept aside until the step ends), and the result list is
 /// frozen.
 struct ArgState {
     entry_id: String,
     kind: ArgumentKind,
+    /// What the step was opened with, as a host that shows it elsewhere
+    /// reads it back ([`CommandPalette::argument_step`]).
+    spec: ArgumentSpec,
     /// A step the host opened ([`CommandPalette::open_argument_step`]):
     /// Enter hands the value back through
     /// [`CommandPalette::take_submitted_argument`] and Escape reports
@@ -693,9 +610,6 @@ pub struct CommandPalette {
     rect: Rect,
     text_scale: f64,
     ui_scale: f64,
-    /// The theme's gap between two sections, set above every section or
-    /// group header that follows a row.
-    section_gap: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -734,19 +648,15 @@ pub struct CommandPalette {
     /// Show the query field alone while nothing is typed: no filter band
     /// and no list ([`Self::set_field_only_while_empty`]).
     field_only_while_empty: bool,
-    /// Rebuilt whenever the entry set, query or filter changes. Every
-    /// geometry accessor reads this so hit-testing, scrolling and painting
-    /// cannot disagree.
-    rows: Vec<VisualRow>,
-    /// Last pointer position in logical coordinates. The palette paints its
-    /// rows itself, so it owns hover hit testing rather than asking an
-    /// overlay host to translate row clicks back into a cursor update.
+    /// The result list: rows, headers, scrolling and their painting, fed
+    /// from `visible` whenever the entry set, query or filter changes.
+    /// Every geometry accessor reads it so hit-testing, scrolling and
+    /// painting cannot disagree.
+    results: SearchResultsView,
+    /// Last pointer position in logical coordinates. The palette routes
+    /// pointer moves to the cursor itself, so hover is the selection.
     last_cursor: Point,
     platform: PlatformConventions,
-    /// The first visual row painted. Kept between frames, so moving the
-    /// cursor inside the painted window never scrolls it; it only moves
-    /// when the cursor leaves the window or the wheel turns.
-    scroll_start: std::cell::Cell<usize>,
     /// Tallest the result list may grow before it scrolls; the host knows
     /// the display, the palette does not ([`Self::set_max_list_height`]).
     max_list_height: Option<f64>,
@@ -766,35 +676,6 @@ pub struct CommandPalette {
     /// What pressing the token does, when it is a control: its accessible
     /// name ("Search every workspace"). `None`: Backspace alone removes it.
     scope_token_action: Option<String>,
-}
-
-/// One painted line in the result list. Headers are not selectable and are
-/// skipped by the cursor.
-#[derive(Clone, Debug, PartialEq)]
-enum VisualRow {
-    /// `total` may exceed the number of entries painted for this group,
-    /// when the host capped it.
-    Header {
-        label: String,
-        total: usize,
-        level: HeaderLevel,
-        /// Whether a row comes before it, so the section gap sits above.
-        spaced: bool,
-    },
-    /// Index into `self.visible`.
-    Entry(usize),
-}
-
-/// Which header a header row is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HeaderLevel {
-    /// A group of results, with how many it holds.
-    Group,
-    /// A section of entries ([`CommandEntry::section`]): what is going on,
-    /// what to continue. No count: it is not a tally.
-    Section,
-    /// A group within a section (the apps for one purpose).
-    Subgroup,
 }
 
 impl Default for CommandPalette {
@@ -817,7 +698,6 @@ impl CommandPalette {
             rect: Rect::ZERO,
             text_scale: 1.0,
             ui_scale: 1.0,
-            section_gap: f64::from(crate::tokens::RhythmScale::BASE.section),
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -836,10 +716,9 @@ impl CommandPalette {
             host_filter_strip: false,
             host_filter_strip_rows: 1,
             field_only_while_empty: false,
-            rows: Vec::new(),
+            results: Self::result_list(),
             last_cursor: Point::ZERO,
             platform: PlatformConventions::default(),
-            scroll_start: std::cell::Cell::new(0),
             max_list_height: None,
             max_width: None,
             held: winit::keyboard::ModifiersState::empty(),
@@ -848,6 +727,12 @@ impl CommandPalette {
             scope_token_removed: false,
             scope_token_action: None,
         }
+    }
+
+    fn result_list() -> SearchResultsView {
+        let mut results = SearchResultsView::new();
+        results.set_group_gap(f64::from(crate::tokens::RhythmScale::BASE.section));
+        results
     }
 
     /// The query field: the card's own first row, embedded in its header,
@@ -884,6 +769,7 @@ impl CommandPalette {
         if self.arg_state.is_none() {
             self.saved_query = self.field.value().to_owned();
         }
+        let kept = spec.clone();
         let value = prefill.or(spec.prefill).unwrap_or_default();
         let kind = match spec.kind {
             ArgumentKind::Number { .. } => TextInputKind::Number,
@@ -900,6 +786,7 @@ impl CommandPalette {
         self.arg_state = Some(ArgState {
             entry_id,
             kind: spec.kind,
+            spec: kept,
             host_step,
         });
     }
@@ -985,6 +872,7 @@ impl CommandPalette {
         if mode == PaletteMode::Commands {
             self.modal = true;
         }
+        self.sync_list();
     }
 
     pub fn set_modal(&mut self, modal: bool) {
@@ -1020,6 +908,7 @@ impl CommandPalette {
         self.entries.clear();
         self.visible.clear();
         self.cursor = 0;
+        self.replan_rows();
     }
 
     /// Clears the query and any in-progress argument, focuses the palette,
@@ -1036,7 +925,6 @@ impl CommandPalette {
         self.argument_cancelled = false;
         self.action_invocation.clear();
         self.cursor = 0;
-        self.scroll_start.set(0);
         self.rebuild();
     }
 
@@ -1126,6 +1014,7 @@ impl CommandPalette {
     pub fn set_held_modifiers(&mut self, held: winit::keyboard::ModifiersState) -> bool {
         let changed = self.held != held;
         self.held = held;
+        self.results.set_held_modifier(ActivationModifier::of(held));
         changed
     }
 
@@ -1144,6 +1033,40 @@ impl CommandPalette {
 
     pub fn in_argument_mode(&self) -> bool {
         self.arg_state.is_some()
+    }
+
+    /// The argument step on screen: its id and what it was opened with.
+    pub fn argument_step(&self) -> Option<(&str, &ArgumentSpec)> {
+        self.arg_state
+            .as_ref()
+            .map(|arg| (arg.entry_id.as_str(), &arg.spec))
+    }
+
+    /// Every entry, before any filter.
+    pub fn entries(&self) -> &[CommandEntry] {
+        &self.entries
+    }
+
+    /// Whether the entries show as given, unmatched against the query
+    /// ([`Self::set_bypass_fuzzy`]).
+    pub fn bypasses_fuzzy(&self) -> bool {
+        self.bypass_fuzzy
+    }
+
+    /// What the empty field says it searches.
+    pub fn query_placeholder(&self) -> &str {
+        &self.query_placeholder
+    }
+
+    /// Whether the host said more results are coming ([`Self::set_searching`]).
+    pub fn more_coming(&self) -> bool {
+        self.searching
+    }
+
+    /// Whether the field shows alone while nothing is typed
+    /// ([`Self::set_field_only_while_empty`]).
+    pub fn field_only_while_empty(&self) -> bool {
+        self.field_only_while_empty
     }
 
     pub fn argument_buffer(&self) -> Option<&str> {
@@ -1192,6 +1115,25 @@ impl CommandPalette {
     /// Bypasses taffy, for apps that hand-position their overlays.
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
+        self.sync_list();
+    }
+
+    /// The result list's rect (the card under its field and filter band,
+    /// with the rows' padding) and cursor, from the card's.
+    fn sync_list(&mut self) {
+        if !self.visible.is_empty() && self.results.cursor() != self.cursor {
+            self.results.set_cursor(self.cursor);
+        }
+        // Before the first layout there is nothing to place the rows in;
+        // a pending reveal waits for it.
+        if self.rect.height() > 0.0 {
+            self.results.set_rect(Rect::new(
+                self.rect.x0,
+                self.list_top_y() - PADDING,
+                self.rect.x1,
+                self.list_bottom_y() + PADDING,
+            ));
+        }
     }
 
     /// Text scale used by layout and host-painted filter controls.
@@ -1215,7 +1157,7 @@ impl CommandPalette {
         }
         // Sized off the rows it holds, up to the tallest list the host
         // allows; past that the list scrolls.
-        let list = if self.rows.is_empty() {
+        let list = if self.visible.is_empty() {
             EMPTY_STATE_HEIGHT * self.layout_scale()
         } else {
             self.fitted_list_height()
@@ -1254,50 +1196,10 @@ impl CommandPalette {
 
     /// The whole rows from the top that fit under the cap: a cap that cut
     /// a row in half would leave a sliver nothing paints, and a header
-    /// with no row under it is not painted ([`Self::painted_window`]).
+    /// with no row under it is not painted.
     fn fitted_list_height(&self) -> f64 {
-        let cap = self.max_list_height().max(self.row_height());
-        let mut used = 0.0;
-        let mut trailing_header = 0.0;
-        for row in &self.rows {
-            let h = self.visual_row_height(row);
-            if used + h > cap + 0.01 {
-                break;
-            }
-            used += h;
-            trailing_header = if matches!(row, VisualRow::Header { .. }) {
-                trailing_header + h
-            } else {
-                0.0
-            };
-        }
-        (used - trailing_header).max(self.row_height())
-    }
-
-    fn visual_row_height(&self, row: &VisualRow) -> f64 {
-        match row {
-            VisualRow::Header { spaced, .. } => {
-                HEADER_HEIGHT * self.layout_scale() + if *spaced { self.section_gap } else { 0.0 }
-            }
-            VisualRow::Entry(entry_i) => self.entry_row_height(*entry_i),
-        }
-    }
-
-    /// A result row is as tall as its content: 36 for a title alone, 52
-    /// for a title over a secondary line (the design system's rows). A
-    /// title-only row padded to two lines leaves a hole under it, and the
-    /// gaps between groups then read as uneven.
-    fn entry_row_height(&self, entry_i: usize) -> f64 {
-        let two_line = self
-            .visible
-            .get(entry_i)
-            .and_then(|&idx| self.entries.get(idx))
-            .is_some_and(|e| e.description.is_some());
-        if two_line {
-            TWO_LINE_ROW_HEIGHT * self.layout_scale()
-        } else {
-            ROW_HEIGHT * self.layout_scale()
-        }
+        self.results
+            .fitted_height(self.max_list_height().max(self.row_height()))
     }
 
     /// The host's cap, else ten rows: enough to see past the first group
@@ -1323,17 +1225,13 @@ impl CommandPalette {
     }
 
     /// The list's nominal row: what capacity, the default cap and a wheel
-    /// notch count in. Each painted row is sized by `entry_row_height`.
+    /// notch count in. Each row is as tall as its own lines.
     fn row_height(&self) -> f64 {
         let any_subtitle = self
             .visible
             .iter()
             .any(|&i| self.entries.get(i).is_some_and(|e| e.description.is_some()));
-        if any_subtitle {
-            TWO_LINE_ROW_HEIGHT * self.layout_scale()
-        } else {
-            ROW_HEIGHT * self.layout_scale()
-        }
+        self.results.row_band(any_subtitle)
     }
 
     fn card_width(&self) -> f64 {
@@ -1495,6 +1393,9 @@ impl CommandPalette {
             entry.badge = Some(badge.into());
             entry.description = Some(description.into());
         }
+        let groups = self.list_groups();
+        self.results.replace_groups(groups);
+        self.sync_list();
     }
 
     /// Whether more results are still on their way (an index whose code is
@@ -1518,6 +1419,7 @@ impl CommandPalette {
         if on {
             self.hide_filter_strip = false;
         }
+        self.sync_list();
     }
 
     /// Show or hide the filter band. A host hides it until the results
@@ -1526,6 +1428,7 @@ impl CommandPalette {
     pub fn set_filter_band_shown(&mut self, shown: bool) -> bool {
         let changed = self.hide_filter_strip == shown;
         self.hide_filter_strip = !shown;
+        self.sync_list();
         changed
     }
 
@@ -1541,6 +1444,7 @@ impl CommandPalette {
         let rows = rows.max(1);
         let changed = self.host_filter_strip_rows != rows;
         self.host_filter_strip_rows = rows;
+        self.sync_list();
         changed
     }
 
@@ -1596,6 +1500,7 @@ impl CommandPalette {
         } else {
             self.cursor = index.min(self.visible.len().saturating_sub(1));
         }
+        self.sync_list();
     }
 
     /// `None` if the filter matched no rows.
@@ -1606,129 +1511,27 @@ impl CommandPalette {
             .map(|e| e.id.as_str())
     }
 
-    fn visual_index_of(&self, entry_i: usize) -> Option<usize> {
-        self.rows
-            .iter()
-            .position(|r| matches!(r, VisualRow::Entry(e) if *e == entry_i))
-    }
-
-    /// The visual rows from `start` that fit `budget`, as the end of the
-    /// half-open range.
-    fn window_end(&self, start: usize, budget: f64) -> usize {
-        let mut used = 0.0;
-        let mut end = start;
-        while let Some(row) = self.rows.get(end) {
-            let h = self.visual_row_height(row);
-            if used + h > budget + 0.01 {
-                break;
-            }
-            used += h;
-            end = end.saturating_add(1);
-        }
-        end
-    }
-
-    /// Half-open range of visual rows currently painted. The window stays
-    /// where it was while the cursor is inside it, moves just far enough to
-    /// bring the cursor back when it leaves, and fills from above when
-    /// rows below have run out. A header is never its window's last row:
-    /// a heading with nothing under it reads as a broken list.
-    fn painted_window(&self) -> (usize, usize) {
-        let budget = (self.list_bottom_y() - self.list_top_y()).max(0.0);
-        let len = self.rows.len();
-        let target = self.visual_index_of(self.cursor);
-        let mut start = self.scroll_start.get().min(len.saturating_sub(1));
-        if let Some(t) = target
-            && t < start
-        {
-            // Moving up into a group brings its header along.
-            start = if t > 0
-                && self
-                    .rows
-                    .get(t.saturating_sub(1))
-                    .is_some_and(|r| matches!(r, VisualRow::Header { .. }))
-            {
-                t.saturating_sub(1)
-            } else {
-                t
-            };
-        }
-        let mut end = self.window_end(start, budget);
-        if let Some(t) = target {
-            while t >= end && start < t {
-                start = start.saturating_add(1);
-                end = self.window_end(start, budget);
-            }
-        }
-        // Use slack at the bottom for rows above, which also brings back
-        // the header of a group whose first row the window starts on.
-        while start > 0 && self.window_end(start.saturating_sub(1), budget) >= end {
-            start = start.saturating_sub(1);
-        }
-        if end > start
-            && self
-                .rows
-                .get(end.saturating_sub(1))
-                .is_some_and(|r| matches!(r, VisualRow::Header { .. }))
-        {
-            end = end.saturating_sub(1);
-        }
-        self.scroll_start.set(start);
-        (start, end.max(start))
-    }
-
-    /// Scroll the list by `rows` visual rows (down for positive), keeping
-    /// the cursor on a painted row so the window stays where it was put.
-    fn scroll_by(&mut self, rows: isize) {
-        let (start, end) = self.painted_window();
-        let span = end.saturating_sub(start);
-        let max_start = self.rows.len().saturating_sub(span);
-        let next = start.saturating_add_signed(rows).min(max_start);
-        if next == start {
+    /// Scroll the list by `dy` logical px (down for positive), keeping the
+    /// cursor on a row in view so the list stays where it was put.
+    fn scroll_list(&mut self, dy: f64) {
+        self.sync_list();
+        if !self.results.scroll_by(dy) {
             return;
         }
-        self.scroll_start.set(next);
-        let next_end = self.window_end(next, (self.list_bottom_y() - self.list_top_y()).max(0.0));
-        let Some(target) = self.visual_index_of(self.cursor) else {
+        let shown = self.results.shown_rows();
+        if shown.is_empty() {
             return;
-        };
-        let entry_at = |i: usize| match self.rows.get(i) {
-            Some(VisualRow::Entry(entry)) => Some(*entry),
-            _ => None,
-        };
-        if target < next {
-            if let Some(entry) = (next..next_end).find_map(entry_at) {
-                self.cursor = entry;
-            }
-        } else if target >= next_end
-            && let Some(entry) = (next..next_end).rev().find_map(entry_at)
-        {
-            self.cursor = entry;
         }
+        self.cursor = self.cursor.clamp(shown.start, shown.end.saturating_sub(1));
+        self.sync_list();
     }
 
-    /// `None` when the row is scrolled out of the currently painted window.
+    /// `None` when the row is scrolled out of view.
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
-        if i >= self.visible.len() {
+        if i >= self.visible.len() || self.shows_field_only() {
             return None;
         }
-        let target = self.visual_index_of(i)?;
-        let (start, end) = self.painted_window();
-        if target < start || target >= end {
-            return None;
-        }
-        let mut y0 = self.list_top_y();
-        let window = self.rows.get(start..target)?;
-        for r in window {
-            y0 += self.visual_row_height(r);
-        }
-        let y1 = y0 + self.entry_row_height(i);
-        Some(Rect::new(
-            self.rect.x0 + PADDING,
-            y0,
-            self.rect.x1 - PADDING,
-            y1,
-        ))
+        self.results.row_rect(i)
     }
 
     /// Shared by `row_rect` and `draw`.
@@ -1746,19 +1549,7 @@ impl CommandPalette {
         if self.shows_field_only() || !self.rect.contains(p) {
             return None;
         }
-        let (start, end) = self.painted_window();
-        let mut y = self.list_top_y();
-        for row in self.rows.get(start..end)? {
-            let h = self.visual_row_height(row);
-            if let VisualRow::Header { label, .. } = row
-                && p.y >= y
-                && p.y < y + h
-            {
-                return Some(label.clone());
-            }
-            y += h;
-        }
-        None
+        self.results.header_at(p)
     }
 
     /// The id of the row drawn at `p`.
@@ -1774,7 +1565,9 @@ impl CommandPalette {
         if self.shows_field_only() {
             return None;
         }
-        (0..self.visible.len()).find(|&i| self.row_rect(i).is_some_and(|r| r.contains(p)))
+        self.results
+            .row_at(p)
+            .filter(|&row| row < self.visible.len())
     }
 
     /// The ordinal in the synthetic list is deliberately relative to the
@@ -1812,8 +1605,11 @@ impl CommandPalette {
     ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // The pointer picks the row it is over where it stands: a row
+            // half in view is not scrolled out from under it.
             if let Some(row) = self.row_at(self.last_cursor) {
-                self.set_cursor(row);
+                self.cursor = row;
+                self.results.set_cursor_in_place(row);
                 *handled = true;
             }
             // The field follows the pointer too, for its caret and drags.
@@ -2021,563 +1817,6 @@ impl CommandPalette {
         );
     }
 
-    /// One renderer for both modes.
-    fn draw_result_rows(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        // Section headers are sentence case, a `Subheading` in the
-        // secondary ink; the count beside one is a tabular caption.
-        let header_style = theme.text(TextRole::Subheading);
-        let count_style = theme.text(TextRole::Caption).numeric();
-        let x0 = self.rect.x0 + PADDING;
-        let x1 = self.rect.x1 - PADDING;
-        let (start, end) = self.painted_window();
-        let mut y = self.list_top_y();
-
-        let Some(window) = self.rows.get(start..end) else {
-            return;
-        };
-        for row in window {
-            match row {
-                VisualRow::Header {
-                    label,
-                    total,
-                    level,
-                    spaced,
-                } => {
-                    if *spaced {
-                        y += self.section_gap;
-                    }
-                    // A section's header in the text's own ink; a group
-                    // within it a caption under it.
-                    let (style, ink) = match level {
-                        HeaderLevel::Group => (&header_style, colors.text_dim),
-                        HeaderLevel::Section => (&header_style, colors.text_primary),
-                        HeaderLevel::Subgroup => (&count_style, colors.text_dim),
-                    };
-                    let (_, height) = text_renderer.measure_style(label, None, style);
-                    let hy = y + (HEADER_HEIGHT * self.layout_scale() - f64::from(height)) / 2.0;
-                    text_renderer.draw_style(
-                        scene,
-                        label,
-                        ink,
-                        transform.pre_translate(Vec2::new(x0 + 12.0, hy)),
-                        None,
-                        style,
-                    );
-                    if *level != HeaderLevel::Group {
-                        y += HEADER_HEIGHT * self.layout_scale();
-                        continue;
-                    }
-                    let count = total.to_string();
-                    let (cw, ch) = text_renderer.measure_style(&count, None, &count_style);
-                    let cy = y + (HEADER_HEIGHT * self.layout_scale() - f64::from(ch)) / 2.0;
-                    text_renderer.draw_style(
-                        scene,
-                        &count,
-                        colors.text_dim,
-                        transform.pre_translate(Vec2::new(x1 - 12.0 - f64::from(cw), cy)),
-                        None,
-                        &count_style,
-                    );
-                    y += HEADER_HEIGHT * self.layout_scale();
-                }
-                VisualRow::Entry(entry_i) => {
-                    let rh = self.entry_row_height(*entry_i);
-                    let row_rect = Rect::new(x0, y, x1, y + rh);
-                    if let Some(entry) = self
-                        .visible
-                        .get(*entry_i)
-                        .and_then(|&idx| self.entries.get(idx))
-                    {
-                        let selected = *entry_i == self.cursor;
-                        self.draw_one_row(
-                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                            row_rect,
-                            entry,
-                            selected,
-                        );
-                    }
-                    y += rh;
-                }
-            }
-        }
-    }
-
-    /// A selected row stands on the panel's strong lift, as the armed row
-    /// of every menu (`floating_surface::armed_row`); ink is measured on
-    /// that ground.
-    pub(crate) fn row_ground(theme: &Theme, selected: bool) -> Color {
-        if selected {
-            crate::widget::floating_surface::armed_row(theme).0
-        } else {
-            crate::chrome::panel_ground(theme)
-        }
-    }
-
-    /// Paints the row's leading icon, if any, and returns where the label
-    /// text should start.
-    fn row_icon_rect(row: Rect) -> Rect {
-        let size = 16.0;
-        let cy = f64::midpoint(row.y0, row.y1);
-        Rect::new(
-            row.x0 + 12.0,
-            cy - size / 2.0,
-            row.x0 + 12.0 + size,
-            cy + size / 2.0,
-        )
-    }
-
-    /// Where a person's avatar sits: the icon's place, a little larger, so
-    /// its initials read.
-    fn row_avatar_rect(row: Rect) -> Rect {
-        let icon = Self::row_icon_rect(row);
-        let grow = 2.0;
-        Rect::new(
-            icon.x0,
-            icon.y0 - grow,
-            icon.x1 + 2.0 * grow,
-            icon.y1 + grow,
-        )
-    }
-
-    /// The row's application artwork; the x its label starts at, or `None`
-    /// when the artwork has no pixels and the glyph must stand in.
-    fn draw_row_image(
-        scene: &mut Scene,
-        transform: Affine,
-        row: Rect,
-        image: &icons::AppImage,
-    ) -> Option<f64> {
-        let icon_rect = Self::row_icon_rect(row);
-        icons::draw_app_image(scene, transform, icon_rect, image).then_some(icon_rect.x1 + 10.0)
-    }
-
-    fn draw_row_icon(
-        scene: &mut Scene,
-        transform: Affine,
-        row: Rect,
-        icon: Icon,
-        tint: Color,
-    ) -> f64 {
-        let icon_rect = Self::row_icon_rect(row);
-        icons::draw_icon(scene, transform, icon_rect, icon, tint, 1.5);
-        icon_rect.x1 + 10.0
-    }
-
-    /// Paints the row's trailing decoration — a badge or a keybinding
-    /// chip, mutually exclusive — and returns the x the label
-    /// text must stay clear of.
-    fn draw_row_trailing(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        row: Rect,
-        entry: &CommandEntry,
-        selected: bool,
-    ) -> f64 {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let colors = &theme.tokens.colors;
-        // What Enter does, when the row says: its outcome, as a button at
-        // the trailing edge ("Join", "Answer"). The row is the control; the
-        // button names what choosing it does.
-        let mut right = row.x1 - 8.0;
-        if let Some(outcome) = entry.outcome.as_deref() {
-            use crate::widget::button::{Button, ButtonFace, ButtonRole};
-            use crate::widget::control_size::ControlSize;
-            let probe = ButtonFace::new(Rect::ZERO, outcome).control_size(ControlSize::Small);
-            let width = probe.intrinsic_width(text_renderer, theme);
-            let height = ButtonFace::height(ControlSize::Small, theme);
-            let middle = f64::midpoint(row.y0, row.y1);
-            let rect = Rect::new(
-                right - width,
-                middle - height / 2.0,
-                right,
-                middle + height / 2.0,
-            );
-            let face = ButtonFace::new(rect, outcome)
-                .role(if selected {
-                    ButtonRole::Primary
-                } else {
-                    ButtonRole::Secondary
-                })
-                .control_size(ControlSize::Small);
-            Button::paint(scene, transform, text_renderer, theme, &face);
-            right = rect.x0 - 8.0;
-        }
-        // Faces first: who the row is about outranks a hint.
-        if !entry.faces.is_empty() {
-            let stack = crate::presence::FaceStack::WINDOW;
-            let (shown, more) = stack.split(entry.faces.len());
-            let faces: Vec<crate::presence::Face<'_>> = entry
-                .faces
-                .iter()
-                .take(shown)
-                .map(|face| crate::presence::Face {
-                    is_agent: face.is_agent,
-                    dimmed: face.dimmed,
-                    ..crate::presence::Face::new(&face.name, &face.identity, face.colour)
-                })
-                .collect();
-            stack.paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                (right, f64::midpoint(row.y0, row.y1)),
-                (&faces, more),
-                Self::row_ground(theme, selected),
-            );
-            return right - stack.width_of(faces.len(), more) - 8.0;
-        }
-        if entry.outcome.is_some() {
-            return right;
-        }
-        // Reserved before measuring the text, so a long title is ellipsised
-        // rather than painted under the chip.
-        if let Some(badge) = &entry.badge {
-            let badge_style = theme.text(TextRole::Caption);
-            let (text_w, text_h) = text_renderer.measure_style(badge, None, &badge_style);
-            let pill_w = f64::from(text_w) + 16.0;
-            let pill_h = f64::from(text_h) + 8.0;
-            let cy = f64::midpoint(row.y0, row.y1);
-            let pill = Rect::new(
-                row.x1 - pill_w - 8.0,
-                cy - pill_h / 2.0,
-                row.x1 - 8.0,
-                cy + pill_h / 2.0,
-            );
-            let shape = RoundedRect::from_rect(pill, pill_h / 2.0);
-            let fill = colors
-                .text_primary
-                .with_alpha_factor(if selected { 0.28 } else { 0.16 });
-            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.text_primary.with_alpha_factor(0.55),
-                None,
-                &shape,
-            );
-            let ink = colors.ink_on(
-                Self::row_ground(theme, selected),
-                colors.text_primary,
-                SMALL_TEXT_MIN_CONTRAST,
-            );
-            text_renderer.draw_style(
-                scene,
-                badge,
-                ink,
-                transform.pre_translate(Vec2::new(pill.x0 + 8.0, cy - f64::from(text_h) / 2.0)),
-                None,
-                &badge_style,
-            );
-            pill.x0 - 8.0
-        } else if let Some(labels) = entry.keycap_labels(self.platform) {
-            let chip_w =
-                crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
-            let chip_h = 26.0;
-            let cy = f64::midpoint(row.y0, row.y1);
-            let chip = Rect::new(
-                row.x1 - chip_w - 8.0,
-                cy - chip_h / 2.0,
-                row.x1 - 8.0,
-                cy + chip_h / 2.0,
-            );
-            crate::widget::InputHint::paint_keycap_labels_at(
-                scene,
-                transform,
-                Point::new(chip.x0, chip.y0),
-                &labels,
-                text_renderer,
-                theme,
-            );
-            chip.x0 - 8.0
-        } else if selected && let Some(alternate) = self.shown_alternate(entry) {
-            // The selected row says what its other activation does: while
-            // the modifier is held, in full ink as a preview of where it
-            // lands; otherwise dimmed, with its keys, as the one hint.
-            let held = self.held_modifier() == Some(alternate.modifier);
-            let style = theme.text(TextRole::Caption);
-            let ink = if held {
-                colors.text_primary
-            } else {
-                colors.ink_on(
-                    Self::row_ground(theme, selected),
-                    colors.text_dim,
-                    SMALL_TEXT_MIN_CONTRAST,
-                )
-            };
-            let keycaps = crate::keycaps::active();
-            let labels = vec![keycaps.key(alternate.modifier.key()), keycaps.key("Enter")];
-            let caps_w =
-                crate::widget::InputHint::measure_keycap_labels(&labels, text_renderer, theme);
-            let gap = f64::from(theme.tokens.spacing.s1);
-            let (label_w, label_h) = text_renderer.measure_style(&alternate.label, None, &style);
-            let cy = f64::midpoint(row.y0, row.y1);
-            let label_x = row.x1 - 12.0 - f64::from(label_w);
-            text_renderer.draw_style(
-                scene,
-                &alternate.label,
-                ink,
-                transform.pre_translate(Vec2::new(label_x, cy - f64::from(label_h) / 2.0)),
-                None,
-                &style,
-            );
-            let caps_x = label_x - gap - caps_w;
-            let cap_h = crate::widget::InputHint::keycap_height(theme);
-            crate::widget::InputHint::paint_keycap_labels_at(
-                scene,
-                transform,
-                Point::new(caps_x, cy - cap_h / 2.0),
-                &labels,
-                text_renderer,
-                theme,
-            );
-            caps_x - 8.0
-        } else {
-            // A row that asks for an argument is a row like any other: the
-            // prompt it opens says what comes next.
-            row.x1 - 12.0
-        }
-    }
-
-    /// The alternative a selected row shows: the one whose modifier is
-    /// held, else the first it offers.
-    fn shown_alternate<'a>(&self, entry: &'a CommandEntry) -> Option<&'a Alternate> {
-        let held = self.held_modifier();
-        entry
-            .alternates
-            .iter()
-            .find(|alternate| Some(alternate.modifier) == held)
-            .or_else(|| entry.alternates.first())
-    }
-
-    /// Where `text`, a row's line searched as a field of `weight`, shows
-    /// the query's words as search matched them, merged and in order: the
-    /// part of a row a person reads to see why it matched.
-    fn match_ranges(
-        &self,
-        text: &str,
-        weight: tilo_search::FieldWeight,
-    ) -> Vec<std::ops::Range<usize>> {
-        let mut ranges: Vec<std::ops::Range<usize>> = self
-            .query_text()
-            .split_whitespace()
-            .filter_map(|word| tilo_search::locate(word, text, weight))
-            .collect();
-        ranges.compact_sort_by_key(|range| range.start);
-        let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            match merged.last_mut() {
-                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
-                _ => merged.push(range),
-            }
-        }
-        merged
-    }
-
-    /// `text` at `origin`, the parts in `ranges` in a heavier weight.
-    fn draw_marked(
-        ctx: &mut PaintCtx<'_>,
-        text: &str,
-        ranges: &[std::ops::Range<usize>],
-        origin: Point,
-        ink: Color,
-        style: &TextStyle,
-    ) {
-        let marked = style
-            .clone()
-            .with_weight(crate::text_render::TextWeight::Semibold);
-        let mut x = origin.x;
-        let mut at = 0usize;
-        let mut pieces: Vec<(&str, bool)> = Vec::new();
-        for range in ranges {
-            if let Some(before) = text.get(at..range.start) {
-                pieces.push((before, false));
-            }
-            if let Some(hit) = text.get(range.start..range.end) {
-                pieces.push((hit, true));
-            }
-            at = range.end;
-        }
-        if let Some(rest) = text.get(at..) {
-            pieces.push((rest, false));
-        }
-        for (piece, strong) in pieces {
-            if piece.is_empty() {
-                continue;
-            }
-            let piece_style = if strong { &marked } else { style };
-            ctx.text.draw_style(
-                ctx.scene,
-                piece,
-                ink,
-                ctx.transform.pre_translate(Vec2::new(x, origin.y)),
-                None,
-                piece_style,
-            );
-            x += f64::from(ctx.text.measure_style(piece, None, piece_style).0);
-        }
-    }
-
-    /// The roles of a result row's title and of its description line.
-    fn row_text_styles(theme: &Theme) -> (TextStyle, TextStyle) {
-        (theme.text(TextRole::Body), theme.text(TextRole::Caption))
-    }
-
-    fn draw_one_row(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        row: Rect,
-        entry: &CommandEntry,
-        selected: bool,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            theme,
-        } = ctx.reborrow();
-        let colors = &theme.tokens.colors;
-        let (label_style, desc_style) = Self::row_text_styles(theme);
-        let row_ground = Self::row_ground(theme, selected);
-        // Needs contrast against the armed lift: take the nearest
-        // legible step from the theme's dim tone rather than promoting it
-        // to the title's weight to survive.
-        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, SMALL_TEXT_MIN_CONTRAST);
-        let label_ink = if selected {
-            crate::widget::floating_surface::paint_armed_row(
-                scene,
-                transform,
-                row,
-                row.x0 - self.rect.x0,
-                theme,
-            )
-        } else {
-            colors.text_primary
-        };
-
-        let mut text_x = row.x0 + 12.0;
-        let image_x = entry
-            .image
-            .as_ref()
-            .and_then(|image| Self::draw_row_image(scene, transform, row, image));
-        if let Some(x) = image_x {
-            text_x = x;
-        } else if let Some((name, key)) = &entry.avatar {
-            let face = Self::row_avatar_rect(row);
-            crate::widget::AvatarFace::new(name, key).paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                face,
-            );
-            text_x = face.x1 + 10.0;
-        } else if let Some(icon) = entry.icon {
-            let icon_ink = if selected { label_ink } else { colors.text_dim };
-            text_x = Self::draw_row_icon(scene, transform, row, icon, icon_ink);
-        }
-
-        let text_right = self.draw_row_trailing(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            row,
-            entry,
-            selected,
-        );
-        let avail = (text_right - text_x).max(0.0);
-
-        let label =
-            text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
-        let label_marks = self.match_ranges(&label, tilo_search::FieldWeight::TITLE);
-        if let Some(desc) = &entry.description {
-            // A path keeps both ends; prose keeps its beginning, where the
-            // meaning is.
-            let sub = if entry.description_is_path {
-                elide_middle(text_renderer, desc, &desc_style, avail)
-            } else {
-                text_renderer.elide_to_width_style(desc, f32_of_f64(avail), &desc_style)
-            };
-            let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
-            let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
-            let gap = 3.0 * self.layout_scale();
-            let block = f64::from(label_height + desc_height) + gap;
-            let ly = row.y0 + (row.height() - block) / 2.0;
-            // Only one line is set off: the title when it shows the query,
-            // else the subtitle, so a row never shouts twice.
-            let desc_marks = if label_marks.is_empty() {
-                self.match_ranges(&sub, tilo_search::FieldWeight::SUBTITLE)
-            } else {
-                Vec::new()
-            };
-            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-            Self::draw_marked(
-                &mut ctx,
-                &label,
-                &label_marks,
-                Point::new(text_x, ly),
-                label_ink,
-                &label_style,
-            );
-            let sub_y = ly + f64::from(label_height) + gap;
-            if entry.description_facts.len() > 1 {
-                // Facts are runs of their own with space between them, the
-                // last losing its end when the row runs out.
-                let fact_gap = 12.0 * self.layout_scale();
-                let mut x = text_x;
-                let right = text_x + avail;
-                for fact in &entry.description_facts {
-                    let room = right - x;
-                    if room <= fact_gap {
-                        break;
-                    }
-                    let shown = ctx
-                        .text
-                        .elide_to_width_style(fact, f32_of_f64(room), &desc_style);
-                    let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
-                    let marks = if label_marks.is_empty() {
-                        self.match_ranges(&shown, tilo_search::FieldWeight::SUBTITLE)
-                    } else {
-                        Vec::new()
-                    };
-                    Self::draw_marked(
-                        &mut ctx,
-                        &shown,
-                        &marks,
-                        Point::new(x, sub_y),
-                        subtitle_ink,
-                        &desc_style,
-                    );
-                    x += f64::from(w) + fact_gap;
-                }
-            } else {
-                Self::draw_marked(
-                    &mut ctx,
-                    &sub,
-                    &desc_marks,
-                    Point::new(text_x, sub_y),
-                    subtitle_ink,
-                    &desc_style,
-                );
-            }
-        } else {
-            let (_, height) = text_renderer.measure_style(&label, None, &label_style);
-            let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
-            Self::draw_marked(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                &label,
-                &label_marks,
-                Point::new(text_x, ly),
-                label_ink,
-                &label_style,
-            );
-        }
-    }
-
     /// Painted in the list area so the card keeps its shape instead of
     /// collapsing to a bare input.
     fn draw_empty_state(
@@ -2671,7 +1910,7 @@ impl CommandPalette {
     }
 
     /// Moves through the results: arrows step and wrap, Page keys move a
-    /// window's worth, Tab and Shift+Tab jump to the next and previous
+    /// view's worth, Tab and Shift+Tab jump to the next and previous
     /// group, and Home and End reach the first and last result when the
     /// caret has nowhere left to go in the field (always with Ctrl).
     /// `true` when the key moved the selection or belonged to the list.
@@ -2695,9 +1934,11 @@ impl CommandPalette {
             }
             Key::Named(NamedKey::PageDown) => self
                 .cursor
-                .saturating_add(self.entries_per_page())
+                .saturating_add(self.results.rows_per_page())
                 .min(last),
-            Key::Named(NamedKey::PageUp) => self.cursor.saturating_sub(self.entries_per_page()),
+            Key::Named(NamedKey::PageUp) => {
+                self.cursor.saturating_sub(self.results.rows_per_page())
+            }
             Key::Named(NamedKey::Tab) => self.next_group_start(!shift),
             Key::Named(NamedKey::Home)
                 if ctrl || (!shift && self.field.selection_anchor_focus_or_caret() == (0, 0)) =>
@@ -2719,37 +1960,16 @@ impl CommandPalette {
         // scrolls or tabs through whatever is behind the palette.
         if len > 0 {
             self.cursor = target.min(last);
+            self.sync_list();
         }
         true
-    }
-
-    /// Result rows in one painted window, the step of PageUp and PageDown.
-    fn entries_per_page(&self) -> usize {
-        let (start, end) = self.painted_window();
-        self.rows
-            .get(start..end)
-            .map_or(0, |rows| {
-                rows.iter()
-                    .filter(|r| matches!(r, VisualRow::Entry(_)))
-                    .count()
-            })
-            .saturating_sub(1)
-            .max(1)
     }
 
     /// The first result of the group after the cursor's (`forward`) or of
     /// the cursor's own group, else the one before it; wrapping at the
     /// ends. An ungrouped list has one group, so Tab stays put.
     fn next_group_start(&self, forward: bool) -> usize {
-        let starts: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, row)| match (row, self.rows.get(i.saturating_add(1))) {
-                (VisualRow::Header { .. }, Some(VisualRow::Entry(entry))) => Some(*entry),
-                _ => None,
-            })
-            .collect();
+        let starts = self.results.group_starts();
         if starts.is_empty() {
             return self.cursor;
         }
@@ -2810,68 +2030,110 @@ impl CommandPalette {
         self.replan_rows();
     }
 
+    /// Feed the result list the visible entries, read from their top.
     fn replan_rows(&mut self) {
-        self.rows.clear();
+        let groups = self.list_groups();
+        self.results.set_groups(groups);
+        let query = self.query_text().to_owned();
+        self.results.set_highlight(&query);
+        self.sync_list();
+    }
+
+    /// The visible entries as the result list's groups: a run of entries
+    /// sharing a group under its header with the group's count, entries in
+    /// a section under the section's header with their groups as captions,
+    /// and an entry with neither running on under the rows above it.
+    fn list_groups(&self) -> Vec<SearchGroup> {
+        let mut groups: Vec<SearchGroup> = Vec::new();
         let mut current: Option<&str> = None;
         let mut section: Option<&str> = None;
         for (entry_i, &idx) in self.visible.iter().enumerate() {
             let Some(entry) = self.entries.get(idx) else {
                 continue;
             };
+            let mut opened: Option<SearchGroup> = None;
             if let Some(name) = entry.section.as_deref() {
                 if section != Some(name) {
                     section = Some(name);
                     current = Some(name);
-                    let spaced = !self.rows.is_empty();
-                    self.rows.push(VisualRow::Header {
-                        label: name.to_string(),
-                        total: 0,
-                        level: HeaderLevel::Section,
-                        spaced,
+                    opened = Some(SearchGroup {
+                        section: Some(name.to_owned()),
+                        ..SearchGroup::new("", Vec::new())
                     });
                 }
                 if let Some(group) = entry.group.as_deref()
                     && current != Some(group)
                 {
                     current = Some(group);
-                    self.rows.push(VisualRow::Header {
-                        label: group.to_string(),
-                        total: 0,
-                        level: HeaderLevel::Subgroup,
-                        spaced: false,
+                    opened = Some(SearchGroup {
+                        section: Some(name.to_owned()),
+                        ..SearchGroup::new(group, Vec::new())
                     });
                 }
-                self.rows.push(VisualRow::Entry(entry_i));
-                continue;
+            } else {
+                section = None;
+                if let Some(group) = entry.group.as_deref()
+                    && current != Some(group)
+                {
+                    current = Some(group);
+                    // Fall back to the contiguous run when the host gives no
+                    // uncapped total.
+                    let total = entry.group_total.unwrap_or_else(|| {
+                        self.visible.get(entry_i..).map_or(0, |rest| {
+                            rest.iter()
+                                .take_while(|&&j| {
+                                    self.entries
+                                        .get(j)
+                                        .is_some_and(|e| e.group.as_deref() == Some(group))
+                                })
+                                .count()
+                        })
+                    });
+                    opened = Some(SearchGroup {
+                        total: Some(total),
+                        ..SearchGroup::new(group, Vec::new())
+                    });
+                }
             }
-            section = None;
-            if let Some(group) = entry.group.as_deref()
-                && current != Some(group)
-            {
-                current = Some(group);
-                // Fall back to the contiguous run when the host gives no
-                // uncapped total.
-                let total = entry.group_total.unwrap_or_else(|| {
-                    self.visible.get(entry_i..).map_or(0, |rest| {
-                        rest.iter()
-                            .take_while(|&&j| {
-                                self.entries
-                                    .get(j)
-                                    .is_some_and(|e| e.group.as_deref() == Some(group))
-                            })
-                            .count()
-                    })
-                });
-                let spaced = !self.rows.is_empty();
-                self.rows.push(VisualRow::Header {
-                    label: group.to_string(),
-                    total,
-                    level: HeaderLevel::Group,
-                    spaced,
-                });
+            let row = self.list_result(entry);
+            match (opened, groups.last_mut()) {
+                (Some(mut group), _) => {
+                    group.results.push(row);
+                    groups.push(group);
+                }
+                (None, Some(last)) if last.section.as_deref() == entry.section.as_deref() => {
+                    last.results.push(row);
+                }
+                (None, _) => groups.push(SearchGroup {
+                    section: entry.section.clone(),
+                    ..SearchGroup::new("", vec![row])
+                }),
             }
-            self.rows.push(VisualRow::Entry(entry_i));
         }
+        groups
+    }
+
+    /// An entry as a result list row.
+    fn list_result(&self, entry: &CommandEntry) -> SearchResult {
+        let mut result = SearchResult::new(
+            entry.group.clone().unwrap_or_default(),
+            entry.label.clone(),
+            entry.id.clone(),
+        );
+        result.subtitle.clone_from(&entry.description);
+        result.icon = entry.icon;
+        result.row = Some(SearchRow::Command(Box::new(CommandRow {
+            description_is_path: entry.description_is_path,
+            facts: entry.description_facts.clone(),
+            image: entry.image.clone(),
+            avatar: entry.avatar.clone(),
+            badge: entry.badge.clone(),
+            keycaps: entry.keycap_labels(self.platform),
+            faces: entry.faces.clone(),
+            outcome: entry.outcome.clone(),
+            alternates: entry.alternates.clone(),
+        })));
+        result
     }
 
     /// The painted rows of each section, in order, as `(section, visible
@@ -2900,12 +2162,6 @@ impl CommandPalette {
     }
 }
 
-/// Ink drawn on a selected row is measured against the composite this
-/// produces — the two values must stay equal.
-
-const ROW_HEIGHT: f64 = 36.0;
-const TWO_LINE_ROW_HEIGHT: f64 = 52.0;
-const HEADER_HEIGHT: f64 = 24.0;
 /// Rows the list shows before it scrolls when the host sets no height.
 const DEFAULT_LIST_ROWS: f64 = 10.0;
 /// Room the composed zero-state needs: glyph, headline, hint.
@@ -2920,7 +2176,12 @@ impl Widget for CommandPalette {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
-        self.platform = conventions;
+        if self.platform != conventions {
+            self.platform = conventions;
+            // Keycaps follow the platform's notation.
+            let groups = self.list_groups();
+            self.results.replace_groups(groups);
+        }
     }
 
     fn build_layout(
@@ -2931,7 +2192,9 @@ impl Widget for CommandPalette {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
-        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
+        self.results.resolve_metrics(theme);
+        self.results
+            .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
         let generation = crate::search::engine_generation();
         if self.ranked_generation != generation {
             self.ranked_generation = generation;
@@ -2949,7 +2212,15 @@ impl Widget for CommandPalette {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.sync_list();
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
     /// Sized by its style alone (no `measure`): nothing it changes needs
     /// taffy to measure it again, and saying it does re-solved the layout of
     /// everything above it on every frame.
@@ -2971,7 +2242,10 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(1.0);
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
-        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
+        self.results.resolve_metrics(theme);
+        self.results
+            .set_group_gap(f64::from(theme.tokens.spacing.rhythm.section));
+        self.sync_list();
         // The one floating card (HIG §9.1): the opaque panel ground and its
         // edges. Opaque, as the card is rows of small text: a tinted
         // backdrop let the window under it read through them, text over
@@ -3018,7 +2292,8 @@ impl Widget for CommandPalette {
         if self.visible.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme);
         } else {
-            self.draw_result_rows(scene, transform, text_renderer, theme);
+            self.results
+                .draw_list(scene, transform, text_renderer, theme);
         }
 
         text_renderer.set_text_scale(renderer_scale);
@@ -3029,25 +2304,24 @@ impl Widget for CommandPalette {
             return;
         }
         self.sync_field_focus();
+        self.sync_list();
         // Read, never consumed: every other surface needs modifiers too.
         if let WindowEvent::ModifiersChanged(modifiers) = event {
-            self.held = modifiers.state();
+            self.set_held_modifiers(modifiers.state());
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
             && self.arg_state.is_none()
         {
-            let rows = match *delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
-                winit::event::MouseScrollDelta::PixelDelta(p) => {
-                    -p.y / ctx.scale_factor / self.row_height().max(1.0)
+            // A notch moves the list a row.
+            let dy = match *delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                    -f64::from(y) * self.row_height()
                 }
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y / ctx.scale_factor,
             };
-            let rows = isize::try_from(crate::num::i64_of_f64(rows.round())).unwrap_or_default();
-            if rows != 0 {
-                self.scroll_by(rows);
-            }
+            self.scroll_list(dy);
             *ctx.handled = true;
             return;
         }
@@ -3743,14 +3017,6 @@ mod keyboard_flow_tests {
         p
     }
 
-    fn painted_rows(p: &CommandPalette) -> Vec<VisualRow> {
-        let (start, end) = p.painted_window();
-        p.rows
-            .get(start..end)
-            .map(<[VisualRow]>::to_vec)
-            .unwrap_or_default()
-    }
-
     #[test]
     fn escape_clears_the_query_before_it_closes() {
         let mut p = grouped(&[("Files", 3)]);
@@ -3790,17 +3056,17 @@ mod keyboard_flow_tests {
         assert_eq!(p.selected_id(), Some("Settings0"), "Shift+Tab goes back");
 
         p.set_cursor(2);
-        let page = p.entries_per_page();
+        let page = p.results.rows_per_page();
         assert!(page > 1, "a page is more than one row");
         assert!(dispatch(&mut p, &press(NamedKey::PageDown)));
         assert_eq!(p.cursor(), page.saturating_add(2));
         let before = p.cursor();
-        let page = p.entries_per_page();
+        let page = p.results.rows_per_page();
         assert!(dispatch(&mut p, &press(NamedKey::PageUp)));
         assert_eq!(
             p.cursor(),
             before.saturating_sub(page),
-            "PageUp moves a window's worth back"
+            "PageUp moves a view's worth back"
         );
 
         assert!(
@@ -3828,35 +3094,41 @@ mod keyboard_flow_tests {
     }
 
     #[test]
-    fn the_list_scrolls_only_when_the_cursor_leaves_it_and_never_ends_on_a_header() {
+    fn the_list_scrolls_only_when_the_cursor_leaves_it_and_brings_a_groups_header_along() {
         let mut p = grouped(&[("Apps", 3), ("Files", 40)]);
-        let first = p.painted_window();
-        assert_eq!(first.0, 0);
-        // Down to the bottom of the first window, then one past it.
-        let last_painted = (0..p.visible.len())
-            .filter(|&i| p.row_rect(i).is_some())
-            .max()
-            .expect("rows are painted");
-        p.set_cursor(last_painted.saturating_add(1));
-        let scrolled = p.painted_window();
-        assert!(scrolled.0 > 0, "leaving the window scrolls it");
-        // Back up one row: still inside the window, which stays put.
-        p.set_cursor(last_painted);
-        assert_eq!(
-            p.painted_window(),
-            scrolled,
-            "moving inside the window keeps it"
+        let shown = p.results.shown_rows();
+        assert_eq!(shown.start, 0);
+        // Down to the bottom of the view, then one past it.
+        let last_shown = shown.end.saturating_sub(1);
+        p.set_cursor(last_shown.saturating_add(1));
+        assert!(
+            p.results.shown_rows().start > 0,
+            "leaving the view scrolls it"
         );
-        // Wherever it stands, the window's last row is a result.
+        let scrolled = p.row_rect(last_shown);
+        // Back up one row: still inside the view, which stays put.
+        p.set_cursor(last_shown);
+        assert_eq!(
+            p.row_rect(last_shown),
+            scrolled,
+            "moving inside the view keeps it"
+        );
+        // Wherever it stands, the cursor's row shows whole.
         for cursor in 0..p.visible.len() {
             p.set_cursor(cursor);
-            let rows = painted_rows(&p);
             assert!(
-                matches!(rows.last(), Some(VisualRow::Entry(_))),
-                "cursor {cursor}: window ends on {:?}",
-                rows.last()
+                p.results.shown_rows().contains(&cursor),
+                "cursor {cursor} is out of view"
             );
         }
+        // Moving up into a group brings its header along.
+        p.set_cursor(3);
+        let files = p.row_rect(3).expect("Files' first row shows");
+        assert_eq!(
+            p.header_at(Point::new(files.center().x, files.y0 - 1.0))
+                .as_deref(),
+            Some("Files")
+        );
     }
 
     #[test]
@@ -3870,7 +3142,7 @@ mod keyboard_flow_tests {
         );
         let default_cap = p.desired_size().1;
         assert!(default_cap > small, "more rows make a taller card");
-        p.set_max_list_height(20.0 * p.row_height() + HEADER_HEIGHT);
+        p.set_max_list_height(20.0 * p.row_height() + p.results.header_band());
         let (w, tall) = p.desired_size();
         assert!(tall > default_cap, "the host's cap, not a fixed row count");
         p.set_rect(Rect::new(0.0, 0.0, w, tall));
@@ -3882,7 +3154,10 @@ mod keyboard_flow_tests {
             &mut p,
             &crate::synthetic_input::mouse_wheel(0.0, -3.0)
         ));
-        assert!(p.painted_window().0 >= 3, "the wheel scrolls the list");
+        assert!(
+            p.results.shown_rows().start >= 3,
+            "the wheel scrolls the list"
+        );
         assert!(p.row_rect(p.cursor()).is_some(), "the cursor stays painted");
     }
 
@@ -3958,8 +3233,12 @@ mod keyboard_flow_tests {
             .alternate(ActivationModifier::Shift, "As a tab here")
             .alternate(ActivationModifier::Ctrl, "Beside");
         let mut p = grouped(&[("Apps", 1)]);
+        let Some(SearchRow::Command(row)) = p.list_result(&entry).row else {
+            panic!("an entry is a command row");
+        };
         assert_eq!(
-            p.shown_alternate(&entry).map(|a| a.label.as_str()),
+            row.shown_alternate(p.held_modifier())
+                .map(|a| a.label.as_str()),
             Some("As a tab here"),
             "the first is the hint while nothing is held"
         );
@@ -3967,7 +3246,8 @@ mod keyboard_flow_tests {
         dispatch(&mut p, &WindowEvent::ModifiersChanged(held));
         assert_eq!(p.held_modifier(), Some(ActivationModifier::Ctrl));
         assert_eq!(
-            p.shown_alternate(&entry).map(|a| a.label.as_str()),
+            row.shown_alternate(p.held_modifier())
+                .map(|a| a.label.as_str()),
             Some("Beside")
         );
         assert_eq!(
@@ -4000,48 +3280,6 @@ mod keyboard_flow_tests {
         assert!(
             !p.step_selected(&Key::Named(NamedKey::ArrowRight)),
             "inside the query the arrows move the caret"
-        );
-    }
-
-    #[test]
-    fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
-        let mut p = grouped(&[("Files", 1)]);
-        p.field.set_query("dark the");
-        let title = tilo_search::FieldWeight::TITLE;
-        assert_eq!(
-            p.match_ranges("Use the dark theme", title),
-            vec![4..7, 8..12],
-            "each query word, merged and in order"
-        );
-        assert!(p.match_ranges("Brightness", title).is_empty());
-        p.field.set_query("pi");
-        assert!(
-            p.match_ranges(
-                "Insert it where you're typing",
-                tilo_search::FieldWeight::SUBTITLE
-            )
-            .is_empty(),
-            "two letters inside a word of a description are no match"
-        );
-        assert_eq!(p.match_ranges("Pixel Editor", title), vec![0..2]);
-
-        let theme = Theme::dark();
-        let style = theme.text(TextRole::Caption);
-        let mut tr = TextRenderer::new();
-        let prose = "Request one-session microphone access for the focused field, or finish the current recording.";
-        let width = f64::from(tr.measure_style(prose, None, &style).0) / 2.0;
-        let cut = tr.elide_to_width_style(prose, f32_of_f64(width), &style);
-        assert!(
-            cut.starts_with("Request one-session"),
-            "prose keeps its start: {cut}"
-        );
-        assert!(cut.ends_with('\u{2026}'));
-        let path = "~/src/tilo/crates/sdk/ui-core/src/widget/command_palette.rs";
-        let width = f64::from(tr.measure_style(path, None, &style).0) / 2.0;
-        let cut = elide_middle(&mut tr, path, &style, width);
-        assert!(
-            cut.starts_with("~/") && cut.ends_with("palette.rs"),
-            "a path keeps both ends: {cut}"
         );
     }
 
@@ -4121,10 +3359,11 @@ mod keyboard_flow_tests {
             CommandEntry::new("b", "Notes").in_section("Apps"),
         ]);
         let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
-        p.set_max_list_height(HEADER_HEIGHT * 2.0 + gap + p.row_height());
+        let header = p.results.header_band();
+        p.set_max_list_height(header * 2.0 + gap + p.row_height());
         assert_eq!(
             p.fitted_list_height(),
-            HEADER_HEIGHT + p.row_height(),
+            header + p.row_height(),
             "the Apps header has no row under it, so the list ends on Pitch deck"
         );
     }
@@ -4137,17 +3376,19 @@ mod keyboard_flow_tests {
             CommandEntry::new("bo", "Bo").in_section("Waiting on you"),
             CommandEntry::new("doc", "Plan").in_section("Continue"),
         ]);
-        let heights: Vec<f64> = p
-            .rows
-            .iter()
-            .filter(|row| matches!(row, VisualRow::Header { .. }))
-            .map(|row| p.visual_row_height(row))
-            .collect();
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+        let headers = p.results.header_list();
+        let first_row = p.row_rect(0).expect("Bo shows");
         let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
-        assert_eq!(
-            heights,
-            [HEADER_HEIGHT, HEADER_HEIGHT + gap],
-            "the first header opens the list; the next stands a section gap below the row above it"
+        assert_eq!(headers.len(), 2);
+        assert!(
+            (headers[0].3.y0 - p.list_top_y()).abs() < 0.01,
+            "the first header opens the list"
+        );
+        assert!(
+            (headers[1].3.y0 - first_row.y1 - gap).abs() < 0.01,
+            "the next stands a section gap below the row above it"
         );
     }
 
@@ -4167,21 +3408,20 @@ mod keyboard_flow_tests {
                 .group("Office")
                 .in_section("Apps"),
         ]);
-        let headers: Vec<(&str, HeaderLevel)> = p
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                VisualRow::Header { label, level, .. } => Some((label.as_str(), *level)),
-                VisualRow::Entry(_) => None,
-            })
+        use crate::widget::search_results::HeaderLevel;
+        let headers: Vec<(String, HeaderLevel)> = p
+            .results
+            .header_list()
+            .into_iter()
+            .map(|(label, _, level, _)| (label, level))
             .collect();
         assert_eq!(
             headers,
             [
-                ("Happening now", HeaderLevel::Section),
-                ("Apps", HeaderLevel::Section),
-                ("Utilities", HeaderLevel::Subgroup),
-                ("Office", HeaderLevel::Subgroup),
+                ("Happening now".to_owned(), HeaderLevel::Section),
+                ("Apps".to_owned(), HeaderLevel::Section),
+                ("Utilities".to_owned(), HeaderLevel::Subgroup),
+                ("Office".to_owned(), HeaderLevel::Subgroup),
             ],
             "a section's own group needs no second header; Apps has its header and its purposes"
         );

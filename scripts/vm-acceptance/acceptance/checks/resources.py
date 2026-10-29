@@ -6,7 +6,6 @@ carries the renderer it was measured on, and so does every performance record
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import shlex
@@ -16,7 +15,7 @@ from pathlib import Path
 
 from .. import core
 from ..core import check, expect
-from ..vm import VmError, first_json, wait_until
+from ..vm import VmError, wait_until
 
 AREA = "resources"
 
@@ -1566,247 +1565,28 @@ def sign_in_to_desktop(ctx, res):
 
 # -- an idle shared workspace (R09) ------------------------------------------
 
-# A workspace is natively committed only when a relay of another device governs it: one
-# of the person's hosts, which may not own workspaces itself (a host that may is a node,
-# whose rooms are stewarded, not committed). The run makes one in the guest the way a person
-# adds a home server: the server runs `tilo-enroll pair` as the relay's own account, the
-# person's device answers with `tilo-enroll approve` (what Settings runs through the
-# home-peer broker), which certifies the server as a host, records it as a home peer and
-# hands it the bundle with the device's filesystem ticket, and the relay starts on that
-# bundle. Then `invitation.issue` on a fresh workspace shares it on that relay and enrolls
-# this device into it. The slot must be the VM's person (`slot create --identity device`):
-# the approval needs the machine's certified device key and its running fs.
-HOME_RELAY_DIR = "tilo-acceptance-home-relay"
-HOME_RELAY_UNIT = "tilo-acceptance-home-relay"
-HOME_RELAY_LABEL = "Acceptance home relay"
+# Every new workspace is placed on this device's own host, which governs its room: the
+# native owner enrolls with that host as a member and the apps' records are sealed with the
+# content keys its steward hands the broker. R09 makes one with `workspace.create`, waits
+# until the room is held here, and measures it idle. The room has no other member device:
+# the one way to add one on a single VM, having the person's home relay host the workspace
+# too (Settings, Devices & Sync), is a switch bound to its row that the action catalogue
+# does not offer, and its `tilo.hosting` step answers only callers confined to a room.
 SHARED_WORKSPACE = "Acceptance shared"
-# Two apps that read their records through the broker: their committed reads are what
-# the broker holds a wait for.
+# Two apps that read their records through the broker: their reads are what the broker
+# holds a wait for.
 SHARED_APPS = ("so.tilo.notes", "so.tilo.file-explorer")
 # The kernel truncates thread names to 15 bytes: the compositor's collaboration broker
 # (`tilo-collab-broker-capnp`) and each app's collaboration shovel (`ui-collab-shovel`).
 BROKER_THREAD = "tilo-collab-bro"
 SHOVEL_THREAD = "ui-collab-shove"
-ENROLL = "/usr/libexec/tilo/tilo-enroll"
-# The machine's identity tree, which the VM's person owns.
-MACHINE_IDENTITY = "/var/lib/tilo"
-HOME_PEERS = f"{MACHINE_IDENTITY}/peers/home-peers.json"
-# Where the relay's directory goes: a root-owned runtime directory.
-RELAY_RUNTIME = "/run"
-
-# As root: a fresh directory the relay's account owns, its device key (printed as one JSON
-# line with its relay's endpoint id), and `tilo-enroll pair` started as a transient unit
-# of that account, soliciting the person's approval on the LAN.
-HOME_RELAY_PAIR = r"""
-exec 2>&1
-set -eu
-d=__RUN__/__DIR__
-# A relay left by an earlier run that refuses to stop keeps its state: never delete it under
-# a running relay.
-for u in __UNIT__.service __UNIT__-pair.service; do
-  load=$(systemctl show "$u" --property=LoadState --value)
-  if [ "$load" != not-found ]; then
-    systemctl stop "$u"
-  fi
-done
-systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null || true
-rm -rf "$d"
-mkdir -m 750 "$d" "$d/identity" "$d/state"
-chown -R tilo-relay:tilo-relay "$d"
-runuser -u tilo-relay -- __ENROLL__ device-key --identity-root "$d/identity"
-systemd-run --quiet --unit=__UNIT__-pair --uid=tilo-relay --gid=tilo-relay \
-  -p RemainAfterExit=yes \
-  __ENROLL__ pair --identity-root "$d/identity" --label __LABEL__ --timeout 150 \
-  --home-peer-output "$d/home-peer.toml"
-echo "HOME-RELAY pairing"
-"""
-
-# As the VM's person: approve the server that solicits, and no other.
-HOME_RELAY_APPROVE = r"""
-exec 2>&1
-export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
-__ENROLL__ approve --identity-root __MACHINE__ \
-  --identity-dir "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" --timeout 120 \
-  --expected-device __DEVICE__ --expected-service __SERVICE__ && echo "HOME-RELAY approved"
-"""
-
-# As root: once the pairing has finished, the relay starts on the bundle it received, as a
-# transient unit of its account, ready once it has bound its endpoint. The bundle names where
-# the server's full-replica status lives, and the relay refuses a bundle whose path is not its own.
-HOME_RELAY_START = r"""
-exec 2>&1
-set -eu
-d=__RUN__/__DIR__
-for _ in $(seq 60); do
-  [ "$(systemctl show -p SubState --value __UNIT__-pair.service)" = running ] || break
-  sleep 1
-done
-systemctl show -p Result -p ExecMainStatus __UNIT__-pair.service
-journalctl -u __UNIT__-pair.service --no-pager -o cat | tail -n 40
-grep -q '^ticket' "$d/home-peer.toml" 2>/dev/null || { echo "HOME-RELAY no-bundle"; exit 0; }
-status=$(sed -n 's/^status_file = "\(.*\)"$/\1/p' "$d/home-peer.toml")
-cat > "$d/relay.toml" <<TOML
-identity_root = "$d/identity"
-state_root = "$d/state"
-full_replica_status = "$status"
-home_peer_bundle = "$d/home-peer.toml"
-iroh_listen = "0.0.0.0:__PORT__"
-TOML
-chown tilo-relay:tilo-relay "$d/relay.toml"
-systemd-run --quiet --collect --unit=__UNIT__ --uid=tilo-relay --gid=tilo-relay \
-  --service-type=notify -p TimeoutStartSec=60 \
-  /usr/libexec/tilo/tilo-relay --config "$d/relay.toml" run
-echo "HOME-RELAY started"
-"""
-
-HOME_RELAY_STOP = r"""
-d=__RUN__/__DIR__
-journalctl -u __UNIT__-pair.service -u __UNIT__.service --no-pager -o short-monotonic 2>/dev/null \
-  | tail -n 200 | cut -c1-400
-# A relay that refuses to stop keeps its directory, and the failure is the step's.
-for u in __UNIT__.service __UNIT__-pair.service; do
-  load=$(systemctl show "$u" --property=LoadState --value) || exit $?
-  if [ "$load" != not-found ]; then
-    systemctl stop "$u" || exit $?
-  fi
-done
-systemctl reset-failed __UNIT__.service __UNIT__-pair.service 2>/dev/null
-rm -rf "$d"
-"""
 
 # What the compositor said about launches, authorship and the native owner while R09 ran:
-# an app that never opens in a committed workspace is refused on that path.
+# an app that never opens in the shared workspace is refused on that path.
 SHARED_SESSION_LOG = (
     "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
     "| grep -aiE 'launch|authorship|native|membership|owner|custody|refus|identity|enroll|governor' "
     "| tail -n 200 | cut -c1-500; true")
-
-
-def _guest(script: str, **values) -> str:
-    for key, value in {"DIR": HOME_RELAY_DIR, "UNIT": HOME_RELAY_UNIT, "ENROLL": ENROLL,
-                       "MACHINE": MACHINE_IDENTITY, "RUN": RELAY_RUNTIME, **values}.items():
-        script = script.replace(f"__{key}__", str(value))
-    return script
-
-
-def home_relay_port(uid: int) -> int:
-    """The port the slot's relay listens on: one per slot user, so two slots of a shared VM
-    never contend, and below Linux's ephemeral range."""
-    return 24000 + uid % 8000
-
-
-def start_home_relay(ctx) -> dict:
-    """Enroll a home relay into the VM's person as production does and start it; return its
-    device key, relay endpoint id and port. Raises Unobservable when the guest cannot."""
-    try:
-        out = ctx.vm.root_exec(_guest(HOME_RELAY_PAIR, LABEL=shlex.quote(HOME_RELAY_LABEL)))
-    except VmError as e:
-        raise core.Unobservable(f"the home server's pairing could not be set up: {e}") from e
-    ctx.write("R09-home-relay-pair.txt", out)
-    try:
-        key = first_json(out)
-        device, service = key["device_public_key"], key["relay_service_node_id"]
-    except (VmError, KeyError, TypeError, ValueError) as e:
-        raise core.Unobservable(f"tilo-enroll device-key gave no relay key: {out.strip()[-300:]!r}") from e
-    try:
-        if "HOME-RELAY pairing" not in out:
-            raise core.Unobservable(f"the home server's pairing did not start: {out.strip()[-400:]!r}")
-        approved = ctx.vm.exec(_guest(HOME_RELAY_APPROVE, DEVICE=device, SERVICE=service),
-                               timeout=180, check=False)
-        ctx.write("R09-home-relay-approve.txt", approved)
-        if "HOME-RELAY approved" not in approved:
-            raise core.Unobservable("the VM's person did not approve the home server "
-                                    f"(tilo-enroll approve): {approved.strip()[-400:]!r}")
-        port = home_relay_port(ctx.vm.slot_uid())
-        out = ctx.vm.root_exec(_guest(HOME_RELAY_START, PORT=port), timeout=180)
-        ctx.write("R09-home-relay-setup.txt", out)
-        if "HOME-RELAY no-bundle" in out:
-            raise core.Unobservable("the home server was approved but received no bundle with the "
-                                    f"device's filesystem ticket: {out.strip()[-400:]!r}")
-        if "HOME-RELAY started" not in out:
-            raise core.Unobservable(f"the home relay did not start: {out.strip()[-400:]!r}")
-        return {"device": device, "service": service, "port": port}
-    except Exception as exc:
-        # The approval may already have recorded the home peer before startup fails.
-        try:
-            stop_home_relay(ctx, device)
-        except Exception as cleanup:
-            exc.add_note(f"home relay cleanup also failed: {cleanup}")
-        raise
-
-
-def without_home_peer(text: str, device: str) -> str | None:
-    """A home-peer registry less `device`'s entry, or None when it has none (or the
-    registry is not one): nothing to write back."""
-    try:
-        peers = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(peers, list):
-        return None
-    kept = [p for p in peers if not (isinstance(p, dict) and p.get("device_node_id") == device)]
-    return None if len(kept) == len(peers) else json.dumps(kept, indent=2)
-
-
-def stop_home_relay(ctx, device: str | None) -> None:
-    """Stop the relay, keep its journal as evidence, and remove its home-peer entry so a
-    slot that runs the suite again does not keep dialling relays that are gone."""
-    ctx.write("R09-home-relay.log", ctx.vm.root_exec(_guest(HOME_RELAY_STOP)))
-    if device is None:
-        return
-    text = ctx.vm.exec(f"cat {HOME_PEERS} 2>/dev/null; true", check=False)
-    rest = without_home_peer(text, device)
-    if rest is not None:
-        blob = base64.b64encode(rest.encode()).decode()
-        ctx.vm.exec(f"f={HOME_PEERS}; echo {blob} | base64 -d > \"$f.acc-tmp\" && "
-                    "chmod 664 \"$f.acc-tmp\" && mv -f \"$f.acc-tmp\" \"$f\"")
-
-
-def committed_workspace(state: dict, host_device: str) -> dict | None:
-    """The workspace whose room this device's native owner holds under `host_device`'s
-    governance, when that governor may not own workspaces: a room whose app records the
-    owner commits (shell `commits_native_documents`), not one whose channels a node
-    stewards. None while the enrollment is pending or the room is another's."""
-    tree = state["workspace_tree"]
-    rooms = (tree.get("native_authority") or {}).get("rooms") or {}
-    want = bytes.fromhex(host_device)
-    for w in tree["workspaces"]:
-        stored = rooms.get(str(w.get("room")))
-        governor = (stored or {}).get("governor") or {}
-        if bytes(governor.get("device_public_key") or []) != want:
-            continue
-        caps = governor.get("capabilities") or {}
-        if not (caps.get("can_own_workspaces") and caps.get("can_act_as_host") and not caps.get("foreign")):
-            return w
-    return None
-
-
-def describe_native_rooms(state: dict) -> str:
-    """The native owner's rooms and pending enrollments, for a failure message."""
-    authority = state["workspace_tree"].get("native_authority") or {}
-    rooms, pending = authority.get("rooms") or {}, authority.get("pending") or {}
-    governed = [f"{room} (governor {bytes((r.get('governor') or {}).get('device_public_key') or []).hex()[:12]})"
-                for room, r in rooms.items()]
-    return f"rooms: {', '.join(governed) or 'none'}; pending: {', '.join(pending) or 'none'}"
-
-
-def invoke_settled(ctx, provider: str, action: str, args: dict, timeout: float = 90):
-    """Invoke `action` and follow it until it settles; its output when it succeeded."""
-    reply = ctx.vm.control_json("actions", "invoke", provider, action, "--args-json", json.dumps(args),
-                                "--wait=30000", timeout=60)
-    deadline = time.monotonic() + timeout
-    while True:
-        receipt = (reply or {}).get("receipt") or {}
-        update = receipt.get("update") or {}
-        state = update.get("state")
-        if state == "succeeded":
-            return update.get("output")
-        if state in ("failed", "cancelled"):
-            raise core.CheckFailed(f"{action} {state}: {json.dumps(update)[:400]}")
-        job = receipt.get("broker_invocation_id")
-        if job is None or time.monotonic() > deadline:
-            raise core.CheckFailed(f"{action} did not settle within {timeout:.0f} s: {json.dumps(update)[:400]}")
-        reply = ctx.vm.control_json("actions", "status", str(job), "--wait=30000", timeout=60)
 
 
 def _select_workspace(ctx, wid) -> None:
@@ -1816,29 +1596,24 @@ def _select_workspace(ctx, wid) -> None:
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 
-def share_new_workspace(ctx, host_device: str) -> dict:
-    """Create a workspace, make it active and invite into it, which shares it on the home
-    relay; return it once this device's enrollment into it is committed."""
+def held_here(state: dict, room) -> bool:
+    """Whether this device holds `room`'s replica: its enrollment with the host it was
+    placed on is installed, not merely in flight."""
+    rooms = (state["workspace_tree"].get("native_authority") or {}).get("rooms") or {}
+    return str(room) in rooms
+
+
+def new_hosted_workspace(ctx) -> dict:
+    """Create a workspace, make it active and return it once this device's host holds its
+    room."""
     before = {w["id"] for w in ctx.state()["workspace_tree"]["workspaces"]}
     ctx.vm.invoke("actions", "workspace.create", {"name": SHARED_WORKSPACE})
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         8, "a new workspace")
-    _select_workspace(ctx, next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)["id"])
-    # Shared on the relay: nobody redeems the token, and it is never written down.
-    invoke_settled(ctx, "actions", "invitation.issue",
-                   {"role": "viewer", "expires_in_seconds": 3600, "confirm": True})
-    last = {}
-
-    def committed():
-        last["s"] = ctx.state()
-        return committed_workspace(last["s"], host_device)
-
-    shared = wait_until(committed, 60, 1.0)
-    if shared is None:
-        raise core.CheckFailed("the invited workspace was not committed under the home relay within "
-                               f"60 s ({describe_native_rooms(last['s'])})")
-    _select_workspace(ctx, shared["id"])
-    return shared
+    made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)
+    _select_workspace(ctx, made["id"])
+    ctx.wait_state(lambda s: held_here(s, made["room"]), 30, "the new workspace's room held here")
+    return made
 
 
 def shared_idle(m: dict, budgets: dict) -> tuple[dict, list[str]]:
@@ -1873,19 +1648,15 @@ def shared_idle(m: dict, budgets: dict) -> tuple[dict, list[str]]:
 
 @check("R09", AREA, "Idle in a shared workspace: the broker and the apps' shovels sleep until told")
 def idle_shared(ctx, res):
-    """A natively committed workspace, made by the real enrollment, with Notes and Files
-    open and nothing edited: the broker holds each committed read's wait and re-checks it
-    only when an identity or membership input announces a change, and the apps'
-    collaboration shovels have nothing to carry."""
+    """A workspace placed on this device's own host, its records sealed through the broker,
+    with Notes and Files open and nothing edited: the broker holds each read's wait and
+    re-checks it only when an identity or membership input announces a change, and the
+    apps' collaboration shovels have nothing to carry."""
     ctx.reset()
     home = ctx.state()["workspace_tree"]["active"]
-    device = None
     try:
-        relay = start_home_relay(ctx)
-        device = relay["device"]
-        res.metrics["home_relay"] = relay
-        shared = share_new_workspace(ctx, device)
-        res.metrics["workspace"] = {"id": shared["id"], "room": shared.get("room")}
+        shared = new_hosted_workspace(ctx)
+        res.metrics["workspace"] = {"id": shared["id"], "room": shared["room"]}
         opened = _open_several(ctx, SHARED_APPS, "R09")
         res.metrics["opened"] = opened
         here = next(w for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == shared["id"])
@@ -1909,14 +1680,14 @@ def idle_shared(ctx, res):
                    shovels=judged["shovels"], apps=",".join(opened), **window)
         expect(not problems, "; ".join(problems))
     finally:
-        _leave_shared(ctx, res, home, device)
+        _leave_shared(ctx, res, home)
 
 
-def _leave_shared(ctx, res, home, device: str | None) -> None:
-    """Close R09's windows, return to the workspace the run was in and stop the relay.
-    Every step runs whatever the one before did; what failed is kept in the metrics."""
+def _leave_shared(ctx, res, home) -> None:
+    """Close R09's windows and return to the workspace the run was in. Every step runs
+    whatever the one before did; what failed is kept in the metrics."""
     errors = []
-    for step in (ctx.reset, lambda: _select_workspace(ctx, home), lambda: stop_home_relay(ctx, device)):
+    for step in (ctx.reset, lambda: _select_workspace(ctx, home)):
         try:
             step()
         except Exception as e:  # noqa: BLE001 - every cleanup step must run

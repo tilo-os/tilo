@@ -1310,12 +1310,14 @@ pub struct ShellNetwork {
     next_sync_pull: Mutex<Option<std::time::Instant>>,
     /// See [`Self::peers_joined_epoch`].
     peers_joined: std::sync::atomic::AtomicU64,
-    personal_continuity_user: Option<[u8; 32]>,
+    /// The person this device belongs to: its certificate's root.
+    local_person: Option<[u8; 32]>,
     /// The other roots that certified this device for a workspace of theirs
     /// (its workspace identities): each has a person room of its own, routed
     /// to that root's other devices only.
     workspace_person_roots: Vec<[u8; 32]>,
-    pub(crate) personal_continuity_device: Option<tilo_network_actor::fabric::DeviceId>,
+    /// This device, as its person's other devices name it.
+    pub(crate) local_device: Option<tilo_network_actor::fabric::DeviceId>,
     /// What the exported room list (`personal-rooms.json`) was last asked to
     /// hold.
     personal_rooms_export: KnownContents,
@@ -1887,24 +1889,24 @@ impl ShellNetwork {
         );
         let listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>> = Arc::new(Mutex::new(Vec::new()));
         let host_identity = identity(&keypair, keypair_path);
-        let personal_continuity_user = host_identity
+        let local_person = host_identity
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
         let workspace_person_roots = host_identity
             .as_ref()
             .map(workspace_person_roots)
             .unwrap_or_default();
-        let personal_continuity_device = host_identity.as_ref().and_then(|identity| {
+        let local_device = host_identity.as_ref().and_then(|identity| {
             tilo_network_actor::fabric::DeviceId::new(hex::encode(
                 identity.device_cert.device_public_key,
             ))
             .ok()
         });
-        tree.write().local_person = personal_continuity_user;
+        tree.write().local_person = local_person;
         // Read here, off the loop, and on a worker after each change.
         let personal_device_peers = Arc::new(Mutex::new(
             personal_device_peers::PersonalDevicePeers::watching(own_devices::own_device_sources(
-                personal_continuity_user,
+                local_person,
                 own_device_fleet.as_ref(),
             )),
         ));
@@ -1951,10 +1953,9 @@ impl ShellNetwork {
                 )
             });
 
-        let relay_workspace_ids =
-            relay_topics_for_home_peers(tree.read().rooms(), personal_continuity_user);
-        let home_peers = registered_home_peer_addrs(personal_continuity_user, &relay_workspace_ids)
-            .unwrap_or_default();
+        let relay_workspace_ids = relay_topics_for_home_peers(tree.read().rooms(), local_person);
+        let home_peers =
+            registered_home_peer_addrs(local_person, &relay_workspace_ids).unwrap_or_default();
         let home_peer_ids = home_peers
             .iter()
             .map(|host| host.addr.id)
@@ -2015,8 +2016,7 @@ impl ShellNetwork {
 
         let pending_invitations_path = pending_invites_path(state_dir);
         let device_fabric_path = device_fabric_path(state_dir);
-        let device_fabric =
-            load_device_fabric(&device_fabric_path).restored(personal_continuity_device.as_ref());
+        let device_fabric = load_device_fabric(&device_fabric_path).restored(local_device.as_ref());
         let now = tilo_clock::unix_now();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -2028,7 +2028,7 @@ impl ShellNetwork {
         let other_devices = device_fabric
             .snapshots()
             .keys()
-            .any(|device| Some(device) != personal_continuity_device.as_ref());
+            .any(|device| Some(device) != local_device.as_ref());
         reachability.need(
             crate::network::reachability::Need::Session,
             needs_reachability(
@@ -2081,9 +2081,9 @@ impl ShellNetwork {
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
             personal_focus_recency: Mutex::default(),
-            personal_continuity_user,
+            local_person,
             workspace_person_roots,
-            personal_continuity_device,
+            local_device,
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
@@ -2164,7 +2164,7 @@ impl ShellNetwork {
         &self,
     ) -> Option<(tilo_network_actor::fabric::DeviceId, String)> {
         Some((
-            self.personal_continuity_device.clone()?,
+            self.local_device.clone()?,
             self.host_identity
                 .as_ref()?
                 .device_cert
@@ -2523,7 +2523,7 @@ impl ShellNetwork {
         // The person's own topic also travels directly between their
         // devices; a room's travels over its host sessions alone.
         let command = if self
-            .personal_continuity_user
+            .local_person
             .is_some_and(|user| ws == personal_continuity_topic_id(&user))
         {
             NetCmd::JoinPersonalTopic { ws, on_event }
@@ -2981,14 +2981,14 @@ impl ShellNetwork {
     /// The person's own room: the room derived from the root that certified
     /// this device. Its records travel only between that root's devices.
     pub fn local_person_room(&self) -> Option<RoomId> {
-        self.personal_continuity_user
+        self.local_person
             .map(|user| RoomId::from(collab_types::person_room(&user)))
     }
 
     /// Every root this device acts for: the one that certified it, then its
     /// workspace identities. Each has its own person room.
     pub(crate) fn person_roots(&self) -> impl Iterator<Item = [u8; 32]> + '_ {
-        self.personal_continuity_user
+        self.local_person
             .into_iter()
             .chain(self.workspace_person_roots.iter().copied())
     }
@@ -3882,7 +3882,7 @@ impl ShellNetwork {
         named: Option<RoomId>,
     ) -> Result<(iroh::EndpointId, RoomId, u64), String> {
         let local = self
-            .personal_continuity_device
+            .local_device
             .as_ref()
             .and_then(|device| decode_lower_hex_32(device.as_str()));
         let enrolled = self.enrolled_personal_devices(local);
@@ -3920,7 +3920,7 @@ impl ShellNetwork {
     ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>, String>
     {
         let user = self
-            .personal_continuity_user
+            .local_person
             .ok_or_else(|| "this device holds no identity".to_string())?;
         if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
             return Err("only the person this device belongs to reaches their devices".into());
@@ -4033,7 +4033,7 @@ impl ShellNetwork {
             if let tilo_actions::remote::RemoteActionMessage::Invoke(request) = &frame.message
                 && !identity.capabilities.foreign
                 && self
-                    .personal_continuity_user
+                    .local_person
                     .is_some_and(|user| identity.is_same_user(&user))
             {
                 self.note_remote_use(&identity.device_cert.device_label, request);
@@ -4358,10 +4358,10 @@ impl ShellNetwork {
         // skip them.
         changed |= self.dial_direct_peers();
         let mut relay_workspace_ids = relay_topics_for_home_peers(self.tree.read().rooms(), None);
-        if let Some(user) = self.personal_continuity_user {
+        if let Some(user) = self.local_person {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
-        let desired = match self.personal_continuity_user {
+        let desired = match self.local_person {
             None => Ok(Vec::new()),
             Some(user) => inputs.registrations.clone().map(|registrations| {
                 home_peers_from_registrations(registrations, user, &relay_workspace_ids)
@@ -4524,7 +4524,7 @@ impl ShellNetwork {
             fabric
                 .snapshots()
                 .keys()
-                .any(|device| Some(device) != self.personal_continuity_device.as_ref())
+                .any(|device| Some(device) != self.local_device.as_ref())
         });
         let tree = tree.read();
         needs_reachability(
@@ -4914,9 +4914,9 @@ impl ShellNetwork {
 
         let permitted = self.permits_continuity(ContinuityCapability::AppContinuations);
         let device = self
-            .personal_continuity_device
+            .local_device
             .clone()
-            .filter(|_| permitted && self.personal_continuity_user.is_some());
+            .filter(|_| permitted && self.local_person.is_some());
         // Asked on every round: only a change takes the tree for writing,
         // which would wake every reader that watches its generation.
         if self.tree.read().continuation_device != device {
@@ -4970,6 +4970,7 @@ impl ShellNetwork {
                 });
             }
         }
+        drop(tree);
         focus
     }
 
@@ -4993,7 +4994,7 @@ impl ShellNetwork {
         let fabric = self.device_fabric.lock().ok();
         let devices = certified
             .iter()
-            .filter(|device| self.personal_continuity_device.as_ref() != Some(*device))
+            .filter(|device| self.local_device.as_ref() != Some(*device))
             .cloned()
             .map(|device| {
                 let label = fabric
@@ -5008,7 +5009,7 @@ impl ShellNetwork {
             .collect();
         drop(fabric);
         crate::shell::continuity_suggestion::ContinuityFeed {
-            local_device: self.personal_continuity_device.clone(),
+            local_device: self.local_device.clone(),
             observations,
             devices,
         }
@@ -5042,9 +5043,7 @@ impl ShellNetwork {
                         enrolled.contains(&route.endpoint_id)
                             && persons
                                 .get(&crate::shell::state::PeerOrigin::peer(&route.endpoint_id))
-                                .is_some_and(|root| {
-                                    Some(root) == self.personal_continuity_user.as_ref()
-                                })
+                                .is_some_and(|root| Some(root) == self.local_person.as_ref())
                     })
                     .map(|route| (route.device.clone(), route.clone()))
                     .collect()
@@ -5069,7 +5068,7 @@ impl ShellNetwork {
                 .collect();
             registry.retain_owner_view_candidates(&live_keys);
             for (room, app) in &noted {
-                if self.personal_continuity_device.as_ref() == Some(&app.stamp.device) {
+                if self.local_device.as_ref() == Some(&app.stamp.device) {
                     if registry.owner_claimed(*room, app) {
                         continue;
                     }
@@ -5105,6 +5104,7 @@ impl ShellNetwork {
                 }
             }
         }
+        drop(tree);
         noted
     }
 
@@ -5193,10 +5193,10 @@ impl ShellNetwork {
         path: &Path,
     ) -> Result<(), String> {
         let user_public_key = self
-            .personal_continuity_user
+            .local_person
             .ok_or_else(|| "this device has no certified personal identity".to_string())?;
         let source = self
-            .personal_continuity_device
+            .local_device
             .as_ref()
             .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
         if source == target || !self.certified_secret_recipients().contains(target) {
@@ -5283,10 +5283,10 @@ impl ShellNetwork {
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
-            .personal_continuity_user
+            .local_person
             .ok_or_else(|| "this device has no certified personal identity".to_string())?;
         let source = self
-            .personal_continuity_device
+            .local_device
             .clone()
             .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
         if &source == target {
@@ -5368,7 +5368,7 @@ impl ShellNetwork {
 
     /// This device, as the person's fabric names it.
     pub(crate) fn personal_device_id(&self) -> Option<tilo_network_actor::fabric::DeviceId> {
-        self.personal_continuity_device.clone()
+        self.local_device.clone()
     }
 
     /// Whether any of the person's other devices has a current route here.
@@ -5471,7 +5471,7 @@ impl ShellNetwork {
         path: &Path,
         fabric: &crate::shell::device_fabric::DeviceFabric,
     ) -> Result<(), String> {
-        if let Some(user) = self.personal_continuity_user {
+        if let Some(user) = self.local_person {
             let bytes = display_observations::encode(fabric, user)?;
             let sidecar = Self::display_observations_path(path);
             crate::shell::durable_writer::global().submit(sidecar.clone(), move || {
@@ -5484,10 +5484,8 @@ impl ShellNetwork {
     }
 
     pub(crate) fn restore_display_observations(&self) {
-        let (Some(path), Some(user)) = (
-            self.device_fabric_path.as_deref(),
-            self.personal_continuity_user,
-        ) else {
+        let (Some(path), Some(user)) = (self.device_fabric_path.as_deref(), self.local_person)
+        else {
             return;
         };
         let enrolled = self.certified_secret_recipients();
@@ -5507,8 +5505,7 @@ impl ShellNetwork {
         &self,
         device: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
-        self.personal_continuity_user.is_some()
-            && self.certified_secret_recipients().contains(device)
+        self.local_person.is_some() && self.certified_secret_recipients().contains(device)
     }
 
     /// Retain offline facts without treating a checkpoint as live reachability.
@@ -5516,9 +5513,7 @@ impl ShellNetwork {
         &self,
         local: &tilo_network_actor::fabric::DeviceId,
     ) -> Vec<settings_store::person_displays::PersonDevice> {
-        if self.personal_continuity_user.is_none()
-            || self.personal_continuity_device.as_ref() != Some(local)
-        {
+        if self.local_person.is_none() || self.local_device.as_ref() != Some(local) {
             return Vec::new();
         }
         let enrolled = self.certified_secret_recipients();
@@ -5571,7 +5566,7 @@ impl ShellNetwork {
         snapshot: crate::shell::device_fabric::DeviceFabricSnapshot,
     ) -> Result<bool, crate::shell::device_fabric::FabricError> {
         if self
-            .personal_continuity_device
+            .local_device
             .as_ref()
             .is_none_or(|device| device != &snapshot.owner)
         {
@@ -5610,7 +5605,7 @@ impl ShellNetwork {
         use crate::shell::device_fabric::FabricError;
         if !self
             .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
-            || self.personal_continuity_device.as_ref() != Some(&stamp.device)
+            || self.local_device.as_ref() != Some(&stamp.device)
         {
             return Err(FabricError::ForeignAuthorship);
         }
@@ -5626,7 +5621,7 @@ impl ShellNetwork {
 
     fn display_input_declines_path(&self) -> Result<(PathBuf, [u8; 32]), String> {
         let user = self
-            .personal_continuity_user
+            .local_person
             .ok_or("display input has no selected identity")?;
         let path = self
             .device_fabric_path
@@ -5677,7 +5672,7 @@ impl ShellNetwork {
 
     /// The person whose devices form this device's personal fabric.
     pub fn personal_user_public_key(&self) -> Option<[u8; 32]> {
-        self.personal_continuity_user
+        self.local_person
     }
 
     /// Delete everything `device` published to the personal fabric, here and
@@ -5746,7 +5741,7 @@ impl ShellNetwork {
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         let local = self
-            .personal_continuity_device
+            .local_device
             .clone()
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
         let changed = {
@@ -5870,7 +5865,7 @@ impl ShellNetwork {
         password: &str,
     ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
         let author = self
-            .personal_continuity_device
+            .local_device
             .clone()
             .ok_or_else(|| "this device has no certified personal identity".to_string())?;
         if !self.certified_secret_recipients().contains(requester) {
@@ -5956,7 +5951,7 @@ impl ShellNetwork {
     fn certified_secret_recipients(
         &self,
     ) -> Arc<std::collections::BTreeSet<tilo_network_actor::fabric::DeviceId>> {
-        let local = self.personal_continuity_device.as_ref();
+        let local = self.local_device.as_ref();
         let build = |enrolled: &[[u8; 32]]| {
             let mut recipients = local
                 .cloned()
@@ -5993,7 +5988,7 @@ impl ShellNetwork {
     }
 
     fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
-        let local = self.personal_continuity_device.as_ref()?;
+        let local = self.local_device.as_ref()?;
         let snapshot = self
             .device_fabric
             .lock()
@@ -6016,7 +6011,7 @@ impl ShellNetwork {
         if !self.personal_fabric_allowed() {
             return;
         }
-        let Some(user_public_key) = self.personal_continuity_user else {
+        let Some(user_public_key) = self.local_person else {
             return;
         };
         let ws = personal_continuity_topic_id(&user_public_key);
@@ -6050,7 +6045,7 @@ impl ShellNetwork {
         }
         if self
             .permits_continuity(crate::shell::continuity_policy::ContinuityCapability::DisplayInput)
-            && let Some(local) = self.personal_continuity_device.as_ref()
+            && let Some(local) = self.local_device.as_ref()
             && let Some(display) = self
                 .device_fabric()
                 .snapshots()
@@ -6079,7 +6074,7 @@ impl ShellNetwork {
     fn publish_personal_workspaces(&self) {
         let (Some(workspaces), Some(user), Some(identity)) = (
             self.personal_workspaces.as_ref(),
-            self.personal_continuity_user,
+            self.local_person,
             self.host_identity.as_ref(),
         ) else {
             return;
@@ -6115,7 +6110,7 @@ impl ShellNetwork {
             return false;
         };
         let (Some(local_user), Some(workspaces), Some(here)) = (
-            self.personal_continuity_user,
+            self.local_person,
             self.personal_workspaces.as_ref(),
             self.host_identity
                 .as_ref()
@@ -6408,7 +6403,7 @@ impl ShellNetwork {
                 // A configured host's session of the person's own topic is
                 // up: the rooms it holds for them are entered now.
                 if self
-                    .personal_continuity_user
+                    .local_person
                     .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
                 {
                     self.enter_configured_host_rooms_off_loop(Some(peer));
@@ -6425,7 +6420,7 @@ impl ShellNetwork {
                 self.record_content_sources_changed();
                 self.publish_sync_requests();
                 if self
-                    .personal_continuity_user
+                    .local_person
                     .is_some_and(|user| ws == personal_continuity_topic_id(&user))
                 {
                     self.publish_device_fabric_request();
@@ -6570,7 +6565,7 @@ impl ShellNetwork {
         };
         // The device's own root carries the whole fabric; a workspace
         // identity's root carries only its person room's records.
-        let own_root = self.personal_continuity_user == Some(user_public_key)
+        let own_root = self.local_person == Some(user_public_key)
             || (matches!(payload, PersonalFabricPayload::Document { .. })
                 && self.workspace_person_roots.contains(&user_public_key));
         if !own_root
@@ -6712,7 +6707,7 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "personal fabric action has trailing data");
             return;
         }
-        let Some(local) = self.personal_continuity_device.as_ref() else {
+        let Some(local) = self.local_device.as_ref() else {
             return;
         };
         let Ok(source) =
@@ -7579,9 +7574,9 @@ pub(crate) fn shell_network_for_test(
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
-        personal_continuity_user: None,
+        local_person: None,
         workspace_person_roots: Vec::new(),
-        personal_continuity_device: None,
+        local_device: None,
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
@@ -8543,7 +8538,7 @@ mod tests {
     #[serial_test::serial]
     fn app_continuations_follow_the_switch() {
         let (mut net, _commands) = personal_continuity_network_for_test([0xA4; 32]);
-        let device = net.personal_continuity_device.clone();
+        let device = net.local_device.clone();
         assert!(device.is_some());
         net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
         assert!(net.enforce_app_continuations_policy());
@@ -9128,8 +9123,8 @@ mod tests {
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         let (mut net, commands) =
             shell_network_for_test(WorkspaceTree::default().shared(), 0xC0_11_AB);
-        net.personal_continuity_user = Some(user_public_key);
-        net.personal_continuity_device = Some(
+        net.local_person = Some(user_public_key);
+        net.local_device = Some(
             tilo_network_actor::fabric::DeviceId::new("local-continuity-device")
                 .expect("valid local device id"),
         );
@@ -9162,7 +9157,7 @@ mod tests {
         sign_device_cert(&mut cert, root).expect("certified device");
         let (mut net, commands) =
             shell_network_for_test(tree.shared(), u64::from(device.public().as_bytes()[0]));
-        net.personal_continuity_user = Some(user);
+        net.local_person = Some(user);
         net.require_peer_identity = true;
         net.personal_workspaces = Some(Mutex::new(
             crate::shell::personal_workspaces::PersonalWorkspaces::new(
@@ -9534,8 +9529,8 @@ mod tests {
             sign_device_cert(&mut local_cert, &root).expect("local certificate");
 
             let (mut net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 1);
-            net.personal_continuity_user = Some(user_public_key);
-            net.personal_continuity_device = Some(local_device.clone());
+            net.local_person = Some(user_public_key);
+            net.local_device = Some(local_device.clone());
             net.host_identity = Some(HostIdentity {
                 device_cert: local_cert,
                 device_signing_key: local_key,
@@ -9897,7 +9892,7 @@ mod tests {
         assert!(net.current_personal_route(&owner).is_some());
         assert!(net.device_fabric().display_outputs(&owner).is_some());
         assert!(!net.personal_device_is_enrolled(&owner));
-        let local = net.personal_continuity_device.as_ref().unwrap();
+        let local = net.local_device.as_ref().unwrap();
         assert!(net.person_display_devices(local).is_empty());
     }
 
@@ -9957,7 +9952,7 @@ mod tests {
         let owner =
             tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                 .unwrap();
-        let local = net.personal_continuity_device.clone().unwrap();
+        let local = net.local_device.clone().unwrap();
         let (snapshot, observation) = rich_display_network_snapshot(owner.clone());
         let stamp = snapshot.display.as_ref().unwrap().stamp.clone();
         net.device_fabric.lock().unwrap().upsert(snapshot).unwrap();
@@ -10187,7 +10182,7 @@ mod tests {
                 peer_device.public().as_bytes(),
             ))
             .unwrap();
-            let target = net.personal_continuity_device.clone().unwrap();
+            let target = net.local_device.clone().unwrap();
             let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
                 request_id: [8; 16],
                 source,
@@ -10241,7 +10236,7 @@ mod tests {
             let source =
                 tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                     .unwrap();
-            let target = net.personal_continuity_device.clone().unwrap();
+            let target = net.local_device.clone().unwrap();
             let mut envelope = fabric_envelope(
                 0xD4,
                 &source,
@@ -10339,7 +10334,7 @@ mod tests {
             let envelope = fabric_envelope(
                 0xD8,
                 &peer_device,
-                net.personal_continuity_device.as_ref().unwrap(),
+                net.local_device.as_ref().unwrap(),
                 crate::shell::device_fabric::PersonalFabricAction::MediaCancelled {
                     request_id: [0xD9; 16],
                     session_id: "wire".into(),
@@ -11142,7 +11137,7 @@ mod tests {
             tree.join_room("Home peer workspace", room)
                 .expect("joins the room");
             let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
-            net.personal_continuity_user = Some(own_user);
+            net.local_person = Some(own_user);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
             std::fs::write(
@@ -11543,7 +11538,7 @@ mod tests {
         tree.desktop.workspaces[index] =
             crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
         let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
-        net.personal_continuity_user = Some(user);
+        net.local_person = Some(user);
         authenticated_personal_peer_on_topic(
             &net,
             &collaborator_root,

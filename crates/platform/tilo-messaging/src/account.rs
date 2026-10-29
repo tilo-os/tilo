@@ -2,6 +2,7 @@
 
 /// Operational health is information, never a sending or credential grant.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccountState {
     #[default]
     Unknown,

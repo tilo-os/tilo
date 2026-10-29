@@ -50,14 +50,14 @@ fn host_request(action: &str, argument: Value) -> InvokeRequest {
     request
 }
 
-/// What `device` is offered of the host's operations, asked on `workspace`.
+/// What `device` is offered of the host's operations, asked of the host.
 async fn offered(host: &HostRoomActions, device: &DeviceCert, caller: &Caller) -> Vec<String> {
     let query = CatalogueQuery {
         provider: Some(HOST_ACTIONS_PROVIDER.into()),
         max_results: 100,
         ..CatalogueQuery::default()
     };
-    settled(host.in_workspace_as(7, device).query(caller, query))
+    settled(host.as_host(device).query(caller, query))
         .await
         .unwrap()
         .rows
@@ -72,11 +72,7 @@ async fn invoke(
     device: &DeviceCert,
     request: InvokeRequest,
 ) -> Result<Value, ActionHostError> {
-    let receipt = settled(
-        host.in_workspace_as(7, device)
-            .invoke(&caller(device), request),
-    )
-    .await?;
+    let receipt = settled(host.as_host(device).invoke(&caller(device), request)).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("a host operation completes at once: {other:?}"),
@@ -273,7 +269,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let agent = Caller::delegated_agent("writer", laptop.user_public_key, laptop.device_public_key);
     assert!(offered(&host, &laptop, &agent).await.is_empty());
     let refused = settled(
-        host.in_workspace_as(7, &laptop)
+        host.as_host(&laptop)
             .invoke(&agent, host_request(LIST_ROOMS, json!({}))),
     )
     .await;
@@ -281,7 +277,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
 
     // A certificate that is not the caller's speaks for nobody.
     let refused = settled(
-        host.in_workspace_as(7, &laptop)
+        host.as_host(&laptop)
             .invoke(&caller(&stranger), host_request(LIST_ROOMS, json!({}))),
     )
     .await;
@@ -304,7 +300,7 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let list = RemoteActionMessage::Invoke(host_request(LIST_ROOMS, json!({})));
     assert!(plane.answers(&caller(&laptop), &list));
     let answer = plane
-        .serve_certified(7, &caller(&laptop), &laptop, list)
+        .serve_host(&caller(&laptop), &laptop, list)
         .expect("an invocation is answered");
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {
         panic!("a receipt");

@@ -203,7 +203,7 @@ impl FrameHarness {
     }
 
     /// Resolve and run one History door action; the next frame presents it.
-    fn run_local_history_action(
+    pub(super) fn run_local_history_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
@@ -233,44 +233,6 @@ impl FrameHarness {
         self.execute_history_operation(&encoded)
     }
 
-    /// A control in the app's tree bound to the window's History door (the
-    /// History control in the app's header row) runs there, as the History
-    /// shortcut does, never as an app action. An app `owner` hosted in a tile
-    /// opens that tile's History. Returns whether it was one.
-    pub(super) fn take_history_invocation(
-        &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool {
-        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
-            return false;
-        }
-        let embedded = owner.and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.root.as_mut(), &owner, intent)
-        });
-        let result = embedded.unwrap_or_else(|| {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            self.run_local_history_action(&intent.address, Some(&argument))
-                .map_err(tilo_actions::DoorError::Failed)
-        });
-        if let Err(error) = &result {
-            tracing::debug!(?error, "headless: History control refused");
-        }
-        let result = result.map(|()| {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        });
-        crate::widget::controls::on_control_invocation_result(
-            self.root.as_mut(),
-            &intent.address,
-            &result,
-        );
-        true
-    }
-
     fn execute_history_operation(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
@@ -289,8 +251,9 @@ impl FrameHarness {
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"))
         };
-        self.apply_confirmed_history_restore();
-        self.fulfil_history_preview();
+        if self.settle_history_requests() {
+            self.invalidate_layout_tree();
+        }
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
     }
@@ -304,37 +267,6 @@ impl FrameHarness {
         self.invalidate_local();
         self.document_history
             .set_preview_root(std::rc::Rc::new(factory));
-    }
-
-    fn fulfil_history_preview(&mut self) {
-        if !self.document_history.has_preview_request() {
-            return;
-        }
-        let root = self
-            .document_history
-            .preview_root()
-            .and_then(|factory| factory().ok());
-        self.with_history(|host, context| host.install_preview(root, context));
-        self.invalidate_layout_tree();
-    }
-
-    /// The headless counterpart of the App's restore door: the same checked
-    /// write through the same undo log, attributed to this harness's author.
-    fn apply_confirmed_history_restore(&mut self) {
-        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
-            return;
-        };
-        let result = crate::standalone_history::apply_restore(
-            &mut self.state,
-            &confirmed,
-            Some(self.author.clone()),
-        );
-        if matches!(result, Ok(true)) {
-            self.invalidate_layout_tree();
-        }
-        let _ = self
-            .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
-        self.document_history.report_restore(&result);
     }
 
     pub(super) fn history_tick(&mut self) -> Result<(), String> {
@@ -365,8 +297,9 @@ impl FrameHarness {
             )
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
-        self.apply_confirmed_history_restore();
-        self.fulfil_history_preview();
+        if self.settle_history_requests() {
+            self.invalidate_layout_tree();
+        }
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
         // boundary records completed actions but does not commit unrelated typing.
         self.idle_control_tick();
@@ -428,10 +361,6 @@ impl FrameHarness {
         });
         self.history_layout = Some(layout);
         let context = HistoryReadContext::of(&self.state, self.records.as_ref(), &self.permissions);
-        let chrome = self
-            .document_history
-            .presentation_roots(&context)
-            .unwrap_or_default();
         let mut roots: Vec<(&dyn Widget, NodeId)> = vec![(
             self.history.as_ref().map_or_else(
                 || self.root.as_ref(),
@@ -440,14 +369,8 @@ impl FrameHarness {
             self.child_node,
         )];
         roots.extend(
-            chrome.into_iter().zip(
-                layout
-                    .toolbar
-                    .into_iter()
-                    .chain(layout.search)
-                    .chain(layout.pane)
-                    .chain(layout.preview),
-            ),
+            self.document_history
+                .presentation_roots_in(layout, &context),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.action_palette.as_deref()) {
             roots.push((palette, node));
@@ -466,17 +389,13 @@ impl FrameHarness {
     }
 
     pub(super) fn apply_history_frame(&mut self) {
-        if let Some(layout) = self.history_layout {
-            let origin = self
-                .document_history
-                .apply_layout(layout, &self.taffy, Point::ORIGIN);
-            if layout.app_visible {
-                self.root.apply_layout(&self.taffy, self.child_node, origin);
-            }
-        } else {
-            self.root
-                .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
-        }
+        self.document_history.apply_with_app(
+            self.history_layout,
+            &self.taffy,
+            self.root.as_mut(),
+            self.child_node,
+            Point::ORIGIN,
+        );
     }
 
     pub(super) fn restore_history_focus(&mut self) {
@@ -550,99 +469,27 @@ impl FrameHarness {
                 .controls_mut()
                 .any(|control| control.get_rect().contains(point));
         }
-        let keyboard = matches!(
+        let input = crate::standalone_history_host::ChromeInput {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            taffy: &self.taffy,
+            focused: self.focused,
+            modifiers: &self.modifiers,
+            scale: self.input_scale,
+        };
+        let routed = self
+            .document_history
+            .route_event(layout, input, event, handled, focus);
+        if matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-        );
-        if keyboard {
-            let Some(node) = self.focused.filter(|node| self.is_history_node(*node)) else {
-                // A managed History surface owns its modal keyboard routing
-                // even when standalone chrome has hidden the live app. Let
-                // the existing HistoryHost route below receive Enter/Escape;
-                // only a genuinely hidden ordinary app has no recipient.
-                return self.history.is_none() && !layout.app_visible;
-            };
-            // SAFETY: focused retained chrome is unbound and the admitted tree
-            // remains exclusive for the duration of this event.
-            let _ = unsafe {
-                crate::bound_dispatch::invoke_bound_node(
-                    &self.bindings,
-                    &self.node_map,
-                    node,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    |widget, doc, path| {
-                        widget.handle_event(
-                            event,
-                            &mut crate::widget::EventCtx {
-                                scale_factor: self.input_scale,
-                                modifiers: &self.modifiers,
-                                state: crate::widget::Edits::lend(doc),
-                                path,
-                                handled,
-                                focus_target: focus,
-                                node_id: node,
-                                taffy: &self.taffy,
-                            },
-                        );
-                    },
-                )
-            };
-            return true;
-        }
-        if let (Some(toolbar), Some(node)) = (self.document_history.toolbar_mut(), layout.toolbar) {
-            toolbar.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: self.input_scale,
-                    modifiers: &self.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.taffy,
-                },
-            );
-        }
-        if !*handled
-            && let Some(node) = layout.pane
-            && let Some(pane) = self.document_history.pane_mut()
-        {
-            pane.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: self.input_scale,
-                    modifiers: &self.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.taffy,
-                },
-            );
-        }
-        if !*handled
-            && let Some(node) = layout.preview
-            && let Some(preview) = self.document_history.preview_mut()
-        {
-            preview.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: self.input_scale,
-                    modifiers: &self.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.taffy,
-                },
-            );
-        }
-        if !layout.app_visible {
-            *handled = true;
+        ) {
+            // A managed History surface owns its modal keyboard routing
+            // even when standalone chrome has hidden the live app. Let
+            // the existing HistoryHost route below receive Enter/Escape;
+            // only a genuinely hidden ordinary app has no recipient.
+            return routed || (self.history.is_none() && !layout.app_visible);
         }
         *handled
             || (self.history_pointer_owned

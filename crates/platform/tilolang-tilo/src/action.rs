@@ -24,6 +24,9 @@ use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 /// The registry type id every [`DynAction`] is encoded under.
 pub const ACTION_TYPE: &str = "tl.action";
 
+/// The key of the map in a resource that holds the migrations that ran on it, by action id.
+pub const MIGRATED_KEY: &str = "$migrated";
+
 /// The key of the map in the room record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
@@ -128,6 +131,9 @@ pub enum DynEdit {
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
     In { app: String, edit: Box<DynEdit> },
+    /// Record that the migration `migration` (its action id) ran on the resource `id`, in the
+    /// same change as what it did, so it runs once on each resource an earlier version wrote.
+    Migrated { id: String, migration: String },
 }
 
 impl DynEdit {
@@ -151,7 +157,8 @@ impl DynEdit {
             | Self::Insert { .. }
             | Self::Place { .. }
             | Self::Remove { .. }
-            | Self::OutboxSettle { .. } => false,
+            | Self::OutboxSettle { .. }
+            | Self::Migrated { .. } => false,
         }
     }
 }
@@ -256,6 +263,7 @@ impl DynAction {
                 DynEdit::Remove { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
+                | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
             }
         }
@@ -277,7 +285,8 @@ impl DynAction {
             | DynEdit::Place { id, .. }
             | DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. }) = edit
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. }) = edit
             else {
                 continue;
             };
@@ -328,7 +337,8 @@ fn target_map(
         | DynEdit::Place { id, .. }
         | DynEdit::Remove { id }
         | DynEdit::OutboxPush { id, .. }
-        | DynEdit::OutboxSettle { id, .. } => stored_map(doc, records, app, id),
+        | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
     };
     match held {
         Some(map) => Ok(map),
@@ -437,9 +447,40 @@ fn apply_one(
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
+        DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::In { .. } => {}
     }
     Ok(())
+}
+
+/// Record in the resource `id` (in the app's records map `app`) that the migration `migration`
+/// ran on it.
+fn mark_migrated(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    migration: &str,
+) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+    };
+    // `require not migrated`: where actions are applied in order (the origin), a second run of
+    // the same migration on the resource is refused, not applied twice.
+    if migrated(doc, &obj, migration) {
+        return Err(ActionError::Refused(format!(
+            "the migration `{migration}` already ran on `{id}`"
+        )));
+    }
+    let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+    doc.put(&done, migration, true)?;
+    Ok(())
+}
+
+/// Whether the migration `migration` (its action id) ran on the resource at the map `obj`.
+#[must_use]
+pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
+    map_in(doc, obj, MIGRATED_KEY)
+        .is_some_and(|done| doc.get(&done, migration).ok().flatten().is_some())
 }
 
 /// The items of each collection of a record being stored, in order, by the item holding the
@@ -694,7 +735,8 @@ impl DynAction {
                     .and_then(Json::as_str)
                     .and_then(crate::schema::lookup)?;
                 let title = own_text(schema, |field| {
-                    record.get(field).and_then(Json::as_str).map(str::to_owned)
+                    self.written_text(id, None, field)
+                        .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
                 return Some((id.clone(), schema, title));
             }
@@ -706,7 +748,8 @@ impl DynAction {
                     .and_then(Json::as_str)
                     .and_then(crate::schema::lookup)?;
                 let title = own_text(schema, |field| {
-                    record.get(field).and_then(Json::as_str).map(str::to_owned)
+                    self.written_text(id, Some(item), field)
+                        .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
                 return Some((format!("{id}/{item}"), schema, title));
             }
@@ -721,7 +764,8 @@ impl DynAction {
             DynEdit::Place { id, item, .. } => (id, Some(item.clone())),
             DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. } => (id, None),
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
         let root = crate::reads::resource_obj(doc, &self.app, id)?;
@@ -744,6 +788,41 @@ impl DynAction {
             })
         });
         Some((at.id_string(), located.schema, title))
+    }
+}
+
+impl DynAction {
+    /// The text this action writes into the `field` of the resource `id` (of its item `item`),
+    /// the last write winning: what a resource it makes is titled once it applies, since a new
+    /// item is stored empty and its fields are written after it.
+    fn written_text(&self, id: &str, item: Option<&str>, field: &str) -> Option<String> {
+        self.edits.iter().rev().find_map(|edit| {
+            let DynEdit::Edit { id: edited, edit } = edit else {
+                return None;
+            };
+            if edited != id {
+                return None;
+            }
+            let (Segment::Field(written), holder) = edit.path().split_last()? else {
+                return None;
+            };
+            if written != field {
+                return None;
+            }
+            let held = match holder.last() {
+                Some(Segment::Item(held)) => Some(held.as_str()),
+                Some(_) => return None,
+                None => None,
+            };
+            if held != item {
+                return None;
+            }
+            match edit.op() {
+                tilo_resource::EditOp::Replace { text } => Some(text.clone()),
+                tilo_resource::EditOp::Set { value } => value.as_str().map(str::to_owned),
+                _ => None,
+            }
+        })
     }
 }
 

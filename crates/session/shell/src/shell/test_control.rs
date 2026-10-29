@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
 
-use crate::shell::pointer_readiness::{NotReady, PressFacts, consume_press};
+use crate::shell::pointer_readiness::{NotReady, PressFacts, PressVantage as _, consume_press};
 
 /// Which pointer button a [`Command::PointerButton`] means — spelled out because X11, evdev and winit each number buttons differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -1717,11 +1717,19 @@ fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) 
 }
 
 /// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
+///
+/// The chrome carries `in_transition`, the same fact a press is refused with
+/// (`desktop_in_transition`), so a caller waits on the desktop settling
+/// rather than guessing how long its motion runs.
 fn state_dump<S: ControlState>(state: &S, include_history: bool) -> (Response, Vec<PlannedAction>) {
+    let mut chrome = state.chrome_state_json();
+    if let (Some(fields), Some((_, facts))) = (chrome.as_object_mut(), state.press_witness()) {
+        fields.insert("in_transition".into(), facts.desktop_in_transition().into());
+    }
     (
         Response::State {
             workspace_tree: state.workspace_tree_json(include_history),
-            chrome: state.chrome_state_json(),
+            chrome,
             peers: state.peers_json(),
             sharing: state.sharing_json(),
         },

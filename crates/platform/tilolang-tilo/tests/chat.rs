@@ -132,7 +132,7 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
-    let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
+    let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
     let design = call(&ada, "add_channel", vec![team, Value::text("design")]);
     ada.commit();
     let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);

@@ -195,8 +195,8 @@ spotify() (
   rm -rf "$runtime"
 )
 
-# Apps run their engine libraries. Settings has no probe, to keep its tapp as
-# it is, Calendar none for the accounts engine (its probe runs the time-zone
+# Apps run their engine libraries. Settings has no probe (its binary is one
+# call into its engine library), Calendar none for the accounts engine (its probe runs the time-zone
 # one), and the PDF engine's apps, Imager, Browser, Store, Chat and the
 # on-screen keyboard none (build-thin-apps.sh runs those engines' own
 # checks): for those only the trace of the start counts (an app need not
@@ -205,6 +205,8 @@ spotify() (
 # loaded itself:
 # Browser's import engine carries its service sessions, whose custody comes
 # from the accounts engine; on x86_64 Browser names only the import engine.
+# Settings' engine library carries the app itself, whose custody comes from
+# the accounts engine.
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
@@ -213,7 +215,7 @@ engines() (
                "music libtilo_youtube_engine.so --probe-youtube-engine" \
                "tube libtilo_youtube_engine.so --probe-youtube-engine" \
                "mail libtilo_accounts_engine.so --probe-accounts-engine" \
-               "settings libtilo_accounts_engine.so" \
+               "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
                "settings libtilo_settings_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                "calendar libtilo_accounts_engine.so" \

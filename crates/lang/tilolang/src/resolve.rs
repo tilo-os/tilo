@@ -269,6 +269,9 @@ pub struct Import {
     pub roots: Vec<String>,
     /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
     pub named_roots: Vec<(String, String)>,
+    /// The ids the package was published under before (`previously:`): `use` and a full path
+    /// under one of them name it.
+    pub previously: Vec<String>,
 }
 
 /// Everything the checker knows about the module and the packages it imports.
@@ -363,6 +366,7 @@ impl Env {
             app: crate::stdlib::NS.to_string(),
             roots: Vec::new(),
             named_roots: Vec::new(),
+            previously: Vec::new(),
         });
         self.templates
             .extend(crate::stdlib::views().iter().map(|decl| Template {
@@ -383,6 +387,11 @@ impl Env {
             .iter()
             .find(|i| i.alias == path)
             .or_else(|| self.imports.iter().find(|i| i.app == path))
+            .or_else(|| {
+                self.imports
+                    .iter()
+                    .find(|i| i.previously.iter().any(|old| old == path))
+            })
     }
 
     /// Resolves the app part of a reference literal and its type name.
@@ -422,6 +431,7 @@ impl Env {
             app: crate::toolkit::UI_APP.to_string(),
             roots: Vec::new(),
             named_roots: Vec::new(),
+            previously: Vec::new(),
         });
         self.toolkit = Some(crate::toolkit::catalogue());
     }
@@ -450,6 +460,7 @@ impl Env {
                 .iter()
                 .map(|r| (r.name.clone(), r.ty.clone()))
                 .collect(),
+            previously: meta.previously.clone(),
         });
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
@@ -726,7 +737,7 @@ impl Resolver<'_> {
     fn imports(&mut self, module: &ast::Module, available: &[PackageMeta]) {
         for item in &module.items {
             let Item::Use(u) = item else { continue };
-            let Some(meta) = available.iter().find(|m| m.app == u.app) else {
+            let Some(meta) = find_package(available, &u.app) else {
                 let known: Vec<&str> = available.iter().map(|m| m.app.as_str()).collect();
                 let known = if known.is_empty() {
                     "none were provided".to_string()
@@ -1165,8 +1176,12 @@ impl Resolver<'_> {
         before: &[FieldInfo],
     ) -> Option<String> {
         let m = f.marker.as_ref()?;
+        // What the type held before: kept in its records, read only by its migrations.
+        if m.name == "previously" {
+            return Some(m.name.clone());
+        }
         if !matches!(m.name.as_str(), "title" | "body") {
-            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text", m.name));
+            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text, and any field `(previously)`, what the type held before, which only its migrations read", m.name));
             return None;
         }
         let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);
@@ -2449,4 +2464,15 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
             | ast::UiKind::On { .. } => {}
         }
     }
+}
+
+/// The package `use <app>` imports among `available`: the one whose id it is, else the one
+/// published under it before (`previously:`). An id a package still has as its own is that
+/// package's, whoever else names it as an earlier one.
+pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a PackageMeta> {
+    available.iter().find(|m| m.app == app).or_else(|| {
+        available
+            .iter()
+            .find(|m| m.previously.iter().any(|old| old == app))
+    })
 }
