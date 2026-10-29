@@ -135,4 +135,16 @@ portal-shortcut-not-set = Nicht festgelegt
 portal-usb-row-read-write = Lesen und Schreiben
 portal-usb-row-read-only = Nur lesen
 portal-a11y-name = Name
+portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
+portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
 portal-a11y-answer = Antwort
+
+## File chooser
+
+file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
+file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
+file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
+file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
+file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
+file-chooser-changed = Die Dateiauswahl hat sich geändert. Sieh sie dir noch einmal an.
+file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.
