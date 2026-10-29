@@ -82,7 +82,7 @@ bench = false
 [[bin]]
 name = "shots"
 path = "src/bin/shots/main.rs"
-required-features = ["hosted-test-control", "in-process-apps"]
+required-features = ["hosted-test-control", "in-process-apps", "test-support"]
 
 [[bin]]
 name = "tilo-runtime-mcp"
