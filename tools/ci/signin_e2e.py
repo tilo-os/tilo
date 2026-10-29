@@ -920,6 +920,9 @@ cryptsetup close e2e-target
                 say(f"no guest shell after the greeter wait: {reason}")
             raise Failed("the greeter never accepted input on the second boot") from error
         self.greeter_log(label, state)
+        # The pointer rests in the corner, clear of the card item 12 compares with the boot's.
+        self.cycle.vm("pointer", "4", "4", check=False)
+        time.sleep(0.5)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("greeter-before-sign-in", path, text)
         self.cycle.invoke("greeter", "sign-in@greeter", {"password": self.account})
