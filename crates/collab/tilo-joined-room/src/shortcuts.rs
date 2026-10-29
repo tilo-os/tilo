@@ -3,8 +3,8 @@
 //! the write by the rule that proves who saved it.
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
-use std::time::SystemTime;
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use web_time::SystemTime;
 
 impl NativeWorkspaceOwner {
     /// Commit this device's own shortcut change, signed by `key`, its key:

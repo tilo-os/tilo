@@ -4,9 +4,10 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, time::SystemTime};
+use std::collections::BTreeSet;
 use tilo_owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{Reseal, StatePeer};
+use web_time::SystemTime;
 
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]

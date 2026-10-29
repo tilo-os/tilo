@@ -697,14 +697,7 @@ pub async fn dial(
     .map_err(|_| DialError::from("native relay connection timed out"))?
 }
 
-/// Whether `hint` names this device, `device`, as the room's host: a room
-/// placed on this device, whose host runs in this process. Such a room is
-/// joined over the host's in-process carrier ([`join_local`]), never
-/// dialled: an endpoint cannot dial itself.
-#[must_use]
-pub fn hosted_by(hint: &TransportHint, device: &[u8; 32]) -> bool {
-    &hint.host.device_public_key == device
-}
+pub use crate::hosted_by;
 
 /// Join the co-edit session of workspace `ws` as this device, `own_device`,
 /// over `client`, a session the host `hint` pins opened in this process

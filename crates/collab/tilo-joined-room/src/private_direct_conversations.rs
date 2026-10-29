@@ -1,8 +1,9 @@
 //! Two-person text retained exclusively by the trusted native workspace owner.
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, time::SystemTime};
+use std::collections::BTreeMap;
 use tilo_peer_state::caller_authority::CallerAuthority;
+use web_time::SystemTime;
 
 const MAX_CONVERSATIONS: usize = 1024;
 const MAX_MESSAGES: usize = 4096;

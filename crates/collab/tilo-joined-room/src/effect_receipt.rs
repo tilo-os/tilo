@@ -6,8 +6,8 @@
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use web_time::SystemTime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredEffectReceipt {

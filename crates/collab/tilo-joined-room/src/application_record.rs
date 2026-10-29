@@ -3,8 +3,8 @@
 
 use crate::{NativeWorkspaceOwner, RoomId, publication};
 use ed25519_dalek::SigningKey;
-use std::time::SystemTime;
 use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
 
 /// A route checked against the installed package's signed resource declarations.
 /// The host supplies those declarations from verified package evidence, never

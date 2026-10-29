@@ -25,8 +25,8 @@
 //! base the document does not hold) is left to
 //! [`NativeCommittedView::read_document`].
 use crate::NativeCommittedView;
-use std::time::SystemTime;
 use tilo_peer_state::PeerDocumentReadError;
+use web_time::SystemTime;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 

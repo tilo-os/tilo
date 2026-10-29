@@ -30,7 +30,7 @@ impl StatePeer {
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
         let seconds = now
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
         let mut workspace = self.settings_workspace()?;
         let refused = |error: &dyn std::fmt::Display| error.to_string();
