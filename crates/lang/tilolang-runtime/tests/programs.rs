@@ -85,7 +85,7 @@ mod cases {
 
     impl World {
         fn list_literal(&self) -> String {
-            format!("@todo.Tasks:{}", self.list.id_string())
+            format!("@tasks.Tasks:{}", self.list.id_string())
         }
 
         fn todo_titles(&self) -> Vec<String> {
@@ -133,7 +133,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    todo.add({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.add({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                 w.list_literal()
             ),
         );
@@ -202,7 +202,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "print(\"before\")\ntodo.add({}, \"Ask first\")\nprint(\"after\")",
+                "print(\"before\")\ntasks.add({}, \"Ask first\")\nprint(\"after\")",
                 w.list_literal()
             ),
         );
@@ -218,7 +218,7 @@ mod cases {
     fn errors_name_what_was_meant() {
         let w = world();
         let mut session = Session::new();
-        let typo = rejected(&session.run(&w.rt, &agent(), "todo.ad(1)"));
+        let typo = rejected(&session.run(&w.rt, &agent(), "tasks.ad(1)"));
         assert!(typo.contains("did you mean `add`?"), "{typo}");
         let word = rejected(&session.run(&w.rt, &agent(), "prnt(1)"));
         assert!(word.contains("did you mean `print`?"), "{word}");

@@ -216,6 +216,12 @@ fn hand_over_now(
         instance,
         person,
         module_len,
+        records_under: Some(
+            super::installed_earlier_ids()
+                .records_under(&app.package_id)
+                .to_owned(),
+        )
+        .filter(|id| *id != app.package_id),
     };
     let fds = InstanceFds {
         broker,

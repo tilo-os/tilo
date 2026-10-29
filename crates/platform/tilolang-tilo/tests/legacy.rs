@@ -660,7 +660,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
 }
 
 #[test]
-fn mail_holds_the_records_letters_wrote_where_they_are() {
+fn mail_leaves_the_records_letters_wrote_where_they_are() {
     let packages = vec![app!("mail")];
     let mut replica = open(include_str!("legacy/letters.hex"), &packages);
     let heads = replica.doc.get_heads();
@@ -678,14 +678,17 @@ fn mail_holds_the_records_letters_wrote_where_they_are() {
                 .all(|(held, _)| held == "so.tilo.lang.letters"),
         "{before:?}"
     );
-    // Mail reads them as its own, under the ids they have, and writes nothing to do so.
-    let app = "so.tilo.lang.mail";
-    assert!(replica.host.store().index_contents(app).is_some());
+    // Mail never was Letters: Letters' records are not Mail's, and opening the room beside them
+    // changes nothing of them.
+    let mail = replica
+        .host
+        .store()
+        .index_contents("so.tilo.lang.mail")
+        .expect("Mail's index");
     for (_, id) in &before {
-        assert!(replica.host.store().contains(id), "{id} is Mail's now");
+        assert!(!mail.docs.contains_key(id), "{id} is not Mail's");
     }
     assert_eq!(replica.doc.get_heads(), heads);
     assert!(replica.host.take_committed().is_empty());
     assert_eq!(stored(&replica), before);
-    check_index(&replica, &packages, app);
 }
