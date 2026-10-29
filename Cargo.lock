@@ -21355,6 +21355,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "url",
  "workspace-hack",
 ]
 
