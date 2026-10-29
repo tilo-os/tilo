@@ -616,7 +616,9 @@ pub struct OnboardingView {
     /// Back on its first page and Done both dismiss the modal directly.
     tour_only: bool,
     /// Raised when the user has finished and the desktop may start.
-    finished: bool,
+    /// The person saw the result and dismissed it; shared with the host,
+    /// which takes setup down then ([`OnboardingView::finished_signal`]).
+    finished: Rc<std::cell::Cell<bool>>,
     /// Actions the person took since `sync` last looked: view state, never
     /// written to the document.
     pressed: PressedActions,
@@ -965,7 +967,7 @@ impl OnboardingView {
             journal_writer: tilo_durable_writer::global(),
             tour_page: None,
             tour_only: false,
-            finished: false,
+            finished: Rc::default(),
             pressed: PressedActions::default(),
             acknowledgements: Rc::default(),
             acknowledgement_actions: ui::local_dispatch::LocalDispatch::new(),
@@ -1024,7 +1026,7 @@ impl OnboardingView {
     /// Every step of the ceremony up to entering the desktop, except typing
     /// a recovery key in.
     fn publish_first_use(&self) {
-        let active = !self.finished
+        let active = !self.finished.get()
             && (self.prepared_setup_status().is_some()
                 || self.migration_status().is_some_and(|status| {
                     status.get("deferred") != Some(&serde_json::Value::Bool(true))
@@ -1132,7 +1134,14 @@ impl OnboardingView {
 
     /// True once the user has seen the result and dismissed it.
     pub fn finished(&self) -> bool {
-        self.finished
+        self.finished.get()
+    }
+
+    /// Whether the person finished setup, asked again on every call: the
+    /// session hosting this view takes it down once it holds.
+    pub fn finished_signal(&self) -> Rc<dyn Fn() -> bool> {
+        let finished = Rc::clone(&self.finished);
+        Rc::new(move || finished.get())
     }
 
     /// A tour is trusted modal chrome, but it deliberately keeps the real
@@ -1209,7 +1218,7 @@ impl OnboardingView {
         self.identity_work = None;
         self.tour_page = None;
         self.tour_only = false;
-        self.finished = false;
+        self.finished.set(false);
         self.invalidation.both();
     }
 
@@ -1391,7 +1400,7 @@ impl OnboardingView {
             }
             AfterJournal::FinishPortableBackup => {
                 if self.portable_backup_only && self.flow.is_done() && self.backup_was_verified {
-                    self.finished = true;
+                    self.finished.set(true);
                     clear_secret(&self.backup_passphrase);
                     clear_secret(&self.backup_confirmation);
                     self.invalidation.both();
@@ -1520,7 +1529,7 @@ impl OnboardingView {
     }
 
     fn finish_ceremony(&mut self) {
-        self.finished = true;
+        self.finished.set(true);
         if let Some(copy) = self.recovery_key_copy.take() {
             copy.clear();
         }
@@ -1863,7 +1872,7 @@ impl OnboardingView {
             || !self.flow.is_done()
             || self.identity_ready_page
             || self.tour_page.is_some()
-            || self.finished
+            || self.finished.get()
         {
             return None;
         }
@@ -2462,7 +2471,7 @@ impl Widget for OnboardingView {
         if self.take_journaled(KEY_TOUR_BACK) {
             let next = match self.tour_page {
                 Some(TourPage::Navigate) if self.tour_only => {
-                    self.finished = true;
+                    self.finished.set(true);
                     self.tour_page
                 }
                 Some(TourPage::Navigate) | None => None,
@@ -2521,7 +2530,7 @@ impl Widget for OnboardingView {
             } else if self.tour_page.is_some() && self.flow.is_done() {
                 self.journal_then(JournalChange::Clear, AfterJournal::Finish);
             } else {
-                self.finished = false;
+                self.finished.set(false);
             }
         }
 
@@ -2558,7 +2567,7 @@ impl Widget for OnboardingView {
                     AfterJournal::EnterReady,
                 );
             } else {
-                self.finished = false;
+                self.finished.set(false);
             }
         }
 
@@ -3189,7 +3198,7 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(view.prepared_pending);
         assert_eq!(view.page().step(), tilo_onboarding::Step::Prepared);
-        assert!(!view.finished);
+        assert!(!view.finished());
     }
 
     use super::*;
@@ -4808,7 +4817,7 @@ mod tests {
     }
 
     fn setup_actions_pending(view: &OnboardingView) -> bool {
-        !view.finished
+        !view.finished()
             && (view.prepared_setup_status().is_some()
                 || view.migration_status().is_some_and(|status| {
                     status.get("deferred") != Some(&serde_json::Value::Bool(true))

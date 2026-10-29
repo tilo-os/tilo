@@ -19960,7 +19960,6 @@ dependencies = [
 name = "tilo-notification-banners"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-vello",
@@ -20478,7 +20477,6 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "os-actions",
  "parking_lot",
  "serde",
@@ -21264,6 +21262,7 @@ dependencies = [
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
+ "os-actions",
  "rustix 1.1.4",
  "serde_json",
  "tilo-action-policy",
@@ -21273,7 +21272,10 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-notification-banners",
+ "tilo-onboarding",
+ "tilo-onboarding-host",
  "tilo-quick-settings",
+ "tilo-sheets",
  "tilo-surface-host",
  "tilo-ui",
  "tracing",
@@ -21537,7 +21539,6 @@ dependencies = [
 name = "tilo-topbar"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-desktop-model",

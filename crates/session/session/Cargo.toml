@@ -20,6 +20,9 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
+tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-sheets = { path = "../sheets" }
+os-actions = { path = "../../system/os-actions" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 serde_json.workspace = true
 tracing.workspace = true
@@ -27,6 +30,7 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
+tilo-onboarding = { path = "../onboarding" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }

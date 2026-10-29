@@ -21,7 +21,14 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, WINDOW_KIND};
+use tilo_onboarding::OnboardingEffect;
+use tilo_quick_settings::QsEffect;
+use tilo_quick_settings::host::FixtureHost;
+use tilo_quick_settings::scenarios;
 use tilo_session::{Options, Session};
+use tilo_sheets::portal::{Body, Dialog, PortalEffect};
+use tilo_sheets::power::PowerEffect;
+use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -304,6 +311,198 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     assert!(
         window_resource(&session, "org.example.Editor").is_none(),
         "the tab is gone from the desk"
+    );
+}
+
+/// The resource publishing `action` among everything the session
+/// publishes.
+fn publisher(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
+fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        other => panic!("not an object: {other}"),
+    }
+}
+
+#[test]
+fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
+    let _settled = ui::motion::testing::settled();
+    let host = std::rc::Rc::new(FixtureHost::new(scenarios::readings(Some("controls"))));
+    let lent: std::rc::Rc<dyn tilo_session::PanelHost> = host.clone();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(lent),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    let closed = session.compositor().screenshot("HEADLESS-1").unwrap();
+
+    // Its actions are there whether or not the panel is open: an agent sets
+    // the volume without opening anything.
+    let volume = QsEffect::SET_VOLUME.id;
+    let panel = publisher(&session, volume).expect("quick settings publishes its volume");
+    session
+        .invoke(
+            &panel,
+            volume,
+            &arguments(serde_json::json!({ "level": 0.25 })),
+        )
+        .expect("set the volume");
+    assert_eq!(host.ran(), [QsEffect::SetVolume { level: 0.25 }]);
+
+    invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+    assert!(session.quick_settings_open());
+    session.step(Duration::from_millis(1)).unwrap();
+    let open = session.compositor().screenshot("HEADLESS-1").unwrap();
+    assert_ne!(open.rgba, closed.rgba, "the panel shows under the bar");
+}
+
+#[test]
+fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            setup: Some(tilo_session::OnboardingView::new_tour()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.setup_up());
+    assert!(
+        publisher(&session, "toggle-overview").is_none(),
+        "setup withholds the desktop's actions"
+    );
+    assert!(
+        session
+            .invoke(CHROME_RESOURCE, "toggle-overview", &serde_json::Map::new())
+            .is_err(),
+        "and refuses them"
+    );
+    assert!(
+        !session.accessible_labels().is_empty(),
+        "setup names what it shows"
+    );
+
+    let skip = OnboardingEffect::SKIP.id;
+    let setup = publisher(&session, skip).expect("setup publishes its steps");
+    session
+        .invoke(&setup, skip, &serde_json::Map::new())
+        .expect("skip the tour");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(!session.setup_up(), "skipping the tour finishes setup");
+    assert!(
+        publisher(&session, "toggle-overview").is_some(),
+        "the desktop's actions are back"
+    );
+    assert!(publisher(&session, skip).is_none());
+}
+
+#[test]
+fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let lock = PowerEffect::LOCK.id;
+    assert!(
+        publisher(&session, lock).is_none(),
+        "a sheet that is down offers nothing"
+    );
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let menu = publisher(&session, lock).expect("the open menu publishes its choices");
+    session
+        .invoke(&menu, lock, &serde_json::Map::new())
+        .expect("lock");
+    assert!(session.compositor().locked(), "the screen is locked");
+}
+
+#[test]
+fn workspace_settings_renames_the_workspace_through_its_action() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let seat = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .clone();
+    seat.presentation().open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let rename = WorkspaceSettingsEffect::RENAME.id;
+    let sheet = publisher(&session, rename).expect("the open sheet publishes renaming");
+    session
+        .invoke(
+            &sheet,
+            rename,
+            &arguments(serde_json::json!({ "name": "Garden" })),
+        )
+        .expect("rename");
+    session.step(Duration::from_millis(1)).unwrap();
+    let name = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.name.clone())
+    });
+    assert_eq!(name.as_deref(), Some("Garden"));
+}
+
+#[test]
+fn a_portal_question_is_answered_through_the_sheets_actions() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let seat = session.portal().expect("portal sheet").clone();
+    seat.presentation().open(false);
+    seat.show(Some(Dialog {
+        handle: "request-1".to_owned(),
+        title: "Share your screen?".to_owned(),
+        heading: "Meet".to_owned(),
+        detail: "Meet asks to record your screen".to_owned(),
+        body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
+        confirm_label: "Allow".to_owned(),
+        cancel_label: "Cancel".to_owned(),
+        ..Dialog::default()
+    }));
+    session.step(Duration::from_millis(1)).unwrap();
+    let select = PortalEffect::SELECT.id;
+    let sheet = publisher(&session, select).expect("the question publishes its answers");
+    session
+        .invoke(
+            &sheet,
+            select,
+            &arguments(serde_json::json!({ "index": 1 })),
+        )
+        .expect("select");
+    session
+        .invoke(&sheet, PortalEffect::CONFIRM.id, &serde_json::Map::new())
+        .expect("confirm");
+    let asked = seat.take_asked();
+    assert!(
+        asked.contains(&PortalEffect::Select { index: 1 }),
+        "the service reads what was chosen: {asked:?}"
     );
 }
 
