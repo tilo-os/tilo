@@ -110,6 +110,8 @@ pub struct State {
     pub(crate) tablets: crate::tablet::Tablets,
     pub(crate) output_power: crate::output_power::OutputPower,
     pub(crate) gamma: crate::gamma::Gamma,
+    /// How windows are drawn this frame instead of as they stand, by id.
+    pub(crate) effects: std::collections::HashMap<u64, crate::effects::WindowEffect>,
     pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
@@ -175,6 +177,7 @@ impl State {
             tablets: crate::tablet::Tablets::default(),
             output_power: crate::output_power::OutputPower::new(display),
             gamma: crate::gamma::Gamma::new(display),
+            effects: std::collections::HashMap::new(),
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),

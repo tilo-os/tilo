@@ -19,7 +19,7 @@ use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
-use smithay::utils::{Physical, Point, Scale, Size};
+use smithay::utils::{Physical, Point, Rectangle, Scale, Size};
 
 use crate::state::State;
 
@@ -40,6 +40,9 @@ smithay::backend::renderer::element::render_elements! {
     ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
     /// A hosted surface's layer under the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
+    /// A window drawn moved, scaled or faded, or pictured by a hosted
+    /// surface.
+    Transformed=crate::effects::TransformedElement<R>,
 }
 
 /// `element` as the magnifier shows it: scaled by `zoom` about `centre`
@@ -114,7 +117,15 @@ where
             .chain(state.lock_elements(renderer, output))
             .collect();
     }
-    let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_scale = output.current_scale().fractional_scale();
+    let scale = Scale::from(output_scale);
+    let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
+    let window_of = |id: u64| {
+        state
+            .space
+            .elements()
+            .find(|window| crate::state::describe(window).is_some_and(|info| info.id == id))
+    };
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     elements.extend(state.drag_icon_elements(renderer, output));
     elements.extend(state.input_popup_elements(renderer, output));
@@ -125,6 +136,17 @@ where
             .rev()
             .filter(|host| host.below_windows() == below)
         {
+            for picture in host.window_pictures().iter().rev() {
+                if let Some(window) = window_of(picture.window) {
+                    elements.extend(crate::effects::pictured(
+                        renderer,
+                        window,
+                        picture,
+                        geometry.loc.to_f64(),
+                        (bounds, output_scale),
+                    ));
+                }
+            }
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
@@ -148,6 +170,20 @@ where
         let Some(location) = state.space.element_location(window) else {
             continue;
         };
+        let effect = crate::state::describe(window).and_then(|info| state.effects.get(&info.id));
+        if let Some(effect) = effect {
+            let Some(standing) = state.space.element_geometry(window) else {
+                continue;
+            };
+            elements.extend(crate::effects::with_effect(
+                renderer,
+                window,
+                (standing.loc - geometry.loc).to_f64(),
+                effect,
+                (bounds, output_scale),
+            ));
+            continue;
+        }
         let origin = location - window.geometry().loc - geometry.loc;
         elements.extend(window.render_elements::<OutputRenderElement<R>>(
             renderer,

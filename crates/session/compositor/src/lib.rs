@@ -29,6 +29,7 @@ mod cursor;
 pub mod dim;
 mod display_change;
 mod dnd;
+pub mod effects;
 pub mod gamma;
 pub mod gestures;
 pub mod host;
@@ -72,6 +73,7 @@ pub use backend::{
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
+pub use effects::{WindowEffect, WindowPicture};
 pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
@@ -348,6 +350,17 @@ impl Compositor {
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Draw the window `id` with `effect` (moved, scaled about its centre,
+    /// faded) from the next frame on, or as it stands again (`None`). The
+    /// desktop animates windows by setting this every frame; input still
+    /// lands where the window stands.
+    pub fn set_window_effect(&mut self, id: u64, effect: Option<WindowEffect>) {
+        match effect {
+            Some(effect) => self.data.state.effects.insert(id, effect),
+            None => self.data.state.effects.remove(&id),
+        };
     }
 
     /// Night light's colour temperature, while it is on.

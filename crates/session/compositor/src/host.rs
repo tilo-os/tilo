@@ -91,6 +91,13 @@ pub trait SurfaceHost {
         KeyClaim::Pass
     }
 
+    /// Other clients' windows this surface pictures (thumbnails, cards),
+    /// bottom first: the compositor draws their live buffers there, in
+    /// front of this surface's layers.
+    fn window_pictures(&self) -> Vec<crate::WindowPicture> {
+        Vec::new()
+    }
+
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
 

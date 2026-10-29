@@ -23,8 +23,8 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig, PadAction,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowInfo,
-    WindowPolicy,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowEffect,
+    WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -1490,6 +1490,118 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
 }
 
 delegate_noop!(Seen: ignore XdgToplevel);
+
+#[test]
+fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, rect) = compositor.windows()[0].clone();
+    assert_eq!(rect, (220, 190, 200, 100));
+    let red = Some([255, 0, 0, 255]);
+    let shown = |compositor: &mut Compositor, x, y| {
+        compositor.render().unwrap();
+        compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
+    };
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            offset: (-200.0, 0.0),
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(shown(&mut compositor, 30, 200), red, "drawn moved left");
+    assert_eq!(shown(&mut compositor, 400, 200), Some(BACKGROUND));
+    assert_eq!(
+        compositor.windows()[0].1,
+        rect,
+        "it still stands where it was"
+    );
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            scale: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    assert_eq!(shown(&mut compositor, 320, 240), red, "the centre stays");
+    assert_eq!(
+        shown(&mut compositor, 225, 195),
+        Some(BACKGROUND),
+        "corners shrink in"
+    );
+    assert_eq!(shown(&mut compositor, 275, 220), red);
+
+    compositor.set_window_effect(
+        info.id,
+        Some(WindowEffect {
+            opacity: 0.5,
+            ..WindowEffect::default()
+        }),
+    );
+    let faded = shown(&mut compositor, 320, 240).unwrap();
+    assert!(
+        faded[0] > 120 && faded[0] < 160,
+        "half red over the background: {faded:?}"
+    );
+
+    compositor.set_window_effect(info.id, None);
+    assert_eq!(shown(&mut compositor, 320, 240), red);
+}
+
+/// A hosted surface that pictures one window.
+struct Pictures(WindowPicture);
+
+impl SurfaceHost for Pictures {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn window_pictures(&self) -> Vec<WindowPicture> {
+        vec![self.0]
+    }
+}
+
+#[test]
+fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    let (info, _) = compositor.windows()[0].clone();
+    compositor.add_host(Box::new(Pictures(WindowPicture {
+        window: info.id,
+        rect: (10.0, 10.0, 100.0, 100.0),
+        opacity: 1.0,
+        clip: None,
+    })));
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    // 200 x 100 fits 100 x 100 as 100 x 50, centred: rows 35..85.
+    assert_eq!(frame.pixel(12, 40), Some([255, 0, 0, 255]));
+    assert_eq!(frame.pixel(108, 80), Some([255, 0, 0, 255]));
+    assert_eq!(frame.pixel(60, 20), Some(BACKGROUND), "above the picture");
+    assert_eq!(frame.pixel(60, 95), Some(BACKGROUND), "below it");
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some([255, 0, 0, 255]),
+        "the window itself"
+    );
+
+    // The picture is live: the window's next buffer shows in it.
+    client.show(200, 100, [0, 255, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
+}
 
 #[test]
 fn a_window_that_asks_to_be_maximized_covers_its_output_and_comes_back() {
