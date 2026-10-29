@@ -39,11 +39,6 @@
 "crates/platform/tilolang-tilo/src/meta.rs" = 3
 "crates/platform/tilolang-tilo/src/surface.rs" = 4
 "crates/platform/tilolang-tilo/src/task.rs" = 1
-"crates/runtime/runtime-portal/src/jobs.rs" = 1
-"crates/runtime/runtime-portal/src/lib.rs" = 1
-"crates/runtime/runtime-portal/src/process_binding/linux.rs" = 2
-"crates/runtime/runtime-portal/src/tilolang_host.rs" = 1
-"crates/runtime/runtime-portal/src/tools.rs" = 1
 "crates/session/shell/src/bin/pressure_fixture.rs" = 2
 "crates/session/shell/src/bin/shots/driver.rs" = 1
 "crates/session/shell/src/bin/shots/driver/desktop_control.rs" = 1
