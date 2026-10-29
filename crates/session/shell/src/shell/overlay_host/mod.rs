@@ -514,6 +514,8 @@ pub struct ShellOverlayHost {
     launcher: Option<launcher_host::LauncherHost>,
     /// The launcher cannot be mounted here.
     launcher_unavailable: bool,
+    /// The shell's own actions, published as its app in the room in front.
+    shell_actions: Option<crate::shell::actions::host::ShellActionsHost>,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
