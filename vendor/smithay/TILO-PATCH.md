@@ -49,3 +49,20 @@ adds pads beside tablets and tools, in the same shape:
 
 The protocol version stays 1 (no dials). Remove this once a smithay release
 supports tablet pads.
+
+## Drops on targets the compositor serves itself
+
+A client's drag dropped where no Wayland client accepted an offer (a hosted
+surface, or an X11 window the compositor bridges itself) always told the
+source `cancelled`, so a move never completed and the source kept the item.
+
+- `src/wayland/selection/data_device/mod.rs`:
+  `ClientDndGrabHandler::drop_target_action(&mut self, seat) -> Option<DndAction>`,
+  default `None` (upstream behaviour).
+- `src/wayland/selection/data_device/dnd_grab.rs`: the shared pointer and
+  touch `drop()` asks it when there is a data source and no accepted offer.
+  `Some(action)` sends the source `action` and `dnd_drop_performed` (by
+  version) instead of `cancelled`, and calls `dropped` with `validated`
+  set; the compositor sends `dnd_finished` once its target read the data.
+
+Remove this once smithay lets a compositor complete drops on its own targets.

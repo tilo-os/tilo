@@ -226,18 +226,23 @@ where
 
     fn drop(&mut self, data: &mut D) {
         // the user dropped, proceed to the drop
+        let offer_validated = self.offer_data.as_ref().is_some_and(|data| {
+            let data = data.lock().unwrap();
+            data.accepted && (!data.chosen_action.is_empty())
+        });
+        // a target the compositor serves itself may take a drop no client accepted
+        let compositor_action = if self.data_source.is_some() && !offer_validated {
+            ClientDndGrabHandler::drop_target_action(data, &self.seat)
+        } else {
+            None
+        };
         let seat_data = self
             .seat
             .user_data()
             .get::<RefCell<SeatData<D::SelectionUserData>>>()
             .unwrap()
             .borrow_mut();
-        let validated = if let Some(ref data) = self.offer_data {
-            let data = data.lock().unwrap();
-            data.accepted && (!data.chosen_action.is_empty())
-        } else {
-            false
-        };
+        let validated = offer_validated;
         if let Some(ref surface) = self.current_focus {
             if self.data_source.is_some() || self.origin.id().same_client_as(&surface.id()) {
                 for device in seat_data.known_data_devices() {
@@ -256,14 +261,26 @@ where
             }
         }
         if let Some(ref source) = self.data_source {
-            if !validated {
+            if let Some(action) = compositor_action {
+                if source.version() >= wl_data_source::EVT_ACTION_SINCE {
+                    source.action(action);
+                }
+                if source.version() >= wl_data_source::EVT_DND_DROP_PERFORMED_SINCE {
+                    source.dnd_drop_performed();
+                }
+            } else if !validated {
                 source.cancelled();
             } else if source.version() >= wl_data_source::EVT_DND_DROP_PERFORMED_SINCE {
                 source.dnd_drop_performed();
             }
         }
 
-        ClientDndGrabHandler::dropped(data, self.current_focus.clone(), validated, self.seat.clone());
+        ClientDndGrabHandler::dropped(
+            data,
+            self.current_focus.clone(),
+            validated || compositor_action.is_some(),
+            self.seat.clone(),
+        );
         self.icon = None;
         // in all cases abandon the drop
         // no more buttons are pressed, release the grab
