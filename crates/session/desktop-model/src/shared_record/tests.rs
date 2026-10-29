@@ -282,3 +282,82 @@ fn desktops_written_before_the_room_was_received_fold_into_its_workspace() {
     let again = read(&room, None).unwrap();
     assert!(!write(&mut room, &again).unwrap());
 }
+
+fn on_canvas(desktop: &mut SharedDesktop, places: &[(u64, CanvasPlace)]) {
+    let arrangement = &mut desktop.tree.workspaces[0].arrangement;
+    arrangement.kind = ArrangementKind::Canvas;
+    arrangement.places.extend(places.iter().copied());
+}
+
+#[test]
+fn a_canvas_and_its_places_read_back_as_written() {
+    let mut doc = AutoCommit::new();
+    let mut written = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    on_canvas(&mut written, &[(100, CanvasPlace::new(-40, 12, 640, 480))]);
+    assert!(write(&mut doc, &written).unwrap());
+    doc.commit();
+    let back = read(&doc, None).unwrap();
+    let arrangement = &back.tree.workspaces[0].arrangement;
+    assert_eq!(arrangement.kind, ArrangementKind::Canvas);
+    assert_eq!(
+        arrangement.place_of(100),
+        Some(CanvasPlace::new(-40, 12, 640, 480))
+    );
+    assert_eq!(arrangement.place_of(200), None, "never placed");
+    assert!(
+        !write(&mut doc, &written).unwrap(),
+        "unchanged writes nothing"
+    );
+}
+
+#[test]
+fn two_people_moving_different_windows_on_the_canvas_both_keep_their_move() {
+    let mut doc = AutoCommit::new();
+    let mut base = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    on_canvas(
+        &mut base,
+        &[
+            (100, CanvasPlace::new(0, 0, 400, 300)),
+            (200, CanvasPlace::new(500, 0, 400, 300)),
+        ],
+    );
+    write(&mut doc, &base).unwrap();
+    doc.commit();
+    let mut ada = fork(&doc, 1);
+    let mut ben = fork(&doc, 2);
+    let mut ada_moved = base.clone();
+    on_canvas(&mut ada_moved, &[(100, CanvasPlace::new(0, 900, 400, 300))]);
+    write(&mut ada, &ada_moved).unwrap();
+    ada.commit();
+    let mut ben_moved = base.clone();
+    on_canvas(
+        &mut ben_moved,
+        &[(200, CanvasPlace::new(500, 900, 400, 300))],
+    );
+    write(&mut ben, &ben_moved).unwrap();
+    ben.commit();
+    merge(&mut ada, &mut ben);
+    let back = read(&ada, None).unwrap();
+    let arrangement = &back.tree.workspaces[0].arrangement;
+    assert_eq!(arrangement.place_of(100).map(|p| p.y), Some(900));
+    assert_eq!(arrangement.place_of(200).map(|p| p.y), Some(900));
+}
+
+#[test]
+fn moving_someone_elses_window_on_the_canvas_is_moving_it() {
+    use crate::ownership::{Act, foreign_acts};
+    let mut before = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    on_canvas(&mut before, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
+    let mut after = before.clone();
+    on_canvas(&mut after, &[(200, CanvasPlace::new(10, 0, 400, 300))]);
+    let acts = foreign_acts(&before, &after, "ada", None);
+    assert!(
+        acts.iter().any(|t| t.id == 2 && t.act == Act::Move),
+        "{acts:?}"
+    );
+    // Placing a window that stood nowhere yet moves nothing.
+    let unplaced = desktop(&[(1, 100, "ada"), (2, 200, "ben")]);
+    let mut first = unplaced.clone();
+    on_canvas(&mut first, &[(200, CanvasPlace::new(0, 0, 400, 300))]);
+    assert!(foreign_acts(&unplaced, &first, "ada", None).is_empty());
+}
