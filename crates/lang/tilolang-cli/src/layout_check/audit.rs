@@ -384,7 +384,7 @@ impl Walk<'_> {
                             size(*rb),
                             size(both),
                             a.widget,
-                            a.test_id.as_deref().unwrap_or("")
+                            size(*ra)
                         ),
                     );
                 }
