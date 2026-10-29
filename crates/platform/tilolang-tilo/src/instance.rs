@@ -248,7 +248,13 @@ pub struct Instance {
     lenses: HashMap<String, Vec<(Principal, bool)>>,
     lenses_changed: bool,
     /// The person and the room's policy the runtime's members were last read from.
-    members_from: Option<(String, tilo_action_policy::RoomPolicy)>,
+    members_from: Option<(
+        String,
+        tilo_action_policy::RoomPolicy,
+        crate::members::People,
+    )>,
+    /// How the policy's people are the runtime's principals, as presence pairs them.
+    people: crate::members::People,
     names_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -284,6 +290,7 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
+        let people = crate::members::People::new(&config.me, []);
         Self {
             app: config.app,
             me: config.me,
@@ -304,6 +311,7 @@ impl Instance {
             lenses: HashMap::new(),
             lenses_changed: false,
             members_from: None,
+            people,
             names_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -1667,18 +1675,28 @@ impl Instance {
         let Some(standing) = standing else {
             return false;
         };
-        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
-            *person == standing.person && *policy == standing.policy
-        });
+        let seen = self
+            .members_from
+            .as_ref()
+            .is_some_and(|(person, policy, people)| {
+                *person == standing.person && *policy == standing.policy && *people == self.people
+            });
         if seen {
             return false;
         }
         host.runtime().set_members(
-            crate::members::members_of(&standing, &self.me),
-            Some(crate::members::reads_of(&standing, &self.me, &host)),
+            crate::members::members_of(&standing, &self.people),
+            Some(crate::members::reads_of(&standing, &self.people, &host)),
         );
-        self.members_from = Some((standing.person, standing.policy));
+        self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
+    }
+
+    /// Which person each participant presence reports is a device of, `(participant,
+    /// person)`, where the room's host paired them: the policy's people are the runtime's
+    /// principals by it.
+    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
+        self.people = crate::members::People::new(&self.me, pairs);
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.
