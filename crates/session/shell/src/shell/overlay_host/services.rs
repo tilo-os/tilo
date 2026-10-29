@@ -70,13 +70,13 @@ impl ShellOverlayHost {
     /// displays other than the one in use.
     #[cfg(test)]
     pub(crate) fn machine_banner_rects(&self) -> &[Rect] {
-        &self.machine_banners
+        self.machine_banners()
     }
 
     /// The displays the last paint edged for a ringing call.
     #[cfg(test)]
     pub(crate) fn call_edge_rects(&self) -> &[Rect] {
-        &self.call_edges
+        self.call_edges()
     }
 
     /// The QS action dispatcher, for callers that actuate hardware

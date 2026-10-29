@@ -717,7 +717,9 @@ mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
     use std::time::Instant;
-    use tilo_desktop::notifications::{MAX_HISTORY, MAX_NOTIFICATIONS, NotificationStack};
+    use tilo_desktop::notifications::{
+        BannerFeed, MAX_HISTORY, MAX_NOTIFICATIONS, NotificationStack,
+    };
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     use vello::Scene;
@@ -926,10 +928,11 @@ mod tests {
                     let host = ChromeNotifications::new(&chrome);
                     let mut stack = NotificationStack::new();
                     stack.set_viewport(viewport);
+                    stack.set_feed(BannerFeed::of(&host));
                     let mut tr = TextRenderer::new();
                     tr.set_text_scale(scale);
                     let mut scene = Scene::new();
-                    stack.draw(&host, &mut scene, Affine::IDENTITY, &mut tr, &theme);
+                    stack.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme);
                     assert_eq!(
                         tr.text_scale(),
                         scale,
@@ -1583,6 +1586,69 @@ mod tests {
         let mut remote = remote_notification("phone", token, title, false).projection;
         remote.expires_unix_ms = now.saturating_add(60_000);
         remote
+    }
+
+    /// What the banners ask beyond open, close and choose: a call's own
+    /// answer and decline, an inline reply and reading a banner in full.
+    #[test]
+    fn banners_answer_calls_reply_inline_and_read_in_full() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let mut call = incoming(51, 1, 0);
+        call.actions = vec![
+            ("accept".into(), "Answer".into()),
+            ("decline".into(), "Decline".into()),
+        ];
+        let answered = chrome
+            .borrow_mut()
+            .push_notification_full(from_incoming(call.clone()));
+        assert!(chrome.borrow_mut().answer_call(answered, true));
+        assert_eq!(bridge.drain_action_events(), vec![(51, "accept".into())]);
+        call.dbus_id = 52;
+        let declined = chrome
+            .borrow_mut()
+            .push_notification_full(from_incoming(call));
+        assert!(chrome.borrow_mut().answer_call(declined, false));
+        assert_eq!(bridge.drain_action_events(), vec![(52, "decline".into())]);
+
+        let plain = chrome
+            .borrow_mut()
+            .push_notification_full(from_incoming(incoming(53, 1, 0)));
+        assert!(
+            !chrome.borrow_mut().reply_to_notification(plain, "hi"),
+            "a sender that offered no inline reply takes none"
+        );
+        let mut message = incoming(54, 1, 0);
+        message
+            .actions
+            .push(("inline-reply".into(), "Reply".into()));
+        let replied = chrome
+            .borrow_mut()
+            .push_notification_full(from_incoming(message));
+        assert!(
+            chrome
+                .borrow_mut()
+                .reply_to_notification(replied, "On my way")
+        );
+        assert_eq!(bridge.drain_reply_events(), vec![(54, "On my way".into())]);
+
+        bridge.drain_closed_events();
+        assert!(chrome.borrow_mut().read_notification(plain));
+        assert!(chrome.borrow().notifications().is_empty());
+        assert!(
+            chrome
+                .borrow()
+                .notification_history()
+                .iter()
+                .any(|n| n.id == plain),
+            "read in the centre"
+        );
+        assert!(
+            bridge.drain_closed_events().is_empty(),
+            "reading is not closing"
+        );
+        assert!(chrome.borrow().overlays.quick_settings);
     }
 
     #[test]

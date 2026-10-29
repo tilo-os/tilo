@@ -569,11 +569,11 @@ impl ShellOverlayHost {
             .last_cursor
             .is_some_and(|point| self.notification_history_covers_pointer(point));
         if covered {
-            self.notification_stack.cancel_pointer_press();
+            self.cancel_banner_press();
         }
-        if let Some(chrome) = self.chrome.clone()
+        if self.chrome.is_some()
             && (!covered
-                || (self.notification_stack.wants_pointer_capture()
+                || (self.banner_wants_pointer_capture()
                     && !matches!(
                         event,
                         WindowEvent::MouseInput {
@@ -582,21 +582,9 @@ impl ShellOverlayHost {
                             ..
                         }
                     )))
+            && self.route_banner_pointer(event, ctx)
         {
-            let mut banner_handled = false;
-            let changed = self.notification_stack.handle_pointer_event(
-                &ChromeNotifications::new(&chrome),
-                event,
-                ctx.scale_factor,
-                &mut banner_handled,
-            );
-            if changed {
-                chrome.borrow_mut().bump();
-            }
-            if banner_handled {
-                *ctx.handled = true;
-                return true;
-            }
+            return true;
         }
         let is_absorbable_pointer = matches!(
             event,

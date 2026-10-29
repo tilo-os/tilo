@@ -442,12 +442,15 @@ impl Widget for ShellOverlayHost {
             }
         }
         let desk_dirty = self.update_desk(ui::time::now());
+        // The banners run what their wake or a published action brought.
+        let banners_dirty = self.update_banners(doc, path);
         // A window bar's tooltip whose dwell ran out shows on this tick: its
         // deadline woke the loop, and a deadline alone paints nothing.
         let tooltip_dirty = self.bar_tooltip.tick(ui::time::now());
         steps.mark("commit");
         drop(steps);
         desk_dirty
+            || banners_dirty
             || tooltip_dirty
             || agent_quick_dirty
             || person_quick_dirty
@@ -996,6 +999,10 @@ impl Widget for ShellOverlayHost {
     ) -> bool {
         if target.starts_with("desk.widget:") {
             return self.desk_semantic_action(action, target);
+        }
+        // A banner's control, pressed as a click on it presses it.
+        if matches!(action, ui::a11y::Action::Activate) && self.perform_banner_target(target) {
+            return true;
         }
         if target.starts_with("participant:") && target.ends_with(":chat") {
             if self.person_cursor_controls_suppressed() {

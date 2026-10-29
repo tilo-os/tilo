@@ -3397,7 +3397,7 @@ fn notification_banner_completed_click_and_interrupted_gestures() {
         );
         let theme = Theme::dark().with_reduce_motion(true);
         settle_with_theme(&mut h, 960.0, 540.0, &theme);
-        let point = h.host.notification_stack.rect().center();
+        let point = h.host.notification_banners_rect().center();
         pump(&mut h, &cursor_moved_at(point));
         assert!(pump(&mut h, &left_button_pressed()));
         assert_eq!(
@@ -3451,7 +3451,7 @@ fn notification_banner_completed_click_and_interrupted_gestures() {
         );
         if interruption != "retired" {
             settle_with_theme(&mut h, 780.0, 540.0, &theme);
-            let point = h.host.notification_stack.rect().center();
+            let point = h.host.notification_banners_rect().center();
             pump(&mut h, &cursor_moved_at(point));
             assert!(pump(&mut h, &left_button_pressed()));
             assert!(pump(&mut h, &left_button_released()));
@@ -3542,14 +3542,14 @@ fn capture_banner_pointer_state(
     width: u32,
     path: &std::path::Path,
 ) {
-    let bounds = h.host.notification_stack.rect();
+    let bounds = h.host.notification_banners_rect();
     let mut scene = Scene::new();
-    h.host.notification_stack.draw(
-        &ChromeNotifications::new(&h.chrome),
+    h.host.draw_banners(
         &mut scene,
         Affine::translate((24.0 - bounds.x0, 24.0 - bounds.y0)),
         &mut TextRenderer::new(),
         theme,
+        &PresenceCtx::default(),
     );
     offscreen::OffscreenRenderer::new(width, 300).render_png(
         &scene,
@@ -3606,7 +3606,7 @@ fn notification_banner_pointer_feedback_matches_shared_close_face() {
                 .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
             );
             settle_with_theme(&mut h, viewport, 540.0, &theme);
-            let card = h.host.notification_stack.rect();
+            let card = h.host.notification_banners_rect();
             assert!(card.area() > 0.0);
             let hit = ui::widget::toast::paint_card(
                 &mut Scene::new(),
@@ -3667,7 +3667,7 @@ fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
         );
         let theme = Theme::dark().with_reduce_motion(true);
         settle_with_theme(&mut h, 960.0, 540.0, &theme);
-        let point = h.host.notification_stack.rect().center();
+        let point = h.host.notification_banners_rect().center();
         pump(&mut h, &cursor_moved_at(point));
         assert!(pump(&mut h, &left_button_pressed()));
         if lost_focus {

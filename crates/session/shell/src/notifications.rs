@@ -3,8 +3,8 @@
 //! In Tilo the desktop *chrome* is owned by the compositor, and
 //! notifications are chrome too: this module makes the compositor own
 //! `org.freedesktop.Notifications` so `libnotify`/freedesktop-API calls
-//! render as OS-drawn, OS-themed toasts (see
-//! [`tilo_desktop::notifications::NotificationStack`]) instead of app-drawn windows.
+//! render as OS-drawn, OS-themed toasts (the notification banners app,
+//! `tilo_notification_banners`) instead of app-drawn windows.
 //!
 //! The zbus service runs async on a tokio runtime; the toast queue lives
 //! on [`crate::shell::chrome_state::ChromeState`], an `Rc<RefCell<…>>`
@@ -313,6 +313,8 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    /// Inline reply sent from the compositor → `NotificationReplied` signal.
+    reply_events: Vec<(u32, String)>,
     /// The `xdg_activation_v1` token the compositor minted for an action the
     /// person activated, sent as `ActivationToken` just before that
     /// action's `ActionInvoked`, so the app can bring its window forward.
@@ -734,6 +736,23 @@ impl NotificationBridge {
             }
             self.signal_wake.poke();
         }
+    }
+
+    /// compositor → app: the person replied `text` to notification `id`
+    /// inline, to be emitted as `NotificationReplied`.
+    pub fn note_reply(&self, id: u32, text: impl Into<String>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.reply_events.push((id, text.into()));
+            self.signal_wake.poke();
+        }
+    }
+
+    /// signal emitter: take every queued inline reply.
+    pub fn drain_reply_events(&self) -> Vec<(u32, String)> {
+        self.inner
+            .lock()
+            .map(|mut g| std::mem::take(&mut g.reply_events))
+            .unwrap_or_default()
     }
 
     /// Subscribe a protocol-specific action observer. Observers are invoked

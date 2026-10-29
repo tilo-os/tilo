@@ -353,13 +353,7 @@ impl ShellOverlayHost {
         self.desk_pointer(p, ui::time::now());
         // Resting on the banner stack holds its banners; leaving it into the
         // window under it lets them go, though that window takes the motion.
-        if let Some(chrome) = self.chrome.clone()
-            && self
-                .notification_stack
-                .note_pointer(&ChromeNotifications::new(&chrome), Some(p))
-        {
-            chrome.borrow_mut().bump();
-        }
+        self.note_banner_pointer(Some(p));
         // The strip switcher reads the path toward the ribbon over the
         // windows it crosses, as the top-edge reveals do.
         self.strip_switcher_pointer_moved(p);

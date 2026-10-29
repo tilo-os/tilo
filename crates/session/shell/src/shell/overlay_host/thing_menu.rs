@@ -113,7 +113,7 @@ impl ShellOverlayHost {
                     .notification_at(&host, &self.qs_notification_layout(), at)
             })
             .flatten()
-            .or_else(|| self.notification_stack.banner_at(at))?;
+            .or_else(|| self.banner_at(at))?;
         let (title, app_id) = {
             let state = chrome.borrow();
             let log = state.notification_log();

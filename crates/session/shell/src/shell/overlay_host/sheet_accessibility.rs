@@ -12,7 +12,7 @@
 
 use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 
-use super::{ChromeNotifications, ShellOverlayHost, fullscreen_hint, t};
+use super::{ShellOverlayHost, fullscreen_hint, t};
 use tilo_quick_settings::WifiPasswordPrompt;
 
 const WIFI_PASSWORD_PREFIX: &str = "wifi-password:";
@@ -145,10 +145,8 @@ impl ShellOverlayHost {
     /// acknowledgement and a held pad's mapping, each a live region.
     pub(super) fn live_status_accessibility(&self) -> Vec<AccessNode> {
         let mut nodes = Vec::new();
-        if let Some(chrome) = self.chrome.as_ref()
-            && let Some(node) = self
-                .notification_stack
-                .accessibility(&ChromeNotifications::new(chrome))
+        if self.chrome.is_some()
+            && let Some(node) = self.banner_accessibility()
         {
             nodes.push(node);
         }

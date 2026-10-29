@@ -530,12 +530,10 @@ impl ShellOverlayHost {
             peer_sync_overlay: Box::default(),
             directory_sheet: Box::default(),
             arrival_pulses: Vec::new(),
-            notification_stack: NotificationStack::new(),
+            banners: banners::BannerHost::default(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
             osd_pin: std::cell::Cell::new(None),
-            machine_banners: Vec::new(),
-            call_edges: Vec::new(),
             motion: std::cell::Cell::new(ui::tokens::EffectiveMotion::new(
                 ui::tokens::Motion::default(),
                 false,

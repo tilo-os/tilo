@@ -841,6 +841,16 @@ impl NotificationCenter {
         self.reader.take().is_some()
     }
 
+    /// Read retained notification `id` in full, as choosing it does when it
+    /// opens nothing: a live banner the person asked to read lands here.
+    pub fn open_reader(&mut self, id: u64) {
+        self.selected = Some(RowIdentity::Item(id));
+        self.row_control = None;
+        self.back_focused = false;
+        self.action_focus = None;
+        self.reader = Some(NotificationReader::new(id, false));
+    }
+
     pub fn is_reading(&self) -> bool {
         self.reader.is_some()
     }

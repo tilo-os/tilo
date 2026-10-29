@@ -17,6 +17,7 @@ mod agent_markers;
 mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
+mod banners;
 mod bar_popovers;
 mod control_hints;
 mod cursor_chat;
@@ -176,7 +177,6 @@ use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::DrillInList;
 use tilo_desktop::notifications::{
     CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
-    NotificationStack,
 };
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
@@ -897,9 +897,9 @@ pub struct ShellOverlayHost {
     /// The faces the bar pulses for an arrival, until the frame bounces
     /// them (`arrival::say_arrived`).
     arrival_pulses: Vec<String>,
-    /// Top-right notification stack, above content but below the
-    /// permission prompt and modals.
-    notification_stack: NotificationStack,
+    /// The notification banners, an app hosted above content but below
+    /// the permission prompt and modals.
+    banners: banners::BannerHost,
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
@@ -908,12 +908,6 @@ pub struct ShellOverlayHost {
     /// The display the readout was raised on, kept while it is up
     /// ([`crate::shell::osd::pin_display`]).
     osd_pin: std::cell::Cell<Option<crate::shell::osd::OsdPin>>,
-    /// Where the last paint repeated banners about the whole machine on the
-    /// displays other than the one in use.
-    machine_banners: Vec<Rect>,
-    /// The displays the last paint edged for a ringing call, every display
-    /// but the one whose banner shows the call.
-    call_edges: Vec<Rect>,
     /// The motion the chrome may play as last drawn (`Theme::motion`), for
     /// transitions started outside a draw.
     motion: std::cell::Cell<ui::tokens::EffectiveMotion>,

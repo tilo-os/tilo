@@ -53,10 +53,7 @@ impl ShellOverlayHost {
                     .screenshot_markup
                     .as_ref()
                     .is_some_and(Widget::needs_animation_frame),
-                notification: self.chrome.as_ref().is_some_and(|chrome| {
-                    self.notification_stack
-                        .needs_animation_frame(&ChromeNotifications::new(chrome))
-                }),
+                notification: self.chrome.is_some() && self.banners_need_frame(),
                 desk: self.desk_animating(now),
                 cursor_chat: self.cursor_chat_animating(now),
                 collaborators: (self.overlay_flags().collaborators
@@ -798,10 +795,7 @@ impl ShellOverlayHost {
             ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (
                 "notification",
-                self.chrome.as_ref().and_then(|chrome| {
-                    self.notification_stack
-                        .next_wake_deadline(&ChromeNotifications::new(chrome))
-                }),
+                self.chrome.as_ref().and_then(|_| self.banners_deadline()),
             ),
             (
                 // Clear all's Undo goes away when its window ends, though

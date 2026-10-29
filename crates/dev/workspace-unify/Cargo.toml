@@ -1220,6 +1220,7 @@ doc = false
 "tilo-network-actor" = { path = "../../../crates/session/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../../crates/session/network-secret-agent", default-features = false, features = ["test-support"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
+"tilo-notification-banners" = { path = "../../../crates/session/notification-banners", default-features = false, features = [] }
 "tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-ntfs-helper" = { path = "../../../crates/session/tilo-ntfs-helper", default-features = false, features = [] }
 "tilo-ntfs-mount" = { path = "../../../crates/system/ntfs-mount", default-features = false, features = ["default", "service"] }

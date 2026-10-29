@@ -4233,6 +4233,9 @@ mod remote_continuity;
 #[path = "chrome_state_desk_undo.rs"]
 mod desk_undo;
 
+#[path = "chrome_state_banner_answers.rs"]
+mod banner_answers;
+
 #[cfg(test)]
 mod panel_exclusion_tests {
     use super::*;

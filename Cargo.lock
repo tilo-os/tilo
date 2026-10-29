@@ -15711,6 +15711,7 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-notification-banners",
  "tilo-ntfs-mount",
  "tilo-output-passes",
  "tilo-owner-commit",
@@ -19912,6 +19913,18 @@ dependencies = [
  "workspace-hack",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-notification-banners"
+version = "0.1.0"
+dependencies = [
+ "durable-store",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -27522,6 +27535,7 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-notification-banners",
  "tilo-notify",
  "tilo-ntfs-helper",
  "tilo-ntfs-mount",

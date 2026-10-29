@@ -335,8 +335,8 @@ impl ShellOverlayHost {
         if chrome.borrow().notifications().is_empty() {
             return false;
         }
-        self.notification_stack.wants_pointer_capture()
-            || p.is_some_and(|p| self.notification_stack.rect().contains(p))
+        self.banner_wants_pointer_capture()
+            || p.is_some_and(|p| self.banner_stack_rect().contains(p))
     }
 
     /// Whether the shell takes pointer input at `p` (the pointer's place, or
@@ -363,7 +363,7 @@ impl ShellOverlayHost {
 
     /// Where the notification banners were last drawn.
     pub fn notification_banners_rect(&self) -> Rect {
-        self.notification_stack.rect()
+        self.banner_stack_rect()
     }
 
     /// Test hook: as if the person had turned "hide the top bar" on or off.
