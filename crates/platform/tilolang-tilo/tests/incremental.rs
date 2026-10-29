@@ -356,6 +356,76 @@ fn the_label_follows_whatever_names_the_record() {
     check(&ada, &published, "titling the list");
 }
 
+/// The published id and label of every resource in `resource`.
+fn labels(resource: &ResourceSpec, out: &mut Vec<(String, String)>) {
+    out.push((resource.id.as_str().to_owned(), resource.label.clone()));
+    for child in &resource.children {
+        labels(child, out);
+    }
+}
+
+/// An item retyped moves its label, and the record's when it names it, and nothing else: a
+/// reader holding an earlier revision learns those labels alone, until an item is added.
+#[test]
+fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let start = published.revision();
+    assert_eq!(published.labels_since(start), Some(Vec::new()));
+    let now = |published: &Publications| {
+        let mut out = Vec::new();
+        labels(&published.trees()[&root], &mut out);
+        out
+    };
+    let before = now(&published);
+    // What moved from `before` to the tree now: what a reader holding `before` must learn.
+    let moved = |published: &Publications, before: &[(String, String)]| {
+        let mut out: Vec<(String, String)> = now(published)
+            .into_iter()
+            .filter(|label| !before.contains(label))
+            .collect();
+        out.sort();
+        out
+    };
+    let learned = |published: &Publications, since: u64| {
+        let mut out = published.labels_since(since).expect("only labels moved");
+        out.sort();
+        out
+    };
+
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[0], "almond milk");
+    published.update(&ada.host, &planner);
+    let first = moved(&published, &before);
+    assert_eq!(first.len(), 2, "the item and the list it names: {first:?}");
+    assert_eq!(learned(&published, start), first);
+
+    let middle = published.revision();
+    let after_first = now(&published);
+    retype(&mut ada, &meta, &root, &ids[2], "rye bread");
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        learned(&published, middle),
+        moved(&published, &after_first),
+        "since the first retyping, only the second"
+    );
+    assert_eq!(learned(&published, start), moved(&published, &before));
+
+    add(&mut ada, &meta, &root, "jam");
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        published.labels_since(start),
+        None,
+        "an item added is more than labels"
+    );
+    assert_eq!(
+        published.labels_since(published.revision()),
+        Some(Vec::new())
+    );
+}
+
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = room();

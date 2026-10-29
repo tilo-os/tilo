@@ -379,6 +379,11 @@ pub struct Publications {
     trees: std::collections::BTreeMap<String, Rc<ResourceSpec>>,
     /// Moves whenever a tree is added, replaced or removed.
     revision: u64,
+    /// The last revision at which a tree was added, removed or changed in more than its labels.
+    structural: u64,
+    /// The labels each recent revision that changed only labels moved, oldest first: what a
+    /// reader holding an earlier revision patches instead of reading every tree again.
+    relabels: std::collections::VecDeque<(u64, Vec<(String, String)>)>,
     /// Per record, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
     /// Records being built whole off the frame.
@@ -501,6 +506,8 @@ impl Publications {
             watch: host.store().watch(),
             trees: std::collections::BTreeMap::new(),
             revision: 0,
+            structural: 0,
+            relabels: std::collections::VecDeque::new(),
             named_by: std::collections::BTreeMap::new(),
             building: None,
             wake: None,
@@ -603,6 +610,7 @@ impl Publications {
             self.named_by.insert(doc.clone(), named_by);
             touched.push(doc);
             self.revision = self.revision.wrapping_add(1);
+            self.structural = self.revision;
         }
     }
 
@@ -619,20 +627,62 @@ impl Publications {
         self.revision
     }
 
+    /// The labels that moved since `revision`, by published resource id, each with its label
+    /// now: all that changed in [`Self::trees`] since then. `None` when more than labels changed
+    /// since (a tree was added, removed or changed in what it holds), or when what changed that
+    /// long ago is no longer kept.
+    #[must_use]
+    pub fn labels_since(&self, revision: u64) -> Option<Vec<(String, String)>> {
+        if revision == self.revision {
+            return Some(Vec::new());
+        }
+        if self.structural > revision || revision > self.revision {
+            return None;
+        }
+        let first = self.relabels.iter().position(|(at, _)| *at > revision)?;
+        // Every revision after `revision` is one the journal holds.
+        if self.relabels.get(first)?.0 != revision.wrapping_add(1) {
+            return None;
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (_, labels) in self.relabels.iter().skip(first) {
+            for (id, label) in labels {
+                match out.iter_mut().find(|(held, _)| held == id) {
+                    Some(slot) => slot.1.clone_from(label),
+                    None => out.push((id.clone(), label.clone())),
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// Republish what changed since the last update. Returns the documents whose published tree
     /// changed (or went away).
     pub fn update(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
-        let touched = self.update_trees(host, planner);
+        let mut relabels = Some(Vec::new());
+        let touched = self.update_trees(host, planner, &mut relabels);
         if !touched.is_empty() {
             self.revision = self.revision.wrapping_add(1);
+            match relabels {
+                Some(labels) => {
+                    if self.relabels.len() >= RELABELS_KEPT {
+                        self.relabels.pop_front();
+                    }
+                    self.relabels.push_back((self.revision, labels));
+                }
+                None => self.structural = self.revision,
+            }
         }
         touched
     }
 
+    /// [`Self::update`]'s work on the trees; `relabels` gathers the labels it moved, and is
+    /// `None` once it changed more than labels.
     fn update_trees(
         &mut self,
         host: &crate::host::Host,
         planner: &Arc<dyn Planner>,
+        relabels: &mut Option<Vec<(String, String)>>,
     ) -> Vec<String> {
         use std::collections::BTreeSet;
 
@@ -645,7 +695,10 @@ impl Publications {
                     self.building = Some((docs, building));
                     return touched;
                 }
-                built => self.take_in(host, planner, &docs, built, &mut touched),
+                built => {
+                    self.take_in(host, planner, &docs, built, &mut touched);
+                    *relabels = None;
+                }
             }
         }
         let changes = self.watch.take();
@@ -662,6 +715,7 @@ impl Publications {
             self.trees.remove(&doc);
             self.named_by.remove(&doc);
             touched.push(doc);
+            *relabels = None;
         }
         for (package, type_name, doc) in &records {
             let Some(schema) = package
@@ -701,33 +755,61 @@ impl Publications {
             else {
                 continue;
             };
-            if at.republish(
+            match at.republish(
                 tree,
                 (fields, &changes),
                 self.named_by.entry(doc.clone()).or_default(),
             ) {
-                touched.push(doc.clone());
+                Republished::Unchanged => {}
+                Republished::Relabeled(labels) => {
+                    if let Some(gathered) = relabels.as_mut() {
+                        gathered.extend(labels);
+                    }
+                    touched.push(doc.clone());
+                }
+                Republished::Rebuilt => {
+                    *relabels = None;
+                    touched.push(doc.clone());
+                }
             }
         }
         if !whole_docs.is_empty() {
-            // Built off the frame; changes from now on stay in the watch until it is taken in.
-            let snapshot = host.store().snapshot();
-            let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
-            self.building = Some((
-                docs,
-                Pending::start(
-                    move || {
-                        whole_docs
-                            .iter()
-                            .map(|whole| whole.build(&snapshot))
-                            .collect()
-                    },
-                    self.wake.clone(),
-                ),
-            ));
+            self.build_off_frame(host, whole_docs);
         }
         touched
     }
+
+    /// Build `whole_docs` off the frame; changes from now on stay in the watch until they are
+    /// taken in.
+    fn build_off_frame(&mut self, host: &crate::host::Host, whole_docs: Vec<Whole>) {
+        let snapshot = host.store().snapshot();
+        let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
+        self.building = Some((
+            docs,
+            Pending::start(
+                move || {
+                    whole_docs
+                        .iter()
+                        .map(|whole| whole.build(&snapshot))
+                        .collect()
+                },
+                self.wake.clone(),
+            ),
+        ));
+    }
+}
+
+/// How many label-only revisions [`Publications::labels_since`] reaches back over.
+const RELABELS_KEPT: usize = 256;
+
+/// What republishing a record did to its tree.
+enum Republished {
+    /// It is the very tree it was.
+    Unchanged,
+    /// Only labels moved: these, by published resource id, each with its label now.
+    Relabeled(Vec<(String, String)>),
+    /// Items were built, dropped or moved.
+    Rebuilt,
 }
 
 /// What to rebuild of a published record: the resources a change reached, each at its own
@@ -905,7 +987,7 @@ impl Published<'_> {
 
     /// Republish in `tree` what the changes to `fields` reached; `named_by` is the resource
     /// whose text names the record, kept up to date.
-    /// Whether the tree changed. A change that reached nothing the tree shows (a note's body
+    /// What changed in the tree. A change that reached nothing the tree shows (a note's body
     /// typed into, which no label reads) leaves it the very tree it was.
     fn republish(
         &self,
@@ -915,12 +997,27 @@ impl Published<'_> {
             &crate::store::Changes,
         ),
         named_by: &mut Option<String>,
-    ) -> bool {
+    ) -> Republished {
         let mut rework = self.rework(fields, named_by.as_deref());
         if self.shows_the_same(tree, &rework, named_by.as_deref()) {
-            return false;
+            return Republished::Unchanged;
         }
         let tree = Rc::make_mut(tree);
+        if rework.nodes.is_empty() && rework.collections.is_empty() {
+            // A title typed into: only labels move.
+            let mut labels = self.relabel(tree, &rework.relabels);
+            let (label, named) = match &rework.relabel {
+                Relabel::Kept => return Republished::Relabeled(labels),
+                Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
+                Relabel::Whole => self.label(),
+            };
+            if tree.label != label {
+                labels.push((tree.id.as_str().to_owned(), label.clone()));
+                tree.label = label;
+            }
+            *named_by = named;
+            return Republished::Relabeled(labels);
+        }
         for (path, field) in &rework.collections {
             if self.within(path, &rework.nodes) {
                 continue;
@@ -939,13 +1036,13 @@ impl Published<'_> {
         self.rebuild(tree, &rework.nodes);
         self.relabel(tree, &rework.relabels);
         let (label, named) = match &rework.relabel {
-            Relabel::Kept => return true,
+            Relabel::Kept => return Republished::Rebuilt,
             Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
             Relabel::Whole => self.label(),
         };
         tree.label = label;
         *named_by = named;
-        true
+        Republished::Rebuilt
     }
 
     /// Whether `rework` would leave `tree` as it is: it builds and moves no item, and every
@@ -1107,8 +1204,13 @@ impl Published<'_> {
     }
 
     /// Read again the labels of the items at `paths`: the first text in each, as
-    /// [`item_resource`] names an item.
-    fn relabel(&self, tree: &mut ResourceSpec, paths: &std::collections::BTreeSet<String>) {
+    /// [`item_resource`] names an item. The labels that moved, by published resource id.
+    fn relabel(
+        &self,
+        tree: &mut ResourceSpec,
+        paths: &std::collections::BTreeSet<String>,
+    ) -> Vec<(String, String)> {
+        let mut moved = Vec::new();
         for path in paths {
             let (Some(at), Some(schema)) = (self.at(path), self.schema_at(path)) else {
                 continue;
@@ -1116,11 +1218,16 @@ impl Published<'_> {
             let Some(node) = self.node_mut(tree, path) else {
                 continue;
             };
-            node.label = self
+            let label = self
                 .store
                 .first_text(&at)
                 .map_or_else(|| schema.name.clone(), |(text, _)| text);
+            if node.label != label {
+                moved.push((node.id.as_str().to_owned(), label.clone()));
+                node.label = label;
+            }
         }
+        moved
     }
 
     /// Apply the steps of the listing of the collection `field` of the resource at `path` to
