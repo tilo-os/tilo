@@ -142,6 +142,10 @@ struct Bar {
 }
 
 /// The bars and their menus on screen.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the surface that changes on its own"
+)]
 pub struct TopBarSurface {
     link: Link,
     source: Rc<FeedChrome>,
@@ -286,19 +290,16 @@ impl TopBarSurface {
             let reuse = kept
                 .iter()
                 .position(|bar| bar.place.display == place.display && bar.place.full == place.full);
-            let mut bar = match reuse {
-                Some(at) => kept.remove(at),
-                None => {
-                    let chrome: Chrome = self.source.clone();
-                    let widget = TopBarChrome::from_tree_with_local_user(
-                        &feed.tree,
-                        feed.local_user.clone(),
-                    );
-                    let widget = if place.full { widget } else { widget.compact() };
-                    Bar {
-                        place: *place,
-                        widget: widget.with_chrome(chrome),
-                    }
+            let mut bar = if let Some(at) = reuse {
+                kept.remove(at)
+            } else {
+                let chrome: Chrome = self.source.clone();
+                let widget =
+                    TopBarChrome::from_tree_with_local_user(&feed.tree, feed.local_user.clone());
+                let widget = if place.full { widget } else { widget.compact() };
+                Bar {
+                    place: *place,
+                    widget: widget.with_chrome(chrome),
                 }
             };
             bar.place = *place;
@@ -323,13 +324,13 @@ impl TopBarSurface {
     fn catch_up(&mut self) {
         self.take_feed();
         while let Some(command) = self.link.next_command() {
-            self.take_command(command);
+            self.take_command(&command);
         }
         self.follow_placement();
         self.open_asked_popover();
     }
 
-    fn take_command(&mut self, command: Command) {
+    fn take_command(&mut self, command: &Command) {
         match command {
             Command::Focus => {
                 if let Some(bar) = self.bars.iter_mut().find(|bar| bar.place.full) {
@@ -349,7 +350,7 @@ impl TopBarSurface {
                 source,
             } => {
                 if let Some(bar) = self.bars.iter_mut().find(|bar| bar.place.full) {
-                    bar.widget.move_with_window(shown, motion, source);
+                    bar.widget.move_with_window(*shown, *motion, *source);
                 }
             }
             Command::ClosePopovers => {
@@ -596,7 +597,7 @@ impl TopBarSurface {
                 Ask::Chrome(ChromeIntent::AcceptContinuity)
             }
             TopBarEffect::Focus => {
-                self.take_command(Command::Focus);
+                self.take_command(&Command::Focus);
                 self.hand_over();
                 return Ok(());
             }
@@ -917,7 +918,7 @@ impl ResourceSurface<TopBar, TopBarEffect> for TopBarSurface {
             match scenario {
                 Some("menu") => self.staged_popover = Some(Popover::WorkspaceMenu),
                 Some("profile") => self.staged_popover = Some(Popover::Profile),
-                Some("focused") => self.take_command(Command::Focus),
+                Some("focused") => self.take_command(&Command::Focus),
                 _ => {}
             }
         }

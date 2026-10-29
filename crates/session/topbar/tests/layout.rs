@@ -6,7 +6,8 @@
     clippy::unwrap_used,
     clippy::panic,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::float_cmp,
+    reason = "in a test these are the assertion, not a hazard; geometry is compared exactly"
 )]
 
 use tilo_desktop::chrome::ChromeIntent;
