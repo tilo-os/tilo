@@ -7753,24 +7753,6 @@ impl FrameHarness {
         Ok(started)
     }
 
-    /// The window a palette is asked for from, when the root lays several
-    /// out (the desktop's strip of app tiles): the tile under the pointer
-    /// that pressed, else the one holding keyboard focus. `None` for a lone
-    /// app, whose window is the whole surface.
-    fn invoking_window_rect(&self) -> Option<Rect> {
-        crate::action_palette::invoking_window(
-            &self.taffy,
-            self.layout_built.then_some(self.root_node),
-            self.pointer.pressed_at,
-            self.focused,
-            |node| {
-                self.inspect_node(node, crate::action_palette::tile_rect)
-                    .ok()
-                    .flatten()
-            },
-        )
-    }
-
     fn open_ordinary_confirmation(
         &mut self,
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
@@ -7819,7 +7801,7 @@ impl FrameHarness {
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
         let reason = crate::bound_dispatch::refusal_reason(error);
-        if let Some(anchor) = self.acting_control_rect() {
+        if let Some(anchor) = self.tree().acting_control_rect() {
             self.control_notice = Some(crate::control_notice::ControlNotice {
                 text: reason,
                 anchor,
@@ -7829,24 +7811,6 @@ impl FrameHarness {
             self.window_refusal = Some(reason);
         }
         self.invalidate_local();
-    }
-
-    /// The control the person acted on last: under their last press, else
-    /// the one holding the keyboard.
-    fn acting_control_rect(&self) -> Option<Rect> {
-        crate::control_notice::acting_control(
-            &self.taffy,
-            self.layout_built.then_some(self.root_node),
-            self.pointer.pressed_at,
-            self.focused,
-            |node| {
-                self.inspect_node(node, |widget| {
-                    Some((widget.get_rect(), widget.is_focusable()))
-                })
-                .ok()
-                .flatten()
-            },
-        )
     }
 
     /// What stands at the control the person last used: why what they did
@@ -9951,6 +9915,8 @@ impl crate::host_core::HostCore for FrameHarness {
             permissions: &self.permissions,
             focused: self.focused,
             history_layout: self.history_layout,
+            root_node: self.layout_built.then_some(self.root_node),
+            pointer: &self.pointer,
         }
     }
 
@@ -9973,6 +9939,8 @@ impl crate::host_core::HostCore for FrameHarness {
                 permissions: &self.permissions,
                 focused: self.focused,
                 history_layout: self.history_layout,
+                root_node: self.layout_built.then_some(self.root_node),
+                pointer: &self.pointer,
             },
         )
     }

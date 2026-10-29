@@ -4,6 +4,7 @@
 
 use super::FrameHarness;
 use crate::action_palette::ActionPaletteBox;
+use crate::host_core::HostCore as _;
 
 /// What waits on the palette's code.
 #[derive(Default)]
@@ -29,8 +30,8 @@ impl FrameHarness {
             return;
         };
         // Read before the tree it is found in is discarded.
-        self.palette_window = self.invoking_window_rect();
-        let anchor = self.acting_control_rect();
+        self.palette_window = self.tree().invoking_window_rect();
+        let anchor = self.tree().acting_control_rect();
         self.discard_layout_tree();
         self.focused = None;
         // The question stands at the control the person used.

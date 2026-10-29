@@ -27,6 +27,9 @@ pub(crate) struct HostTree<'a> {
     pub(crate) permissions: &'a crate::permissions::PermissionContext,
     pub(crate) focused: Option<NodeId>,
     pub(crate) history_layout: Option<HostHistoryLayout>,
+    /// The laid-out root, once the host built its layout.
+    pub(crate) root_node: Option<NodeId>,
+    pub(crate) pointer: &'a PointerPlace,
 }
 
 impl<'a> HostTree<'a> {
@@ -64,6 +67,43 @@ impl<'a> HostTree<'a> {
         self.history.is_some()
             || crate::history_mode::embedded::has_surfaces(self.root)
             || crate::history_mode::capability::provides_document_history(self.root)
+    }
+
+    /// The window a palette is asked for from, when the root lays several
+    /// out (the desktop's strip of app tiles): the tile under the pointer
+    /// that pressed, else the one holding keyboard focus. `None` for a lone
+    /// app, whose window is the whole surface
+    /// ([`crate::action_palette::invoking_window`]).
+    pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
+        crate::action_palette::invoking_window(
+            self.taffy,
+            self.root_node,
+            self.pointer.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, crate::action_palette::tile_rect)
+                    .ok()
+                    .flatten()
+            },
+        )
+    }
+
+    /// The control the person acted on last, in window coordinates: under
+    /// their last press, else the one holding the keyboard.
+    pub(crate) fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
+        crate::control_notice::acting_control(
+            self.taffy,
+            self.root_node,
+            self.pointer.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, |widget| {
+                    Some((widget.get_rect(), widget.is_focusable()))
+                })
+                .ok()
+                .flatten()
+            },
+        )
     }
 
     /// Read the widget laid out at `node`, through its component binding.
