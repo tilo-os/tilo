@@ -209,7 +209,6 @@ members = [
     "crates/collab/workspace-join",
 
     # Dev
-    "crates/dev/codebase-qualification",
     "crates/dev/workspace-unify",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
