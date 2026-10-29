@@ -19,10 +19,10 @@
 //! arrives: no timer runs while it is connected.
 //!
 //! A session carries changes one way, from the host dialed to the host
-//! dialing. Two certified hosts each dial the other. A device governing a
-//! room another host of its person serves dials nothing on its own: when
-//! that host's session arrives, the device answers it with one back
-//! ([`PeerRelayDialer::answer`]) that lasts as long as it does.
+//! dialing. A device governing a room another host of its person serves
+//! dials nothing on its own: when that host's session arrives, the device
+//! answers it with one back ([`PeerRelayDialer::answer`]) that lasts as long
+//! as it does.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,8 +45,6 @@ use crate::transport::Envelope;
 /// Which host a federation session dials, and how its identity is pinned.
 #[derive(Clone, Debug)]
 pub enum Upstream {
-    /// A certified host of this host's own person, at `addr`.
-    Relay(EndpointAddr),
     /// The device `device` of this host's own person, hosting its rooms at
     /// `addr`: the governor of a room this host also serves.
     OwnDevice {
@@ -64,14 +62,13 @@ pub enum Upstream {
 impl Upstream {
     const fn addr(&self) -> &EndpointAddr {
         match self {
-            Self::Relay(addr) | Self::OwnDevice { addr, .. } | Self::OwnHost { addr, .. } => addr,
+            Self::OwnDevice { addr, .. } | Self::OwnHost { addr, .. } => addr,
         }
     }
 
     /// The device the session pins.
-    fn device(&self) -> [u8; 32] {
+    const fn device(&self) -> [u8; 32] {
         match self {
-            Self::Relay(addr) => *addr.id.as_bytes(),
             Self::OwnDevice { device, .. } | Self::OwnHost { device, .. } => *device,
         }
     }
@@ -107,15 +104,8 @@ impl Arrivals {
     }
 }
 
-/// Wait until `device` arrives in `arrivals`; never when there are none to
-/// hear.
-async fn arrival(
-    arrivals: Option<&mut tokio::sync::broadcast::Receiver<[u8; 32]>>,
-    device: [u8; 32],
-) {
-    let Some(arrivals) = arrivals else {
-        return std::future::pending().await;
-    };
+/// Wait until `device` arrives in `arrivals`.
+async fn arrival(arrivals: &mut tokio::sync::broadcast::Receiver<[u8; 32]>, device: [u8; 32]) {
     loop {
         match arrivals.recv().await {
             Ok(arrived) if arrived == device => return,
@@ -145,35 +135,30 @@ impl PeerRelayDialer {
     /// Spawn the reconnect-with-backoff task for `upstream`. The task runs
     /// until its handle is aborted. While connected it holds one session;
     /// after a session ends or a dial fails it waits `1s, 2s, 4s, …` up to
-    /// 60s before dialing again.
-    pub fn spawn(self, upstream: Upstream, label: String) -> JoinHandle<()> {
-        tokio::spawn(self.dial_loop(upstream, label, None))
-    }
-
-    /// [`Self::spawn`], dialing again as soon as the upstream's device opens
-    /// a session here ([`Arrivals`]): a dial still under way to where it
-    /// was is given up, and a wait for the next dial cut short.
+    /// 60s before dialing again, or dials again as soon as the upstream's
+    /// device opens a session here ([`Arrivals`]): a dial still under way
+    /// to where it was is given up, and a wait for the next dial cut short.
     pub(crate) fn spawn_woken(
         self,
         upstream: Upstream,
         label: String,
         arrivals: &Arrivals,
     ) -> JoinHandle<()> {
-        tokio::spawn(self.dial_loop(upstream, label, Some(arrivals.watch())))
+        tokio::spawn(self.dial_loop(upstream, label, arrivals.watch()))
     }
 
     async fn dial_loop(
         self,
         upstream: Upstream,
         label: String,
-        mut arrivals: Option<tokio::sync::broadcast::Receiver<[u8; 32]>>,
+        mut arrivals: tokio::sync::broadcast::Receiver<[u8; 32]>,
     ) {
         let device = upstream.device();
         let mut backoff_ms: u64 = 1_000;
         loop {
             let dialed = tokio::select! {
                 dialed = self.dial(&upstream) => Some(dialed),
-                () = arrival(arrivals.as_mut(), device) => None,
+                () = arrival(&mut arrivals, device) => None,
             };
             match dialed {
                 Some(Ok(client)) => {
@@ -184,9 +169,7 @@ impl PeerRelayDialer {
                     }
                     // What arrived while the session lasted says nothing
                     // of the device now.
-                    if let Some(arrivals) = arrivals.as_mut() {
-                        *arrivals = arrivals.resubscribe();
-                    }
+                    arrivals = arrivals.resubscribe();
                 }
                 Some(Err(error)) => {
                     tracing::debug!(%label, "peer relay dial failed: {error}");
@@ -201,7 +184,7 @@ impl PeerRelayDialer {
                 () = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {
                     backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
                 }
-                () = arrival(arrivals.as_mut(), device) => backoff_ms = 1_000,
+                () = arrival(&mut arrivals, device) => backoff_ms = 1_000,
             }
         }
     }
@@ -211,17 +194,6 @@ impl PeerRelayDialer {
         let revocations = identity.revocations.read_recover().clone();
         let addr = upstream.addr().clone();
         let client = match upstream {
-            Upstream::Relay(_) => {
-                RelayClient::connect(
-                    self.endpoint.clone(),
-                    addr,
-                    identity.user_public_key,
-                    identity.cert.clone(),
-                    identity.signing_key.clone(),
-                    revocations,
-                )
-                .await
-            }
             Upstream::OwnDevice { device, .. } => {
                 RelayClient::connect_v2_to_own_device(
                     self.endpoint.clone(),
