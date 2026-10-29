@@ -100,7 +100,7 @@ fn to_ods_formula(app_formula: &str) -> String {
 /// alone. Reuses the shared reference scanner so string literals and function
 /// names are correctly skipped.
 fn rewrite_refs_to_ods(body: &str) -> String {
-    let spans = crate::formula::references(body);
+    let spans = crate::refs::references(body);
     if spans.is_empty() {
         return body.to_string();
     }
@@ -252,7 +252,7 @@ mod tests {
             raw.insert((0, 2), "=SUM(A1:A2)".into()); // 12
             raw.insert((0, 3), "=A3*2".into()); // 24
             let fmt: HashMap<Addr, CellFormat> = HashMap::new();
-            let values = crate::formula::recalculate(&raw);
+            let values = crate::calc::recalculate(&raw);
             let table = SheetTable::from_cells(
                 "Calc",
                 &raw,
@@ -287,7 +287,7 @@ mod tests {
                     }
                 }
             }
-            let recomputed = crate::formula::recalculate(&reimported);
+            let recomputed = crate::calc::recalculate(&reimported);
             assert_eq!(recomputed.get(&(0, 2)), Some(&CellValue::Number(12.0)));
             assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(24.0)));
         }

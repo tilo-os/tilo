@@ -2,7 +2,7 @@
 
 use super::{
     CellFormat, CellValue, ChartKind, SelectionKey, SelectionSummary, SheetsApp, Workbook, actions,
-    format_value, formula, verbs,
+    format_value, verbs,
 };
 
 impl SheetsApp {
@@ -152,7 +152,7 @@ impl SheetsApp {
                 for (offset, r) in (1_i64..).zip(r0.saturating_add(1)..=r1) {
                     down.push(CellWrite::at(
                         (c, r),
-                        formula::offset_refs(&raw, 0, offset),
+                        crate::refs::offset_refs(&raw, 0, offset),
                         Some(fmt),
                     ));
                 }
@@ -168,7 +168,7 @@ impl SheetsApp {
                 for (offset, c) in (1_i64..).zip(c0.saturating_add(1)..=c1) {
                     right.push(CellWrite::at(
                         (c, r),
-                        formula::offset_refs(&raw, offset, 0),
+                        crate::refs::offset_refs(&raw, offset, 0),
                         Some(fmt),
                     ));
                 }

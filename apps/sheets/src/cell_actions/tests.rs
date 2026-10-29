@@ -137,7 +137,7 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
     assert_eq!(read_back(&book, None)["bold"], json!(["A1", "B1"]));
 
     let snap = snapshot(&book);
-    let values = crate::formula::recalculate(&snap.raw);
+    let values = crate::calc::recalculate(&snap.raw);
     let table =
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &snap.fmt, &values, &snap.bold);
     let path = std::env::temp_dir().join(format!("sheets-bold-{}.xlsx", uuid::Uuid::new_v4()));
@@ -518,7 +518,7 @@ fn a_formula_that_does_not_parse_is_kept_and_answered() {
     assert_eq!(
         set["formula_errors"],
         json!([{"cell": "B4", "shows": "#ERROR!",
-            "message": "`INDEX(` is never closed: add `)`"}])
+            "message": "A parenthesis is opened but not closed"}])
     );
     assert_eq!(
         read_back(&book, Some("A4:C4"))["formula_errors"],

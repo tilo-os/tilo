@@ -673,7 +673,7 @@ impl Workbook {
     pub fn snapshot_of(&self, id: &Id) -> Option<SheetSnapshot> {
         let sheet = self.sheet(id)?;
         let mut snap = sheet.snapshot();
-        if crate::formula::Book::needed(&snap.raw) {
+        if crate::calc::Book::needed(&snap.raw) {
             let sheets = self
                 .sheets
                 .iter()
@@ -687,7 +687,7 @@ impl Workbook {
                 })
                 .collect();
             let own = self.sheets.position(id).unwrap_or_default();
-            snap.book = Some(std::sync::Arc::new(crate::formula::Book { sheets, own }));
+            snap.book = Some(std::sync::Arc::new(crate::calc::Book { sheets, own }));
         }
         Some(snap)
     }
@@ -756,7 +756,7 @@ pub struct SheetSnapshot {
     /// Whether the sheet is hidden.
     pub hidden: bool,
     /// The workbook's sheets, when formulas of this one read them.
-    pub book: Option<std::sync::Arc<crate::formula::Book>>,
+    pub book: Option<std::sync::Arc<crate::calc::Book>>,
 }
 
 /// A chart by position, as the sheet shows it.

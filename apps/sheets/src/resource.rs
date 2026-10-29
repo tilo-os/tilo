@@ -338,7 +338,7 @@ fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, R
         .map(|(row, column, cell)| (row, column, cell.raw.0.clone()))
         .collect();
     for (row, column, raw) in cells {
-        let moved = crate::formula::remap_refs(&raw, edit);
+        let moved = crate::refs::remap_refs(&raw, edit);
         if moved != raw
             && let Some(cell) = sheet.cells.cell_mut(&row, &column)
         {
