@@ -36,6 +36,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 pub mod default_node;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod group_tap;
 
 /// How long one `wpctl`/`pw-metadata` change may take.
 #[cfg(not(target_arch = "wasm32"))]

@@ -194,7 +194,6 @@ pub mod sign_in_comforts;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;
-pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
