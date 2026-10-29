@@ -49,7 +49,7 @@ pub(crate) struct Protocols {
     dmabuf: DmabufState,
     dmabuf_global: Option<DmabufGlobal>,
     activation: XdgActivationState,
-    primary_selection: PrimarySelectionState,
+    pub(crate) primary_selection: PrimarySelectionState,
     shortcuts_inhibit: KeyboardShortcutsInhibitState,
     /// Surfaces that keep the session from idling (a video playing).
     pub(crate) idle_inhibitors: HashSet<WlSurface>,

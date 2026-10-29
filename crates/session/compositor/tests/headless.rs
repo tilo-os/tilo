@@ -1279,3 +1279,98 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
     );
     assert!(!first.seen.closed);
 }
+
+delegate_noop!(Seen: ignore XdgToplevel);
+
+#[test]
+fn a_window_that_asks_to_be_maximized_covers_its_output_and_comes_back() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "max", (200, 100), [0, 255, 0, 255]);
+    assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
+    client.toplevel.as_ref().expect("toplevel").set_maximized();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows()[0].1.0 == 0
+    });
+    assert_eq!(compositor.windows()[0].1.1, 0, "at the output's corner");
+    client
+        .toplevel
+        .as_ref()
+        .expect("toplevel")
+        .unset_maximized();
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.windows()[0].1.0 == 220
+    });
+}
+
+#[test]
+fn a_policy_that_declines_fullscreen_keeps_the_window_where_it_is() {
+    struct Strips;
+    impl WindowPolicy for Strips {
+        fn initial_size(
+            &mut self,
+            _window: &WindowInfo,
+            _outputs: &[Rectangle<i32, Logical>],
+        ) -> Option<(i32, i32)> {
+            None
+        }
+        fn place(
+            &mut self,
+            _window: &WindowInfo,
+            _size: (i32, i32),
+            _outputs: &[Rectangle<i32, Logical>],
+        ) -> Point<i32, Logical> {
+            Point::from((10, 10))
+        }
+        fn request(
+            &mut self,
+            _window: &WindowInfo,
+            _request: &tilo_compositor::WindowRequest,
+        ) -> bool {
+            false
+        }
+    }
+    let mut compositor = headless(Box::new(Strips));
+    let mut client = mapped_client(&mut compositor, "full", (200, 100), [0, 255, 0, 255]);
+    client
+        .toplevel
+        .as_ref()
+        .expect("toplevel")
+        .set_fullscreen(None);
+    for _ in 0..20 {
+        client.exchange();
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+    }
+    assert_eq!(compositor.windows()[0].1, (10, 10, 200, 100));
+}
+
+#[test]
+fn a_hosted_apps_copy_is_offered_under_every_text_name_and_read_back() {
+    use std::io::Read as _;
+    let mut compositor = headless(Box::new(StackPolicy));
+    compositor
+        .set_selection(
+            tilo_compositor::Selection::Clipboard,
+            vec![("text/plain".into(), b"copied".to_vec())],
+        )
+        .expect("offer");
+    let formats = compositor.selection_formats(tilo_compositor::Selection::Clipboard);
+    assert_eq!(
+        formats.first().map(String::as_str),
+        Some("text/plain;charset=utf-8")
+    );
+    assert!(formats.iter().any(|mime| mime == "UTF8_STRING"));
+    let mut reader = compositor
+        .receive_selection(tilo_compositor::Selection::Clipboard, "UTF8_STRING")
+        .expect("read");
+    let mut text = String::new();
+    reader.read_to_string(&mut text).expect("bytes");
+    assert_eq!(text, "copied");
+    assert!(
+        compositor
+            .receive_selection(tilo_compositor::Selection::Primary, "text/plain")
+            .is_err(),
+        "nothing owns the primary selection"
+    );
+}

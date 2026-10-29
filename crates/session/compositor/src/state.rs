@@ -31,10 +31,7 @@ use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::selection::SelectionHandler;
-use smithay::wayland::selection::data_device::{
-    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-};
+use smithay::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
@@ -112,6 +109,7 @@ pub struct State {
     pub(crate) touch: crate::touch::Touches,
     pub(crate) tablets: crate::tablet::Tablets,
     pub(crate) output_power: crate::output_power::OutputPower,
+    pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
@@ -119,6 +117,12 @@ pub struct State {
     pub(crate) host_keys: HostKeys,
     /// The magnifier's zoom about the pointer; 1 is off.
     pub(crate) zoom: f64,
+    pub(crate) selections: crate::selection::Selections,
+    pub(crate) dnd: crate::dnd::Dnd,
+    pub(crate) display_changes: crate::display_change::DisplayChanges,
+    /// The compositor's event loop, for work the window manager schedules.
+    pub(crate) loop_handle:
+        Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
 }
 
 impl State {
@@ -137,6 +141,8 @@ impl State {
         }
         seat.add_pointer();
         seat.add_touch();
+        let protocols = crate::protocols::Protocols::new(display);
+        let selections = crate::selection::Selections::new(display, &protocols.primary_selection);
         Self {
             display: display.clone(),
             started: Instant::now(),
@@ -155,7 +161,7 @@ impl State {
             told_outputs: Vec::new(),
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
-            protocols: crate::protocols::Protocols::new(display),
+            protocols,
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
             cursor: crate::cursor::Cursor::new(),
@@ -167,10 +173,15 @@ impl State {
             touch: crate::touch::Touches::default(),
             tablets: crate::tablet::Tablets::default(),
             output_power: crate::output_power::OutputPower::new(display),
+            capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             host_keys: HostKeys::default(),
             zoom: 1.0,
+            selections,
+            dnd: crate::dnd::Dnd::default(),
+            display_changes: crate::display_change::DisplayChanges::default(),
+            loop_handle: None,
         }
     }
 
@@ -200,9 +211,12 @@ impl State {
         self.rearrange();
     }
 
-    /// Whether a hosted surface has the pointer (not a client).
-    pub(crate) fn pointer_over_host(&self) -> bool {
-        matches!(self.pointer_target, PointerTarget::Host(_))
+    /// The hosted surface that has the pointer.
+    pub(crate) fn host_under_pointer(&self) -> Option<&dyn SurfaceHost> {
+        match self.pointer_target {
+            PointerTarget::Host(index) => self.hosts.get(index).map(AsRef::as_ref),
+            PointerTarget::Clients => None,
+        }
     }
 
     /// The outputs' rectangles `(x, y, w, h)`, as hosted surfaces are
@@ -431,7 +445,17 @@ impl State {
     pub(crate) fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
         self.pointer = self.clamp_to_outputs(to);
         let location = self.pointer;
-        let target = if self.locked() {
+        if self.drag_motion(location, serial, time) {
+            return;
+        }
+        self.x11_drag_motion(location);
+        // A client's press keeps the pointer until it is released, over
+        // hosted surfaces too.
+        let grabbed = self
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed());
+        let target = if self.locked() || grabbed {
             PointerTarget::Clients
         } else {
             self.host_under(location)
@@ -473,6 +497,9 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        if self.drag_button(button, pressed, serial, time) {
+            return;
+        }
         if pressed {
             let target = self.pointer_target;
             for (index, host) in self.hosts.iter_mut().enumerate() {
@@ -508,6 +535,9 @@ impl State {
             },
         );
         pointer.frame(self);
+        if !pressed {
+            self.x11_drag_motion(self.pointer);
+        }
     }
 
     pub(crate) fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -668,6 +698,7 @@ impl State {
         self.space.refresh();
         self.popups.cleanup();
         self.unmapped.retain(IsAlive::alive);
+        self.sync_toplevels();
     }
 }
 
@@ -707,7 +738,7 @@ const X11_IDS: u64 = 1 << 40;
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
-fn describe(window: &Window) -> Option<WindowInfo> {
+pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
     if let Some(toplevel) = window.toplevel() {
         return Some(window_info(toplevel));
     }
@@ -875,6 +906,83 @@ impl XdgShellHandler for State {
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(&window, &crate::policy::WindowRequest::Move, Some(serial));
+        }
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+    ) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            let request = crate::policy::WindowRequest::Resize(crate::requests::xdg_edges(edges));
+            self.window_request(&window, &request, Some(serial));
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window_of_toplevel(&surface) {
+            Some(window) => {
+                self.window_request(&window, &crate::policy::WindowRequest::Maximize(true), None);
+            }
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(
+                &window,
+                &crate::policy::WindowRequest::Maximize(false),
+                None,
+            );
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        let output = output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .map(|output| output.name());
+        match self.window_of_toplevel(&surface) {
+            Some(window) => self.window_request(
+                &window,
+                &crate::policy::WindowRequest::Fullscreen { on: true, output },
+                None,
+            ),
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            let request = crate::policy::WindowRequest::Fullscreen {
+                on: false,
+                output: None,
+            };
+            self.window_request(&window, &request, None);
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(&window, &crate::policy::WindowRequest::Minimize, None);
+        }
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let pending = self
             .unmapped
@@ -910,18 +1018,10 @@ impl SeatHandler for State {
         self.cursor.status = image;
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|surface| self.display.get_client(surface.id()).ok());
-        smithay::wayland::selection::data_device::set_data_device_focus(
-            &self.display,
-            seat,
-            client,
-        );
+        self.selection_focus(client.as_ref());
     }
-}
-
-impl SelectionHandler for State {
-    type SelectionUserData = ();
 }
 
 impl DataDeviceHandler for State {
@@ -929,9 +1029,6 @@ impl DataDeviceHandler for State {
         &self.data_device_state
     }
 }
-
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
 
 impl OutputHandler for State {}
 
@@ -951,6 +1048,14 @@ pub(crate) fn client_data(trusted: bool) -> Arc<ClientState> {
 }
 
 impl State {
+    /// The mapped window of a toplevel.
+    pub(crate) fn window_of_toplevel(&self, surface: &ToplevelSurface) -> Option<Window> {
+        self.space
+            .elements()
+            .find(|window| window.toplevel() == Some(surface))
+            .cloned()
+    }
+
     /// The window whose surface has keyboard focus.
     pub(crate) fn focused_window(&self) -> Option<WindowInfo> {
         let focus = self.seat.get_keyboard()?.current_focus()?;

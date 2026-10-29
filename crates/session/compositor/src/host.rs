@@ -9,6 +9,8 @@
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
+pub use smithay::input::pointer::CursorIcon;
+
 use crate::input::HostKey;
 use crate::keys::KeyClaim;
 
@@ -84,4 +86,29 @@ pub trait SurfaceHost {
     /// one is added, removed or moved: a surface covering the desktop
     /// (the top bar, the chrome above the windows) follows them.
     fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {}
+
+    /// The pointer shape while the pointer is over the surface (a text
+    /// beam over a field, a hand over a link).
+    fn cursor(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
+
+    /// A drag (from a Wayland window, an X11 window or a hosted surface)
+    /// is over the surface at this logical point, offering these formats
+    /// (files as `text/uri-list`): the format the surface takes if it is
+    /// dropped here, or `None` to refuse it. Asked again as it moves.
+    fn drop_offered(&mut self, _mimes: &[String], _x: f64, _y: f64) -> Option<String> {
+        None
+    }
+
+    /// The drag left the surface without a drop.
+    fn drop_left(&mut self) {}
+
+    /// The drag was dropped on the surface: its data in the format
+    /// [`SurfaceHost::drop_offered`] chose, once it has been read.
+    fn drop_data(&mut self, _mime: &str, _data: Vec<u8>) {}
+
+    /// A drag this surface started ([`crate::Compositor::start_drag`])
+    /// ended: `dropped` when a target took it.
+    fn drag_ended(&mut self, _dropped: bool) {}
 }

@@ -10,16 +10,19 @@
 //!
 //! [`WindowPolicy`]: crate::WindowPolicy
 
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
 use smithay::desktop::Window;
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle};
+use smithay::wayland::selection::SelectionTarget;
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
 
+use crate::policy::WindowRequest;
 use crate::state::State;
 use crate::{Error, LoopData, io};
 
@@ -39,8 +42,12 @@ pub(crate) fn start(handle: &LoopHandle<'static, LoopData>, state: &State) -> Re
     let wm_handle = handle.clone();
     handle
         .insert_source(xwayland, move |event, (), data| match event {
-            XWaylandEvent::Ready { x11_socket, .. } => {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
                 start_wm(&wm_handle, data, x11_socket, client.clone());
+                data.state.start_xdnd(display_number);
             }
             XWaylandEvent::Error => tracing::warn!("Xwayland did not start"),
         })
@@ -115,6 +122,10 @@ impl XwmHandler for State {
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, surface: X11Surface) {
+        // The drag-and-drop proxy takes X11 drags; it is never shown.
+        if self.dnd_proxy(&surface) {
+            return;
+        }
         let location = surface.geometry().loc;
         let window = Window::new_x11_window(surface);
         self.space.map_element(window, location, true);
@@ -176,13 +187,91 @@ impl XwmHandler for State {
     fn resize_request(
         &mut self,
         _xwm: XwmId,
-        _window: X11Surface,
+        surface: X11Surface,
         _button: u32,
-        _resize_edge: ResizeEdge,
+        resize_edge: ResizeEdge,
     ) {
+        if let Some(window) = self.element_of(&surface) {
+            let request = WindowRequest::Resize(crate::requests::x11_edges(resize_edge));
+            self.window_request(&window, &request, None);
+        }
     }
 
-    fn move_request(&mut self, _xwm: XwmId, _window: X11Surface, _button: u32) {}
+    fn move_request(&mut self, _xwm: XwmId, surface: X11Surface, _button: u32) {
+        if let Some(window) = self.element_of(&surface) {
+            self.window_request(&window, &WindowRequest::Move, None);
+        }
+    }
+
+    fn maximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        self.x11_request(&surface, &WindowRequest::Maximize(true));
+    }
+
+    fn unmaximize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        self.x11_request(&surface, &WindowRequest::Maximize(false));
+    }
+
+    fn fullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        self.x11_request(
+            &surface,
+            &WindowRequest::Fullscreen {
+                on: true,
+                output: None,
+            },
+        );
+    }
+
+    fn unfullscreen_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        self.x11_request(
+            &surface,
+            &WindowRequest::Fullscreen {
+                on: false,
+                output: None,
+            },
+        );
+    }
+
+    fn minimize_request(&mut self, _xwm: XwmId, surface: X11Surface) {
+        self.x11_request(&surface, &WindowRequest::Minimize);
+    }
+
+    fn allow_selection_access(&mut self, xwm: XwmId, _selection: SelectionTarget) -> bool {
+        self.x11_selection_access(xwm)
+    }
+
+    fn send_selection(
+        &mut self,
+        _xwm: XwmId,
+        selection: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+    ) {
+        self.x11_reads_selection(selection.into(), &mime_type, fd);
+    }
+
+    fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        self.x11_set_selection(selection.into(), mime_types);
+    }
+
+    fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
+        self.x11_cleared_selection(selection.into());
+    }
+}
+
+impl State {
+    /// An X11 window's request; one not mapped yet just keeps its state.
+    fn x11_request(&mut self, surface: &X11Surface, request: &WindowRequest) {
+        match self.element_of(surface) {
+            Some(window) => self.window_request(&window, request, None),
+            None => {
+                let _ = match request {
+                    WindowRequest::Maximize(on) => surface.set_maximized(*on),
+                    WindowRequest::Fullscreen { on, .. } => surface.set_fullscreen(*on),
+                    _ => Ok(()),
+                };
+            }
+        }
+    }
 }
 
 /// The loop's data answers the window manager's events with the state's
@@ -252,6 +341,48 @@ impl XwmHandler for LoopData {
 
     fn move_request(&mut self, xwm: XwmId, window: X11Surface, button: u32) {
         self.state.move_request(xwm, window, button);
+    }
+
+    fn maximize_request(&mut self, xwm: XwmId, window: X11Surface) {
+        self.state.maximize_request(xwm, window);
+    }
+
+    fn unmaximize_request(&mut self, xwm: XwmId, window: X11Surface) {
+        self.state.unmaximize_request(xwm, window);
+    }
+
+    fn fullscreen_request(&mut self, xwm: XwmId, window: X11Surface) {
+        self.state.fullscreen_request(xwm, window);
+    }
+
+    fn unfullscreen_request(&mut self, xwm: XwmId, window: X11Surface) {
+        self.state.unfullscreen_request(xwm, window);
+    }
+
+    fn minimize_request(&mut self, xwm: XwmId, window: X11Surface) {
+        self.state.minimize_request(xwm, window);
+    }
+
+    fn allow_selection_access(&mut self, xwm: XwmId, selection: SelectionTarget) -> bool {
+        self.state.allow_selection_access(xwm, selection)
+    }
+
+    fn send_selection(
+        &mut self,
+        xwm: XwmId,
+        selection: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+    ) {
+        self.state.send_selection(xwm, selection, mime_type, fd);
+    }
+
+    fn new_selection(&mut self, xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
+        XwmHandler::new_selection(&mut self.state, xwm, selection, mime_types);
+    }
+
+    fn cleared_selection(&mut self, xwm: XwmId, selection: SelectionTarget) {
+        self.state.cleared_selection(xwm, selection);
     }
 }
 

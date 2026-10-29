@@ -49,6 +49,8 @@ pub(super) struct Input {
     glide: Option<RegistrationToken>,
     /// The keymap shortcut chords are typed on.
     keymap: Option<xkb::Keymap>,
+    /// Pad rings and strips turned into scroll steps.
+    dials: super::input_source::DialSteps,
 }
 
 impl Input {
@@ -61,6 +63,7 @@ impl Input {
             access,
             glide: None,
             keymap: None,
+            dials: super::input_source::DialSteps::default(),
         }
     }
 
@@ -71,6 +74,64 @@ impl Input {
         }
         self.config = config;
         input_config::reconfigure_all(&self.config, &mut self.devices);
+    }
+}
+
+/// How far one ring or strip step scrolls, in logical pixels (a wheel
+/// notch).
+const DIAL_SCROLL: f64 = 15.0;
+
+/// Route one tablet pad event: a button mapped to a shortcut presses it; a
+/// ring or strip scrolls.
+pub(super) fn dispatch_pad(
+    input: &Rc<RefCell<Input>>,
+    device: &Device,
+    event: &super::input_source::PadEvent,
+    state: &mut State,
+) {
+    use super::input_source::PadEvent;
+    let events = {
+        let mut this = input.borrow_mut();
+        match *event {
+            PadEvent::Button {
+                button,
+                pressed: true,
+            } => {
+                let key = device_key(device.id_vendor(), device.id_product(), device.name());
+                // A pad is its own libinput device; its tablet's settings
+                // are found by the pad's name, else by the tablet's model.
+                let model = format!("{:04x}:{:04x}:", device.id_vendor(), device.id_product());
+                let chord = this
+                    .config
+                    .tablets
+                    .get(&key)
+                    .or_else(|| {
+                        this.config
+                            .tablets
+                            .iter()
+                            .find(|(known, _)| known.starts_with(&model))
+                            .map(|(_, config)| config)
+                    })
+                    .and_then(|config| super::tablet::pad_button(config, button))
+                    .cloned();
+                chord.map(|chord| this.chord(&chord)).unwrap_or_default()
+            }
+            PadEvent::Button { .. } => Vec::new(),
+            PadEvent::Ring { .. } | PadEvent::Strip { .. } => {
+                let steps = this.dials.steps(event);
+                if steps == 0 {
+                    Vec::new()
+                } else {
+                    vec![InputEvent::PointerAxis {
+                        horizontal: 0.0,
+                        vertical: f64::from(steps) * DIAL_SCROLL * this.config.scroll_speed,
+                    }]
+                }
+            }
+        }
+    };
+    for event in events {
+        state.handle_input(event);
     }
 }
 
@@ -121,6 +182,22 @@ pub(super) fn dispatch(
                 };
                 this.tablet(&event, phase, state)
             }
+            DeviceEvent::TouchDown { event } => {
+                let (x, y) = touch_position(&event, state);
+                vec![InputEvent::TouchDown {
+                    slot: touch_slot(&event),
+                    x,
+                    y,
+                }]
+            }
+            DeviceEvent::TouchMotion { event } => {
+                let (x, y) = touch_position(&event, state);
+                vec![InputEvent::TouchMotion {
+                    slot: touch_slot(&event),
+                    x,
+                    y,
+                }]
+            }
             other => InputEvent::from_device(other, extent)
                 .map(|event| match event {
                     // libinput has no scroll speed; the compositor scales.
@@ -140,6 +217,58 @@ pub(super) fn dispatch(
         state.handle_input(event);
     }
     arm_glide(input, handle);
+}
+
+/// A touch's place in the logical layout: on the touchscreen's own output
+/// (see [`super::touch_map`]).
+fn touch_position<E>(event: &E, state: &State) -> (f64, f64)
+where
+    E: smithay::backend::input::AbsolutePositionEvent<LibinputInputBackend>,
+{
+    // Normalised to the panel, at a resolution far finer than any output.
+    const SCALE: i32 = 1 << 16;
+    use super::touch_map::{TouchOutput, calibrate_touch_position, touch_output_for_name};
+    let outputs: Vec<(
+        String,
+        smithay::utils::Rectangle<i32, Logical>,
+        smithay::utils::Transform,
+    )> = state
+        .space
+        .outputs()
+        .filter_map(|output| {
+            let geometry = state.space.output_geometry(output)?;
+            Some((output.name(), geometry, output.current_transform()))
+        })
+        .collect();
+    let device = event.device();
+    let named = device.output_name();
+    let Some(output) = touch_output_for_name(
+        outputs
+            .iter()
+            .map(|(name, geometry, transform)| TouchOutput {
+                connector_name: name.rsplit('/').next().unwrap_or(name),
+                key: name,
+                position: (geometry.loc.x, geometry.loc.y),
+                size: (geometry.size.w, geometry.size.h),
+                transform: *transform,
+            }),
+        named,
+    ) else {
+        return (0.0, 0.0);
+    };
+    calibrate_touch_position(
+        output,
+        event.x_transformed(SCALE) / f64::from(SCALE),
+        event.y_transformed(SCALE) / f64::from(SCALE),
+    )
+}
+
+/// A touch's slot number.
+fn touch_slot<E>(event: &E) -> u32
+where
+    E: smithay::backend::input::TouchEvent<LibinputInputBackend>,
+{
+    crate::input::touch_slot(event.slot())
 }
 
 /// Keep the mouse-keys glide ticking while a direction key is held.

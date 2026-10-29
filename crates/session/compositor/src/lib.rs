@@ -23,8 +23,12 @@
 #![cfg(target_os = "linux")]
 
 pub mod backend;
+pub mod capture;
+pub mod config;
 mod cursor;
 pub mod dim;
+mod display_change;
+mod dnd;
 pub mod gestures;
 pub mod host;
 pub mod idle;
@@ -39,33 +43,43 @@ mod power;
 mod present;
 mod protocols;
 pub mod render;
+mod requests;
+pub mod selection;
 mod state;
 mod tablet;
 mod text_input;
 mod touch;
+mod xdnd;
+mod xdnd_bridge;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
+
+use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
+pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
+pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
-pub use host::{HostLayer, SurfaceHost};
+pub use display_change::{CONFIRM_FOR, DisplayEvent};
+pub use host::{CursorIcon, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig};
-pub use policy::{Arrangement, StackPolicy, WindowInfo, WindowPolicy};
+pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
+pub use selection::Selection;
 pub use state::State;
 
 /// Why the compositor could not start or keep running.
@@ -142,6 +156,7 @@ impl Compositor {
                 |_, _, _| Ok(PostAction::Continue),
             )
             .map_err(io)?;
+        state.loop_handle = Some(event_loop.handle());
         let backend = make_backend(&event_loop.handle(), &mut state)?;
         Ok(Self {
             event_loop,
@@ -283,6 +298,9 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         self.configure_from_clients();
+        if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
+            self.put_back(&undo);
+        }
         self.data.state.tick_idle();
         self.sync_power();
         self.display.flush_clients()?;
@@ -414,6 +432,95 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
+    /// Offer `offer` (bytes per format) as `selection` for a hosted
+    /// surface app, as a client's copy would; Wayland and X11 clients read
+    /// it from the compositor. An empty offer drops a hosted app's
+    /// selection.
+    pub fn set_selection(
+        &mut self,
+        selection: Selection,
+        offer: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        self.data.state.set_host_selection(selection, offer);
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Start dragging `offer` (bytes per format; files as `text/uri-list`)
+    /// out of the hosted surface app the pointer is pressed on, as a
+    /// client's drag would: Wayland clients, X11 clients and hosted apps
+    /// under the pointer are offered it until the button comes up, and the
+    /// app learns how it went ([`SurfaceHost::drag_ended`]). False when
+    /// there is nothing to drag or no hosted surface under the pointer.
+    pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
+        let started = self.data.state.start_host_drag(offer);
+        self.display.flush_clients()?;
+        Ok(started)
+    }
+
+    /// The formats `selection` offers now, whoever owns it.
+    pub fn selection_formats(&self, selection: Selection) -> Vec<String> {
+        self.data.state.selections.offered(selection).to_vec()
+    }
+
+    /// Read `selection` as `mime`: the returned pipe yields the bytes and
+    /// ends when the owner is done (a client writes it as the loop runs,
+    /// so read it without blocking the loop).
+    pub fn receive_selection(
+        &mut self,
+        selection: Selection,
+        mime: &str,
+    ) -> Result<std::io::PipeReader, Error> {
+        let (reader, writer) = std::io::pipe()?;
+        self.data
+            .state
+            .receive_selection(selection, mime, writer.into())
+            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+        self.display.flush_clients()?;
+        Ok(reader)
+    }
+
+    /// The executables of display tools the person trusts: their risky
+    /// changes apply without asking (see [`DisplayEvent::Confirm`]).
+    pub fn set_trusted_display_tools(
+        &mut self,
+        tools: impl IntoIterator<Item = std::path::PathBuf>,
+    ) {
+        self.data.state.display_changes.set_trusted(tools);
+    }
+
+    /// What happened to display tools' changes since the last call.
+    pub fn take_display_events(&mut self) -> Vec<DisplayEvent> {
+        self.data.state.display_changes.take_events()
+    }
+
+    /// The person keeps the change they were asked about; false when `id`
+    /// is no longer the open question.
+    pub fn keep_display_change(&mut self, id: u64) -> bool {
+        let heads = self.data.state.heads_now();
+        self.data.state.display_changes.keep(id, &heads)
+    }
+
+    /// The person reverts the change they were asked about; false when
+    /// `id` is no longer the open question.
+    pub fn revert_display_change(&mut self, id: u64) -> Result<bool, Error> {
+        let Some(undo) = self.data.state.display_changes.revert(id, Instant::now()) else {
+            return Ok(false);
+        };
+        self.put_back(&undo);
+        self.display.flush_clients()?;
+        Ok(true)
+    }
+
+    /// Put outputs back after a reverted change.
+    fn put_back(&mut self, undo: &[OutputChange]) {
+        let LoopData { state, backend } = &mut self.data;
+        if let Err(error) = backend.configure_checked(state, undo, false) {
+            tracing::warn!(%error, "reverting a display change failed");
+        }
+        self.configure_from_clients();
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off).
     pub fn output_lit(&self, name: &str) -> bool {
@@ -425,16 +532,40 @@ impl Compositor {
     fn configure_from_clients(&mut self) {
         let state = &mut self.data.state;
         for pending in state.output_management.take_pending() {
-            match self
-                .data
-                .backend
-                .configure_checked(state, &pending.changes, pending.test)
+            let Pending {
+                configuration,
+                changes,
+                test,
+                tool,
+            } = pending;
+            let now = Instant::now();
+            if !test
+                && state
+                    .display_changes
+                    .refuses_reapply(tool.as_ref(), &changes, now)
             {
-                Ok(()) => pending.configuration.succeeded(),
-                Err(error) => {
-                    tracing::info!(%error, "display configuration refused");
-                    pending.configuration.failed();
-                }
+                configuration.failed();
+                continue;
+            }
+            let risk =
+                state
+                    .display_changes
+                    .risk(&changes, &state.heads_now(), &state.watched_outputs());
+            let undo = state.undo_for(&changes);
+            if let Err(error) = self.data.backend.configure_checked(state, &changes, test) {
+                tracing::info!(%error, "display configuration refused");
+                configuration.failed();
+                continue;
+            }
+            configuration.succeeded();
+            if test {
+                continue;
+            }
+            if state.display_changes.keeps_unasked(risk, tool.as_ref()) {
+                let heads = state.heads_now();
+                state.display_changes.kept(changes, &heads);
+            } else {
+                state.display_changes.ask(tool, changes, undo, now);
             }
         }
         let display = state.display.clone();
@@ -461,6 +592,50 @@ impl Compositor {
         self.configure_from_clients();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Apply everything the person configured (see [`Settings`]), now and
+    /// for outputs and devices that appear later.
+    pub fn apply_settings(&mut self, settings: &Settings) -> Result<(), Error> {
+        self.set_display_config(&settings.display)?;
+        self.set_input_config(settings.input.clone());
+        self.set_keyboard_layout(&settings.keyboard);
+        self.set_idle_config(settings.idle);
+        Ok(())
+    }
+
+    /// Apply the person's display configuration to the outputs there are
+    /// and keep it for those plugged in later. A configuration the outputs
+    /// cannot take is refused whole.
+    pub fn set_display_config(&mut self, config: &DisplayConfig) -> Result<(), Error> {
+        self.data.backend.set_display_config(config);
+        let changes = config.changes(&self.data.state.output_states());
+        if !changes.is_empty() {
+            self.configure_outputs(&changes)?;
+        }
+        Ok(())
+    }
+
+    /// Type with the person's keyboard layout.
+    pub fn set_keyboard_layout(&mut self, layout: &KeyboardLayout) {
+        let LoopData { state, .. } = &mut self.data;
+        let Some(keyboard) = state.seat.get_keyboard() else {
+            return;
+        };
+        let xkb = smithay::input::keyboard::XkbConfig {
+            rules: "",
+            model: &layout.model,
+            layout: &layout.layout,
+            variant: &layout.variant,
+            options: (!layout.options.is_empty()).then(|| layout.options.clone()),
+        };
+        if let Err(error) = keyboard.set_xkb_config(state, xkb) {
+            tracing::warn!(
+                ?error,
+                layout = layout.layout,
+                "keyboard layout did not compile"
+            );
+        }
     }
 
     /// Apply the person's input preferences (pointer, touchpad, tablets,
@@ -492,6 +667,7 @@ impl Compositor {
         // policy places them where the surfaces just laid them out.
         self.data.state.rearrange();
         self.data.backend.render(&mut self.data.state)?;
+        self.data.backend.serve_captures(&mut self.data.state);
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())
