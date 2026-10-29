@@ -14,6 +14,8 @@ pub mod input_config;
 mod libinput;
 pub mod seat_diag;
 pub mod tablet;
+mod topology;
+mod wake_check;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -53,6 +55,7 @@ use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, RequestedMode, select_mode};
+use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
 
 /// Formats tried for an output's primary plane, best first.
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
@@ -88,18 +91,40 @@ struct Lit {
     queued: bool,
     /// The panel is switched off (its CRTC inactive); nothing is drawn.
     dark: bool,
+    /// A panel built into the machine (eDP, LVDS, DSI): its wake is lit
+    /// only once its backlight is unblanked too.
+    builtin: bool,
+    /// The wake this output is in, until it is judged and its first frame
+    /// shown.
+    wake: Option<Wake>,
+    /// When the last frame was queued.
+    queued_at: Instant,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
 }
 
+/// One output's wake: its check, and whether it was judged lit and only
+/// the first frame is awaited.
+struct Wake {
+    check: WakeCheck,
+    judged: bool,
+}
+
+/// How long a queued frame may wait for its vertical blank in a wake
+/// before the link to the display counts as down.
+const LINK_WAIT: Duration = Duration::from_secs(2);
+
 /// The primary GPU: its device, renderer and outputs.
 struct Gpu {
     node: DrmNode,
+    path: PathBuf,
     manager: Manager,
     renderer: GlesRenderer,
     outputs: HashMap<crtc::Handle, Lit>,
     token: RegistrationToken,
+    /// The last topology line written, so it is written when it changes.
+    topology: String,
 }
 
 struct Inner {
@@ -271,20 +296,41 @@ impl Backend for DrmBackend {
             }
             apply_placement(state, &lit.output, change);
             lit.next_frame = Instant::now();
+            if !change.enabled
+                && let Some(mode) = lit.output.current_mode()
+            {
+                let size = (
+                    u16::try_from(mode.size.w).unwrap_or(0),
+                    u16::try_from(mode.size.h).unwrap_or(0),
+                );
+                tracing::info!(
+                    "{}",
+                    topology::connector_attempt_line(
+                        &gpu.path,
+                        &change.name,
+                        size,
+                        topology::ConnectorAttempt::Disabled
+                    )
+                );
+            }
         }
+        log_topology(gpu, state);
         Ok(())
     }
 
-    fn set_power(&mut self, _state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
+    fn set_power(&mut self, state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
         let mut inner = self.inner.borrow_mut();
-        let lit = inner
+        let gpu = inner
             .gpu
             .as_mut()
-            .and_then(|gpu| {
-                gpu.outputs
-                    .values_mut()
-                    .find(|lit| lit.output.name() == name)
-            })
+            .ok_or_else(|| BackendError("no GPU is driven".into()))?;
+        // A configuration that turned an output off or on changes what is
+        // driven.
+        log_topology(gpu, state);
+        let lit = gpu
+            .outputs
+            .values_mut()
+            .find(|lit| lit.output.name() == name)
             .ok_or_else(|| BackendError(format!("{name}: not lit")))?;
         if on != lit.dark {
             return Ok(());
@@ -294,6 +340,7 @@ impl Backend for DrmBackend {
             // to be a whole frame, the old buffers are gone.
             lit.surface.reset_buffers();
             lit.next_frame = Instant::now();
+            lit.begin_wake("dpms");
         } else {
             lit.surface
                 .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
@@ -302,6 +349,12 @@ impl Backend for DrmBackend {
         }
         lit.dark = !on;
         tracing::info!(output = name, on, "panel power");
+        drop(inner);
+        if on {
+            // A wake is the person asking for the displays: a connected one
+            // that could not be lit before gets another attempt.
+            scan_connectors(&self.inner, state);
+        }
         Ok(())
     }
 
@@ -332,6 +385,18 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     };
     let now = Instant::now();
     for lit in gpu.outputs.values_mut() {
+        if lit.queued
+            && lit.wake.as_ref().is_some_and(|wake| !wake.judged)
+            && now.saturating_duration_since(lit.queued_at) > LINK_WAIT
+        {
+            // No vertical blank after the modeset: the link did not come up.
+            judge_wake(
+                lit,
+                gpu.manager.device(),
+                &**state.idle.dimmer.backlight(),
+                Some(WakeStage::Link),
+            );
+        }
         if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
@@ -354,9 +419,20 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
                     presentation.shown(Shown::Host);
                 } else {
                     match lit.surface.queue_frame(Some(presentation)) {
-                        Ok(()) => lit.queued = true,
+                        Ok(()) => {
+                            lit.queued = true;
+                            lit.queued_at = now;
+                        }
                         Err(error) => {
                             tracing::warn!(?error, output = lit.output.name(), "frame not queued");
+                            if lit.wake.is_some() {
+                                judge_wake(
+                                    lit,
+                                    gpu.manager.device(),
+                                    &**state.idle.dimmer.backlight(),
+                                    Some(WakeStage::Commit),
+                                );
+                            }
                         }
                     }
                 }
@@ -370,13 +446,18 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     }
 }
 
-fn vblank(inner: &Rc<RefCell<Inner>>, crtc: crtc::Handle, metadata: Option<&DrmEventMetadata>) {
+fn vblank(
+    inner: &Rc<RefCell<Inner>>,
+    state: &State,
+    crtc: crtc::Handle,
+    metadata: Option<&DrmEventMetadata>,
+) {
     let mut inner = inner.borrow_mut();
-    let Some(lit) = inner
-        .gpu
-        .as_mut()
-        .and_then(|gpu| gpu.outputs.get_mut(&crtc))
-    else {
+    let Some(gpu) = inner.gpu.as_mut() else {
+        return;
+    };
+    let device = gpu.manager.device();
+    let Some(lit) = gpu.outputs.get_mut(&crtc) else {
         return;
     };
     match lit.surface.frame_submitted() {
@@ -386,6 +467,107 @@ fn vblank(inner: &Rc<RefCell<Inner>>, crtc: crtc::Handle, metadata: Option<&DrmE
     }
     lit.queued = false;
     lit.next_frame = Instant::now();
+    match lit.wake.as_mut() {
+        // The link is up; what the kernel holds says the rest.
+        Some(wake) if !wake.judged => {
+            judge_wake(lit, device, &**state.idle.dimmer.backlight(), None);
+        }
+        Some(wake) => {
+            if let Some(line) = wake
+                .check
+                .first_flip(u32::from(lit.connector), Instant::now())
+            {
+                tracing::info!("{line}");
+            }
+            if wake.check.settled() {
+                lit.wake = None;
+            }
+        }
+        None => {}
+    }
+}
+
+impl Lit {
+    /// The output is asked to light after being dark (`reason`: `dpms`,
+    /// `resume`): its wake is judged once the light-up is known.
+    fn begin_wake(&mut self, reason: &'static str) {
+        if self.wake.is_none() {
+            self.wake = Some(Wake {
+                check: WakeCheck::new(Instant::now(), reason, None),
+                judged: false,
+            });
+        }
+    }
+}
+
+/// Judge `lit`'s wake, `observed` the stage seen not to happen (else read
+/// back from the kernel), and write its record. A first failure redoes the
+/// modeset from the CRTC switched off, which retrains the link and
+/// re-enables the panel; a second is final for this wake.
+fn judge_wake(
+    lit: &mut Lit,
+    device: &DrmDevice,
+    backlight: &dyn crate::dim::Backlight,
+    observed: Option<WakeStage>,
+) {
+    let Some(wake) = lit.wake.as_mut() else {
+        return;
+    };
+    let read = LitState {
+        crtc_active: crtc_active(device, lit.surface.crtc()),
+        connector: match device
+            .get_connector(lit.connector, false)
+            .map(|info| info.state())
+        {
+            Ok(connector::State::Connected) => "connected",
+            Ok(connector::State::Disconnected) => "disconnected",
+            _ => "unknown",
+        },
+        backlight_powered: lit.builtin.then(|| backlight.powered()).flatten(),
+        backlight: lit.builtin.then(|| backlight.describe()).flatten(),
+    };
+    let verdict = wake.check.judge(observed.or_else(|| read.failed_stage()));
+    let line = wake
+        .check
+        .record(u32::from(lit.connector), verdict, &read, Instant::now());
+    match verdict {
+        WakeVerdict::Lit => {
+            tracing::info!("{line}");
+            wake.judged = true;
+        }
+        WakeVerdict::Redo(_) => {
+            tracing::warn!("{line}");
+            if let Err(error) = lit
+                .surface
+                .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+            {
+                tracing::warn!(
+                    ?error,
+                    output = lit.output.name(),
+                    "CRTC not switched off for the redo"
+                );
+            }
+            lit.surface.reset_buffers();
+            lit.queued = false;
+            lit.next_frame = Instant::now();
+        }
+        WakeVerdict::Failed(_) => {
+            tracing::warn!("{line}");
+            lit.wake = None;
+        }
+    }
+}
+
+/// Whether `crtc` reads back active (its atomic `ACTIVE`, else a bound
+/// mode); `None` when it cannot be read.
+fn crtc_active(device: &DrmDevice, crtc: crtc::Handle) -> Option<bool> {
+    let active = device.get_properties(crtc).ok().and_then(|properties| {
+        properties.iter().find_map(|(handle, value)| {
+            let info = device.get_property(*handle).ok()?;
+            (info.name().to_bytes() == b"ACTIVE").then_some(*value != 0)
+        })
+    });
+    active.or_else(|| device.get_crtc(crtc).ok().map(|info| info.mode().is_some()))
 }
 
 /// How a vertical blank reports its frame: the kernel's monotonic time and
@@ -426,6 +608,9 @@ fn resume(inner: &Rc<RefCell<Inner>>) {
             lit.surface.reset_buffers();
             lit.queued = false;
             lit.next_frame = Instant::now();
+            if !lit.dark {
+                lit.begin_wake("resume");
+            }
         }
     }
     inner.active = true;
@@ -506,7 +691,7 @@ fn open_gpu(
     let token = handle
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
-                vblank(&vblank_inner, crtc, metadata.as_ref());
+                vblank(&vblank_inner, &data.state, crtc, metadata.as_ref());
                 render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
@@ -514,6 +699,8 @@ fn open_gpu(
         .map_err(|error| failed("DRM source", error.error))?;
     Ok(Gpu {
         node,
+        path: path.to_path_buf(),
+        topology: String::new(),
         manager,
         renderer,
         outputs: HashMap::new(),
@@ -603,17 +790,66 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             tracing::warn!(output = name, "connector advertises no usable mode");
             continue;
         };
+        let attempt = |result| {
+            tracing::info!(
+                "{}",
+                topology::connector_attempt_line(&gpu.path, &name, mode.size(), result)
+            );
+        };
         let Some(crtc) = free_crtc(gpu.manager.device(), &resources, info, &used) else {
-            tracing::warn!(output = name, "no free CRTC");
+            attempt(topology::ConnectorAttempt::Failed(
+                "no free CRTC can drive this connector",
+            ));
             continue;
         };
         let scale = config.scales.get(&name).copied().unwrap_or(1.0);
-        if let Some(lit) = light(gpu, state, info, &name, crtc, *mode, scale) {
+        let lit = light(gpu, state, info, &name, crtc, *mode, scale);
+        let line = topology::connector_attempt_line(
+            &gpu.path,
+            &name,
+            mode.size(),
+            if lit.is_some() {
+                topology::ConnectorAttempt::Lit
+            } else {
+                topology::ConnectorAttempt::Failed("the modeset was refused")
+            },
+        );
+        tracing::info!("{line}");
+        if let Some(lit) = lit {
             used.insert(crtc);
             gpu.outputs.insert(crtc, lit);
         }
     }
     arrange_outputs(gpu, &config, state);
+    log_topology(gpu, state);
+}
+
+/// Write the topology line when what is driven changed.
+fn log_topology(gpu: &mut Gpu, state: &State) {
+    let cards = std::collections::BTreeMap::from([(gpu.node.dev_id(), gpu.path.clone())]);
+    let mut driven: Vec<topology::Driven> = gpu
+        .outputs
+        .values()
+        .filter(|lit| !state.disabled_outputs.contains(&lit.output))
+        .map(|lit| {
+            let mode = lit.output.current_mode();
+            let position = lit.output.current_location();
+            topology::Driven {
+                connector_name: lit.output.name(),
+                device: gpu.node.dev_id(),
+                size: mode.map_or((0, 0), |mode| (mode.size.w, mode.size.h)),
+                refresh_mhz: mode.map_or(0, |mode| mode.refresh),
+                logical_position: (position.x, position.y),
+                scale: lit.output.current_scale().fractional_scale(),
+            }
+        })
+        .collect();
+    driven.sort_by_key(|output| (output.logical_position, output.connector_name.clone()));
+    let line = topology::topology_line(&cards, &driven);
+    if line != gpu.topology {
+        tracing::info!("{line}");
+        gpu.topology = line;
+    }
 }
 
 /// Place every lit output: where the configuration says, the rest packed
@@ -718,6 +954,14 @@ fn light(
         surface,
         queued: false,
         dark: false,
+        builtin: matches!(
+            info.interface(),
+            connector::Interface::EmbeddedDisplayPort
+                | connector::Interface::LVDS
+                | connector::Interface::DSI
+        ),
+        wake: None,
+        queued_at: Instant::now(),
         next_frame: Instant::now(),
         interval,
     })

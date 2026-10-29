@@ -92,8 +92,7 @@ fn main() -> std::process::ExitCode {
             Some(display) => command.env("DISPLAY", display),
             None => command.env_remove("DISPLAY"),
         };
-        match command.spawn()
-        {
+        match command.spawn() {
             Ok(spawned) => child = Some(spawned),
             Err(error) => eprintln!("tilo-compositor: {program}: {error}"),
         }
