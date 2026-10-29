@@ -432,7 +432,7 @@ struct DataPlaneArgs {
     /// Root of the dedicated Btrfs store volume holding the native room trees.
     #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
     store: PathBuf,
-    /// Owner (`UID:GID`) of files the native data plane materialises; defaults to the room directory's owner.
+    /// Owner (`UID:GID`) of the workspace's files, the local person: the native data plane materialises them as theirs (default: the room directory's owner), and FUSE presents them as theirs (default: the caller).
     #[arg(long, value_name = "UID:GID")]
     native_owner: Option<String>,
     /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
@@ -4025,6 +4025,14 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
+    // The local person owns the files on either plane; without one named,
+    // FUSE presents each caller as their owner.
+    let owner = data_plane
+        .as_ref()
+        .and_then(|(args, _)| args.native_owner.as_deref())
+        .map(parse_owner)
+        .transpose()?;
+    let fs = fs.with_owner(owner);
     // Watchers on the mount hear of the changes the kernel did not make
     // (a peer's edit) instead of polling for them. A read-only mount cannot
     // take the signal, so its watchers keep polling.
