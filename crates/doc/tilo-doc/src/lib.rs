@@ -20,6 +20,7 @@ pub mod diff;
 pub mod document;
 pub mod export;
 pub mod model;
+pub mod paging;
 pub mod reconcile;
 pub mod restore;
 pub mod schema;
