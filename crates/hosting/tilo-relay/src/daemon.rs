@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
-use iroh_base::{EndpointAddr, PublicKey};
+use iroh_base::EndpointAddr;
 use tilo_clock::Clock;
 use tokio::task::JoinHandle;
 
@@ -22,7 +22,7 @@ use tilo_user_identity::{RevocationList, verify_revocation_entry};
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
-use crate::config::{PeerRelayConfig, RelayConfig};
+use crate::config::RelayConfig;
 use crate::handshake::{EndpointTrust, LiveIdentity};
 use crate::host::RelayProtocol;
 use crate::metrics::Metrics;
@@ -34,7 +34,6 @@ use crate::transport::{
 };
 use crate::workspace::SharedWorkspace;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
-use tilo_room_host::federation::{PeerRelayDialer, Upstream};
 
 #[derive(serde::Deserialize)]
 struct FullReplicaStatusProof {
@@ -136,7 +135,7 @@ impl Planes {
 }
 
 /// A running relay. Prefer [`Relay::shutdown`]; dropping the handle also
-/// stops the daemon and every federation dial task, but leaves peers to
+/// stops the daemon and its background tasks, but leaves peers to
 /// notice by timeout.
 pub struct Relay {
     pub endpoint: Endpoint,
@@ -148,9 +147,9 @@ pub struct Relay {
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    /// Federation dial tasks — one per known peer relay. Aborted
-    /// (per-handle) when the `Relay` drops.
-    peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
+    /// Background tasks (revocation refresh, metrics persistence, compute
+    /// worker). Aborted (per-handle) when the `Relay` drops.
+    background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
     /// Effective same-identity replication and serving policy, safe to expose
     /// to the shell/fs orchestrators because service claims were intersected
     /// with the verified certificate at startup.
@@ -209,7 +208,7 @@ impl Drop for Relay {
         // Stop reconnect loops before closing the shared endpoint.  An
         // explicit close also tells connected peers about a host shutdown
         // immediately instead of making them wait for QUIC's idle timeout.
-        if let Ok(mut tasks) = self.peer_relay_tasks.lock() {
+        if let Ok(mut tasks) = self.background_tasks.lock() {
             tasks.clear();
         }
         // `Relay` is normally dropped inside Tokio, but Drop must remain safe
@@ -408,6 +407,9 @@ impl Relay {
             shell_payloads,
         } = planes;
         validate_additional_protocols(&additional_protocols)?;
+        if cfg.retired_peer_relays.take().is_some() {
+            tracing::warn!("the relay configuration's peer_relays are ignored");
+        }
         if cfg.retired_workspaces.take().is_some() {
             tracing::warn!(
                 "the relay configuration's [[workspace]] tables are ignored: the rooms this relay \
@@ -567,8 +569,7 @@ impl Relay {
         }
         let router = router.spawn();
 
-        let peer_relay_tasks =
-            spawn_background_tasks(&cfg, &identity, &endpoint, &workspaces, &metrics, &live);
+        let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
         if cfg.services.compute {
             // Running jobs on the replica's copies only saves transfers;
             // without them every input is fetched.
@@ -604,7 +605,7 @@ impl Relay {
                     tracing::warn!(%error, "production compute worker withdrawn");
                 }
             });
-            push_peer_relay_task(&peer_relay_tasks, worker_task);
+            push_background_task(&background_tasks, worker_task);
         }
         Ok(Self {
             endpoint,
@@ -614,7 +615,7 @@ impl Relay {
             resealing: std::sync::Mutex::new(resealing),
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
-            peer_relay_tasks,
+            background_tasks,
             mesh_profile,
             full_replica: full_replica.clone(),
             web,
@@ -648,27 +649,11 @@ impl Relay {
     pub async fn shutdown(self) {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
-        lock_peer_relay_tasks(&self.peer_relay_tasks).clear();
+        lock_background_tasks(&self.background_tasks).clear();
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "relay router shutdown task failed");
         }
         self.sessions.shutdown().await;
-    }
-
-    /// Add a peer relay with a fully-resolved endpoint address —
-    /// same dial loop, but skips iroh discovery. Useful for tests
-    /// that already know the target's iroh addresses, and for
-    /// pinned-address deployments.
-    pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, _priority: i32) {
-        let task = PeerRelayDialer {
-            endpoint: self.endpoint.clone(),
-            identity: self.sessions.identity.clone(),
-            workspaces: self.sessions.workspaces.clone(),
-            metrics: self.sessions.metrics.clone(),
-            scope: None,
-        }
-        .spawn(Upstream::Relay(addr), label);
-        push_peer_relay_task(&self.peer_relay_tasks, task);
     }
 
     /// Cheap external handle.
@@ -991,24 +976,15 @@ fn validate_additional_alpns<'a>(
     Ok(())
 }
 
-/// Spawn the revocation-refresh loop, the metrics-persist loop, the
-/// membership-file watch, and one reconnect-with-backoff task per configured
-/// peer relay,
+/// Spawn the revocation-refresh loop and the metrics-persist loop,
 /// returning the abort-on-drop handle list `Relay` owns.
-///
-/// Each peer-relay task dials via `RelayClient::connect` (same code
-/// path any client uses), exchanges `PeerRelayHello`, subscribes to
-/// the intersection, then feeds inbound deltas into the shared ordered
-/// state persistence owner.
 fn spawn_background_tasks(
     cfg: &RelayConfig,
     identity: &RelayIdentity,
-    endpoint: &Endpoint,
-    workspaces: &WorkspaceRegistry,
     metrics: &Arc<Metrics>,
     live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
-    let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
+    let background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let revocation_task = spawn_revocation_refresh_task(
@@ -1016,25 +992,11 @@ fn spawn_background_tasks(
         identity.revocations.clone(),
         live.revocations.clone(),
     );
-    push_peer_relay_task(&peer_relay_tasks, revocation_task);
+    push_background_task(&background_tasks, revocation_task);
 
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
-    push_peer_relay_task(&peer_relay_tasks, metrics_task);
-
-    // The host's sessions watch the membership files themselves.
-
-    for peer_cfg in cfg.peer_relays.iter().cloned() {
-        let task = spawn_peer_relay_dial(
-            peer_cfg,
-            endpoint.clone(),
-            live.clone(),
-            workspaces.clone(),
-            metrics.clone(),
-        );
-        push_peer_relay_task(&peer_relay_tasks, task);
-    }
-
-    peer_relay_tasks
+    push_background_task(&background_tasks, metrics_task);
+    background_tasks
 }
 
 /// How often the revocation log is re-read while its directory cannot be
@@ -1143,16 +1105,16 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
 /// mutex was poisoned by an earlier panic rather than propagating one
 /// here — losing track of a reconnect task would leak it past the
 /// owning `Relay`'s lifetime.
-fn lock_peer_relay_tasks(
+fn lock_background_tasks(
     tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
 ) -> std::sync::MutexGuard<'_, Vec<AbortOnDrop>> {
     tasks.lock_recover()
 }
 
 /// Register a spawned task on the peer-relay task list (see
-/// [`lock_peer_relay_tasks`]).
-fn push_peer_relay_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
-    lock_peer_relay_tasks(tasks).push(AbortOnDrop(task));
+/// [`lock_background_tasks`]).
+fn push_background_task(tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>, task: JoinHandle<()>) {
+    lock_background_tasks(tasks).push(AbortOnDrop(task));
 }
 
 fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
@@ -1469,41 +1431,6 @@ impl ProtocolHandler for DiscoveryProtocol {
 
 /// The relay frame codec, re-exported under the daemon path older callers use.
 pub use crate::frame::{read_frame, write_frame};
-
-/// Spawn the outbound reconnect-with-backoff task for one peer relay
-/// identified by its config entry ([`tilo_room_host::federation`]).
-fn spawn_peer_relay_dial(
-    peer_cfg: PeerRelayConfig,
-    endpoint: Endpoint,
-    identity: LiveIdentity,
-    workspaces: WorkspaceRegistry,
-    metrics: Arc<Metrics>,
-) -> JoinHandle<()> {
-    let Some(node_id) = parse_iroh_node_id(&peer_cfg.iroh_node_id) else {
-        tracing::warn!(?peer_cfg.iroh_node_id, "peer relay iroh_node_id not parseable, skipping");
-        return tokio::spawn(async {});
-    };
-    PeerRelayDialer {
-        endpoint,
-        identity,
-        workspaces,
-        metrics,
-        scope: None,
-    }
-    .spawn(Upstream::Relay(EndpointAddr::new(node_id)), peer_cfg.label)
-}
-
-/// Parse the hex-encoded iroh node id string into an iroh
-/// `PublicKey`. Accepts upper/lowercase.
-fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
-    let bytes = hex::decode(hex_id).ok()?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    PublicKey::from_bytes(&arr).ok()
-}
 
 #[cfg(test)]
 #[allow(

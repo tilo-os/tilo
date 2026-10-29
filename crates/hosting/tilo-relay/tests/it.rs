@@ -46,18 +46,6 @@ mod end_to_end_sync;
 mod environment_from_a_device;
 #[path = "environment_sessions.rs"]
 mod environment_sessions;
-#[path = "federation_cross_user_reject.rs"]
-mod federation_cross_user_reject;
-#[path = "federation_echo_suppression.rs"]
-mod federation_echo_suppression;
-#[path = "federation_offline_reconnect.rs"]
-mod federation_offline_reconnect;
-#[path = "federation_three_node_chain.rs"]
-mod federation_three_node_chain;
-#[path = "federation_two_relays.rs"]
-mod federation_two_relays;
-#[path = "federation_workspace_shard.rs"]
-mod federation_workspace_shard;
 #[path = "governed_rooms.rs"]
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
