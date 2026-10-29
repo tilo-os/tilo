@@ -1547,7 +1547,6 @@ mod tests {
         OperationKind, ResourceSpec,
     };
     use ui::tilo_resource::Effect as _;
-    use ui::widget::Widget as _;
 
     /// The published ids of the edit and view effects.
     mod op {
@@ -1582,9 +1581,9 @@ mod tests {
     }
 
     /// A bound widget whose body holds `paragraphs`; returns the body ids.
-    fn writer(paragraphs: &[&str]) -> (ui::State, crate::WordProcessorWidget, Vec<String>) {
+    fn writer(paragraphs: &[&str]) -> (ui::State, crate::widget::Editor, Vec<String>) {
         let mut state = crate::initialized_state();
-        let mut wp = crate::WordProcessorWidget::detached();
+        let mut wp = crate::widget::Editor::detached();
         wp.sync(&state.doc, &state.root);
         for (index, text) in paragraphs.iter().enumerate() {
             if index > 0 {
@@ -1624,7 +1623,7 @@ mod tests {
     }
 
     /// Put the model's caret/anchor where `view` says and return the view.
-    fn place(wp: &mut crate::WordProcessorWidget, view: &ParticipantView) {
+    fn place(wp: &mut crate::widget::Editor, view: &ParticipantView) {
         let model = wp.model_mut();
         model.clear_anchor();
         if let Some(anchor) = &view.anchor {

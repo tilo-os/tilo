@@ -2,9 +2,8 @@
 //! The shared controls own their measurements; these checks inspect the
 //! rectangles actually painted by the editor rather than legacy pixel floors.
 
-use super::tests::{mount, mount_themed};
+use super::tests::{mount, mount_themed, split};
 use super::*;
-use ui::headless::Framed;
 use ui::widget::{ControlSize, Edits};
 
 fn overlaps(a: Rect, b: Rect) -> bool {
@@ -16,7 +15,7 @@ fn label_height(theme: &Theme) -> f64 {
     f64::from(ControlSize::Small.label_style(theme).line_height_px())
 }
 
-fn assert_panel_controls_fit(wp: &WordProcessorWidget, theme: &Theme) {
+fn assert_panel_controls_fit(wp: &Editor, theme: &Theme) {
     let hits = &wp.panel_hits;
     assert!(hits.len() > 10, "the inspector publishes its controls");
     for (index, (rect, hit)) in hits.iter().enumerate() {
@@ -48,13 +47,13 @@ fn paragraph_controls_follow_their_measured_labels() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut Edits::lend(&mut state.doc), "Panel rows");
         wp.set_styles_panel_open(true);
         let mut framed = mount_themed(state, wp, 1400, 1200, &theme);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         assert_panel_controls_fit(wp, &theme);
         let swatch_x0 = wp
             .panel_hits
@@ -90,12 +89,12 @@ fn layout_controls_center_on_the_theme_sized_bar() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut Edits::lend(&mut state.doc), "chips");
         let mut framed = mount_themed(state, wp, 1000, 700, &theme);
-        let (wp, _) = Framed::split(&mut framed);
+        let (wp, _) = split(&mut framed);
         let bar_top = wp.rect.y1 - wp.layout_bar_height;
         let bar_mid = f64::midpoint(bar_top, wp.rect.y1);
         assert_eq!(wp.layout_chips.len(), 2, "both layout choices are placed");
@@ -119,7 +118,7 @@ fn layout_controls_center_on_the_theme_sized_bar() {
 fn image_inspector_controls_never_overlap_at_large_text() {
     let theme = Theme::dark().with_text_scale(2.0);
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_image_bytes(&mut Edits::lend(&mut state.doc), super::tests::TEST_PNG);
@@ -138,7 +137,7 @@ fn image_inspector_controls_never_overlap_at_large_text() {
 
     wp.set_styles_panel_open(true);
     let mut framed = mount_themed(state, wp, 1400, 1200, &theme);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     assert!(wp.selected_image_id().is_some(), "the image is selected");
     assert!(
         wp.panel_hits
@@ -155,11 +154,11 @@ fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
         for width in [520, 800, 1800] {
             let theme = Theme::dark().with_text_scale(scale);
             let state = crate::initialized_state();
-            let mut wp = WordProcessorWidget::detached();
+            let mut wp = Editor::detached();
             wp.sync(&state.doc, &state.root);
             wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, width, 900, &theme);
-            let (wp, _) = Framed::split(&mut framed);
+            let (wp, _) = split(&mut framed);
             let bar = wp.window_bar();
             let names: Vec<String> = bar.actions.iter().map(|a| a.name.clone()).collect();
             assert_eq!(
@@ -195,22 +194,19 @@ fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
 fn frame_reserves_large_text_chrome_without_covering_the_page() {
     let theme = Theme::dark().with_text_scale(2.0);
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut Edits::lend(&mut state.doc), "Large text");
     wp.set_styles_panel_open(true);
     let mut framed = mount_themed(state, wp, 800, 900, &theme);
-    let (wp, _) = Framed::split(&mut framed);
+    let (wp, _) = split(&mut framed);
     assert!(wp.panel_rect.y0 >= wp.rect.y0 - 0.01);
     assert!(wp.panel_rect.y1 <= wp.rect.y1 - wp.layout_bar_height + 0.01);
     let state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     let mut framed = mount(state, wp, 800, 900);
-    let (wp, _) = Framed::split(&mut framed);
-    assert!(
-        (wp.layout_bar_height - WordProcessorWidget::status_band_height(&Theme::dark())).abs()
-            < 0.01
-    );
+    let (wp, _) = split(&mut framed);
+    assert!((wp.layout_bar_height - Editor::status_band_height(&Theme::dark())).abs() < 0.01);
 }

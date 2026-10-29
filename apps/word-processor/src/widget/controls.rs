@@ -28,9 +28,9 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::panels::swatch_names;
-use super::{CtxAction, NumField, PanelHit, WordProcessorWidget, block_layout, text_runs};
+use super::{CtxAction, Editor, NumField, PanelHit, block_layout, text_runs};
 
-impl WordProcessorWidget {
+impl Editor {
     fn block_index_cached(&self, block: &str) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == block)
     }

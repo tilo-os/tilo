@@ -733,14 +733,15 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
     let mut host =
         ui::personal_dictionary::TestHost::new(source, "so.tilo.word-processor", [1; 32]).unwrap();
     let bias_reader = ui::personal_dictionary::reader();
-    let flagged =
-        app.with_surface(|editor: &mut WordProcessorWidget| !editor.is_spelled_right("qwordz"));
+    let flagged = app.with_surface(|editor: &mut WordProcessorWidget| {
+        !editor.state().is_spelled_right("qwordz")
+    });
     assert_eq!(flagged, Some(true), "an unknown word is flagged");
     ui::personal_dictionary::edit(0, Edit::Add(Word::new("qwordz", None).unwrap())).unwrap();
     host.flush().unwrap();
     let mut app = app.reopen().unwrap();
-    let known =
-        app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
+    let known = app
+        .with_surface(|editor: &mut WordProcessorWidget| editor.state().is_spelled_right("qwordz"));
     assert_eq!(known, Some(true), "the person's own word is known");
     assert_eq!(
         bias_reader
@@ -861,7 +862,7 @@ fn layout_and_spelling_language_follow_the_person() {
     use word_processor::effects::WordProcessorEffect;
     use word_processor::{WordProcessorWidget, WriterLayout};
     let mut app = open();
-    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.state().panels_shown());
     assert_eq!(shown, Some((true, false, false)), "the default layout");
     app.effect(&WordProcessorEffect::Styles).unwrap();
     app.effect(&WordProcessorEffect::Ruler).unwrap();
@@ -880,14 +881,15 @@ fn layout_and_spelling_language_follow_the_person() {
         .update(|prefs| prefs.spelling_language = "de_DE".into())
         .unwrap();
     let mut app = app.reopen().unwrap();
-    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.state().panels_shown());
     assert_eq!(
         shown,
         Some((false, true, false)),
         "a new window opens as left"
     );
-    let language =
-        app.with_surface(|editor: &mut WordProcessorWidget| editor.spell_language().to_owned());
+    let language = app.with_surface(|editor: &mut WordProcessorWidget| {
+        editor.state().spell_language().to_owned()
+    });
     assert_eq!(language.as_deref(), Some("de_DE"));
 }
 

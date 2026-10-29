@@ -17,11 +17,11 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use super::{
-    DocumentAutocorrection, DragKind, EditorEventCtx, GuideDrag, KeyPressEffect, LayoutMode,
-    ObjectDrag, WordProcessorWidget,
+    DocumentAutocorrection, DragKind, Editor, EditorEventCtx, GuideDrag, KeyPressEffect,
+    LayoutMode, ObjectDrag,
 };
 
-impl WordProcessorWidget {
+impl Editor {
     /// Drag-and-drop a file onto the window inserts it as an image at the
     /// **drop point**: seat the caret under the last pointer position (where
     /// the file was released) before inserting, so the image lands where the
@@ -1183,7 +1183,7 @@ impl WordProcessorWidget {
         *handled = true;
     }
 }
-impl WordProcessorWidget {
+impl Editor {
     #[expect(
         clippy::too_many_lines,
         reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"

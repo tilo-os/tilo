@@ -19,8 +19,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{
-    CARET_WIDTH, CtxAction, EditorEventCtx, FrameGeometry, Pass2Markers, RemoteCaretOverlay,
-    RemoteSelectionOverlay, WordProcessorWidget, block_presence_key, is_scope_digest_key,
+    CARET_WIDTH, CtxAction, Editor, EditorEventCtx, FrameGeometry, Pass2Markers,
+    RemoteCaretOverlay, RemoteSelectionOverlay, block_presence_key, is_scope_digest_key,
 };
 
 /// A comment's own text, its paragraphs joined.
@@ -56,7 +56,7 @@ fn lay_out_flush(
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// The margin column beside the page: a card per comment and tracked
     /// change, and the open thread expanded in place of its comment's card.
     pub(super) fn draw_review_column(

@@ -10,7 +10,7 @@ const W: u32 = 420;
 const H: u32 = 760;
 
 /// The current match's rects on screen.
-fn current_match(wp: &WordProcessorWidget) -> Vec<Rect> {
+fn current_match(wp: &Editor) -> Vec<Rect> {
     let (block, start, end) = wp.find.active_match().cloned().expect("a match is current");
     let anchor = tilo_actions::InteractionAnchor::Text {
         region: "body".into(),
@@ -28,14 +28,14 @@ fn current_match(wp: &WordProcessorWidget) -> Vec<Rect> {
         .collect()
 }
 
-fn draw(framed: &mut Framed<WordProcessorWidget>) -> &mut WordProcessorWidget {
+fn draw(framed: &mut Framed<WordProcessorWidget>) -> &mut Editor {
     super::tests::pipeline_draw(framed, W, H).0
 }
 
 #[test]
 fn the_current_match_is_revealed_clear_of_the_search_options_over_it() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     let mut edits = ui::widget::Edits::lend(&mut state.doc);
     wp.model_mut().insert_str(&mut edits, "Quarterly report");

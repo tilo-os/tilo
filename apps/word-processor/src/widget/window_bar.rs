@@ -12,7 +12,7 @@
 
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
-use super::WordProcessorWidget;
+use super::Editor;
 use super::toolbar::ToolAction;
 use crate::Template;
 use crate::file_menu::FileChoice;
@@ -27,7 +27,7 @@ pub(super) enum BarCommand {
     File(FileChoice),
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// One command as a bar slot: its icon and name, on when it is a toggle
     /// that is on.
     fn tool_slot(&self, action: ToolAction, name: String, on: bool) -> ToolbarAction {

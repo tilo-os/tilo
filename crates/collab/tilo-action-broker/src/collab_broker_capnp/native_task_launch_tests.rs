@@ -357,7 +357,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
             "the actual Writer semantic UI must expose the appended paragraph");
         writer.app.call_on(Document::KIND, "select-all", serde_json::json!({})).unwrap();
         writer.app.settle();
-        let person = writer.app.with_surface::<WordProcessorWidget, _>(|widget| widget.local_participant_view()).unwrap();
+        let person = writer.app.with_surface::<WordProcessorWidget, _>(|widget| widget.state().local_participant_view()).unwrap();
         assert!(person.anchor.is_some(), "the person must have a real selection before agent navigation");
         assert_ne!(person.anchor.as_ref().unwrap(), &person.caret, "the selected range must be nonempty");
         assert!(person.caret.offset > 0, "the person's caret must not be the default start");
@@ -366,6 +366,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         writer.settle(found.0).await;
         let doc = writer.app.peer_document();
         writer.app.with_surface::<WordProcessorWidget, _>(|widget| {
+            let widget = widget.state();
             let agent = widget.participant_view_or_default(&tilo_actions::ParticipantId::for_agent_task(&run.group()).unwrap(), &doc).unwrap();
             assert_eq!(agent.find.query, "governed");
             assert!(agent.anchor.is_some(), "navigation must select the visible match");

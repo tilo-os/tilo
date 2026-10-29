@@ -10,7 +10,7 @@ use ui::PresenceCtx;
 #[test]
 fn a_typed_character_damages_its_paragraph_and_a_resize_the_window() {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     let mut edits = ui::widget::Edits::lend(&mut state.doc);
     wp.model_mut().insert_str(&mut edits, "Title");
@@ -29,7 +29,7 @@ fn a_typed_character_damages_its_paragraph_and_a_resize_the_window() {
     let mut tr = TextRenderer::new();
     let theme = Theme::dark();
     let presence = PresenceCtx::default();
-    let mut frame = |wp: &mut WordProcessorWidget, w: f64, h: f64| {
+    let mut frame = |wp: &mut Editor, w: f64, h: f64| {
         wp.rect = Rect::new(0.0, 0.0, w, h);
         let mut scene = Scene::new();
         wp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);

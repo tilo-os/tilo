@@ -20,11 +20,10 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use super::pagination::flow_to_page_stack;
 use super::{
-    ESTIMATED_BLOCK_EXTENT, LETTER_RATIO, MAX_PAGE_W, PAGE_TOP, UtilityBarsGeometry,
-    WordProcessorWidget,
+    ESTIMATED_BLOCK_EXTENT, Editor, LETTER_RATIO, MAX_PAGE_W, PAGE_TOP, UtilityBarsGeometry,
 };
 
-impl Findable for WordProcessorWidget {
+impl Findable for Editor {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         let count = self.find.find(query, options);
         // The paragraphs are read on the next sync, with the document in
@@ -80,7 +79,7 @@ impl Findable for WordProcessorWidget {
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// Read every paragraph again for an open search, when it has none yet
     /// or the document `moved`.
     pub(super) fn follow_find(&mut self, state: &AutoCommit, moved: bool) {
@@ -280,7 +279,7 @@ impl WordProcessorWidget {
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// Draw any failed-save banner in the document flow. Return the height
     /// reserved below the toolbar.
     pub(super) fn draw_save_error(
@@ -324,25 +323,24 @@ impl WordProcessorWidget {
 #[cfg(test)]
 mod regressions {
     use super::*;
-    use ui::widget::Widget;
 
     /// The bar's search on `wp`: the query, then the paragraphs read with
     /// the document on the next sync, then the query again as the bar does
     /// when the revision moves.
-    fn search(wp: &mut WordProcessorWidget, state: &ui::State, query: &str) -> usize {
+    fn search(wp: &mut Editor, state: &ui::State, query: &str) -> usize {
         Findable::find(wp, query, FindOptions::default());
         wp.sync(&state.doc, &state.root);
         Findable::find(wp, query, FindOptions::default()).len()
     }
 
-    fn spans(wp: &WordProcessorWidget) -> Vec<(usize, usize)> {
+    fn spans(wp: &Editor) -> Vec<(usize, usize)> {
         wp.find.matches().iter().map(|(_, s, e)| (*s, *e)).collect()
     }
 
     #[test]
     fn find_ranges_follow_edits_before_replacement() {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut ui::widget::Edits::lend(&mut state.doc), "cat tail");
@@ -369,7 +367,7 @@ mod regressions {
     #[test]
     fn literal_replace_preserves_text_after_expanding_unicode_case() {
         let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
+        let mut wp = Editor::detached();
         wp.sync(&state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut ui::widget::Edits::lend(&mut state.doc), "İ cat cat!");
@@ -386,10 +384,10 @@ mod regressions {
 
     /// The document's text, its paragraphs one per line.
     fn written(app: &mut TestApp) -> String {
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface::<crate::WordProcessorWidget, _>(crate::widget::tests::on_editor(|wp| {
             let lines: Vec<&str> = wp.blocks.iter().map(|b| b.text.as_str()).collect();
             lines.join("\n").trim().to_owned()
-        })
+        }))
         .unwrap_or_default()
     }
 
@@ -408,7 +406,7 @@ mod regressions {
         assert_eq!(written(&mut app), "one two one");
         let options = FindOptions::default();
         let mut driver = SearchDriver::default();
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface(|wp: &mut crate::WordProcessorWidget| {
             assert_eq!(InPlace::of(wp), InPlace::Document);
             driver.open(InPlace::Document);
             driver.drive(wp, "one", options, None, false);
@@ -417,11 +415,11 @@ mod regressions {
         })
         .unwrap();
         app.settle();
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface(|wp: &mut crate::WordProcessorWidget| {
             driver.drive(wp, "one", options, None, false);
             assert_eq!(driver.position(), Some((1, 2)));
             assert_eq!(
-                wp.find.active_match().map(|(_, s, e)| (*s, *e)),
+                wp.state().find.active_match().map(|(_, s, e)| (*s, *e)),
                 Some((0, 3)),
                 "the first match is selected"
             );
@@ -435,16 +433,19 @@ mod regressions {
         app.settle();
         assert_eq!(written(&mut app), "one two one");
 
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface(|wp: &mut crate::WordProcessorWidget| {
             driver.drive(wp, "one", options, None, false);
             assert!(driver.replace(wp, "one", options, "1", true));
         })
         .unwrap();
         app.settle();
         assert_eq!(written(&mut app), "1 two 1");
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface(|wp: &mut crate::WordProcessorWidget| {
             driver.drive(wp, "one", options, None, true);
-            assert!(!wp.find.is_active(), "closing the search forgets it");
+            assert!(
+                !wp.state().find.is_active(),
+                "closing the search forgets it"
+            );
         })
         .unwrap();
     }
@@ -454,11 +455,11 @@ mod regressions {
         let mut app = TestApp::new().unwrap();
         app.set_role(ui::permissions::Role::Viewer);
         app.settle();
-        app.with_surface::<WordProcessorWidget, _>(|wp| {
+        app.with_surface::<crate::WordProcessorWidget, _>(crate::widget::tests::on_editor(|wp| {
             assert!(wp.read_only());
             assert!(!Findable::supports_replace(wp), "a viewer replaces nothing");
             assert!(Findable::supports_regex(wp));
-        })
+        }))
         .unwrap();
     }
 }

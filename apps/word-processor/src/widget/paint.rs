@@ -32,13 +32,13 @@ use vello::peniko::{Color, Fill};
 
 use super::pagination::{layout_clip_band, responsive_page_geometry, spans_within};
 use super::{
-    BODY_DIM_VEIL_ALPHA, CARET_WIDTH, ChromeColors, FrameGeometry, LETTER_RATIO, Laid, LaidItemCtx,
-    MAX_PAGE_W, NOTE_AREA_GAP, NOTE_CONTENT_PX, NOTE_INK, NOTE_SEP, NotesSpellcheckInput, PAGE_GAP,
-    PAGE_TOP, PageContentInput, PageSheetInput, Pass2Inputs, Pass2Markers, RunningBand,
-    UtilityBarsGeometry, WordProcessorWidget, draw_squiggle,
+    BODY_DIM_VEIL_ALPHA, CARET_WIDTH, ChromeColors, Editor, FrameGeometry, LETTER_RATIO, Laid,
+    LaidItemCtx, MAX_PAGE_W, NOTE_AREA_GAP, NOTE_CONTENT_PX, NOTE_INK, NOTE_SEP,
+    NotesSpellcheckInput, PAGE_GAP, PAGE_TOP, PageContentInput, PageSheetInput, Pass2Inputs,
+    Pass2Markers, RunningBand, UtilityBarsGeometry, draw_squiggle,
 };
 
-impl WordProcessorWidget {
+impl Editor {
     /// Chrome bands above the canvas — the Find bar and the ruler (the
     /// commands are the window bar's) — plus the canvas/page geometry they reserve around. The first
     /// pass of [`Self::draw`].

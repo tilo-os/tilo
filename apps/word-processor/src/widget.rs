@@ -1,4 +1,4 @@
-//! `WordProcessorWidget` — the `ui::Widget` for the word processor. Renders the
+//! The word processor's editor and its window ([`WordProcessorWidget`]). Renders the
 //! `tilo-doc` document as a centered page (à la `LibreOffice` Writer) using the
 //! `RichTextLayout` primitive: word-wrapped paragraphs, headings, list bullets,
 //! inline **bold**/*italic*/underline, a selection highlight, and a caret. Maps
@@ -86,6 +86,7 @@ mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 mod traits;
+mod window;
 mod window_bar;
 
 use pagination::page_stack_to_flow;
@@ -99,6 +100,7 @@ pub use proofing::WriterLayout;
 use proofing::misspelled_spans;
 #[cfg(test)]
 use toolbar::ToolAction;
+pub use window::WordProcessorWidget;
 
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
@@ -658,7 +660,7 @@ fn mark_comments(view: &mut BlockView, comments: &[tilo_doc::CommentView]) {
 /// What the editor last copied out of the document state.
 #[derive(Default)]
 struct CopiedParts {
-    /// The shared paragraph behind each of `WordProcessorWidget::blocks`.
+    /// The shared paragraph behind each of `Editor::blocks`.
     blocks: Vec<std::rc::Rc<BlockView>>,
     header: Copied<Vec<BlockView>>,
     footer: Copied<Vec<BlockView>>,
@@ -710,7 +712,7 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
 
 /// One non-local participant's caret or selection, published by the host
 /// under that participant's identity (see
-/// [`WordProcessorWidget::participant_presence`]).
+/// [`Editor::participant_presence`]).
 pub use ui::ParticipantPresence;
 
 /// The presence payload for `view`, exactly as the local window derives its
@@ -747,7 +749,7 @@ fn participant_presence_payload(
 /// A resolved remote collaborator caret to paint this frame: the on-screen
 /// caret rectangle (in *content* space, ready to be mapped through the page
 /// content transform), the peer's id (for colour + the name label), and the
-/// label text. Produced by [`WordProcessorWidget::remote_presence_overlays`]
+/// label text. Produced by [`Editor::remote_presence_overlays`]
 /// from the live `PresenceCtx` + the frame's laid-out blocks so the geometry is
 /// pixel-identical to a local caret — never a re-derived approximation.
 #[derive(Clone, Debug, PartialEq)]
@@ -768,7 +770,7 @@ pub(crate) struct RemoteSelectionOverlay {
     pub rects: Vec<Rect>,
 }
 
-/// A measured table row within [`WordProcessorWidget::paginate_blocks`]'s
+/// A measured table row within [`Editor::paginate_blocks`]'s
 /// table-layout branch: `(row_height, cells)`, each cell as `(col,
 /// cell_height, block)`.
 type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
@@ -816,7 +818,7 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, color: Color, x0: f64, x1
 }
 
 /// A block laid out for the current frame; kept for click hit-testing. The
-/// shaped `RichTextLayout` itself lives in `WordProcessorWidget::layout_cache`
+/// shaped `RichTextLayout` itself lives in `Editor::layout_cache`
 /// (keyed by `id`) so it can be reused across frames; look it up by `id`.
 #[derive(Clone)]
 struct Laid {
@@ -948,7 +950,7 @@ struct RegionLaid {
 /// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
 const LETTER_RATIO: f64 = 11.0 / 8.5;
 /// Gap between a floated image's edge and the text column that wraps beside
-/// it, in [`WordProcessorWidget::paginate_blocks`]'s float-reserve math.
+/// it, in [`Editor::paginate_blocks`]'s float-reserve math.
 const FLOAT_GUTTER: f64 = 12.0;
 
 struct EditorLifecycle {
@@ -1007,7 +1009,7 @@ struct MaterializedBody {
     preview: bool,
 }
 
-pub struct WordProcessorWidget {
+pub struct Editor {
     inner: WordProcessor,
     rect: Rect,
     lifecycle: EditorLifecycle,
@@ -1342,13 +1344,13 @@ fn shared_dictionary() -> std::sync::Arc<spellcheck::Dictionary> {
         .clone()
 }
 
-impl Default for WordProcessorWidget {
+impl Default for Editor {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// Construct from the canonical record; this performs no document writes.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
         let mut widget = Self::new();
@@ -1665,8 +1667,18 @@ impl WordProcessorWidget {
         self.spell_cache.clear();
     }
 
-    /// The framework presented a new document state: draw it.
-    pub(crate) fn mark_document_changed(&mut self) {
+    /// The document changed: draw it. An editor that has not drawn yet
+    /// still has a caret, at the start of the body, so edits bound to it (a
+    /// table at the caret) can be invoked before the first frame.
+    pub(crate) fn present(&mut self, state: &crate::framework::Document) {
+        if self.inner.caret().block.is_empty()
+            && let Some(first) = state.text().and_then(|text| text.body().id_at(0))
+        {
+            self.inner.set_caret(Caret {
+                block: first.to_owned(),
+                offset: 0,
+            });
+        }
         self.lifecycle.dirty = true;
     }
 
@@ -2401,7 +2413,7 @@ struct NumSlot {
 /// The word processor renders its blocks directly (materialized [`BlockView`]s,
 /// not child widgets), so [`Widget::accessibility`](ui::widget::Widget::accessibility)'s usual "single local node +
 /// `Widget::children`" path doesn't apply. Instead it builds the whole tree itself
-/// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
+/// via [`Editor::accessibility_tree`], with this struct as the carrier;
 /// `accessibility` returns this tree's root so the host still sees a focusable
 /// `Document`.
 #[derive(Clone, Debug, PartialEq)]
@@ -2431,7 +2443,7 @@ struct FrameGeometry {
     page_pitch: f64,
 }
 
-/// [`WordProcessorWidget::paginate_blocks`]'s pagination + text-shaping
+/// [`Editor::paginate_blocks`]'s pagination + text-shaping
 /// output, carried into the drawing passes that follow it.
 struct PaginationResult {
     laid: Vec<Laid>,
@@ -2442,7 +2454,7 @@ struct PaginationResult {
 }
 
 /// Loop-carried pagination state threaded through
-/// [`WordProcessorWidget::paginate_blocks`]'s per-block-kind handlers.
+/// [`Editor::paginate_blocks`]'s per-block-kind handlers.
 struct PageCursor {
     /// Where the next block goes and how it breaks across page sheets.
     flow: PageFlow,
@@ -2491,8 +2503,8 @@ struct ImagePlacement {
     page: usize,
 }
 
-/// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
-/// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
+/// [`Editor::resolve_paragraph_shape`]'s output: everything
+/// [`Editor::paginate_paragraph`] needs to decide where the
 /// block lands and how to lay it out.
 struct ParagraphShape {
     st: crate::styles::StyleProps,
@@ -2507,8 +2519,8 @@ struct ParagraphShape {
     layout: RichTextLayout,
 }
 
-/// The resolved per-block draw geometry [`WordProcessorWidget::paginate_paragraph`]
-/// and [`WordProcessorWidget::emit_paragraph_slices`] both push into `Laid`
+/// The resolved per-block draw geometry [`Editor::paginate_paragraph`]
+/// and [`Editor::emit_paragraph_slices`] both push into `Laid`
 /// entries for one paragraph-like block.
 struct ParagraphPlacement {
     text_x: f64,
@@ -2518,7 +2530,7 @@ struct ParagraphPlacement {
     ink: Color,
 }
 
-/// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects
+/// Per-frame accumulators [`Editor::draw_page_content`] collects
 /// while painting `laid`, rendered by the caller once the pass completes.
 struct Pass2Markers {
     page_notes: HashMap<usize, Vec<usize>>,
@@ -2527,7 +2539,7 @@ struct Pass2Markers {
 }
 
 /// One [`Laid`] item's shaped layout + its on-screen origin y, bundled so
-/// [`WordProcessorWidget::draw_page_content`]'s per-item decoration helpers
+/// [`Editor::draw_page_content`]'s per-item decoration helpers
 /// below don't each carry the same three parameters.
 struct LaidItemCtx<'a> {
     l: &'a Laid,
@@ -2596,7 +2608,7 @@ mod canonical_scroll_tests {
         use ui::widget::PrimaryScrollAction;
 
         let mut state = crate::initialized_state();
-        let mut widget = WordProcessorWidget::detached();
+        let mut widget = Editor::detached();
         widget.sync(&state.doc, &state.root);
         for _ in 0..40 {
             widget
@@ -2612,7 +2624,7 @@ mod canonical_scroll_tests {
 
         widget.apply_primary_vertical_scroll(PrimaryScrollAction::End);
         let (widget, state) = tests::pipeline_draw(&mut framed_widget, 1000, 400);
-        let after = widget.primary_vertical_scroll().unwrap().metrics;
+        let after = widget.primary_vertical_scroll().metrics;
         assert!(after.offset > before.offset);
         assert_eq!(after.offset, after.max_scroll());
         assert_eq!(heads, state.doc.get_heads());
