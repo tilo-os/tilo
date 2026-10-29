@@ -21,7 +21,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ("so.tilo.lang.counter", vec![app!("counter")]),
         ("so.tilo.lang.todo", vec![app!("tasks")]),
         ("so.tilo.lang.notes", vec![app!("notes")]),
-        ("so.tilo.lang.letters", vec![app!("letters")]),
+        ("so.tilo.lang.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),
         (
             "so.tilo.lang.today",
@@ -94,11 +94,11 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     }
     view.poll_patches().unwrap();
     // Each card counts what its app's scenario made: the open todos, the pinned notes and the
-    // conversations.
+    // chat's channels and categories at the top of its sidebar.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["9", "3", "12"]);
+    assert_eq!(counts, ["9", "3", "4"]);
 }

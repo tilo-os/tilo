@@ -6,14 +6,14 @@ use tilolang_runtime::{MemorySink, Principal, Resolution, Value};
 
 use crate::fixtures::Replica;
 
-const LETTERS: &str = include_str!("../../../../apps/tl/letters/app.tl");
-const LETTERS_IDS: &str = include_str!("../../../../apps/tl/letters/app.ids");
+const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
+const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
 
 /// A letters room with one draft and an agent's suggestion to send it, on `ada`'s replica.
 fn suggested_room() -> (Replica, tilolang_runtime::ResourceRef) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
     let meta = packages[0].meta.clone();
-    let desk = ada.host.root_of("so.tilo.lang.letters").unwrap();
+    let desk = ada.host.root_of("test.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
     ada.host
@@ -134,7 +134,7 @@ fn a_commit_needs_what_the_action_it_carries_is() {
     // Creating the root is a change of the record. The host offers its commit as one, which a
     // room whose grants let the app author the record allows.
     let (fresh, _) = Replica::new("ada", AutoCommit::new(), &[(LETTERS, LETTERS_IDS)]);
-    fresh.host.root_of("so.tilo.lang.letters").unwrap();
+    fresh.host.root_of("test.letters").unwrap();
     let created = fresh.host.take_committed();
     assert_eq!(created.len(), 1);
     assert_eq!(commit_need(&fresh, created[0].ticket), (Undoable, Undoable));

@@ -30,6 +30,7 @@ use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
 
 use super::*;
 
+mod mail;
 mod opening;
 
 /// The text a value of the runtime holds.
@@ -833,7 +834,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
         .value
         .expect("the catalogue is the answer")
         .to_string();
-    assert!(text.contains("so.tilo.lang.letters"), "{text}");
+    assert!(text.contains("test.letters"), "{text}");
 }
 
 #[test]
@@ -884,7 +885,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let mut desk = Room::seeded("letters");
     let send = Room::surveyed()
         .into_iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.lang.letters.Draft" && d.action_label == "Send")
+        .find(|d| d.resource_kind == "tl.test.letters.Draft" && d.action_label == "Send")
         .expect("a draft publishes its send");
     desk.applies_as(
         Some(task()),
@@ -906,7 +907,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
 /// The first draft on the desk of a letters room.
 fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
     let host = room.window.current_host().expect("the host started");
-    let desk = host.root_of("so.tilo.lang.letters").unwrap();
+    let desk = host.root_of("test.letters").unwrap();
     let RtValue::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
         panic!("the desk lists its drafts");
     };

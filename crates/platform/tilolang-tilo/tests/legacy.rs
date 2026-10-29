@@ -35,7 +35,14 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
         (include_str!("legacy/todo.hex"), vec![app!("tasks")]),
         (include_str!("legacy/notes.hex"), vec![app!("notes")]),
-        (include_str!("legacy/letters.hex"), vec![app!("letters")]),
+        // Letters as it was when it wrote its room: it became Mail since, keeping its ids.
+        (
+            include_str!("legacy/letters.hex"),
+            vec![(
+                include_str!("legacy/letters/app.tl"),
+                include_str!("legacy/letters/app.ids"),
+            )],
+        ),
         (include_str!("legacy/chat.hex"), vec![app!("chat")]),
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
@@ -88,7 +95,12 @@ fn nested(
                 id.clone(),
                 value.clone(),
             ));
-            let item_schema = field.record.as_deref().and_then(lookup);
+            // An item of a collection of a union's types is of the type it was stored as.
+            let item_schema = value
+                .as_ref()
+                .map(|value| type_of(doc, value))
+                .and_then(|ty| lookup(&ty))
+                .or_else(|| field.record.as_deref().and_then(lookup));
             if let (Some(value), Some(item_schema)) = (value, item_schema) {
                 nested(doc, (&value, item_schema), Some(&id), out);
             }
@@ -331,8 +343,20 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     let mut replica = open(include_str!("legacy/chat.hex"), &packages);
     let app = "so.tilo.lang.chat";
     let all = root(&replica, app);
-    let (conversations, conversation_ty) = field(&replica, app, "Conversations", "items");
-    let (messages, _) = field(&replica, app, "Conversation", "messages");
+    // The Chat of channels reads an older conversation as a text channel.
+    let (conversations, _) = field(&replica, app, "Channels", "items");
+    let (messages, _) = field(&replica, app, "TextChannel", "messages");
+    let conversation_ty = replica
+        .host
+        .package(app)
+        .unwrap()
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "TextChannel")
+        .unwrap()
+        .id
+        .clone();
     let first = listed(&replica, &all, &conversations)[0].clone();
     let conversation = all.item(&first, conversation_ty);
     let before = listed(&replica, &conversation, &messages);
@@ -340,11 +364,11 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     call(
         &mut replica,
         app,
-        "post",
+        "send",
         vec![
             Value::resource(&conversation),
-            Value::text("still here"),
-            Value::text(""),
+            Value::Rich(tilolang_runtime::rich::RichValue::from_text("still here")),
+            Value::none(),
         ],
     );
     let after = listed(&replica, &conversation, &messages);
@@ -464,4 +488,84 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     let coll = map_at(&replica.doc, second_map, &messages_field).unwrap();
     assert!(replica.doc.get(&coll, message.as_str()).unwrap().is_some());
     let _ = id;
+}
+
+/// Todo's package, published as Tasks: the same declarations and ids lock, under the id
+/// `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before.
+fn todo_as_tasks() -> (String, &'static str) {
+    let (source, ids) = app!("tasks");
+    let (header, rest) = source.split_once('\n').unwrap();
+    assert!(header.starts_with("app so.tilo.lang.todo "), "{header}");
+    let renamed = format!(
+        "app so.tilo.lang.tasks \"Tasks\" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)\n{rest}"
+    );
+    (renamed, ids)
+}
+
+#[test]
+fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
+    let (source, ids) = todo_as_tasks();
+    let packages = vec![(source.as_str(), ids)];
+    let mut replica = open(include_str!("legacy/todo.hex"), &packages);
+    let heads = replica.doc.get_heads();
+    let app = "so.tilo.lang.tasks";
+    let stored = |replica: &Replica| -> Vec<(String, String)> {
+        records(&replica.doc)
+            .into_iter()
+            .map(|(app, id, _)| (app, id))
+            .collect()
+    };
+    let before = stored(&replica);
+    assert!(
+        before.iter().all(|(held, _)| held == "so.tilo.lang.todo"),
+        "{before:?}"
+    );
+    // The root is the one Todo made, and its items read as before, by their ids.
+    let list = root(&replica, app);
+    assert!(before.iter().any(|(_, id)| *id == list.doc), "{list:?}");
+    let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
+    let items = listed(&replica, &list, &items_field);
+    assert!(items.len() >= 3, "{items:?}");
+    // Opening changed nothing in the record.
+    assert_eq!(replica.doc.get_heads(), heads);
+    assert!(replica.host.take_committed().is_empty());
+    // Actions of the renamed app change them where they are, keeping every id.
+    let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));
+    call(
+        &mut replica,
+        app,
+        "check",
+        vec![item(&items[0]), Value::Bool(true)],
+    );
+    assert_eq!(
+        replica
+            .host
+            .runtime()
+            .read(&list.item(&items[0], item_ty.clone()), "done")
+            .unwrap(),
+        Value::Bool(true)
+    );
+    call(
+        &mut replica,
+        app,
+        "move",
+        vec![Value::resource(&list), item(&items[2]), item(&items[0])],
+    );
+    assert_eq!(listed(&replica, &list, &items_field)[1], items[2]);
+    call(
+        &mut replica,
+        app,
+        "add",
+        vec![Value::resource(&list), Value::text("after the rename")],
+    );
+    assert_eq!(listed(&replica, &list, &items_field).len(), items.len() + 1);
+    // Every record is where it was, under the id it had.
+    assert_eq!(stored(&replica), before);
+    check_index(&replica, &packages, app);
+    // A peer that opens the room afterwards reads the same.
+    let fresh = Replica::new("fresh", replica.doc.clone().fork(), &packages).0;
+    assert_eq!(
+        listed(&fresh, &root(&fresh, app), &items_field),
+        listed(&replica, &list, &items_field)
+    );
 }

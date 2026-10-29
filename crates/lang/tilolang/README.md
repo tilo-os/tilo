@@ -23,6 +23,13 @@ The ids lock gives every declaration its stable id. The compiler adds new declar
 retires removed ones; commit it with the sources. Rename a declaration with
 `tilolang ids --rename old new`, so it keeps its id and with it the data stored under it.
 
+Rename the app itself by giving it its new id and naming the old one in the header:
+`app so.tilo.lang.tasks "Tasks" (previously: so.tilo.lang.todo)` (several in brackets). The
+records stored under the old id are the app's: they open in it where they are, with the ids they
+have, and its actions change them there; what it creates goes under the new id. The id it had
+before is signed into the app's manifest, and installing it over an app of that id from another
+publisher is refused; from the same publisher it takes that app's place.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -250,6 +257,29 @@ state its arguments use when the control fires (`send(c, draft)`, `set(open, not
 `send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
 pressed twice before the view draws again toggles twice.
 
+**Outside origins** (convergence.md, "Origins" and "Outside services"). A type holds the
+resources of an outside service when it names one of the service's kinds:
+
+```
+type Message (origin: imap.message) {
+    subject: Text (title)
+    from: Text
+    unread: Bool
+    mailbox: Text
+    note: Text            // the app's own field: the service never touches it
+}
+```
+
+The system keeps such resources in step with the service (getting, searching, and telling it
+what people changed), with credentials the package never sees. The fields the type declares of
+the kind take the kind's types (E112); the type may add fields of its own. Only the service
+writes the kind's other fields: code writing one is E113, except in a scenario. People change the
+fields the kind marks as theirs (a message's `unread`, `flagged` and `mailbox`): the change
+applies at once and becomes final when the service accepts it. The kinds are in
+`src/origin.rs`: `imap.account`, `imap.mailbox`, `imap.thread`, `imap.message`.
+`outside(capability, payload)` takes one of the platform's capabilities (`post`, `smtp.send`),
+checked by the compiler.
+
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
 Without one, every Bool, enum, Date, Time, number, reference, identifier and Set field is a
@@ -347,6 +377,8 @@ print(xs, fields: [.title, .due])
   it as mia's at that time.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
+- An item block names a template's other slots beside the item's view; they do not see the
+  item: `std.transcript(c, c.messages) { m -> message(m, replying) composer: { ... } }`.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.

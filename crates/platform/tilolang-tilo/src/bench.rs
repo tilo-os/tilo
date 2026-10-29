@@ -456,11 +456,16 @@ fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
 /// The room record a window of the last of `packages` opens with `n` items, as the bench seeds
 /// it: what a measurement of the real window installs as the room's document.
 ///
+/// With no items it is the room before anything was made, whatever the root holds.
+///
 /// # Errors
 /// The package's root has nothing to seed, or seeding fails.
 pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
     for compiled in packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
+    }
+    if n == 0 {
+        return Ok(Doc::new());
     }
     let main = packages.last().ok_or("no package")?;
     let others: Vec<&Meta> = packages

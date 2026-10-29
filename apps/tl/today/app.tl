@@ -30,11 +30,12 @@ flow morning_cleanup(list: todo.Tasks, nb: notes.Notes) -> Int {
 }
 
 /// Today's window: a card per app, holding that app's resources as rows that open them: the
-/// open todos, the pinned notes, the conversations.
+/// open todos, the pinned notes, the chat's channels.
+/// TODO(language): `list` over a collection of a union, a row per channel or category.
 view today(t: Today) {
     let todos = todo.tasks
     let pinned = notes.notes.filter(.pinned)
-    let talks = chat.conversations
+    let talks = chat.channels
     std.page(t, canvas: true) {
         header: {
             button(morning_cleanup(todos, notes.notes)) as morning
@@ -51,14 +52,19 @@ view today(t: Today) {
                 }
             }
             card(talks, count: talks.len()) {
-                list(talks) { x ->
-                    row(x)
+                stack(gap: .related) {
+                    for x in talks {
+                        match x {
+                            c: chat.Category => text(c.name, role: .caption),
+                            t: chat.TextChannel => button("# {t.name}", on: open(t)),
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// This morning's list, notebook and chats, as each app's own first scenario fills them.
+/// This morning's list, notebook and channels, as each app's own first scenario fills them.
 scenario "this morning" {
 }

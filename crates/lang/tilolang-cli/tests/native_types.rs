@@ -78,6 +78,18 @@ fn native_chat_describes_as_tilolang_types() {
         text.contains("action create_category(workspace: Workspace, name: Text)"),
         "{text}"
     );
+    // A verb's parameters are typed as the code declares them.
+    assert!(
+        text.contains(
+            "action create_channel(workspace: Workspace, name: Text, category: Option<Text>, \
+             kind: Option<ChannelKind>, topic: Option<Text>)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("action add_emoji(workspace_emoji: WorkspaceEmoji, name: Text, image: Text)"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -120,4 +132,23 @@ fn a_field_chat_does_not_publish_is_an_error() {
     let error = check(&dir).expect_err("wrong reads do not type-check");
     assert!(error.contains("colour"), "{error}");
     assert!(error.contains("Int") || error.contains("Text"), "{error}");
+}
+
+#[test]
+fn a_call_of_a_chat_action_is_checked_against_its_parameters() {
+    let scratch = tempfile::tempdir().expect("a scratch directory");
+    let dir = scratch.path().join("wrong");
+    std::fs::create_dir(&dir).expect("package directory");
+    std::fs::write(
+        dir.join("app.tl"),
+        "app so.tilo.test.wrong \"Wrong\"\n\nuse so.tilo.chat as chat\n\n\
+         flow rename(w: chat.Workspace) {\n    chat.rename_channel(w, \"general\", 3)\n}\n",
+    )
+    .expect("source");
+    let error = check(&dir).expect_err("a number is no channel name");
+    println!("{error}");
+    assert!(
+        error.contains("app.tl:6:39: E020 expected Text, found Int"),
+        "{error}"
+    );
 }

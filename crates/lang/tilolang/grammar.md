@@ -10,7 +10,8 @@ starts with `.name` (a method call continuing the previous line) don't end anyth
 ```
 file       = [ header ] { item } ;                    (* one file of the package has the header *)
 header     = "app" app_id string [ "(" app_opt { "," app_opt } ")" ] ;
-app_opt    = ( "icon" | "category" ) ":" "." ident ;
+app_opt    = ( "icon" | "category" ) ":" "." ident
+           | "previously" ":" ( app_id | "[" app_id { "," app_id } "]" ) ;
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
@@ -22,7 +23,7 @@ default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a
 row_view   = "row" "view" ident "for" type ;
 role       = "primary" | "destructive" ;
 
-type_decl  = "type" Ident "{" { field | search } "}" ;
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" ) ")" ]
              [ "=" expr ] ;
 merge_kind = "register" | "counter" | "text" ;

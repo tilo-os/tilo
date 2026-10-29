@@ -457,3 +457,67 @@ fn errors_teach_what_is_valid() {
     let divided = printed(&run(&mut todo, &other, "10 / 2"));
     assert_eq!(divided, "5");
 }
+
+/// The agents.md examples in scope, one program after another in one session, as an agent
+/// sends them: each one's answer, printed (`--no-capture` shows the transcript). Every entry
+/// runs to its end or fails with its error; none keeps asking to read.
+#[test]
+fn a_session_of_the_agents_doc_examples() {
+    let other = holder();
+    let mut todo = worker();
+    let entries = [
+        r#"journal.write(journal.entries, "Launch", "> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist")"#,
+        r"grep(/\bChen\b/, in: notes + chat).count_by(.doc)",
+        r"grep(/\bTide\b/, in: journal, not: .quote)",
+        r"grep(/(?i)release/).count_by(.written_by)",
+        r"grep(/Tide/, in: journal, mentions: me).len()",
+        r"grep(/^- \[ \] (.*launch.*)/i, in: journal, changed: -14d).each(t -> todo.add(todo.todos, t.group(1)))",
+        "print(todo.todos.items, fields: [.title, .done])",
+        r#"find("standup chen")"#,
+        r#"find("standup").take(2)"#,
+        r#"find("standup").single()"#,
+        r#"find("groceries").single()"#,
+        "find(Todo, done: false).sort_by(.title).map(.title)",
+        r"read(grep(/Chen is out/, in: notes).single().doc, matching: /Chen/)",
+        "describe(notes)",
+        "describe(Todo)",
+        "describe(todo.add)",
+        "describe(Todo.done)",
+        "let list = todo.todos\ndescribe(list)",
+        "find(Todo, completed: true)",
+        "grep(/x/, in: docs)",
+        "todo.todos.items.cout_by(.done)",
+        "grep(/x/, not: .quotes)",
+    ];
+    let mut transcript = String::new();
+    for entry in entries {
+        let answer = run(&mut todo, &other, entry);
+        transcript.push_str(&format!("tl> {}\n", entry.replace('\n', "\n... ")));
+        for line in answer["output"].as_array().into_iter().flatten() {
+            transcript.push_str(line.as_str().unwrap_or_default());
+            transcript.push('\n');
+        }
+        match answer["state"].as_str() {
+            Some("done") => {}
+            Some("rejected") => {
+                for line in answer["detail"].as_array().into_iter().flatten() {
+                    transcript.push_str(&format!("error: {}\n", line.as_str().unwrap_or_default()));
+                }
+            }
+            _ => transcript.push_str(&format!(
+                "error: {}\n",
+                answer["detail"].as_str().unwrap_or("the program failed")
+            )),
+        }
+        let changed = answer["changed"].as_u64().unwrap_or(0);
+        if changed > 0 {
+            transcript.push_str(&format!("({changed} changed)\n"));
+        }
+    }
+    println!("{transcript}");
+    assert!(transcript.contains("grep /\\bChen\\b/: "), "{transcript}");
+    assert!(
+        transcript.contains("single: 5 match, not one"),
+        "{transcript}"
+    );
+}

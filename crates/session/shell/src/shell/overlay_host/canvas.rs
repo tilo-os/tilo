@@ -111,6 +111,11 @@ impl CanvasAnswers {
         Some(self.waiting.remove(index).1)
     }
 
+    /// Whether an answer waits for a window of `app_id`.
+    pub(crate) fn waits_for(&self, app_id: &str) -> bool {
+        self.waiting.iter().any(|(app, _)| app == app_id)
+    }
+
     /// How many answers wait for their window.
     pub(crate) fn waiting(&self) -> usize {
         self.waiting.len()
@@ -217,6 +222,41 @@ fn canvas_point(p: Point) -> (i32, i32) {
     (clamp(p.x), clamp(p.y))
 }
 
+/// `read` of the active workspace, holding the tree only while it reads.
+fn read_workspace<T>(
+    chrome: &crate::shell::chrome_state::Chrome,
+    read: impl FnOnce(&crate::shell::state::Workspace) -> T,
+) -> Option<T> {
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let value = tree.desktop.active_workspace().map(read);
+    drop(tree);
+    drop(state);
+    value
+}
+
+/// Client windows of the active workspace keep their canvas size and are
+/// drawn at `zoom` ([`crate::shell::foreign::ForeignFrameStore::set_canvas_zoom`]).
+fn zoom_canvas_windows(chrome: &crate::shell::chrome_state::Chrome, zoom: f64) {
+    let surfaces = read_workspace(chrome, |workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| match tab.tile {
+                TileContent::Foreign { surface_id, .. } => Some(surface_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+    let store = crate::shell::foreign::store();
+    for surface in surfaces {
+        store.set_canvas_zoom(surface, zoom);
+    }
+}
+
 /// One window on the canvas as the agent is told of it.
 struct NamedWindow {
     group: GroupId,
@@ -303,12 +343,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (workspace, arrangement, windows) = {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            let Some(workspace) = tree.desktop.active_workspace() else {
-                return false;
-            };
+        let Some((workspace, arrangement, windows)) = read_workspace(&chrome, |workspace| {
             let windows: Vec<(GroupId, Option<String>)> = workspace
                 .strips
                 .iter()
@@ -325,6 +360,8 @@ impl ShellOverlayHost {
                 })
                 .collect();
             (workspace.id, workspace.arrangement.clone(), windows)
+        }) else {
+            return false;
         };
         if !arrangement.is_canvas() {
             return self.leave_canvas();
@@ -337,7 +374,7 @@ impl ShellOverlayHost {
         }
         self.canvas.shown = Some(workspace);
         let mut arrangement = arrangement;
-        let placed = self.place_new_windows(&chrome, &mut arrangement, &windows);
+        let newly_placed = self.place_new_windows(&chrome, &mut arrangement, &windows);
         let lens = self.canvas_lens();
         let places: HashMap<u64, Rect> = arrangement
             .places
@@ -345,7 +382,7 @@ impl ShellOverlayHost {
             .map(|(group, place)| (*group, place_rect(*place)))
             .collect();
         let view = lens.view(places);
-        let changed = entered || placed || self.canvas.given.as_ref() != Some(&view);
+        let changed = entered || newly_placed || self.canvas.given.as_ref() != Some(&view);
         if let Some(deck) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
@@ -357,7 +394,7 @@ impl ShellOverlayHost {
             // stable-pointer contract; `&mut self` makes it exclusive.
             unsafe { &mut *ptr }.set_canvas(Some(view.clone()));
         }
-        self.zoom_canvas_windows(&chrome, lens.zoom);
+        zoom_canvas_windows(&chrome, lens.zoom);
         self.canvas.given = Some(view);
         if changed {
             self.bump_chrome();
@@ -385,7 +422,7 @@ impl ShellOverlayHost {
             unsafe { &mut *ptr }.set_canvas(None);
         }
         if let Some(chrome) = self.chrome.clone() {
-            self.zoom_canvas_windows(&chrome, 1.0);
+            zoom_canvas_windows(&chrome, 1.0);
         }
         self.bump_chrome();
         true
@@ -403,6 +440,28 @@ impl ShellOverlayHost {
     ) -> bool {
         let (width, height) = WINDOW_SIZE;
         let mut placed = false;
+        // A workspace that just came to its canvas: its windows, in strip
+        // order, share what is on screen, so all of them show at once.
+        if arrangement.places.is_empty() {
+            let unanchored: Vec<GroupId> = windows
+                .iter()
+                .filter(|(_, app)| {
+                    app.as_deref()
+                        .is_none_or(|app| !self.canvas.answers.waits_for(app))
+                })
+                .map(|(group, _)| *group)
+                .collect();
+            let Some(grid) = self.on_screen_grid(unanchored.len()) else {
+                // Not laid out yet: placed once the canvas has a size.
+                return false;
+            };
+            for (group, place) in unanchored.into_iter().zip(grid) {
+                if chrome.borrow_mut().place_on_canvas(group, place).is_ok() {
+                    arrangement.places.insert(group, place);
+                    placed = true;
+                }
+            }
+        }
         for (group, app) in windows {
             if arrangement.places.contains_key(group) {
                 continue;
@@ -427,6 +486,48 @@ impl ShellOverlayHost {
             placed = true;
         }
         placed
+    }
+
+    /// `count` places in rows and columns over what is on screen, a gap
+    /// apart and at most [`WINDOW_SIZE`] each, in reading order; `None`
+    /// while the canvas has no size yet.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "a handful of windows, and sizes clamped to the screen before the casts"
+    )]
+    fn on_screen_grid(&self, count: usize) -> Option<Vec<CanvasPlace>> {
+        if count == 0 {
+            return Some(Vec::new());
+        }
+        let frame = self.canvas_frame()?;
+        let lens = self.canvas_lens();
+        let zoom = lens.zoom.max(f64::EPSILON);
+        let (width, height) = (frame.width() / zoom, frame.height() / zoom);
+        let gap = f64::from(CANVAS_GAP);
+        let columns = (count as f64).sqrt().ceil().max(1.0);
+        let rows = (count as f64 / columns).ceil().max(1.0);
+        let cell = |space: f64, n: f64, most: u32, least: f64| {
+            ((space - gap * (n + 1.0)) / n).clamp(least, f64::from(most))
+        };
+        let cell_w = cell(width, columns, WINDOW_SIZE.0, 320.0);
+        let cell_h = cell(height, rows, WINDOW_SIZE.1, 240.0);
+        Some(
+            (0..count)
+                .map(|i| {
+                    let (column, row) = ((i as f64) % columns, ((i as f64) / columns).floor());
+                    let x = lens.origin.x + gap + column * (cell_w + gap);
+                    let y = lens.origin.y + gap + row * (cell_h + gap);
+                    CanvasPlace::new(
+                        canvas_point(Point::new(x, y)).0,
+                        canvas_point(Point::new(x, y)).1,
+                        cell_w.round() as u32,
+                        cell_h.round() as u32,
+                    )
+                })
+                .collect(),
+        )
     }
 
     /// Where a window nobody placed goes: beside the window in front, else
@@ -456,33 +557,15 @@ impl ShellOverlayHost {
             .canvas_frame()
             .and_then(|frame| self.to_canvas(frame.center()))
             .unwrap_or_default();
-        let corner = middle - Vec2::new(f64::from(width) / 2.0, f64::from(height) / 2.0);
+        let corner = Point::new(
+            middle.x - f64::from(width) / 2.0,
+            middle.y - f64::from(height) / 2.0,
+        );
         arrangement.free_place_near(canvas_point(corner), width, height, None)
     }
 
-    /// Client windows on the canvas keep their canvas size and are drawn at
-    /// `zoom` ([`crate::shell::foreign::ForeignFrameStore::set_canvas_zoom`]).
-    fn zoom_canvas_windows(&self, chrome: &crate::shell::chrome_state::Chrome, zoom: f64) {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return;
-        };
-        let store = crate::shell::foreign::store();
-        for tab in workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-        {
-            if let TileContent::Foreign { surface_id, .. } = tab.tile {
-                store.set_canvas_zoom(surface_id, zoom);
-            }
-        }
-    }
-
     /// The windows the person carried to new places on the canvas, kept.
-    pub(super) fn harvest_pending_canvas_moves(&mut self) {
+    pub(super) fn harvest_pending_canvas_moves(&self) {
         let moves: Vec<(u64, Rect)> = self
             .group_row_ptrs
             .values()
@@ -702,7 +785,9 @@ impl ShellOverlayHost {
             .canvas
             .press
             .filter(|p| p.touch.is_some() && !p.dragging)?;
-        Some(press.since + ui::interaction::TouchPointerEmulator::LONG_PRESS)
+        press
+            .since
+            .checked_add(ui::interaction::TouchPointerEmulator::LONG_PRESS)
     }
 
     /// A finger held still on empty canvas long enough opens its menu, as
@@ -736,9 +821,9 @@ impl ShellOverlayHost {
         let Some(mut press) = self.canvas.press else {
             return false;
         };
-        let travelled = at - press.now;
+        let travelled = Vec2::new(at.x - press.now.x, at.y - press.now.y);
         press.now = at;
-        if !press.dragging && (at - press.start).hypot() > slop {
+        if !press.dragging && at.distance(press.start) > slop {
             press.dragging = true;
             if !press.pans {
                 self.canvas.caret = None;
@@ -998,28 +1083,26 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return Vec::new();
-        };
-        workspace
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .filter_map(|group| {
-                let tab = group
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == group.active_tab)
-                    .or_else(|| group.tabs.first())?;
-                Some(NamedWindow {
-                    group: group.id,
-                    app_id: tile_app_id(&tab.tile).map(str::to_owned),
-                    title: tab.title.clone(),
+        read_workspace(chrome, |workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .filter_map(|group| {
+                    let tab = group
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == group.active_tab)
+                        .or_else(|| group.tabs.first())?;
+                    Some(NamedWindow {
+                        group: group.id,
+                        app_id: tile_app_id(&tab.tile).map(str::to_owned),
+                        title: tab.title.clone(),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// An ask from the canvas, or from a menu on something on it, while the
@@ -1058,19 +1141,18 @@ impl ShellOverlayHost {
     fn beside_window_at(&self, p: Point) -> Option<CanvasAnchor> {
         let group = self.canvas_window_at(p)?;
         let chrome = self.chrome.as_ref()?;
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let place = tree
-            .desktop
-            .active_workspace()?
-            .arrangement
-            .place_of(group)?;
+        let place = read_workspace(chrome, |workspace| workspace.arrangement.place_of(group))??;
         Some(CanvasAnchor::Beside(place_rect(place)))
     }
 
     /// Hand `seed`'s question to the workspace's agent as a Tasks issue
     /// whose page opens as a window at `anchor`. An agent not running is
     /// started; the issue waits for it. Whether it was asked.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the session source and the composer's actions are handed on at their last use; \
+                  the lint reads the move into `open_and_ask` as a held guard"
+    )]
     fn ask_on_canvas(&mut self, seed: &SelectionSeed, anchor: CanvasAnchor, context: &str) -> bool {
         use crate::shell::state::WorkspaceAuthority as _;
         let Some(text) = seed.ask.clone() else {
@@ -1123,9 +1205,14 @@ impl ShellOverlayHost {
             runtime_collab::INSTRUCTION_CONTEXT,
             context.trim()
         );
-        let actions = self.agent_actions.entry(owner.clone()).or_default();
-        let start = !live && actions.start_once(Instant::now());
-        if !actions.open_and_ask(source, &owner, (&text, &body), Some(seed), true, true) {
+        let (start, asked) = {
+            let actions = self.agent_actions.entry(owner.clone()).or_default();
+            let start = !live && actions.start_once(Instant::now());
+            let asked =
+                actions.open_and_ask(source, &owner, (&text, &body), Some(seed), true, true);
+            (start, asked)
+        };
+        if !asked {
             tracing::warn!(%agent, "the canvas's question could not be handed to the agent");
             return false;
         }

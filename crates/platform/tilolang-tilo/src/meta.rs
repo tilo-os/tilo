@@ -34,8 +34,8 @@ pub trait MetaExt {
     /// records was built for, and is built anew when it differs.
     fn schema_text(&self) -> String;
 
-    /// Register the schemas of every declared type; peers that replay this package's actions
-    /// resolve its records through them.
+    /// Register the schemas of every declared type, and the ids the app had before; peers that
+    /// replay this package's actions resolve its records through them.
     fn register_schemas(&self);
 
     /// The resource kind of the type `type_name`: `tl.<app>.<Type>`.
@@ -236,13 +236,19 @@ impl MetaExt for Meta {
     }
 
     fn schema_text(&self) -> String {
-        format!("{:?}", self.schemas())
+        // The records an index holds include those stored under the app's earlier ids.
+        if self.previously.is_empty() {
+            format!("{:?}", self.schemas())
+        } else {
+            format!("{:?} previously {:?}", self.schemas(), self.previously)
+        }
     }
 
     fn register_schemas(&self) {
         for schema in self.schemas() {
             crate::schema::register(schema);
         }
+        crate::schema::register_previously(&self.app, &self.previously);
     }
 
     fn kind_of(&self, type_name: &str) -> String {

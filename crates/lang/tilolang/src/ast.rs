@@ -27,6 +27,10 @@ pub struct AppHeader {
     pub icon: Option<String>,
     /// `(category: .office)`: the launcher category the app is listed under.
     pub category: Option<String>,
+    /// `(previously: so.tilo.old)`: the ids the app was published under before. Its records,
+    /// grants and windows under them are the app's (the platform checks that the same publisher
+    /// signed both).
+    pub previously: Vec<String>,
     pub span: Span,
 }
 
@@ -65,6 +69,9 @@ pub struct TypeDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `(origin: mail.message)`: the outside service whose resources the type holds
+    /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
+    pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,

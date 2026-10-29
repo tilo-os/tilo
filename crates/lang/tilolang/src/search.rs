@@ -521,7 +521,7 @@ impl Lower<'_> {
                 format!("`{text}` reads another resource through a reference")
             }
             (ExprKind::Call { .. }, _) => format!(
-                "`{text}` calls something; a filter reads fields, and of them only `len()` and `is_empty()`"
+                "`{text}` calls something; a filter reads fields, and of them only `len()`, `is_empty()` and a set's `contains(value)`"
             ),
             _ => format!("`{text}` is not a field or a literal"),
         };
@@ -561,6 +561,11 @@ impl Lower<'_> {
                         Operand::Len(field.id.clone()),
                         Operand::Lit(Lit::Int(0)),
                     )),
+                    // A set holding a value: the run of that value in the set's column.
+                    ("contains", [arg], Ty::Set(item)) => {
+                        let (lit, _) = self.literal(&arg.value, Some(item))?;
+                        Ok(Pred::Has(field.id.clone(), lit))
+                    }
                     _ => Err(self.not_own(e)),
                 }
             }
