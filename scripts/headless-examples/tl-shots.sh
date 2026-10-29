@@ -24,7 +24,7 @@ for app in "${apps[@]}"; do
   "$seed" "$tl/$app" 0 "$work/$app" >/dev/null
   id=$(grep -o '^app [a-z.]*' "$tl/$app/app.tl" | cut -d' ' -f2)
   scenario=$(grep -o '^scenario "[^"]*"' "$tl/$app/app.tl" | head -1 | cut -d'"' -f2)
-  case $app in notes) query=standup ;; todo) query=the ;; chat) query=saturday ;; mail) query=launch ;; *) query=a ;; esac
+  case $app in notes) query=standup ;; todo) query=the ;; chat) query=onboarding ;; mail) query=launch ;; *) query=a ;; esac
   shoot() { # name args...
     local name=$1; shift
     local log=$out/logs/$name.log

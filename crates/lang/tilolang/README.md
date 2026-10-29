@@ -407,6 +407,8 @@ print(xs, fields: [.title, .due])
   it as mia's at that time.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
+- An item block names a template's other slots beside the item's view; they do not see the
+  item: `std.transcript(c, c.messages) { m -> message(m, replying) composer: { ... } }`.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.
