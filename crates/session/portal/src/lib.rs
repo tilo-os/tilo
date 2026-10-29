@@ -12,6 +12,10 @@
 //! - `org.freedesktop.impl.portal.Access` ([`access`])
 //! - `org.freedesktop.impl.portal.Inhibit` ([`inhibit`])
 //! - `org.freedesktop.impl.portal.Lockdown` ([`lockdown`])
+//! - `org.freedesktop.impl.portal.GlobalShortcuts` ([`global_shortcuts`])
+//!
+//! The session-based ones live as `org.freedesktop.impl.portal.Session`
+//! objects ([`session`]).
 //!
 //! The backend has no UI. What needs the person's answer (which file,
 //! whether an app may take a screenshot) is asked through the session's
@@ -55,6 +59,7 @@ pub mod documents;
 pub mod dynamic_launcher;
 pub mod email;
 pub mod file_chooser;
+pub mod global_shortcuts;
 pub mod host;
 pub mod inhibit;
 pub mod lifecycle;
@@ -65,7 +70,9 @@ pub mod requester;
 pub mod screensaver;
 pub mod screenshot;
 pub mod secret;
+pub mod session;
 pub mod settings;
+pub mod trigger;
 pub mod usb;
 pub mod wallpaper;
 
@@ -152,6 +159,8 @@ pub struct Portal {
     settings: Settings,
     inhibitions: Inhibitions,
     requests: lifecycle::Requests,
+    sessions: session::Sessions,
+    shortcuts: global_shortcuts::Shortcuts,
 }
 
 impl Portal {
@@ -164,6 +173,7 @@ impl Portal {
             questions.clone(),
             private_state_root().map(|root| root.join("tilo/portal/consents.json")),
         );
+        let sessions = session::Sessions::default();
         Self {
             questions,
             authenticator,
@@ -175,7 +185,22 @@ impl Portal {
             settings: Settings::default(),
             inhibitions: Inhibitions::default(),
             requests: lifecycle::Requests::default(),
+            shortcuts: global_shortcuts::Shortcuts::new(&sessions),
+            sessions,
         }
+    }
+
+    /// The live portal sessions: where the session hears that what the
+    /// portal publishes changed ([`session::Sessions::on_change`]).
+    #[must_use]
+    pub const fn sessions(&self) -> &session::Sessions {
+        &self.sessions
+    }
+
+    /// The apps' bound shortcuts, which the desktop's own table overrides.
+    #[must_use]
+    pub const fn shortcuts(&self) -> &global_shortcuts::Shortcuts {
+        &self.shortcuts
     }
 
     /// The same, capturing through `capture`.
@@ -292,6 +317,13 @@ impl Portal {
             )
             .await?;
         server.at(OBJECT_PATH, usb::Usb::new(self.clone())).await?;
+        self.sessions.serve_on(connection);
+        server
+            .at(
+                OBJECT_PATH,
+                global_shortcuts::GlobalShortcuts::new(self.clone()),
+            )
+            .await?;
         self.requests.close_with_their_owners(connection);
         settings::emit_changes(connection, self.settings.subscribe());
         Ok(())
@@ -445,8 +477,13 @@ impl Published for Consents {
 
 impl Portal {
     /// Every part that publishes something.
-    fn parts(&self) -> [&dyn Published; 3] {
-        [&self.consents, &self.inhibitions, &self.autostart]
+    fn parts(&self) -> [&dyn Published; 4] {
+        [
+            &self.consents,
+            &self.inhibitions,
+            &self.autostart,
+            &self.shortcuts,
+        ]
     }
 }
 
@@ -486,6 +523,10 @@ impl Service for Portal {
                     resource, action,
                 )))
             })
+    }
+
+    fn poll(&mut self) -> bool {
+        self.sessions.take_changed()
     }
 }
 
