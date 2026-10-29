@@ -38,6 +38,7 @@ use smithay::backend::drm::{
 };
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
+use smithay::backend::allocator::Format as DrmFormat;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::renderer::ImportDma as _;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
@@ -66,9 +67,6 @@ use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, select_mode};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
-
-/// Formats tried for an output's primary plane, best first.
-const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
 
 pub use crate::config::DisplayConfig;
 
@@ -624,7 +622,10 @@ fn render_gpu(
             profile: config.color_profiles.get(&name).cloned(),
             hdr: config.hdr.get(&name).cloned(),
         };
-        lit.follow_color(wanted, &mut renderer, device);
+        // An output another GPU shows gets a copy in its swapchain's
+        // format; only one the primary draws directly changes depth.
+        let depth = (*render == primary).then(|| manager.allocator());
+        lit.follow_color(wanted, &mut renderer, device, depth);
         // The pointer in front, where DrmCompositor can give it the cursor
         // plane.
         let mut elements: Vec<OutputRenderElement<Renderer<'_>>> =
@@ -766,12 +767,15 @@ fn vrr_wanted(capable: bool, allowed: bool, fullscreen_here: bool) -> bool {
 }
 
 impl Lit {
-    /// Bring the output's colour pass and HDR signal to `wanted`.
+    /// Bring the output's colour pass, HDR signal and swapchain depth to
+    /// `wanted`; `depth` is the allocator for a swapchain of another depth,
+    /// `None` keeps the depth.
     fn follow_color(
         &mut self,
         mut wanted: color::Wanted,
         renderer: &mut Renderer<'_>,
         device: &DrmDevice,
+        depth: Option<&Allocator>,
     ) {
         let current = self.color.pass.as_ref().map(color::ColorPass::wanted);
         if current.map_or_else(|| wanted.plain(), |current| *current == wanted) {
@@ -803,8 +807,48 @@ impl Lit {
                 }
             }
         };
+        if let Some(allocator) = depth {
+            self.follow_depth(renderer, allocator);
+        }
         // A whole frame, through the new pass.
         self.surface.reset_buffers();
+    }
+
+    /// Ten bits a channel while the output signals HDR, eight otherwise:
+    /// the first format of [`color::depth_formats`] the primary plane takes.
+    fn follow_depth(&self, renderer: &mut Renderer<'_>, allocator: &Allocator) {
+        let gles: &mut GlesRenderer = renderer.as_mut();
+        let renderable: Vec<DrmFormat> = gles
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        let current = self.surface.format();
+        let candidates = color::depth_formats(self.color.hdr_on, current, |code| {
+            renderable.iter().any(|format| format.code == code)
+        });
+        let name = self.output.name();
+        for code in candidates {
+            let modifiers = renderable
+                .iter()
+                .filter(|format| format.code == code)
+                .map(|format| format.modifier);
+            match self.surface.with_compositor(|compositor| {
+                compositor.set_format(allocator.clone(), code, modifiers)
+            }) {
+                Ok(()) => {
+                    tracing::info!(output = name, ?code, "swapchain format");
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(?error, output = name, ?code, "swapchain format refused");
+                }
+            }
+        }
+        if self.color.hdr_on && !color::HDR_FORMATS.contains(&current) {
+            tracing::warn!(output = name, ?current, "HDR without a 10-bit swapchain");
+        }
     }
 
     /// Engage or release variable refresh for the next frame. A driver that
@@ -1098,7 +1142,7 @@ fn open_gpu(
         allocator,
         exporter,
         Some(gbm),
-        COLOR_FORMATS,
+        color::SDR_FORMATS,
         renderer_formats,
     );
 
