@@ -550,6 +550,18 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// What a member device builds its replica of the room from, sent to a
+    /// subscriber before the room's replay: the room's
+    /// `tilo_workspace_join::JoinBootstrap` for this device, postcard
+    /// encoded, as a joining native device receives it. Its governance
+    /// messages and records stay out: the replay that follows carries the
+    /// room's retained governance and records.
+    RoomBootstrap {
+        workspace_id: u64,
+        #[serde(with = "serde_bytes")]
+        bootstrap: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -596,6 +608,7 @@ impl Envelope {
             Self::RecordOpened { .. } => "RecordOpened",
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
+            Self::RoomBootstrap { .. } => "RoomBootstrap",
         }
     }
 
@@ -640,7 +653,8 @@ impl Envelope {
             | Self::VoiceCallList { workspace_id, .. }
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
-            | Self::RecordOpened { workspace_id, .. } => Some(*workspace_id),
+            | Self::RecordOpened { workspace_id, .. }
+            | Self::RoomBootstrap { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }
     }

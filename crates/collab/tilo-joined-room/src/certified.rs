@@ -338,23 +338,16 @@ impl VerifiedNativeEnrollment {
         {
             return Err("native Complete omitted exact enrolled certificates".into());
         }
-        let now = SystemTime::now();
-        let mut revocations = RevocationList::new();
-        for entry in &bootstrap.revocations {
-            revocations
-                .insert(entry.clone())
-                .map_err(|e| e.to_string())?;
-        }
         // Actual StatePeer validation checks certificate/revocation and authority input.
         // A alone admits the signed governance and publishes the durable peer.
         // The roster is the room's admitted evidence: a guest whose
         // certificate expired since is still in it.
-        tilo_peer_state::StatePeer::joined(
+        tilo_peer_state::StatePeer::from_join(
             &bootstrap.room,
             bootstrap.authority.clone(),
             bootstrap.certified_roster.clone(),
-            revocations,
-            now,
+            &bootstrap.revocations,
+            SystemTime::now(),
         )?;
         Ok(Self {
             intent,

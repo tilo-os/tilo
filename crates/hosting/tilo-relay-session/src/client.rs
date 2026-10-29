@@ -167,7 +167,8 @@ fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> boo
         | Envelope::VoiceCallList { workspace_id, .. }
         | Envelope::VoiceShow { workspace_id, .. }
         | Envelope::OpenRecord { workspace_id, .. }
-        | Envelope::RecordOpened { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        | Envelope::RecordOpened { workspace_id, .. }
+        | Envelope::RoomBootstrap { workspace_id, .. } => *workspace_id == scope.workspace_id,
         Envelope::Ping | Envelope::Pong => true,
         Envelope::PeerRelayHello { .. } | Envelope::HostAction { .. } => false,
     }

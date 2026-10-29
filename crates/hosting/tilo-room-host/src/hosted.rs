@@ -36,7 +36,7 @@ use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceH
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::join::{JoinBootstrap, TransportHint};
 use tilo_peer_state::{GovernedAccess, StatePeer, TransportOrigin};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::DeviceCert;
 use tokio::task::JoinHandle;
 use web_time::SystemTime;
 
@@ -351,24 +351,16 @@ fn own_hint(
 /// governance admitted from the bootstrap's signed messages. Record writes
 /// are not this replica's to follow.
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
-    let mut revocations = RevocationList::new();
-    for entry in &bootstrap.revocations {
-        revocations
-            .insert(entry.clone())
-            .map_err(|error| error.to_string())?;
-    }
-    let mut peer = StatePeer::joined(
+    let mut peer = StatePeer::from_join(
         &bootstrap.room,
         bootstrap.authority.clone(),
         bootstrap.certified_roster.clone(),
-        revocations,
+        &bootstrap.revocations,
         now,
     )?;
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the room writes under.
     peer.write_as_room_host();
-    peer.select_admission_v5()
-        .map_err(|error| error.to_string())?;
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
