@@ -289,17 +289,11 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
-    /// The pointer buttons held down, one bit each; see `input_publication`.
-    pub(super) pointer_buttons: u32,
+    /// Where the pointer is, which buttons it holds and where it last pressed.
+    pub(super) pointer: crate::host_core::PointerPlace,
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
-    /// Where the pointer is, in logical pixels of the app's surface.
-    pub(super) pointer_at: Option<vello::kurbo::Point>,
-    /// Where the person last pressed, while a press (not a key) is the last
-    /// thing they did: what they pressed is in the window there, which is the
-    /// window that asked for whatever the press opens.
-    pub(super) pressed_at: Option<vello::kurbo::Point>,
     /// The window has the keyboard: the one a person (or a test control's
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
@@ -318,10 +312,8 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
-            pointer_buttons: 0,
+            pointer: crate::host_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
-            pointer_at: None,
-            pressed_at: None,
         }
     }
 }

@@ -29,6 +29,7 @@ mod host_ui;
 mod host_values;
 pub mod ids;
 mod live;
+pub mod members;
 pub mod meta;
 mod num;
 pub mod place;

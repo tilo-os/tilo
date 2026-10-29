@@ -45,6 +45,7 @@ use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
 mod dialogs;
 mod effects;
 mod files;
+pub(crate) use effects::window;
 mod handoff;
 
 use dialogs::{DialogKey, ExportDraft};
@@ -234,11 +235,16 @@ pub struct ContactsApp {
     scenario: Option<String>,
     file_work: Rc<Cell<Option<FileWork>>>,
     opened_cards: Option<String>,
-    /// Pending untrusted UID collisions. These never enter the document until
-    /// the user explicitly chooses a safe resolution.
-    import_conflicts: Vec<ImportConflict>,
+    /// What the view's effect handler asks of the window, and the pending
+    /// import reviews it answers for.
+    asked: effects::Asked,
     pending_conflict_resolution: Option<(String, bool)>,
 
+    /// The book as the document holds it, shown as it changes; `None` for a
+    /// window outside the framework.
+    document: Option<ui::framework::Live<Contacts>>,
+    /// The `(revision, loads)` of the book last shown.
+    presented: Option<(u64, u64)>,
     dispatcher: Option<Dispatcher<Contacts>>,
     pub(crate) jobs: Option<Jobs<Contacts>>,
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
@@ -334,18 +340,6 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't {operation}: {error}"));
     }
 
-    pub(crate) fn import_conflict_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.import_conflicts
-            .iter()
-            .map(|conflict| {
-                crate::actions::import_conflict_row(
-                    &conflict.token.to_string(),
-                    &conflict.incoming.display_name(),
-                )
-            })
-            .collect()
-    }
-
     /// Select `id`, a contact this window just asked the book to add, before
     /// it arrives.
     pub(super) fn select_awaited(&mut self, id: ContactId) {
@@ -376,6 +370,18 @@ impl ContactsApp {
 
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Contacts>) {
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Show the book the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(book) = document.changed_since(&mut self.presented) else {
+            return;
+        };
+        self.present_book(&book);
+        self.project_identities(&book);
     }
 
     pub(crate) fn present_book(&mut self, state: &Rc<Contacts>) {
@@ -600,6 +606,8 @@ impl ContactsApp {
             scenario: None,
             file_work: Rc::default(),
             opened_cards: None,
+            document: None,
+            presented: None,
             dispatcher: None,
             jobs: None,
             account_editor: None,
@@ -607,7 +615,7 @@ impl ContactsApp {
             identity_directory: None,
             unconfirmed_save: None,
             delete_undo: Cell::default(),
-            import_conflicts: Vec::new(),
+            asked: effects::Asked::default(),
             pending_conflict_resolution: None,
         }
     }
@@ -684,7 +692,7 @@ impl ContactsApp {
                 {
                     let mut incoming = existing.clone();
                     incoming.notes = "Met at the Royal Society; prefers letters to calls.".into();
-                    self.import_conflicts = vec![ImportConflict {
+                    self.asked.borrow_mut().import_conflicts = vec![ImportConflict {
                         token: uuid::Uuid::new_v4(),
                         existing: existing.id,
                         incoming,
@@ -895,14 +903,14 @@ impl ContactsApp {
     ) -> Result<(), String> {
         let token =
             uuid::Uuid::parse_str(token).map_err(|_| "invalid import conflict id".to_string())?;
-        let index = self
+        let conflict = self
+            .asked
+            .borrow()
             .import_conflicts
             .iter()
-            .position(|conflict| conflict.token == token)
+            .find(|conflict| conflict.token == token)
+            .cloned()
             .ok_or_else(|| "import conflict no longer exists".to_string())?;
-        let Some(conflict) = self.import_conflicts.get(index).cloned() else {
-            return Err("import conflict no longer exists".into());
-        };
         if import_as_new {
             let mut contact = conflict.incoming;
             contact.id = uuid::Uuid::new_v4();
@@ -912,7 +920,10 @@ impl ContactsApp {
         } else {
             self.show_toast("Kept the existing contact");
         }
-        self.import_conflicts.remove(index);
+        self.asked
+            .borrow_mut()
+            .import_conflicts
+            .retain(|pending| pending.token != token);
         self.list_stale = true;
         self.dirty = true;
         Ok(())
@@ -1525,6 +1536,7 @@ impl ContactsApp {
 
         ui::window_toolbar::declare(Some(self.window_toolbar()));
 
+        self.asked.borrow_mut().export_open = self.export.is_some();
         let wanted = self.wanted_dialog();
         if self.dialog.as_ref().map(|(key, _)| key) != wanted.as_ref() {
             self.dialog = wanted.and_then(|key| {
@@ -1845,7 +1857,17 @@ impl ui::undo::UndoControl for ContactsApp {
 impl Widget for ContactsApp {
     ui::provides!(dyn ui::undo::UndoControl);
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.do_asks();
         if let Some(editor) = &self.account_editor {
             editor.sync_visibility();
             // Accounts is a contact's inspector, first entered through that
@@ -2182,6 +2204,7 @@ impl Widget for ContactsApp {
     fn needs_idle_sync(&self) -> bool {
         self.portal_in_flight()
             || self.shared.borrow().has_requests()
+            || !self.asked.borrow().asks.is_empty()
             || self.shell.needs_idle_sync()
     }
 

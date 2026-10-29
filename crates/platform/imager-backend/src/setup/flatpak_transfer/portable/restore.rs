@@ -172,22 +172,6 @@ impl ApplicationImport {
             expectation: expected.clone(),
         })
     }
-    fn extra_data_requirement(&self, runner: &impl OfflineRunner) -> io::Result<u64> {
-        self.manifest
-            .deployments
-            .iter()
-            .try_fold(0u64, |total, item| {
-                let bytes = runner
-                    .verify_extra_data(
-                        &self.root.join(&item.repository).join(".ostree/repo"),
-                        &item.commit,
-                    )
-                    .map_err(io::Error::other)?;
-                total
-                    .checked_add(bytes)
-                    .ok_or_else(|| changed("Extra-data target allowance overflows"))
-            })
-    }
     pub fn manifest(&self) -> &ApplicationsManifest {
         &self.manifest
     }
@@ -201,60 +185,12 @@ impl ApplicationImport {
         cancel: &AtomicBool,
     ) -> io::Result<usize> {
         self.review.verify_existing_tree(&self.root, cancel)?;
-        let extra_bytes = self.extra_data_requirement(runner)?;
-        let target = PinnedDirectory::open_absolute(home)?;
-        target.validate_destination()?;
-        crate::setup::destination_security::check_private_file(&target.file)?;
-        extra_capacity(&target, extra_bytes)?;
-        let existing = super::super::discover(runner, home).map_err(io::Error::other)?;
-        let mut skip = BTreeSet::new();
-        for item in &self.manifest.deployments {
-            if let Some(found) = existing.refs.iter().find(|found| {
-                found.installation == Installation::User
-                    && found.reference == item.installed.reference
-            }) {
-                let actual = runner
-                    .run(
-                        home,
-                        &[
-                            "info".into(),
-                            "--user".into(),
-                            "--show-commit".into(),
-                            found.reference.clone(),
-                        ],
-                    )
-                    .map_err(io::Error::other)?;
-                if actual.trim() != item.commit {
-                    return Err(changed(
-                        "Existing user application/runtime differs; no data was replaced",
-                    ));
-                }
-                skip.insert(item.installed.reference.clone());
-            }
-        }
-        if skip.len() == self.manifest.deployments.len() {
-            if !skip.is_empty() {
-                runner.verify_repository(home).map_err(io::Error::other)?;
-            }
-            self.review.verify_existing_tree(&self.root, cancel)?;
-            target.validate_destination()?;
-            return Ok(skip.len());
-        }
-        self.add_remotes(runner, home, cancel)?;
-        let mut deployed: Vec<_> = self.manifest.deployments.iter().collect();
-        deployed.sort_by_key(|item| item.installed.app_id().is_some());
-        for item in deployed {
-            check_cancel(cancel)?;
-            self.review.verify_existing_tree(&self.root, cancel)?;
-            if skip.contains(&item.installed.reference) {
-                continue;
-            }
-            deploy(runner, &self.root, item, home, &item.remote, cancel)?;
-        }
-        runner.verify_repository(home).map_err(io::Error::other)?;
+        let (review, root) = (&mut self.review, &self.root);
+        let restored = apply(runner, root, &self.manifest, home, cancel, &mut || {
+            review.verify_existing_tree(root, cancel)
+        })?;
         self.review.verify_existing_tree(&self.root, cancel)?;
-        target.validate_destination()?;
-        Ok(self.manifest.deployments.len())
+        Ok(restored)
     }
     /// Independently verify exact target deployments and already adopted user
     /// state. This cannot install a missing ref or repair a partial copy.
@@ -289,25 +225,10 @@ impl ApplicationImport {
             self.verify_adopted_selected_state(home, workspace, cancel)?;
         } else if !full_home && self.manifest.user_state {
             let source_grant = self.state_grant(home, workspace, cancel)?;
-            let source_home = self.root.join("user-state");
-            let scoped = super::scoped::PackageRunner::new(
-                runner,
-                &self.root,
-                &source_home,
-                &self.manifest,
-                cancel,
-            );
-            let request = crate::setup::user_transfer::TransferRequest {
-                source_home: source_home.clone(),
-                target_home: workspace.join("user-state-copy"),
-                private_journals: workspace.join("copy-journals"),
-                copy_home: false,
-                copy_flatpak: true,
-                system_refs: scoped.selected_refs().map_err(io::Error::other)?,
-            };
+            let request = self.user_state_request(workspace, workspace.join("copy-journals"));
             let (_, promotion) =
                 crate::setup::user_transfer::recover_portable_promotion_with_runner(
-                    &scoped,
+                    runner,
                     request,
                     home,
                     &workspace.join("adoption.journal"),
@@ -319,32 +240,26 @@ impl ApplicationImport {
         self.review.verify_existing_tree(&self.root, cancel)?;
         target.validate_destination()
     }
-    fn preflight_refs(&self, runner: &impl OfflineRunner, home: &Path) -> io::Result<()> {
-        let existing = super::super::discover(runner, home).map_err(io::Error::other)?;
-        for item in &self.manifest.deployments {
-            if existing.refs.iter().any(|found| {
-                found.installation == Installation::User
-                    && found.reference == item.installed.reference
-            }) {
-                let actual = runner
-                    .run(
-                        home,
-                        &[
-                            "info".into(),
-                            "--user".into(),
-                            "--show-commit".into(),
-                            item.installed.reference.clone(),
-                        ],
-                    )
-                    .map_err(io::Error::other)?;
-                if actual.trim() != item.commit {
-                    return Err(changed(
-                        "Existing user application/runtime differs; no data was replaced",
-                    ));
-                }
-            }
+    /// The copied user state travels with every sealed deployment; the applier
+    /// keeps the ones the copied user installation already has.
+    fn user_state_request(
+        &self,
+        workspace: &Path,
+        journals: PathBuf,
+    ) -> crate::setup::user_transfer::TransferRequest {
+        crate::setup::user_transfer::TransferRequest {
+            source_home: self.root.join("user-state"),
+            target_home: workspace.join("user-state-copy"),
+            private_journals: journals,
+            copy_home: false,
+            copy_flatpak: true,
+            system_refs: self
+                .manifest
+                .deployments
+                .iter()
+                .map(|item| item.installed.clone())
+                .collect(),
         }
-        Ok(())
     }
     /// Explicitly adopt only authenticated user Flatpak state when the person
     /// deselected their documents. The canonical namespace/copy/promotion engine
@@ -359,14 +274,14 @@ impl ApplicationImport {
         cancel: &AtomicBool,
     ) -> io::Result<()> {
         if self.manifest.schema == 2 {
-            self.preflight_refs(runner, home)?;
+            present(runner, &self.manifest, home)?;
             return self.adopt_selected_state(home, workspace, cancel);
         }
         if !self.manifest.user_state {
             return Ok(());
         }
         self.review.verify_existing_tree(&self.root, cancel)?;
-        let extra_bytes = self.extra_data_requirement(runner)?;
+        let extra_bytes = extra_data(runner, &self.root, &self.manifest)?;
         let target = PinnedDirectory::open_absolute(home)?;
         target.validate_destination()?;
         crate::setup::destination_security::check_private_file(&target.file)?;
@@ -390,28 +305,13 @@ impl ApplicationImport {
             Err(error) => return Err(error),
         }
         let source_grant = self.state_grant(home, workspace, cancel)?;
-        let source_home = self.root.join("user-state");
-        let scoped = super::scoped::PackageRunner::new(
-            runner,
-            &self.root,
-            &source_home,
-            &self.manifest,
-            cancel,
-        );
-        let request = crate::setup::user_transfer::TransferRequest {
-            source_home: source_home.clone(),
-            target_home: workspace.join("user-state-copy"),
-            private_journals: journals,
-            copy_home: false,
-            copy_flatpak: true,
-            system_refs: scoped.selected_refs().map_err(io::Error::other)?,
-        };
+        let request = self.user_state_request(workspace, journals);
         let journal = workspace.join("adoption.journal");
         let (promotion, retry) = match std::fs::symlink_metadata(&journal) {
             Ok(_) => {
                 let (_, promotion) =
                     crate::setup::user_transfer::recover_portable_promotion_with_runner(
-                        &scoped,
+                        runner,
                         request,
                         home,
                         &journal,
@@ -421,10 +321,15 @@ impl ApplicationImport {
                 (promotion, true)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                let transfer = crate::setup::user_transfer::review(&scoped, request)
+                let applications = (!request.system_refs.is_empty()).then(|| {
+                    crate::setup::user_transfer::Applications::Sealed(
+                        super::SealedApplications::admitted(self),
+                    )
+                });
+                let transfer = crate::setup::user_transfer::review(request, applications)
                     .map_err(io::Error::other)?;
                 let report = transfer
-                    .execute(&scoped, cancel, transfer.recovered(), |_| {})
+                    .execute(runner, cancel, transfer.recovered(), |_| {})
                     .map_err(io::Error::other)?;
                 if !report.complete() {
                     return Err(changed("Independent app state copy is incomplete"));
@@ -459,41 +364,141 @@ impl ApplicationImport {
         }
         self.review.verify_existing_tree(&self.root, cancel)
     }
-    fn add_remotes(
-        &self,
-        runner: &impl OfflineRunner,
-        home: &Path,
-        cancel: &AtomicBool,
-    ) -> io::Result<()> {
-        let pin = PinnedDirectory::open_absolute(&self.root)?;
-        for trust in &self.manifest.trust {
-            check_cancel(cancel)?;
-            let definition = read(&pin, &trust.definition, 2 * 1024 * 1024)?;
-            if <[u8; 32]>::from(Sha256::digest(&definition)) != trust.sha256 {
-                return Err(changed(
-                    "Original signing authority differs from authenticated manifest",
-                ));
-            }
-            let file = self.root.join(&trust.definition);
-            runner
+}
+/// Deploy every sealed deployment in `manifest` from `root` into the user
+/// installation at `home`, keeping the ones it already has at the same commit.
+/// `check` re-attests the unit between steps.
+pub(super) fn apply(
+    runner: &impl OfflineRunner,
+    root: &Path,
+    manifest: &ApplicationsManifest,
+    home: &Path,
+    cancel: &AtomicBool,
+    check: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<usize> {
+    let extra_bytes = extra_data(runner, root, manifest)?;
+    let target = PinnedDirectory::open_absolute(home)?;
+    target.validate_destination()?;
+    crate::setup::destination_security::check_private_file(&target.file)?;
+    extra_capacity(&target, extra_bytes)?;
+    let skip = present(runner, manifest, home)?;
+    if skip.len() == manifest.deployments.len() {
+        if !skip.is_empty() {
+            runner.verify_repository(home).map_err(io::Error::other)?;
+        }
+        check()?;
+        target.validate_destination()?;
+        return Ok(skip.len());
+    }
+    add_remotes(runner, root, manifest, home, cancel)?;
+    let mut deployed: Vec<_> = manifest.deployments.iter().collect();
+    deployed.sort_by_key(|item| item.installed.app_id().is_some());
+    for item in deployed {
+        check_cancel(cancel)?;
+        check()?;
+        if skip.contains(&item.installed.reference) {
+            continue;
+        }
+        deploy(runner, root, item, home, &item.remote, cancel)?;
+    }
+    runner.verify_repository(home).map_err(io::Error::other)?;
+    check()?;
+    target.validate_destination()?;
+    Ok(manifest.deployments.len())
+}
+
+/// The sealed deployments the user installation at `home` already has, each
+/// at exactly the sealed commit. A different installed commit is refused.
+fn present(
+    runner: &impl OfflineRunner,
+    manifest: &ApplicationsManifest,
+    home: &Path,
+) -> io::Result<BTreeSet<String>> {
+    let existing = super::super::discover(runner, home).map_err(io::Error::other)?;
+    let mut present = BTreeSet::new();
+    for item in &manifest.deployments {
+        if existing.refs.iter().any(|found| {
+            found.installation == Installation::User && found.reference == item.installed.reference
+        }) {
+            let actual = runner
                 .run(
                     home,
                     &[
-                        "remote-add".into(),
+                        "info".into(),
                         "--user".into(),
-                        "--if-not-exists".into(),
-                        "--from".into(),
-                        trust.remote.clone(),
-                        file.to_str()
-                            .ok_or_else(|| changed("Non-UTF8 approved definition"))?
-                            .into(),
+                        "--show-commit".into(),
+                        item.installed.reference.clone(),
                     ],
                 )
                 .map_err(io::Error::other)?;
+            if actual.trim() != item.commit {
+                return Err(changed(
+                    "Existing user application/runtime differs; no data was replaced",
+                ));
+            }
+            present.insert(item.installed.reference.clone());
         }
-        Ok(())
     }
+    Ok(present)
 }
+
+/// The extra-data bytes the sealed deployments will write into the target.
+fn extra_data(
+    runner: &impl OfflineRunner,
+    root: &Path,
+    manifest: &ApplicationsManifest,
+) -> io::Result<u64> {
+    manifest.deployments.iter().try_fold(0u64, |total, item| {
+        let bytes = runner
+            .verify_extra_data(
+                &root.join(&item.repository).join(".ostree/repo"),
+                &item.commit,
+            )
+            .map_err(io::Error::other)?;
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| changed("Extra-data target allowance overflows"))
+    })
+}
+
+/// Trust each authenticated original signing authority in the target user
+/// installation before deploying from the sealed repositories.
+fn add_remotes(
+    runner: &impl OfflineRunner,
+    root: &Path,
+    manifest: &ApplicationsManifest,
+    home: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    let pin = PinnedDirectory::open_absolute(root)?;
+    for trust in &manifest.trust {
+        check_cancel(cancel)?;
+        let definition = read(&pin, &trust.definition, 2 * 1024 * 1024)?;
+        if <[u8; 32]>::from(Sha256::digest(&definition)) != trust.sha256 {
+            return Err(changed(
+                "Original signing authority differs from authenticated manifest",
+            ));
+        }
+        let file = root.join(&trust.definition);
+        runner
+            .run(
+                home,
+                &[
+                    "remote-add".into(),
+                    "--user".into(),
+                    "--if-not-exists".into(),
+                    "--from".into(),
+                    trust.remote.clone(),
+                    file.to_str()
+                        .ok_or_else(|| changed("Non-UTF8 approved definition"))?
+                        .into(),
+                ],
+            )
+            .map_err(io::Error::other)?;
+    }
+    Ok(())
+}
+
 fn read(pin: &Arc<PinnedDirectory>, name: &str, limit: u64) -> io::Result<Vec<u8>> {
     pin.validate_destination()?;
     let mut options = OpenOptions::new();

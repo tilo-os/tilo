@@ -98,8 +98,8 @@ fi
 
 # A boot that signed in before the volume opened (docs/security/sign-in.md
 # §3.4) shows the greeter's first frame within 300 ms of the moment
-# tilo-boot-signin knows who may sign in, which is when Plymouth's sign-in
-# screen appeared. Both lines come from the initrd, timed from the same boot.
+# tilo-boot-signin knows who may sign in, which is when Plymouth's own
+# sign-in screen used to appear. Both lines come from the initrd, timed from the same boot.
 signin_frame_budget_ms="${TILO_BOOT_SIGNIN_FIRST_FRAME_MS:-300}"
 case "$signin_frame_budget_ms" in ''|*[!0-9]*) echo 'invalid first-frame budget' >&2; exit 2 ;; esac
 signin_people="$(grep -m1 -E 'tilo-boot-signin: [0-9]+ may sign in here' <<<"$boot_log" || true)"

@@ -219,21 +219,6 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
             Some(read()),
         ),
         (
-            NeighbourMsg::PersonalContinuityRequest {
-                user_public_key: [1; 32],
-                requester: 1,
-            },
-            None,
-        ),
-        (
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key: [1; 32],
-                publisher: 1,
-                snapshot: Vec::new(),
-            },
-            None,
-        ),
-        (
             NeighbourMsg::RemoteAction { frame: Vec::new() },
             Some(read()),
         ),
@@ -332,7 +317,7 @@ fn required_room_action_is_explicit_for_every_variant() {
         table.len(),
         "one message per variant, none repeated"
     );
-    assert_eq!(table.len(), 28, "every NeighbourMsg variant has an entry");
+    assert_eq!(table.len(), 25, "every NeighbourMsg variant has an entry");
     for (message, expected) in &table {
         assert_eq!(
             ShellNetwork::required_room_action(message),

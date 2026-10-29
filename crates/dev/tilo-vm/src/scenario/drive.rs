@@ -242,7 +242,7 @@ pub fn install(
                 if let Some(layout) = &choices.keyboard_layout {
                     invoke(
                         console,
-                        "installer.keyboard",
+                        INSTALLER,
                         "set-layout",
                         json!({ "layout": layout }),
                     )?;
@@ -257,13 +257,13 @@ pub fn install(
             "accounts" => {
                 // This scenario has no online account credentials. Use the
                 // published offline choice rather than filling private inputs.
-                invoke(console, "installer.accounts", "skip-offline", json!({}))?;
+                invoke(console, INSTALLER, "continue-offline", json!({}))?;
             }
             "disk" => disk_step(console, &state, choices, pace)?,
             "account" => {
                 invoke(
                     console,
-                    "installer.account",
+                    INSTALLER,
                     "set-identity",
                     json!({ "username": choices.username, "full_name": choices.full_name }),
                 )?;
@@ -281,14 +281,14 @@ pub fn install(
                 if let Some(disk_secret) = &choices.disk_secret {
                     invoke(
                         console,
-                        "installer.account",
+                        INSTALLER,
                         "set-disk-passphrase",
                         json!({ "passphrase": disk_secret.expose(), "confirmation": disk_secret.expose() }),
                     )?;
                 }
                 invoke(
                     console,
-                    "installer.account",
+                    INSTALLER,
                     "set-passphrase",
                     json!({ "passphrase": choices.account_secret.expose(), "confirmation": choices.account_secret.expose() }),
                 )?;
@@ -298,14 +298,14 @@ pub fn install(
                 if let Some(filesystem) = &choices.filesystem {
                     invoke(
                         console,
-                        "installer.options",
+                        INSTALLER,
                         "set-filesystem",
                         json!({ "filesystem": filesystem }),
                     )?;
                 }
                 invoke(
                     console,
-                    "installer.options",
+                    INSTALLER,
                     "set-hostname",
                     json!({ "hostname": choices.hostname }),
                 )?;
@@ -314,7 +314,7 @@ pub fn install(
                     ("set-locale", "locale", &choices.locale),
                 ] {
                     if let Some(value) = value {
-                        invoke(console, "installer.options", action, json!({ key: value }))?;
+                        invoke(console, INSTALLER, action, json!({ key: value }))?;
                     }
                 }
                 invoke(console, INSTALLER, "next", json!({}))?;
@@ -340,7 +340,7 @@ pub fn install(
                 }
                 invoke(
                     console,
-                    "installer.review",
+                    INSTALLER,
                     "set-recovery-promise",
                     json!({ "acknowledged": true }),
                 )?;
@@ -385,7 +385,7 @@ fn disk_step(
 ) -> Result<(), DriveError> {
     invoke(
         console,
-        "installer.storage",
+        INSTALLER,
         "set-method",
         json!({ "method": choices.layout.method() }),
     )?;
@@ -393,7 +393,7 @@ fn disk_step(
     invoke(
         console,
         &format!("installer.disk:{target}"),
-        "select",
+        "select-disk",
         json!({}),
     )?;
     let regions = console
@@ -408,7 +408,7 @@ fn disk_step(
         })
         .unwrap_or(0);
     if choices.layout == Layout::GuidedAlongside && regions > 1 {
-        invoke(console, "installer.region:0", "select", json!({}))?;
+        invoke(console, "installer.region:0", "select-region", json!({}))?;
     }
     invoke(console, INSTALLER, "next", json!({}))?;
     // A prepared alongside target runs a read-only preflight before the
@@ -507,8 +507,8 @@ fn finish(
         // screen, which is the only place it ever appears.
         invoke(
             console,
-            "installer.recovery",
-            "confirm-saved",
+            INSTALLER,
+            "confirm-recovery-saved",
             json!({ "saved": true }),
         )?;
     } else {
@@ -518,7 +518,7 @@ fn finish(
         });
     }
     progress("installer: power off");
-    match invoke(console, "installer.power", "power-off", json!({})) {
+    match invoke(console, INSTALLER, "power-off", json!({})) {
         // The guest going down can cut the reply off; the caller confirms
         // the VM stopped.
         Ok(_) | Err(DriveError::Console(_)) => Ok(()),
@@ -600,43 +600,43 @@ mod tests {
             self.calls.push(id.to_owned());
             let ok = json!({"answer": {"id": id}});
             match (self.step, id) {
-                ("keyboard", "set-layout@installer.keyboard") => {
+                ("keyboard", "set-layout@installer") => {
                     self.preferences["layout"] = args["layout"].clone();
                 }
-                ("options", "set-hostname@installer.options") => {
+                ("options", "set-hostname@installer") => {
                     self.preferences["hostname"] = args["hostname"].clone();
                 }
-                ("options", "set-timezone@installer.options") => {
+                ("options", "set-timezone@installer") => {
                     self.preferences["timezone"] = args["timezone"].clone();
                 }
-                ("options", "set-locale@installer.options") => {
+                ("options", "set-locale@installer") => {
                     self.preferences["locale"] = args["locale"].clone();
                 }
                 ("keyboard", "next@installer") => self.step = "network",
                 ("network", "next@installer") => self.step = "accounts",
-                ("accounts", "skip-offline@installer.accounts") => self.step = "disk",
-                ("disk", "set-method@installer.storage") => {
+                ("accounts", "continue-offline@installer") => self.step = "disk",
+                ("disk", "set-method@installer") => {
                     self.method = args["method"].as_str().unwrap().into();
                 }
-                ("options", "set-filesystem@installer.options") => {
+                ("options", "set-filesystem@installer") => {
                     assert_eq!(args["filesystem"], "ext4");
                 }
-                ("disk", "select@installer.disk:/dev/vdb") => {
+                ("disk", "select-disk@installer.disk:/dev/vdb") => {
                     self.selected = Some("/dev/vdb".into());
                 }
                 ("disk", "next@installer") if self.selected.is_some() => self.step = "account",
-                ("account", "set-passphrase@installer.account") => {
+                ("account", "set-passphrase@installer") => {
                     assert_eq!(args["passphrase"], args["confirmation"]);
                     self.passphrase = args["passphrase"].as_str().map(str::to_owned);
                 }
-                ("account", "set-disk-passphrase@installer.account") => {
+                ("account", "set-disk-passphrase@installer") => {
                     assert_eq!(args["passphrase"], args["confirmation"]);
                     self.disk_passphrase = args["passphrase"].as_str().map(str::to_owned);
                 }
                 ("account", "next@installer") if self.passphrase.is_some() => self.step = "options",
                 ("options", "next@installer") => self.step = "media",
                 ("media", "next@installer") => self.step = "review",
-                ("review", "set-recovery-promise@installer.review") => self.promise = true,
+                ("review", "set-recovery-promise@installer") => self.promise = true,
                 ("review", "begin@installer.review") => {
                     if !self.promise {
                         return Self::refuse("action_unavailable");
@@ -648,9 +648,8 @@ mod tests {
                     }
                     self.step = "install";
                 }
-                ("account", "set-identity@installer.account")
-                | ("install", "confirm-saved@installer.recovery" | "power-off@installer.power") => {
-                }
+                ("account", "set-identity@installer")
+                | ("install", "confirm-recovery-saved@installer" | "power-off@installer") => {}
                 _ => return Self::refuse("action_unavailable"),
             }
             ok
@@ -752,9 +751,7 @@ mod tests {
         assert_eq!(default.preferences["layout"], "English (US)");
         assert!(!default.calls.iter().any(|call| matches!(
             call.as_str(),
-            "set-layout@installer.keyboard"
-                | "set-timezone@installer.options"
-                | "set-locale@installer.options"
+            "set-layout@installer" | "set-timezone@installer" | "set-locale@installer"
         )));
     }
 
@@ -789,16 +786,13 @@ mod tests {
                     "power-off"
                 ]
             );
-            assert!(
-                fake.calls
-                    .contains(&"skip-offline@installer.accounts".into())
-            );
+            assert!(fake.calls.contains(&"continue-offline@installer".into()));
             assert_eq!(installed.target, "/dev/vdb");
             assert_eq!(installed.composefs.as_deref(), Some("cafe"));
             assert!(fake.calls.contains(&"begin@installer.review".to_string()));
             assert_eq!(
                 fake.calls.last().map(String::as_str),
-                Some("power-off@installer.power")
+                Some("power-off@installer")
             );
             assert!(
                 !lines
@@ -825,10 +819,7 @@ mod tests {
                 &mut |line| lines.push(line.to_owned()),
             )
             .unwrap();
-            assert!(
-                fake.calls
-                    .contains(&"set-filesystem@installer.options".to_string())
-            );
+            assert!(fake.calls.contains(&"set-filesystem@installer".to_string()));
             assert_eq!(
                 fake.passphrase.as_deref(),
                 Some("account-password-for-testing")
@@ -837,10 +828,7 @@ mod tests {
                 fake.disk_passphrase.as_deref(),
                 Some("disk-passphrase-for-testing")
             );
-            assert!(
-                fake.calls
-                    .contains(&"set-disk-passphrase@installer.account".into())
-            );
+            assert!(fake.calls.contains(&"set-disk-passphrase@installer".into()));
             assert!(!lines.iter().any(|line| {
                 line.contains("account-password-for-testing")
                     || line.contains("disk-passphrase-for-testing")
@@ -912,9 +900,7 @@ mod tests {
                 "{error}"
             );
             assert!(
-                !fake
-                    .calls
-                    .contains(&"set-passphrase@installer.account".to_string()),
+                !fake.calls.contains(&"set-passphrase@installer".to_string()),
                 "no secret may be sent under a policy the scenario did not ask for"
             );
         }

@@ -1,15 +1,11 @@
 //! Remote Desktop as a resource: the saved connections are the [`Remote`]
 //! model, their fields edited at their paths (renaming, pinning, the form's
-//! Save); connect / disconnect / SSH host-key prompts are effects of the live
-//! surface, and a connection's credentials stay in this device's secret store.
-
-use std::rc::Rc;
+//! Save); connect / disconnect / SSH host-key prompts are effects of the
+//! window, and a connection's credentials stay in this device's secret store.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
@@ -17,7 +13,6 @@ use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{self, ActionCx, Id, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions::RemoteEffect;
 use crate::app::RemoteApp;
 pub use crate::model::Remote;
 use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
@@ -140,9 +135,9 @@ impl ResourceApp for RemoteShell {
     fn view(cx: &mut ViewCx<Remote>) -> Element {
         let app = RemoteApp::new();
         // A picked search hit shows its connection in the list.
-        let opened = app.open_requests();
+        let opened = app.state().open_requests();
         cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
-        cx.surface(app)
+        crate::app::window(cx, app)
     }
 
     #[cfg(feature = "samples")]
@@ -184,42 +179,6 @@ impl ResourceApp for RemoteShell {
                 Invoke::edit(&saved.insert_as(&Remote::item(connection.id), at, connection)).ok()
             })
             .collect()
-    }
-}
-
-impl ResourceSurface<Remote, RemoteEffect> for RemoteApp {
-    fn present(&mut self, state: &Rc<Remote>) {
-        self.adopt_resource_state(&state.list());
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Remote>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        RemoteApp::stage(self, scenario);
-    }
-
-    fn effect(&mut self, effect: RemoteEffect, cx: &mut EffectCx<Remote, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    /// Text reaches only a connected SSH terminal.
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.can_send_text() {
-            return Vec::new();
-        }
-        vec![EffectStatus::unavailable(
-            RemoteEffect::SEND_TEXT,
-            "terminal_not_connected",
-            "Text input requires a connected SSH terminal",
-        )]
-    }
-
-    /// Each saved connection's settings and connect, and the open
-    /// session.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_connection_rows()
     }
 }
 

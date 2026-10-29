@@ -159,7 +159,11 @@ impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
     fn attach(&mut self, cx: SurfaceCx<Workspace>) {
         // A live window keeps this device's offline areas; a capture and a
         // past version show what they were staged with.
-        let offline_areas = cx.mode().is_live().then(|| cx.settings());
+        let offline_areas = cx
+            .mode()
+            .is_live()
+            .then(|| cx.person().zip(cx.device().map(str::to_owned)))
+            .flatten();
         self.attach_framework(cx.dispatcher(), offline_areas);
     }
 
@@ -349,10 +353,9 @@ mod tests {
     fn offline_areas_stay_on_this_device() {
         let mut app = TestApp::<MapsShell>::new().unwrap();
         let area = crate::sample::regions().remove(0);
-        app.settings::<OfflineAreas>()
-            .set(&OfflineAreas {
-                offline_areas: vec![area.clone()],
-            })
+        app.person::<OfflineAreas>()
+            .unwrap()
+            .invoke(&OfflineAreas::RECORD.with(("test-device".to_owned(), area.clone())))
             .unwrap();
         app.harness().relayout();
         let row = format!("maps.region:{}", area.id);
@@ -360,9 +363,9 @@ mod tests {
         app.effect_confirmed(&MapsEffect::DeleteOfflineArea { area: area.id })
             .unwrap();
         assert!(
-            app.settings::<OfflineAreas>()
-                .get()
-                .offline_areas
+            app.person::<OfflineAreas>()
+                .unwrap()
+                .with(|areas| areas.on("test-device"))
                 .is_empty(),
             "deleting an area forgets it on this device"
         );

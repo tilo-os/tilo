@@ -7,7 +7,6 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::tile_app_kind;
 use tilo_sort::CompactSort as _;
-use ui::record::RecordStore;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Column, Container, GroupRow, Stack, StripDeck, StripView, TabDescriptor, Widget,
@@ -155,7 +154,6 @@ pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec
 pub fn build_group(
     group: &WindowGroup,
     room: RoomId,
-    records: &RecordStore,
     resolver: &mut dyn TileResolver,
     failures: &mut Vec<ui::launch::LaunchError>,
     wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -164,12 +162,9 @@ pub fn build_group(
         .tabs
         .iter()
         .map(|tab| {
-            let resolution = resolver.resolve(TileRequest { room, tab });
-            let checked = resolution.holds_its_own_record();
-            let mut host = resolution.mount(failures, wake.clone());
-            if !checked {
-                host.bind_record(records.clone(), crate::records::scratch_tab_record(tab.id));
-            }
+            let host = resolver
+                .resolve(TileRequest { room, tab })
+                .mount(failures, wake.clone());
             (
                 TabDescriptor {
                     id: tab.id,
@@ -223,7 +218,6 @@ impl DesktopSurface {
     )]
     pub fn build(
         tree: &DesktopTree,
-        records: &RecordStore,
         resolver: &mut dyn TileResolver,
         mut chrome: SurfaceChrome,
     ) -> Self {
@@ -292,16 +286,7 @@ impl DesktopSurface {
             for strip in &workspace.strips {
                 let groups = display_ordered(&tree.outputs, strip)
                     .into_iter()
-                    .map(|g| {
-                        build_group(
-                            g,
-                            workspace.room(),
-                            records,
-                            resolver,
-                            &mut failures,
-                            &wake_sink,
-                        )
-                    })
+                    .map(|g| build_group(g, workspace.room(), resolver, &mut failures, &wake_sink))
                     .collect();
                 let mut row = GroupRow::new(groups).with_leading_inset(chrome.leading_inset);
                 row.set_external_navigation(external_navigation);
@@ -761,7 +746,6 @@ impl DesktopSurface {
     pub fn reconcile(
         &mut self,
         tree: &DesktopTree,
-        records: &RecordStore,
         resolver: &mut dyn TileResolver,
     ) -> ReconcileOutcome {
         let Some(workspace) = tree.active_workspace() else {
@@ -1015,19 +999,13 @@ impl DesktopSurface {
                         // A window's artwork can arrive after its tab: the
                         // desktop entry is installed, or the app sets its own.
                         changed |= live.set_tab_icon(tab.id, descriptor.icon.clone());
-                        let refusal = resolver.creation_refusal(tab);
                         // A window holding its place while its app's record
                         // opens asks again: the host's storage wake brought
                         // this pass.
                         let arriving = live.host_for_tab_mut(tab.id).is_some_and(|h| {
                             matches!(h.content(), ui::widget::TileContent::Arriving)
                         });
-                        let replace = tiles.get(&tab.id) != Some(&tab.tile)
-                            || arriving
-                            || (refusal.is_none()
-                                && live
-                                    .host_for_tab_mut(tab.id)
-                                    .is_some_and(|h| h.record_creation_refused()));
+                        let replace = tiles.get(&tab.id) != Some(&tab.tile) || arriving;
                         if replace && resolver.ready_to_replace(tab) {
                             let resolution = resolver.resolve(TileRequest {
                                 room: workspace.room(),
@@ -1046,13 +1024,6 @@ impl DesktopSurface {
                                 crate::resolver::TileResolution::Content(content) => {
                                     if let Some(host) = live.host_for_tab_mut(tab.id) {
                                         host.replace_content(content);
-                                        host.bind_record(
-                                            records.clone(),
-                                            crate::records::scratch_tab_record(tab.id),
-                                        );
-                                        if let Some(reason) = refusal {
-                                            host.refuse_record_binding(reason);
-                                        }
                                     }
                                     tiles.insert(tab.id, tab.tile.clone());
                                     changed = true;
@@ -1065,39 +1036,17 @@ impl DesktopSurface {
                                         ));
                                         old
                                     });
-                                    let checked = other.holds_its_own_record();
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
                                     // The app whose record opened goes on with
                                     // the arrival its window showed meanwhile.
                                     if let Some(old) = old.as_ref().filter(|_| arriving) {
                                         host.continue_arrival(old);
                                     }
-                                    if !checked {
-                                        host.bind_record(
-                                            records.clone(),
-                                            crate::records::scratch_tab_record(tab.id),
-                                        );
-                                    }
-                                    if let Some(reason) = resolver.creation_refusal(tab) {
-                                        host.refuse_record_binding(reason);
-                                    }
                                     live.insert_detached_tab(index, descriptor, host);
                                     tiles.insert(tab.id, tab.tile.clone());
                                     changed = true;
                                     continue;
                                 }
-                            }
-                        }
-                        if let Some(host) = live.host_for_tab_mut(tab.id)
-                            && !arriving
-                        {
-                            if let Some(reason) = refusal {
-                                host.refuse_record_binding(reason);
-                            } else if host.callback_binding().is_none() {
-                                host.bind_record(
-                                    records.clone(),
-                                    crate::records::scratch_tab_record(tab.id),
-                                );
                             }
                         }
                         continue;
@@ -1114,26 +1063,16 @@ impl DesktopSurface {
                     // A native surface may still be waiting for its first frame. Keep the
                     // old identity snapshot so a later reconciliation retries replacement.
                     let deferred_replacement = retained.is_some() && changed_identity;
-                    let mut host = if let Some((_, host)) = retained {
+                    let host = if let Some((_, host)) = retained {
                         host
                     } else {
-                        let resolution = resolver.resolve(TileRequest {
-                            room: workspace.room(),
-                            tab,
-                        });
-                        let checked = resolution.holds_its_own_record();
-                        let mut host = resolution.mount(&mut failures, wake_sink.clone());
-                        if !checked {
-                            host.bind_record(
-                                records.clone(),
-                                crate::records::scratch_tab_record(tab.id),
-                            );
-                        }
-                        host
+                        resolver
+                            .resolve(TileRequest {
+                                room: workspace.room(),
+                                tab,
+                            })
+                            .mount(&mut failures, wake_sink.clone())
                     };
-                    if let Some(reason) = resolver.creation_refusal(tab) {
-                        host.refuse_record_binding(reason);
-                    }
                     live.insert_detached_tab(index, descriptor, host);
                     changed = true;
                     if !deferred_replacement {
@@ -1201,7 +1140,6 @@ impl DesktopSurface {
     pub fn rebuild_retaining(
         &mut self,
         tree: &DesktopTree,
-        records: &RecordStore,
         resolver: &mut dyn TileResolver,
         chrome: SurfaceChrome,
     ) {
@@ -1219,9 +1157,6 @@ impl DesktopSurface {
             }
             fn ready_to_replace(&self, tab: &tilo_desktop_model::Tab) -> bool {
                 self.inner.ready_to_replace(tab)
-            }
-            fn creation_refusal(&self, tab: &tilo_desktop_model::Tab) -> Option<String> {
-                self.inner.creation_refusal(tab)
             }
         }
         let mut hosts = HashMap::new();
@@ -1261,7 +1196,7 @@ impl DesktopSurface {
             hosts,
             inner: resolver,
         };
-        let mut next = Self::build(tree, records, &mut retained, chrome);
+        let mut next = Self::build(tree, &mut retained, chrome);
         next.inherit_navigation(self);
         next.style_work_area(self.fullscreen);
         for (_, mut host) in retained.hosts {

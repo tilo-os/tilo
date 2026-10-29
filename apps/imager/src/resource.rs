@@ -30,8 +30,14 @@ use crate::model::{InstallProfile, RecentSource, Source};
 /// The imager's Fluent catalog.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-pub(crate) static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+/// The other languages come from the language packs.
+pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES)
+    .with_language_pack(ui::i18n::LanguagePack {
+        id: env!("CARGO_PKG_NAME"),
+        locales: &["en-US", "de-DE"],
+        source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+    })
+    .with_system_locale();
 
 /// The reviewed image, the images reviewed before it and the install
 /// profile: everything the imager keeps in its document.
@@ -246,6 +252,9 @@ enum Flow {
     Setup,
     #[cfg(feature = "installation")]
     Imports,
+    /// The installer on the live medium, the setup's destination side.
+    #[cfg(feature = "destination")]
+    Destination,
 }
 
 impl Flow {
@@ -256,12 +265,18 @@ impl Flow {
             Some(name) if name.starts_with("installer-") => Self::Setup,
             #[cfg(feature = "installation")]
             Some(name) if name.starts_with("import-") => Self::Imports,
+            #[cfg(feature = "destination")]
+            Some(name) if name.starts_with("destination-") => Self::Destination,
             _ => Self::Wizard,
         }
     }
 
     /// The flow a launch's command line asks for.
     fn launched(cx: &ViewCx<Imager>) -> Self {
+        #[cfg(feature = "destination")]
+        if crate::setup::destination::launched() || cx.launch_flag("--destination") {
+            return Self::Destination;
+        }
         #[cfg(feature = "installation")]
         {
             if cx.launch_flag("--setup") || cx.launch_flag("--demo") {
@@ -301,6 +316,8 @@ static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::
     let scenarios = scenarios
         .chain(crate::setup::journey::SCENARIOS)
         .chain(crate::setup::import_view::SCENARIOS);
+    #[cfg(feature = "destination")]
+    let scenarios = scenarios.chain(crate::setup::destination::SCENARIOS);
     scenarios.copied().collect()
 });
 
@@ -332,9 +349,14 @@ impl ResourceApp for ImagerShell {
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
-    #[cfg(feature = "installation")]
+    #[cfg(all(feature = "installation", feature = "destination"))]
+    const FLAGS: &'static [&'static str] =
+        &["--setup", "--import-folders", "--demo", "--destination"];
+    #[cfg(all(feature = "installation", not(feature = "destination")))]
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders", "--demo"];
-    #[cfg(not(feature = "installation"))]
+    #[cfg(all(not(feature = "installation"), feature = "destination"))]
+    const FLAGS: &'static [&'static str] = &["--destination"];
+    #[cfg(not(any(feature = "installation", feature = "destination")))]
     const FLAGS: &'static [&'static str] = &[];
     // Only hosts with a local workspace runtime can attach the imager.
     const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
@@ -395,6 +417,8 @@ impl ResourceApp for ImagerShell {
             Flow::Setup => crate::setup::journey::view(cx),
             #[cfg(feature = "installation")]
             Flow::Imports => crate::setup::import_view::view(cx),
+            #[cfg(feature = "destination")]
+            Flow::Destination => crate::setup::destination::view(cx),
         }
     }
 }

@@ -581,8 +581,8 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}"' "$cycle" \
   && grep -Fq 'installer began an install confirmed with the wrong device' "$cycle" \
   && grep -Fq -- '--secret passphrase=TILO_PASS --secret confirmation=TILO_PASS' "$cycle" \
-  && grep -Fq 'confirm-saved@installer.recovery' "$cycle" \
-  && grep -Fq 'power-off@installer.power' "$cycle" \
+  && grep -Fq 'confirm-recovery-saved@installer' "$cycle" \
+  && grep -Fq 'power-off@installer' "$cycle" \
   && ! grep -Fq 'finish-recovery' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
   && grep -Fq '::tilo-recovery-key::' "$cycle" \

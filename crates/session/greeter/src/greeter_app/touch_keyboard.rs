@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;
 
 use super::AuthPhase;
+use super::recovery::RECOVERY_FIELDS;
 use crate::i18n::t;
 
 impl super::GreeterApp {
@@ -57,7 +58,9 @@ impl super::GreeterApp {
     /// for a PIN, the letters for a password. A keyboard already for that
     /// kind of secret stays on the layer it is on.
     pub(super) fn fit_touch_keyboard_to_secret(&self) {
-        let pin = self.secret_is_pin();
+        // A recovery key is letters and digits, and the new secret may be
+        // either: the recovery form opens the letters.
+        let pin = self.recovery.is_none() && self.secret_is_pin();
         if self.touch_keyboard.keyboard.get().is_for_pin() != pin {
             self.touch_keyboard
                 .keyboard
@@ -65,17 +68,30 @@ impl super::GreeterApp {
         }
     }
 
-    /// Type what was pressed on the on-screen keyboard into the passcode, as
-    /// keys typed there would.
+    /// Type what was pressed on the on-screen keyboard into the passcode, or
+    /// the recovery form's focused field, as keys typed there would.
     pub(super) fn take_touch_keys(&mut self) {
         let typed = std::mem::take(&mut *self.touch_keyboard.typed.borrow_mut());
         if typed.is_empty() || self.phase != AuthPhase::Idle {
             return;
         }
+        let target = if self.recovery.is_some() {
+            let [key, ..] = RECOVERY_FIELDS;
+            self.composed
+                .element_mut()
+                .and_then(|composed| {
+                    RECOVERY_FIELDS.into_iter().find(|id| {
+                        widget_with_id(&mut *composed, id).is_some_and(|w| w.is_focused())
+                    })
+                })
+                .unwrap_or(key)
+        } else {
+            "greeter.password"
+        };
         let prompt = self
             .composed
             .element_mut()
-            .and_then(|composed| widget_with_id(composed, "greeter.password"))
+            .and_then(|composed| widget_with_id(composed, target))
             .and_then(|widget| widget.as_any_mut())
             .and_then(|any| any.downcast_mut::<SecretPrompt>());
         let Some(prompt) = prompt else {

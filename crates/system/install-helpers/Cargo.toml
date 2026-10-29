@@ -55,12 +55,14 @@ name = "staging-handoff-native-extractor"
 path = "../../../apps/imager/src/bin/tilo-installer-prepared-setup-extract/main.rs"
 test = false
 
-# These test drivers compile the shipped firstboot entry points without the
-# graphical installer's dependency graph. Cargo owns their artifact lifetime.
+# The first-boot account seeding helper the live installer ships
+# (/usr/libexec/tilo-firstboot-home-seeds).
 [[bin]]
-name = "install-test-home-seeds"
-path = "src/bin/test_home_seeds.rs"
+name = "tilo-firstboot-home-seeds"
+path = "src/bin/firstboot_home_seeds.rs"
 
+# This test driver compiles the shipped firstboot entry point without the
+# graphical installer's dependency graph. Cargo owns its artifact lifetime.
 [[bin]]
 name = "install-test-firstboot-files"
 path = "../firstboot-files/src/main.rs"

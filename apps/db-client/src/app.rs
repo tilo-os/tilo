@@ -6,15 +6,24 @@
 //! The controller never draws. Each frame it publishes what is on screen as a
 //! [`ViewModel`] and applies the [`Intent`]s the views asked for (see
 //! [`crate::link`]); the views are the toolkit's own widgets.
+//!
+//! The window is a bound view: [`window`] lays it out over the workspace the
+//! document holds, and the [`Store`] it keeps is shared with the view's
+//! effect handler and with what the view publishes (the live catalog as
+//! rows and search entries).
 
+use std::cell::{RefCell, RefMut};
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, EffectReply, LiveRow, Submit, SurfaceCx};
-use ui::widget::{AppModel, ModelPath, NavShell, Widget};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow,
+    Publishes, Submit, ViewCx,
+};
+use ui::widget::{AppModel, Element, ModelPath, NavShell, Widget};
 use uuid::Uuid;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -83,9 +92,27 @@ struct Published {
     table: Option<(crate::model::RelationRef, u64, Rc<TableInfo>)>,
 }
 
+/// The window: connections and tables beside the workspace, over the
+/// [`Store`] it shares with the view.
 pub struct DbClientApp {
-    /// The window: connections and tables beside the workspace.
     shell: NavShell,
+    store: Shared,
+    /// The workspace as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Record>>,
+    /// The `(revision, loads)` of the workspace last shown.
+    presented: Option<(u64, u64)>,
+}
+
+/// A capture's scenario (`None` for a plain capture).
+pub(crate) struct Staged(Option<String>);
+
+/// The [`Store`] as the window and the view share it.
+pub(crate) type Shared = Rc<RefCell<Store>>;
+
+/// What the window, the view's effect handler and what the view publishes
+/// share: the session and everything done on it.
+pub(crate) struct Store {
     link: Link,
     session: Session,
     /// Where every change of the shared record goes: the saved connections
@@ -122,6 +149,14 @@ pub struct DbClientApp {
     /// the live catalog or collaborative query collection changes.
     search_index: crate::search::DbSearchIndex,
     published: Published,
+    /// An effect asked for the sidebar, opened when the window next looks.
+    open_sidebar: bool,
+    /// An effect or a capture changed what the window shows since it last
+    /// looked.
+    changed: bool,
+    /// The scenario a capture staged, staged once the window has shown the
+    /// document.
+    staged: Option<Staged>,
 }
 
 impl Default for DbClientApp {
@@ -154,8 +189,7 @@ impl DbClientApp {
             .with_window_toolbar()
             .sidebar(Box::new(Navigator::new(&link)))
             .content(Box::new(Workspace::new(&link)));
-        let mut app = Self {
-            shell,
+        let mut store = Store {
             link,
             session,
             actions: None,
@@ -172,11 +206,64 @@ impl DbClientApp {
             pending_query_confirmation: None,
             search_index: crate::search::DbSearchIndex::default(),
             published: Published::default(),
+            open_sidebar: false,
+            changed: false,
+            staged: None,
         };
-        app.publish();
-        app
+        store.publish();
+        Self {
+            shell,
+            store: Rc::new(RefCell::new(store)),
+            live: None,
+            presented: None,
+        }
     }
 
+    /// What the window shares with the view.
+    pub(crate) fn state(&self) -> RefMut<'_, Store> {
+        self.store.borrow_mut()
+    }
+
+    /// The window shell, for tests and shots.
+    pub fn shell(&self) -> &NavShell {
+        &self.shell
+    }
+
+    pub fn shell_mut(&mut self) -> &mut NavShell {
+        &mut self.shell
+    }
+
+    /// Show the workspace the document holds, when it changed since the
+    /// window last showed it.
+    fn follow_document(&mut self) {
+        let Some(shown) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
+        };
+        self.state().adopt_resource_state(&shown);
+    }
+
+    /// Do what the effects and a capture asked of the window since it last
+    /// looked: stage the capture's scenario, open the sidebar.
+    fn follow_store(&mut self) {
+        let (staged, open_sidebar) = {
+            let mut state = self.state();
+            state.changed = false;
+            (state.staged.take(), std::mem::take(&mut state.open_sidebar))
+        };
+        if let Some(scenario) = staged {
+            self.state().stage_scenario(scenario.0.as_deref());
+        }
+        if open_sidebar {
+            self.shell.open_sidebar();
+        }
+    }
+}
+
+impl Store {
     /// Stage a capture. Every populated scenario opens the connection that
     /// stands for the bundled sample catalog and runs the query the
     /// workspace holds against it, then shows what it names: `data` and
@@ -218,15 +305,6 @@ impl DbClientApp {
         self.publish();
     }
 
-    /// The window shell, for tests and shots.
-    pub fn shell(&self) -> &NavShell {
-        &self.shell
-    }
-
-    pub fn shell_mut(&mut self) -> &mut NavShell {
-        &mut self.shell
-    }
-
     /// Show a tab, loading what it needs.
     pub fn show_tab(&mut self, tab: MainTab) {
         self.session.tab = tab;
@@ -260,7 +338,8 @@ impl DbClientApp {
     }
 
     /// Fail the session with `message`, for staging an error.
-    pub fn fail_with(&mut self, message: &str) {
+    #[cfg(test)]
+    pub(crate) fn fail_with(&mut self, message: &str) {
         self.session.status = RunStatus::Error(message.to_owned());
     }
 
@@ -516,7 +595,7 @@ impl DbClientApp {
         {
             return Err("schema is no longer available in the active catalog".into());
         }
-        self.shell.open_sidebar();
+        self.open_sidebar = true;
         Ok(())
     }
 
@@ -677,13 +756,13 @@ impl DbClientApp {
 
     /// Attach the framework dispatcher, this device's keyring, and in a
     /// capture the sample catalog that stands in for a database server.
-    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<Record>) {
+    fn attach_framework(&mut self, cx: &ViewCx<Record>) {
         let dispatcher = cx.dispatcher();
         self.link.attach_sql_edits(dispatcher.clone());
         self.actions = Some(dispatcher);
         // A capture or a past version reaches no keyring.
         if cx.mode().is_live() {
-            self.secrets = Some(cx.secrets());
+            self.secrets = Some(cx.storage().secrets());
         }
         #[cfg(feature = "samples")]
         if let Some(sample) = cx.fixture::<crate::resource::SampleDatabase>() {
@@ -721,8 +800,18 @@ impl DbClientApp {
             .map(|secrets| secrets.item(PASSWORD_PURPOSE, &id.to_string()))
     }
 
-    pub(crate) fn session_connected(&self) -> bool {
-        self.session.connected
+    /// What the effects can do right now: SQL runs only on an open
+    /// connection.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
+        if self.session.connected {
+            Vec::new()
+        } else {
+            vec![EffectStatus::unavailable(
+                DbEffect::QUERY,
+                "not_connected",
+                "Open a saved connection before running SQL",
+            )]
+        }
     }
 
     /// The live entities the client shows that the workspace does not hold:
@@ -978,6 +1067,44 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.follow_store();
+        self.state().refresh();
+        self.run_window_toolbar();
+        Widget::sync(&mut self.shell, state, path);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.state().shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+        Widget::handle_event(&mut self.shell, event, ctx);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        let store = self.store.borrow();
+        store.changed || store.staged.is_some() || store.open_sidebar
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // A connect or query in flight wakes the app when the worker replies
+        // (its waking channel). An action's caller may cancel, and a save
+        // dialog answers on a channel of its own: those are still polled.
+        let store = self.store.borrow();
+        store.effect_reply.is_some()
+            || store.export_rx.is_some()
+            || self.shell.needs_animation_frame()
+    }
+
+    fn name(&self) -> &'static str {
+        "DbClientApp"
+    }
+}
+
+impl Store {
+    /// Bring the session up to date and describe it to the views.
+    fn refresh(&mut self) {
         // Fold in any results the background worker has finished (connect
         // outcomes, query result sets, table pages). This is what makes a
         // remote query land on screen without further user input.
@@ -1004,22 +1131,20 @@ impl ui::widget::Decorator for DbClientApp {
         }
 
         self.publish();
-        self.run_window_toolbar();
-        Widget::sync(&mut self.shell, state, path);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // The window's own shortcuts come before the focused widget sees the
-        // key, unless a dialog is asking for something else.
-        if self.dialog != Some(Dialog::Connect) && is_command(event, *ctx.modifiers, "Enter") {
+    /// Answer one of the window's own shortcuts, which come before the
+    /// focused widget sees the key, unless a dialog is asking for something
+    /// else.
+    fn shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+        if self.dialog != Some(Dialog::Connect) && is_command(event, modifiers, "Enter") {
             let intent = if self.dialog == Some(Dialog::ConfirmRun) {
                 Intent::ConfirmRun
             } else {
                 Intent::Run(self.link.sql())
             };
             self.link.ask(intent);
-            *ctx.handled = true;
-            return;
+            return true;
         }
         // Escape is the way out of a statement that will not come back.
         if self.dialog.is_none()
@@ -1037,28 +1162,13 @@ impl ui::widget::Decorator for DbClientApp {
             && self.link.read(|model| model.busy)
         {
             self.link.ask(Intent::Cancel);
-            *ctx.handled = true;
-            return;
+            return true;
         }
-        if self.dialog.is_none() && is_command(event, *ctx.modifiers, "n") {
+        if self.dialog.is_none() && is_command(event, modifiers, "n") {
             self.link.ask(Intent::NewConnection);
-            *ctx.handled = true;
-            return;
+            return true;
         }
-        Widget::handle_event(&mut self.shell, event, ctx);
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // A connect or query in flight wakes the app when the worker replies
-        // (its waking channel). An action's caller may cancel, and a save
-        // dialog answers on a channel of its own: those are still polled.
-        self.effect_reply.is_some()
-            || self.export_rx.is_some()
-            || self.shell.needs_animation_frame()
-    }
-
-    fn name(&self) -> &'static str {
-        "DbClientApp"
+        false
     }
 }
 
@@ -1100,42 +1210,11 @@ impl DbClientApp {
     /// workspace's tabs as the views once there is a connection.
     fn run_window_toolbar(&mut self) {
         for event in ui::window_toolbar::take_events() {
-            if self.shell.window_toolbar_event(&event) {
-                continue;
-            }
-            if let ToolbarEvent::Action { id } = &event
-                && let Some(tab) = MainTab::all().into_iter().find(|tab| tab.view_id() == id)
-            {
-                self.apply(Intent::SelectTab(tab));
-                self.publish();
-            } else if let ToolbarEvent::Action { id } = &event
-                && id == RUN_QUERY
-                && self.link.read(|model| model.connected && !model.busy)
-            {
-                self.apply(Intent::Run(self.link.sql()));
-                self.publish();
-            } else if let ToolbarEvent::Action { id } = &event
-                && id == CANCEL_QUERY
-                && self.link.read(|model| model.busy)
-            {
-                self.apply(Intent::Cancel);
-                self.publish();
-            } else if let ToolbarEvent::Action { id } = &event
-                && id == EXPORT_CSV
-            {
-                self.export_result_from_bar();
-            } else if let ToolbarEvent::Action { id } = &event
-                && (id == COPY_ROW || id == COPY_RESULT)
-            {
-                self.apply(if id == COPY_ROW {
-                    Intent::CopyRow
-                } else {
-                    Intent::CopyResult
-                });
-                self.publish();
+            if !self.shell.window_toolbar_event(&event) {
+                self.state().toolbar_event(&event);
             }
         }
-        let (name, connected, tab, can_run, busy, has_result) = self.link.read(|model| {
+        let (name, connected, tab, can_run, busy, has_result) = self.state().link.read(|model| {
             (
                 model.active_name.clone(),
                 !model.connections.is_empty(),
@@ -1188,6 +1267,75 @@ impl DbClientApp {
             chosen: tab.view_id().to_owned(),
         });
         ui::window_toolbar::declare(Some(toolbar));
+    }
+}
+
+/// The window as the view lays it out: it shows the workspace the document
+/// holds, answers the effects through the store it shares with them,
+/// publishes the open connection's catalog and stages a capture's scenario.
+pub(crate) fn window(cx: &ViewCx<Record>, mut window: DbClientApp) -> Element {
+    window.live = Some(cx.live().clone());
+    window.state().attach_framework(cx);
+    let store = Rc::clone(&window.store);
+    {
+        let (answer, status) = (Rc::clone(&store), Rc::clone(&store));
+        cx.effects(move |effect: DbEffect, cx| answer.borrow_mut().answer_effect(effect, cx))
+            .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let store = Rc::clone(&store);
+        cx.on_stage(move |scenario| {
+            let mut store = store.borrow_mut();
+            store.staged = Some(Staged(scenario.map(str::to_owned)));
+        });
+    }
+    let (rows, row, entries) = (Rc::clone(&store), Rc::clone(&store), store);
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || rows.borrow().live_rows())
+            .live_row(move |id| row.borrow().live_row(id))
+            // The open connection's relations, columns, result, transaction
+            // and local query history: what the live catalog holds, not the
+            // document.
+            .search_entries(move || entries.borrow().catalog_search_entries()),
+        Box::new(window),
+    )
+}
+
+impl Store {
+    /// Run what the person did in the window's bar beyond the shell's own.
+    fn toolbar_event(&mut self, event: &ToolbarEvent) {
+        if let ToolbarEvent::Action { id } = event
+            && let Some(tab) = MainTab::all().into_iter().find(|tab| tab.view_id() == id)
+        {
+            self.apply(Intent::SelectTab(tab));
+            self.publish();
+        } else if let ToolbarEvent::Action { id } = event
+            && id == RUN_QUERY
+            && self.link.read(|model| model.connected && !model.busy)
+        {
+            self.apply(Intent::Run(self.link.sql()));
+            self.publish();
+        } else if let ToolbarEvent::Action { id } = event
+            && id == CANCEL_QUERY
+            && self.link.read(|model| model.busy)
+        {
+            self.apply(Intent::Cancel);
+            self.publish();
+        } else if let ToolbarEvent::Action { id } = event
+            && id == EXPORT_CSV
+        {
+            self.export_result_from_bar();
+        } else if let ToolbarEvent::Action { id } = event
+            && (id == COPY_ROW || id == COPY_RESULT)
+        {
+            self.apply(if id == COPY_ROW {
+                Intent::CopyRow
+            } else {
+                Intent::CopyResult
+            });
+            self.publish();
+        }
     }
 }
 
@@ -1361,7 +1509,7 @@ mod editor_sql_tests {
     }
 }
 
-impl DbClientApp {
+impl Store {
     fn execute_effect(&mut self, effect: DbEffect) -> Result<(), String> {
         match effect {
             DbEffect::FocusDatabase { connection } => {
@@ -1474,11 +1622,8 @@ impl DbClientApp {
         self.session.run_query(sql);
         Ok(())
     }
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: DbEffect,
-        cx: &mut ui::framework::EffectCx<Record, Self>,
-    ) -> ui::framework::EffectAnswer {
+    fn answer_effect(&mut self, effect: DbEffect, cx: &mut EffectCx<Record>) -> EffectAnswer {
+        self.changed = true;
         if matches!(
             effect,
             DbEffect::FocusDatabase { .. }
@@ -1486,7 +1631,7 @@ impl DbClientApp {
                 | DbEffect::ShowResult { .. }
         ) {
             self.execute_effect(effect)?;
-            return Ok(ui::framework::Effected::done());
+            return Ok(Effected::done());
         }
         if self.effect_reply.is_some() || self.session.busy() {
             return Err("another database operation is already running".into());
@@ -1494,7 +1639,7 @@ impl DbClientApp {
         self.execute_effect(effect)?;
         self.effect_reply = Some(cx.reply());
 
-        Ok(ui::framework::Effected::Pending)
+        Ok(Effected::Pending)
     }
     fn settle_effect(&mut self) {
         let Some(reply) = &self.effect_reply else {
@@ -1555,8 +1700,8 @@ mod tests {
         FrameHarness::for_root(sample_state(), app, (1280, 800), Theme::dark())
     }
 
-    fn app(harness: &FrameHarness) -> &DbClientApp {
-        harness.root::<DbClientApp>()
+    fn app(harness: &FrameHarness) -> RefMut<'_, Store> {
+        harness.root::<DbClientApp>().state()
     }
 
     /// Put `sql` in the shared buffer, as a collaborator writing it does:
@@ -1587,11 +1732,18 @@ mod tests {
         {
             let app = DbClientApp::new();
             assert!(
-                app.session.connections.is_empty(),
+                app.state().session.connections.is_empty(),
                 "no fabricated connections"
             );
-            assert!(!app.session.connected, "no live engine on a fresh machine");
-            assert_eq!(app.session.schema.table_count(), 0, "no fabricated schema");
+            assert!(
+                !app.state().session.connected,
+                "no live engine on a fresh machine"
+            );
+            assert_eq!(
+                app.state().session.schema.table_count(),
+                0,
+                "no fabricated schema"
+            );
         }
 
         // --- phase: the_first_run_action_opens_the_new_connection_dialog ---
@@ -1724,7 +1876,7 @@ mod tests {
 
         // --- phase: opening_a_table_loads_its_rows_and_structure ---
         {
-            let mut root = harness.root_mut::<DbClientApp>();
+            let mut root = app(&harness);
             root.link
                 .ask(Intent::OpenRelation(crate::model::RelationRef {
                     schema: "main".into(),
@@ -1733,7 +1885,7 @@ mod tests {
             root.session.block_until_idle();
             drop(root);
             harness.relayout();
-            harness.root_mut::<DbClientApp>().session.block_until_idle();
+            app(&harness).session.block_until_idle();
             harness.relayout();
             let root = app(&harness);
             let data = root
@@ -1796,7 +1948,7 @@ mod tests {
         // A statement that takes long enough to be caught in flight: a
         // billion rows counted one at a time. It runs through the same
         // session path the Run action uses.
-        harness.root_mut::<DbClientApp>().session.run_query(
+        app(&harness).session.run_query(
             "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
              SELECT sum(x) FROM n",
         );
@@ -1882,7 +2034,7 @@ mod tests {
                 id: RUN_QUERY.into(),
             });
             harness.relayout();
-            harness.root_mut::<DbClientApp>().session.block_until_idle();
+            app(&harness).session.block_until_idle();
             harness.relayout();
             let result = app(&harness)
                 .session
@@ -1909,6 +2061,7 @@ mod tests {
                 "the first run asks for confirmation instead of issuing the effect"
             );
             assert!(!root.session.busy());
+            drop(root);
             assert!(harness.targets().contains_key("db.confirm-dialog"));
 
             harness.key("Escape");
@@ -1926,7 +2079,7 @@ mod tests {
             chord(&mut harness, "Enter");
             harness.relayout();
             chord(&mut harness, "Enter");
-            harness.root_mut::<DbClientApp>().session.block_until_idle();
+            app(&harness).session.block_until_idle();
             harness.relayout();
             let root = app(&harness);
             assert_eq!(root.dialog, None);
@@ -1942,7 +2095,7 @@ mod tests {
     fn a_saved_connections_password_stays_on_the_device() {
         let mut app = DbClientApp::new();
         let secrets = ui::secrets::SecretStore::memory("so.tilo.db-client");
-        app.secrets = Some(secrets.clone());
+        app.state().secrets = Some(secrets.clone());
         let mut doc = AutoCommit::new();
         doc.commit();
         let heads = doc.get_heads();
@@ -1952,10 +2105,13 @@ mod tests {
         profile.host = "127.0.0.1".into();
         profile.port = 1;
         profile.password = "hunter2".into();
-        app.link.ask(Intent::SaveConnection(Box::new(profile)));
+        app.state()
+            .link
+            .ask(Intent::SaveConnection(Box::new(profile)));
         Widget::sync(&mut app, &doc, &ROOT);
-        assert_eq!(app.dialog, None, "saving closes the dialog");
+        assert_eq!(app.state().dialog, None, "saving closes the dialog");
         let id = app
+            .state()
             .pending_connect_id
             .expect("the client opens it once it lands");
         let secret = secrets.item(PASSWORD_PURPOSE, &id.to_string());
@@ -1976,14 +2132,17 @@ mod tests {
             crate::record::id_of(id),
             crate::record::SavedConnection::of(&listed),
         );
-        app.adopt_resource_state(&Rc::new(workspace));
-        assert!(app.pending_connect_id.is_none(), "it opened once listed");
+        app.state().adopt_resource_state(&Rc::new(workspace));
+        assert!(
+            app.state().pending_connect_id.is_none(),
+            "it opened once listed"
+        );
         assert_eq!(
-            app.link.read(|model| model.connections.len()),
+            app.state().link.read(|model| model.connections.len()),
             1,
             "and the views are told about it"
         );
-        app.remove_connection(0);
+        app.state().remove_connection(0);
         assert!(
             !secret.present_blocking(),
             "removing it forgets the password"
@@ -2070,6 +2229,7 @@ mod tests {
             root.pending_connect_id.is_some(),
             "the client opens it once it lands"
         );
+        drop(root);
         drop(harness);
 
         let mut profile = ConnectionProfile::new("Local files", Engine::Sqlite);
@@ -2193,9 +2353,10 @@ mod tests {
         {
             use ui::tilo_resource::Effect as _;
 
-            let (mut app, _doc) = synced();
-            app.session.connections[0].password = "never-publish-this".into();
-            let rows: Vec<ResourceSpec> = app
+            let (app, _doc) = synced();
+            let mut state = app.state();
+            state.session.connections[0].password = "never-publish-this".into();
+            let rows: Vec<ResourceSpec> = state
                 .live_rows()
                 .into_iter()
                 .map(LiveRow::into_resource)
@@ -2213,12 +2374,12 @@ mod tests {
                         && !row.id.as_str().contains("never-publish-this")),
                 "no row carries a password"
             );
-            let connection = app.session.active_connection().unwrap().id.to_string();
-            let schema = &app.session.schema.schemas[0];
+            let connection = state.session.active_connection().unwrap().id.to_string();
+            let schema = &state.session.schema.schemas[0];
             let relation = &schema.tables[0];
             let relation_id =
                 catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
-            let resolved = app
+            let resolved = state
                 .live_row(&relation_id)
                 .expect("exact relation resolves")
                 .into_resource();
@@ -2241,26 +2402,28 @@ mod tests {
 
         // --- phase: relation_resources_and_browse_payloads_remain_schema_qualified ---
         {
-            let (mut app, _doc) = synced();
-            let original = app.session.schema.schemas[0].tables[0].clone();
-            app.session.schema.schemas.push(crate::model::SchemaInfo {
+            let (app, _doc) = synced();
+            let mut state = app.state();
+            let state = &mut *state;
+            let original = state.session.schema.schemas[0].tables[0].clone();
+            state.session.schema.schemas.push(crate::model::SchemaInfo {
                 name: "other:schema".into(),
                 tables: vec![original.clone()],
             });
-            app.search_index.sync(&app.session).unwrap();
-            let connection = app.session.active_connection().unwrap().id.to_string();
+            state.search_index.sync(&state.session).unwrap();
+            let connection = state.session.active_connection().unwrap().id.to_string();
             let first_id = catalog_resource_id(
                 "relation",
                 &[
                     &connection,
-                    &app.session.schema.schemas[0].name,
+                    &state.session.schema.schemas[0].name,
                     &original.name,
                 ],
             );
             let second_id =
                 catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
             assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
-            let resolved = app
+            let resolved = state
                 .live_row(&second_id)
                 .expect("exact relation resolves")
                 .into_resource();
@@ -2323,9 +2486,7 @@ mod tests {
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            harness
-                .root_mut::<DbClientApp>()
-                .fail_with("Connection refused");
+            app(&harness).fail_with("Connection refused");
             harness.relayout();
             let failed = |harness: &FrameHarness| {
                 app(harness)
@@ -2333,10 +2494,7 @@ mod tests {
                     .read(|model| matches!(model.status, RunStatus::Error(_)))
             };
             assert!(failed(&harness));
-            harness
-                .root_mut::<DbClientApp>()
-                .link
-                .ask(Intent::DismissStatus);
+            app(&harness).link.ask(Intent::DismissStatus);
             harness.relayout();
             assert!(!failed(&harness), "dismissing clears the error");
         }
@@ -2345,7 +2503,7 @@ mod tests {
         {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            let mut root = harness.root_mut::<DbClientApp>();
+            let mut root = app(&harness);
             root.session.data_page_size = 5;
             root.link
                 .ask(Intent::OpenRelation(crate::model::RelationRef {
@@ -2354,20 +2512,17 @@ mod tests {
                 }));
             drop(root);
             let page = |harness: &mut FrameHarness| {
-                harness.root_mut::<DbClientApp>().session.block_until_idle();
+                app(harness).session.block_until_idle();
                 harness.relayout();
                 let model = &app(harness).link;
                 model.read(|m| (m.data_offset, m.data.as_ref().map_or(0, |d| d.rows.len())))
             };
             harness.relayout();
             assert_eq!(page(&mut harness), (0, 5));
-            harness.root_mut::<DbClientApp>().link.ask(Intent::NextPage);
+            app(&harness).link.ask(Intent::NextPage);
             harness.relayout();
             assert_eq!(page(&mut harness), (5, 5));
-            harness
-                .root_mut::<DbClientApp>()
-                .link
-                .ask(Intent::PreviousPage);
+            app(&harness).link.ask(Intent::PreviousPage);
             harness.relayout();
             assert_eq!(page(&mut harness), (0, 5));
         }
@@ -2385,20 +2540,15 @@ mod tests {
         harness.relayout();
         audit(&harness, "query");
         for (tab, what) in [(MainTab::Data, "data"), (MainTab::Structure, "structure")] {
-            harness.root_mut::<DbClientApp>().show_tab(tab);
+            app(&harness).show_tab(tab);
             harness.relayout();
             audit(&harness, what);
         }
-        harness.root_mut::<DbClientApp>().open_connect_dialog();
+        app(&harness).open_connect_dialog();
         harness.relayout();
         audit(&harness, "new connection");
-        harness
-            .root_mut::<DbClientApp>()
-            .link
-            .ask(Intent::CloseDialog);
-        harness
-            .root_mut::<DbClientApp>()
-            .confirm_statement("DROP TABLE albums;");
+        app(&harness).link.ask(Intent::CloseDialog);
+        app(&harness).confirm_statement("DROP TABLE albums;");
         harness.relayout();
         audit(&harness, "confirmation");
 
@@ -2412,8 +2562,8 @@ mod tests {
     fn staged_captures_are_consistent() {
         // --- phase: the_track_listing_shows_its_own_query_and_rows ---
         {
-            let mut sampled = DbClientApp::sampled();
-            sampled.stage_scenario(Some("wide"));
+            let sampled = DbClientApp::sampled();
+            sampled.state().stage_scenario(Some("wide"));
             let mut harness = mounted(sampled);
             let sql = scenario_query(Some("wide"));
             write_sql(&mut harness, sql);
@@ -2446,8 +2596,8 @@ mod tests {
 
         // --- phase: a_failed_connection_is_a_remote_one_with_nothing_open ---
         {
-            let mut sampled = DbClientApp::sampled();
-            sampled.stage_scenario(Some("error"));
+            let sampled = DbClientApp::sampled();
+            sampled.state().stage_scenario(Some("error"));
             let mut harness = mounted(sampled);
             harness.relayout();
             let (name, connected, results, failed) = app(&harness).link.read(|model| {
