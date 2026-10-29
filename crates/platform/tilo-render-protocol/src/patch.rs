@@ -660,4 +660,55 @@ mod tests {
         other[0] = 9;
         assert!(decode_batch::<ToUi>(&other).is_err(), "another version");
     }
+
+    #[test]
+    fn rich_text_reads_back_as_it_was_sent_with_or_without_its_parts() {
+        let reference = r#"{"app":"a.b","id":"t1","kind":"a.task"}"#;
+        let rich = |marks: Vec<rich::Mark>, embeds: Vec<rich::Embed>| rich::RichText {
+            blocks: vec![rich::Block {
+                kind: "paragraph".to_owned(),
+                text: "see Fix it".to_owned(),
+                marks,
+                attrs: std::collections::BTreeMap::new(),
+            }],
+            embeds,
+        };
+        let batch: Vec<ToUi> = [
+            rich(Vec::new(), Vec::new()),
+            rich(
+                vec![rich::Mark {
+                    start: 4,
+                    end: 10,
+                    name: "mention".to_owned(),
+                    value: rich::Attr::Text(reference.to_owned()),
+                }],
+                vec![
+                    rich::Embed {
+                        reference: reference.to_owned(),
+                        view: rich::InlineView::Resource {
+                            title: "Fix the build".to_owned(),
+                            icon: None,
+                            detail: None,
+                        },
+                    },
+                    rich::Embed {
+                        reference: "u-ada".to_owned(),
+                        view: rich::InlineView::Unreadable,
+                    },
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|value| ToUi::Patch {
+            lane: Lane::Root,
+            patches: vec![Patch::SetProp {
+                path: Vec::new(),
+                name: "value".to_owned(),
+                value: Some(Value::Rich(value)),
+            }],
+        })
+        .collect();
+        let bytes = encode_batch(&batch).expect("encodes");
+        assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
+    }
 }
