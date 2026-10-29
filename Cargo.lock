@@ -15714,6 +15714,7 @@ dependencies = [
  "tilo-nm",
  "tilo-notification-banners",
  "tilo-ntfs-mount",
+ "tilo-onboarding",
  "tilo-output-passes",
  "tilo-overview",
  "tilo-owner-commit",
@@ -20052,6 +20053,15 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-onboarding"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

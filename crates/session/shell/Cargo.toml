@@ -335,6 +335,7 @@ tilo-network-actor = { path = "../network-actor" }
 tilo-quick-settings = { path = "../quick-settings" }
 # The sheets over the desktop (the power menu), as apps this process mounts.
 tilo-sheets = { path = "../sheets" }
+tilo-onboarding = { path = "../onboarding" }
 # The notification banners, an app the shell hosts over the desktop.
 tilo-notification-banners = { path = "../notification-banners" }
 # The workspace overview, an app this process mounts.

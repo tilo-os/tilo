@@ -7,103 +7,21 @@ use std::sync::mpsc::TryRecvError;
 
 use os_actions::codec_pack::{CodecAction, PackState};
 
-use super::{KEY_CODECS_INSTALL, KEY_CODECS_SKIP, OnboardingView, codecs_background};
-use crate::shell::i18n::{t, t_args};
+use super::OnboardingView;
+use crate::shell::i18n::t_args;
 
 impl OnboardingView {
+    /// Whether the page still offers its own Install (or Try again) choice:
+    /// nothing runs and nothing was asked yet, or the last try failed.
+    pub(super) fn codec_choice_offered(&self) -> bool {
+        let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
+        (failed && self.codec_running.is_none()) || !self.codec_install_requested()
+    }
+
     pub(super) fn codec_install_requested(&self) -> bool {
         self.codec_running.is_some()
             || self.codec_error.is_some()
             || self.codec_status.state != PackState::NotInstalled
-    }
-
-    pub(super) fn codec_progress(&self) -> Option<f32> {
-        match self.codec_status.state {
-            PackState::Installing => Some(
-                self.codec_status
-                    .progress
-                    .as_ref()
-                    .map_or(0.0, os_actions::codec_pack::Progress::fraction),
-            ),
-            PackState::NotInstalled if self.codec_running.is_some() => Some(0.0),
-            _ => None,
-        }
-    }
-
-    /// Banner title and message for what happened to the request, if any.
-    pub(super) fn codec_outcome(&self) -> Option<(String, Option<String>)> {
-        if let Some(error) = &self.codec_error {
-            return Some((t("onboarding-codecs-failed-title"), Some(error.clone())));
-        }
-        match self.codec_status.state {
-            PackState::NotInstalled if self.codec_running.is_some() => {
-                Some((t("onboarding-codecs-starting"), Some(codecs_background())))
-            }
-            PackState::NotInstalled | PackState::Removing => None,
-            PackState::Installing => Some((
-                t("onboarding-codecs-installing-title"),
-                Some(t_args(
-                    "onboarding-codecs-installing-message",
-                    &[("status", self.codec_status.summary().into())],
-                )),
-            )),
-            PackState::WaitingForNetwork => Some((
-                t("onboarding-codecs-offline-title"),
-                Some(t("onboarding-codecs-offline-message")),
-            )),
-            PackState::Installed => Some((
-                t("onboarding-codecs-installed-title"),
-                self.codec_status.when_it_applies().map(str::to_string),
-            )),
-            PackState::Failed => Some((
-                t("onboarding-codecs-failed-title"),
-                Some(if self.codec_status.last_error.is_empty() {
-                    t("onboarding-codecs-failed-message")
-                } else {
-                    t_args(
-                        "onboarding-codecs-failed-message-detail",
-                        &[("error", self.codec_status.last_error.clone().into())],
-                    )
-                }),
-            )),
-        }
-    }
-
-    /// The page's own choice while nothing runs: (id, label, key) of the
-    /// one large Install (or Try again) button, then the quiet way past it.
-    /// `None` once a request is underway or done; the footer then offers
-    /// Continue.
-    pub(super) fn codec_choice(&self) -> Option<[(&'static str, String, &'static str); 2]> {
-        let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
-        if failed && self.codec_running.is_none() {
-            return Some([
-                (
-                    "onboarding.codecs.install.button",
-                    t("onboarding-codecs-retry"),
-                    KEY_CODECS_INSTALL,
-                ),
-                (
-                    "onboarding.codecs.skip.button",
-                    t("onboarding-codecs-skip"),
-                    KEY_CODECS_SKIP,
-                ),
-            ]);
-        }
-        if self.codec_install_requested() {
-            return None;
-        }
-        Some([
-            (
-                "onboarding.codecs.install.button",
-                t("onboarding-codecs-install"),
-                KEY_CODECS_INSTALL,
-            ),
-            (
-                "onboarding.codecs.skip.button",
-                t("onboarding-codecs-not-now"),
-                KEY_CODECS_SKIP,
-            ),
-        ])
     }
 
     pub(super) fn start_codec_install(&mut self) {
