@@ -21268,6 +21268,7 @@ dependencies = [
  "os-actions",
  "rustix 1.1.4",
  "serde_json",
+ "tempfile",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-compositor",
