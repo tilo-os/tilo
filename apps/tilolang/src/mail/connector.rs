@@ -9,7 +9,7 @@
 //! wasm and run by the system takes over.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
 
 use mail::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use mail::model::{AccountConfig, Draft, Folder, Mailbox, Message};
@@ -233,15 +233,12 @@ impl EngineConnector {
     }
 
     fn take_in(&mut self, account: &str, folder: Folder, messages: &[Message]) -> Vec<ImapMessage> {
-        let held = self
-            .held
-            .entry(account.to_owned())
-            .or_insert_with(Mailbox::default);
+        let held = self.held.entry(account.to_owned()).or_default();
         let mut out = Vec::with_capacity(messages.len());
         for m in messages {
             let mut m = m.clone();
             if m.account.is_empty() {
-                m.account = account.to_owned();
+                account.clone_into(&mut m.account);
             }
             m.folder = folder;
             self.keys
@@ -259,12 +256,12 @@ impl MailConnector for EngineConnector {
             .into_iter()
             .map(|c| AccountRef {
                 id: c.email.clone(),
-                address: c.email.clone(),
                 name: if c.display_name.is_empty() {
                     c.email.clone()
                 } else {
-                    c.display_name.clone()
+                    c.display_name
                 },
+                address: c.email,
             })
             .collect()
     }
@@ -355,11 +352,7 @@ impl MailConnector for EngineConnector {
 
     fn events(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
-        loop {
-            let event = match self.events.try_recv() {
-                Ok(event) => event,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            };
+        while let Ok(event) = self.events.try_recv() {
             match event {
                 EngineEvent::Fetched {
                     account_id,

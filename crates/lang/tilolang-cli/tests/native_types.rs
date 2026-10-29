@@ -20,7 +20,9 @@ fn block<'a>(text: &'a str, head: &str) -> &'a str {
     let start = text.find(head);
     assert!(start.is_some(), "no `{head}` in:\n{text}");
     let rest = text.get(start.unwrap_or_default()..).unwrap_or_default();
-    let end = rest.find("\n}\n").map_or(rest.len(), |end| end + 2);
+    let end = rest
+        .find("\n}\n")
+        .map_or(rest.len(), |end| end.saturating_add(2));
     rest.get(..end).unwrap_or_default()
 }
 
