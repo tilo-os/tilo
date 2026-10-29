@@ -3855,14 +3855,7 @@ fn launch_fitting(
         capabilities_file.as_ref(),
         (document, uri),
     )?;
-    stage_continuity(&app, room, &mut command);
-    // A tilolang app whose process serves a window door is its windows alone: a tilolang host
-    // runs their instances (`tilolang_hosts`).
-    #[cfg(target_os = "linux")]
-    if door.is_some() && tilolang_hosts::runs_in_host(&app) {
-        command.args.push(tilolang_hosts::HOSTED_ARG.to_owned());
-        window_doors::host_instances(&app, room);
-    }
+    stage_window(&app, room, door.is_some(), &mut command);
     apply_launch_context(context, (document, uri), &mut command)?;
     if let Some(handoff) = media_handoff {
         attach_media_handoff(&mut command, handoff);
@@ -4016,6 +4009,17 @@ fn launch_capabilities(
     }
     let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     (capabilities, capabilities_file)
+}
+
+/// Stage the launch's window: its continuity ([`stage_continuity`]) and, for a tilolang app
+/// whose process serves a window door (`served`), presentation alone: a tilolang host runs its
+/// instance.
+fn stage_window(app: &InstalledApp, room: RoomId, served: bool, command: &mut LaunchCommand) {
+    stage_continuity(app, room, command);
+    #[cfg(target_os = "linux")]
+    tilolang_hosts::present_only(app, room, served, command);
+    #[cfg(not(target_os = "linux"))]
+    let _ = served;
 }
 
 /// Give the launch its continuity instance: the record a restored tab

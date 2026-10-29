@@ -194,22 +194,21 @@ pub(crate) fn register_tilolang_instance(
     let Some((_, start_time)) = proc_stat(launched) else {
         return false;
     };
-    let (creation, launch_ticket) = {
-        let launches = lock(&TRUSTED_SERVICE_LAUNCHES);
-        let Some(launch) = launches
-            .get(&launched)
-            .filter(|launch| launch.attests(launched, start_time, app_id, workspace_id))
-        else {
-            return false;
-        };
-        (
-            launch.identity.application_creation.clone(),
-            launch.launch_ticket,
-        )
+    let attested = lock(&TRUSTED_SERVICE_LAUNCHES)
+        .get(&launched)
+        .filter(|launch| launch.attests(launched, start_time, app_id, workspace_id))
+        .map(|launch| {
+            (
+                launch.identity.application_creation.clone(),
+                launch.launch_ticket,
+            )
+        });
+    let Some((creation, launch_ticket)) = attested else {
+        return false;
     };
-    let mut launches = lock(&IN_PROCESS_LAUNCHES);
-    launches.retain(|launch| launch.window_instance != Some(instance));
-    launches.push(InProcessLaunch {
+    let mut records = lock(&IN_PROCESS_LAUNCHES);
+    records.retain(|launch| launch.window_instance != Some(instance));
+    records.push(InProcessLaunch {
         app_id: app_id.to_owned(),
         workspace_id: workspace_id.to_owned(),
         window_instance: Some(instance),

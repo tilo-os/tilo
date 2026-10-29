@@ -420,6 +420,10 @@ pub(super) fn host_instances(app: &InstalledApp, room: RoomId) {
 
 /// Send the window `instance` of the process serving `package_id` in `room` its patch
 /// connection `patch`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door is sent on in the hold it was looked up in, so it is not retired in between"
+)]
 pub(super) fn send_patch(
     package_id: &str,
     room: &str,

@@ -104,6 +104,20 @@ pub(super) fn runs_in_host(app: &InstalledApp) -> bool {
         .is_some_and(|runtime| ::launcher::run::tilolang_host::is_tilolang(&runtime))
 }
 
+/// A tilolang app whose process serves a window door (`served`) is its windows alone: a
+/// tilolang host runs their instances. Its `command` says so, and its door is marked.
+pub(super) fn present_only(
+    app: &InstalledApp,
+    room: RoomId,
+    served: bool,
+    command: &mut super::LaunchCommand,
+) {
+    if served && runs_in_host(app) {
+        command.args.push(HOSTED_ARG.to_owned());
+        super::window_doors::host_instances(app, room);
+    }
+}
+
 /// A patch connection: the window's end and the host's.
 pub(super) fn patch_pair() -> std::io::Result<(OwnedFd, OwnedFd)> {
     runtime_portal::tilolang_host::pair()
@@ -176,7 +190,7 @@ fn hand_over_now(
         &evidence.package_hash,
     )
     .map_err(|error| refused(error.to_string()))?;
-    let person = crate::shell::state::local_user_id_for_room(&room).to_string();
+    let person = crate::shell::state::local_user_id_for_room(&room);
     let key = HostKey {
         workspace: workspace.clone(),
         author: Author::of(verified.publisher, &person).key(),
@@ -372,8 +386,8 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
 /// The host `key` (its start `generation`) says the instance of the window `instance` ended.
 /// Once its last instance ended, it is closed: it ends when it has written what it keeps.
 fn ended(key: &HostKey, generation: u64, instance: u64) {
-    let mut hosts = lock(&HOSTS);
-    let Some(hosts) = hosts.as_mut() else {
+    let mut guard = lock(&HOSTS);
+    let Some(hosts) = guard.as_mut() else {
         return;
     };
     let Some(host) = hosts
@@ -383,9 +397,13 @@ fn ended(key: &HostKey, generation: u64, instance: u64) {
         return;
     };
     host.instances.remove(&instance);
-    if host.instances.is_empty()
-        && let Some(host) = hosts.remove(key)
-    {
+    let closed = if host.instances.is_empty() {
+        hosts.remove(key)
+    } else {
+        None
+    };
+    drop(guard);
+    if let Some(host) = closed {
         // The host reads the end of its door and ends once it runs nothing.
         // SAFETY: shutting down the writing half of a socket the session owns.
         let _ = unsafe { libc::shutdown(host.door.as_raw_fd(), libc::SHUT_WR) };
