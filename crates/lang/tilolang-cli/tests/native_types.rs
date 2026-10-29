@@ -17,10 +17,9 @@ fn chat_dir() -> PathBuf {
 
 /// The block of `text` that starts with the line `head` and ends at the closing brace.
 fn block<'a>(text: &'a str, head: &str) -> &'a str {
-    let start = text
-        .find(head)
-        .unwrap_or_else(|| panic!("no `{head}` in:\n{text}"));
-    let rest = text.get(start..).unwrap_or_default();
+    let start = text.find(head);
+    assert!(start.is_some(), "no `{head}` in:\n{text}");
+    let rest = text.get(start.unwrap_or_default()..).unwrap_or_default();
     let end = rest.find("\n}\n").map_or(rest.len(), |end| end + 2);
     rest.get(..end).unwrap_or_default()
 }

@@ -202,13 +202,30 @@ struct Reader<'a> {
 impl Reader<'_> {
     fn surface(&mut self, surface: &Surface) {
         let own = self.kinds.get(&surface.kind).cloned();
-        // A named type another resource declared differently is this resource's own, named
-        // after it.
+        let renamed = self.named_types(surface, own.as_deref());
+        let rename = |name: &str| {
+            renamed
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.to_owned())
+        };
+        if let Some(own) = &own {
+            self.own_type(surface, own, &rename);
+        }
+        for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
+            self.action(verb, own.as_deref(), &rename);
+        }
+    }
+
+    /// Declares the named types of `surface`, the resource type `own`'s, and gives the name each
+    /// is declared under: a type another resource declared differently is this resource's own,
+    /// named after it.
+    fn named_types(&mut self, surface: &Surface, own: Option<&str>) -> BTreeMap<String, String> {
         let mut renamed: BTreeMap<String, String> = BTreeMap::new();
         for named in &surface.types {
             let name = match self.declared.get(&named.name) {
                 Some((declared, _)) if declared == named => continue,
-                Some(_) => format!("{}{}", own.as_deref().unwrap_or_default(), named.name),
+                Some(_) => format!("{}{}", own.unwrap_or_default(), named.name),
                 None => named.name.clone(),
             };
             renamed.insert(named.name.clone(), name.clone());
@@ -265,76 +282,83 @@ impl Reader<'_> {
                 });
             }
         }
-        if let Some(own) = &own {
-            let fields = surface
-                .fields
-                .iter()
-                .filter(|field| !field.path.contains('.'))
-                .filter_map(|field| {
-                    let typed = tilo_actions::surface::TypeField {
-                        name: field.path.clone(),
-                        ty: field.ty.clone(),
-                        title: field.title.clone(),
-                    };
-                    self.field(own, &typed, &rename)
-                })
-                .collect();
-            self.meta.types.push(TypeMeta {
-                id: own.clone(),
-                name: own.clone(),
-                // What people call the resource, when it says more than the type's name.
-                doc: if surface.label == *own {
-                    String::new()
-                } else {
-                    surface.label.clone()
-                },
-                fields,
-                search: SearchMeta::default(),
-                holder: false,
-            });
-        }
-        for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
-            let mut params = Vec::new();
-            if let Some(own) = &own {
-                params.push(ParamMeta {
-                    name: own.to_lowercase(),
-                    ty: own.clone(),
-                    default: None,
-                });
-            }
-            for param in &verb.params {
-                let ty = FieldType::from_schema(&param.schema);
-                let ty = if param.required {
-                    ty
-                } else {
-                    match ty {
-                        FieldType::Option(_) => ty,
-                        other => FieldType::Option(Box::new(other)),
-                    }
+        renamed
+    }
+
+    /// Declares the type `own` of the resource `surface` describes: its top-level fields.
+    fn own_type(&mut self, surface: &Surface, own: &str, rename: &dyn Fn(&str) -> String) {
+        let fields = surface
+            .fields
+            .iter()
+            .filter(|field| !field.path.contains('.'))
+            .filter_map(|field| {
+                let typed = tilo_actions::surface::TypeField {
+                    name: field.path.clone(),
+                    ty: field.ty.clone(),
+                    title: field.title.clone(),
                 };
-                params.push(ParamMeta {
-                    name: action_name(&param.name),
-                    ty: self.ty(&ty, &rename).unwrap_or_else(|| "Text".to_owned()),
-                    default: None,
-                });
-            }
-            self.meta.actions.push(ActionMeta {
-                id: verb.id.clone(),
-                name: action_name(&verb.id),
-                doc: verb.description.clone().unwrap_or_default(),
-                params,
-                result: None,
-                class: effect_class(verb.kind),
-                proposal: None,
-                reaches: Vec::new(),
-                label: verb.label.clone(),
-                icon: None,
-                role: verb.destructive.then(|| "destructive".to_owned()),
-                scenario: false,
-                present: None,
-                toggles: None,
+                self.field(own, &typed, rename)
+            })
+            .collect();
+        self.meta.types.push(TypeMeta {
+            id: own.to_owned(),
+            name: own.to_owned(),
+            // What people call the resource, when it says more than the type's name.
+            doc: if surface.label == own {
+                String::new()
+            } else {
+                surface.label.clone()
+            },
+            fields,
+            search: SearchMeta::default(),
+            holder: false,
+        });
+    }
+
+    /// Declares the verb `verb` of the resource type `own` (none: a loose verb) as an action
+    /// taking its resource first. A verb with a parameter whose schema says no type tilolang
+    /// code can give is left out: tilolang code cannot call it yet.
+    fn action(&mut self, verb: &VerbSurface, own: Option<&str>, rename: &dyn Fn(&str) -> String) {
+        let mut params = Vec::new();
+        if let Some(own) = own {
+            params.push(ParamMeta {
+                name: own.to_lowercase(),
+                ty: own.to_owned(),
+                default: None,
             });
         }
+        for param in &verb.params {
+            let ty = FieldType::from_schema(&param.schema);
+            let ty = match ty {
+                FieldType::Option(_) => ty,
+                other if !param.required => FieldType::Option(Box::new(other)),
+                other => other,
+            };
+            let Some(ty) = self.ty(&ty, rename) else {
+                return;
+            };
+            params.push(ParamMeta {
+                name: action_name(&param.name),
+                ty,
+                default: None,
+            });
+        }
+        self.meta.actions.push(ActionMeta {
+            id: verb.id.clone(),
+            name: action_name(&verb.id),
+            doc: verb.description.clone().unwrap_or_default(),
+            params,
+            result: None,
+            class: effect_class(verb.kind),
+            proposal: None,
+            reaches: Vec::new(),
+            label: verb.label.clone(),
+            icon: None,
+            role: verb.destructive.then(|| "destructive".to_owned()),
+            scenario: false,
+            present: None,
+            toggles: None,
+        });
     }
 
     /// The field `field` of the type `owner`, or `None` when its type is not one tilolang code
