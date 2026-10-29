@@ -473,3 +473,59 @@ fn shift_never_skips_the_hosts_question_for_what_undo_cannot_take_back() {
     assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
     hold_shift(&mut app, false);
 }
+
+/// What has to be confirmed is asked at the control pressed, as a popover
+/// beside it: never as the window's search, which a click never opens.
+#[test]
+fn a_confirmation_stands_at_the_control_pressed() {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let mut app = app.reopen().unwrap();
+    let forget = app.harness().targets()["forget"];
+    app.harness().click_named("forget").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the person is asked first");
+    let anchor = app
+        .harness()
+        .asking_at()
+        .expect("the question has a control");
+    assert!(
+        anchor.contains(forget.center()),
+        "it stands at the pressed control: {anchor:?} for {forget:?}"
+    );
+    assert!(!app.harness().palette_shown(), "a click opens no search");
+    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
+}
+
+/// A press the action refuses when it runs says why at the control
+/// pressed, announced and gone with the next key, and opens no search over
+/// the window.
+#[test]
+fn a_refused_press_is_said_at_the_control_and_opens_no_search() {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    let remove = app.harness().targets()["remove"];
+    // With no note there is nothing to remove: the action refuses.
+    app.harness().click_named("remove").unwrap();
+    app.settle();
+    let notice = app
+        .harness()
+        .control_notice()
+        .cloned()
+        .expect("the refusal stands at the control");
+    assert!(
+        notice.anchor.contains(remove.center()),
+        "beside the pressed control: {notice:?} for {remove:?}"
+    );
+    assert!(
+        notice.text.to_lowercase().contains("no such note"),
+        "{notice:?}"
+    );
+    assert!(!app.harness().palette_shown(), "a refusal opens no search");
+    assert_eq!(app.asking(), None);
+    app.harness().key("Escape");
+    assert_eq!(
+        app.harness().control_notice(),
+        None,
+        "the next key dismisses it"
+    );
+}

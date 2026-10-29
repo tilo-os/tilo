@@ -140,6 +140,10 @@ struct LocalWrite {
     touched: Vec<FieldKey>,
     /// The collection items it added, removed or moved.
     items: Vec<(FieldKey, String)>,
+    /// For the last write of a committed action, the versions it made, provisional until the
+    /// record holds the action: per resource it changed, the invoker and the invocation's
+    /// recorded time ([`Inner::provisional_versions`]).
+    versions: Option<Ends>,
 }
 
 impl LocalWrite {
@@ -325,6 +329,9 @@ struct Inner {
     /// The last snapshot taken, while the store has not changed since: what search and
     /// publication starting in one frame share.
     snapshot: std::sync::Weak<Snapshot>,
+    /// What a reference to a resource the reader does not hold says, in their language
+    /// ([`crate::reading`]).
+    unshared: Arc<str>,
 }
 
 /// The store as it was when taken, to read on another thread: each package's index as its last
@@ -333,6 +340,9 @@ pub struct Snapshot {
     index: BTreeMap<DocId, (AppId, TypeId)>,
     apps: BTreeMap<AppId, Arc<idx::Snapshot>>,
     overlay: Arc<Overlay>,
+    /// Every package loaded, whether or not its index was read from yet.
+    packages: BTreeSet<AppId>,
+    unshared: Arc<str>,
 }
 
 impl Snapshot {
@@ -354,10 +364,62 @@ impl Snapshot {
     /// [`TiloStore::first_text`], as it was when the snapshot was taken.
     #[must_use]
     pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let (value, held) = self.first_stored(at)?;
+        Some((crate::reading::said(self, &at.id_string(), value)?, held))
+    }
+
+    /// The text value `value` of the resource `of` (its id) as the store's reader reads it
+    /// ([`crate::reading::said`]).
+    #[must_use]
+    pub fn said(&self, of: &str, value: FieldValue) -> Option<String> {
+        crate::reading::said(self, of, value)
+    }
+
+    fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
         let (app, ty) = self.index.get(&at.doc)?;
         let view = self.view(app)?;
         let schema = lookup(&at.ty).or_else(|| lookup(ty))?;
         view.first_text(&at.id_string(), schema).ok().flatten()
+    }
+}
+
+impl crate::reading::Holdings for Snapshot {
+    fn held(&self, at: &ResourceRef) -> Option<String> {
+        let (app, ty) = self.index.get(&at.doc)?;
+        if at.path.is_empty() {
+            return Some(ty.clone());
+        }
+        self.view(app)?.type_of(&at.id_string()).ok().flatten()
+    }
+
+    fn first_value(&self, at: &ResourceRef) -> Option<FieldValue> {
+        self.first_stored(at).map(|(value, _)| value)
+    }
+
+    fn keeps(&self, app: &str) -> bool {
+        self.packages.contains(app)
+    }
+
+    fn unshared(&self) -> Arc<str> {
+        Arc::clone(&self.unshared)
+    }
+}
+
+impl crate::reading::Holdings for TiloStore {
+    fn held(&self, at: &ResourceRef) -> Option<String> {
+        Store::type_of(self, at).ok()
+    }
+
+    fn first_value(&self, at: &ResourceRef) -> Option<FieldValue> {
+        self.first_stored(at).map(|(value, _)| value)
+    }
+
+    fn keeps(&self, app: &str) -> bool {
+        self.inner.borrow().apps.contains_key(app)
+    }
+
+    fn unshared(&self) -> Arc<str> {
+        Arc::clone(&self.inner.borrow().unshared)
     }
 }
 
@@ -646,6 +708,7 @@ impl TiloStore {
                 instance,
                 counter: 0,
                 snapshot: std::sync::Weak::new(),
+                unshared: Arc::from(tilolang_runtime::rich::UNSHARED),
             })),
         }
     }
@@ -1161,9 +1224,20 @@ impl TiloStore {
                 .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
                 .collect(),
             overlay: Arc::clone(&inner.overlay),
+            packages: inner.apps.keys().cloned().collect(),
+            unshared: Arc::clone(&inner.unshared),
         });
         inner.snapshot = Arc::downgrade(&taken);
         taken
+    }
+
+    /// Say a reference to a resource the reader does not hold as `unshared`: the platform's
+    /// phrase in the reader's language ([`crate::reading`]).
+    pub fn set_unshared(&self, unshared: &str) {
+        let unshared = Arc::from(unshared);
+        if *self.inner.borrow().unshared != *unshared {
+            self.mutate().unshared = unshared;
+        }
     }
 
     /// The store, to change: a snapshot taken before no longer stands for it.
@@ -1217,9 +1291,24 @@ impl TiloStore {
     }
 
     /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
-    /// and the path of the resource that holds it: what names a resource.
+    /// as the store's reader reads it ([`crate::reading`]), and the path of the resource that
+    /// holds it: what names a resource.
     #[must_use]
     pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let (value, held) = self.first_stored(at)?;
+        Some((crate::reading::said(self, &at.id_string(), value)?, held))
+    }
+
+    /// The text value `value` of the resource `of` (its id) as the store's reader reads it
+    /// ([`crate::reading::said`]): each reference in rich text by what its resource is called
+    /// now when they hold it, as not shared when they do not.
+    #[must_use]
+    pub fn said(&self, of: &str, value: FieldValue) -> Option<String> {
+        crate::reading::said(self, of, value)
+    }
+
+    /// [`Self::first_text`] as stored.
+    fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at).ok()?;
         if let Some(view) = inner.view(&app) {
@@ -1229,6 +1318,7 @@ impl TiloStore {
         let mirror = inner.mirror.as_deref()?;
         let located = locate_ref(mirror, (&app, &ty), at).ok()?;
         crate::reads::first_text(mirror, &located.obj?, located.schema, &at.id_string())
+            .map(|(text, held)| (FieldValue::Text(text), held))
     }
 
     /// How many items of the collection `field` of `at` hold each value of their column
@@ -1690,7 +1780,7 @@ impl Inner {
     fn splices_since(
         &self,
         before: &BTreeMap<AppId, Arc<idx::Snapshot>>,
-        overlay: &Overlay,
+        overlay: &Arc<Overlay>,
         items: &ItemTouches,
     ) -> BTreeMap<DocId, Vec<ListingChange>> {
         let mut out: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
@@ -1727,9 +1817,70 @@ impl Inner {
                 };
                 let mut derive = Derive::new(&mirror, &self.index);
                 let _ = derive.changes(&mut sink, &write.app, &write.reached());
+                if let Some(ends) = &write.versions {
+                    let _ = derive.versions(&mut sink, &write.app, ends);
+                }
             }
         }
         self.overlay = Arc::new(overlay);
+    }
+
+    /// Take in the versions an action this device committed made, provisional until the
+    /// record holds it: each resource it changed was last changed by its invoker at the time
+    /// the invocation recorded, and one it made was made then. Reflection (`created(r)`,
+    /// `updated(r)`) and the lists ordered by them read these until the record's own replace
+    /// them with the record's next change; the record's carry the same time, so nothing moves
+    /// then. Returns the fields that changed: each resource's versions.
+    fn provisional_versions(
+        &mut self,
+        app: &str,
+        start: usize,
+        note: &ChangeNote,
+        resources: Vec<String>,
+    ) -> BTreeMap<DocId, Vec<FieldKey>> {
+        let at = note.at.clone().unwrap_or_else(crate::host::system_time);
+        let stamp = idx::reflect::Stamp {
+            version: Version {
+                who: note.invoker.clone(),
+                at,
+                action: note.action.clone(),
+            },
+            // No change yet: it orders before the record's own at the same time.
+            change: String::new(),
+        };
+        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+        let mut ends = Ends::new();
+        for resource in resources {
+            for field in [idx::reflect::CREATED, idx::reflect::UPDATED] {
+                reached
+                    .entry(tilolang_runtime::store::doc_of(&resource).to_owned())
+                    .or_default()
+                    .push(FieldKey {
+                        resource: resource.clone(),
+                        field: field.to_owned(),
+                    });
+            }
+            ends.insert(resource, (stamp.clone(), stamp.clone()));
+        }
+        // Kept with the action's last write, so they go when its writes go.
+        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
+            return BTreeMap::new();
+        };
+        write.versions = Some(ends.clone());
+        if let (Some(mirror), Some(held)) = (
+            self.mirror.clone(),
+            self.apps.get(app).filter(|held| held.ready()),
+        ) {
+            let snapshot = Arc::clone(&held.snapshot);
+            let mut sink = OverlaySink {
+                overlay: Arc::make_mut(&mut self.overlay),
+                snapshot: Some(&snapshot),
+            };
+            let mut derive = Derive::new(&mirror, &self.index);
+            let _ = derive.versions(&mut sink, app, &ends);
+        }
+        self.changed_within(&reached);
+        reached
     }
 
     /// Apply one edit to the mirror's open transaction and derive what it changed into the
@@ -1755,6 +1906,7 @@ impl Inner {
             seed,
             touched,
             items,
+            versions: None,
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
@@ -2153,6 +2305,15 @@ fn edit_of(
 }
 
 impl Store for TiloStore {
+    /// The store holds only the records its reader was sent: a resource of a package here
+    /// reads by what it is called now when the store holds it, as not shared when it does not.
+    fn reading(
+        &self,
+        reference: &tilolang_runtime::rich::Reference,
+    ) -> tilolang_runtime::rich::Reading {
+        crate::reading::reading(self, reference)
+    }
+
     fn fresh_id(&mut self, prefix: &str) -> String {
         self.inner.borrow_mut().fresh(prefix)
     }
@@ -2312,6 +2473,7 @@ impl Store for TiloStore {
         if state.edits.is_empty() {
             return Ok(());
         }
+        let versioned = app.clone();
         let action = DynAction {
             app,
             kind,
@@ -2325,9 +2487,14 @@ impl Store for TiloStore {
             },
             edits: state.edits,
         };
+        let changed = action.changed();
         inner.enqueue(action);
+        let mut touched = state.touched;
+        for (doc, keys) in inner.provisional_versions(&versioned, state.start, note, changed) {
+            touched.entry(doc).or_default().extend(keys);
+        }
         let mut listings = state.listings;
-        for (doc, fields) in state.touched {
+        for (doc, fields) in touched {
             inner
                 .notes
                 .entry(doc.clone())

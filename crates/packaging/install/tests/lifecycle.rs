@@ -132,14 +132,14 @@ impl Env {
         path
     }
 
-    /// A package pinning `optional` as one of its `optional-runtimes`.
-    fn tapp_pinning_optional(&self, version: &str, body: &[u8], optional: &str) -> PathBuf {
-        let build = self.home.path().join(format!("build-optional-{version}"));
+    /// A package requiring `runtime` as one of its further runtimes.
+    fn tapp_requiring_runtime(&self, version: &str, body: &[u8], runtime: &str) -> PathBuf {
+        let build = self.home.path().join(format!("build-requiring-{version}"));
         let payload = build.join("payload");
         write_payload(&payload, body);
         let source = manifest_src(version, &self.pub_hex, None).replace(
             "kind    = \"app\"\n",
-            &format!("kind    = \"app\"\noptional-runtimes = [\"{optional}\"]\n"),
+            &format!("kind    = \"app\"\noptional-runtimes = [\"{runtime}\"]\n"),
         );
         let manifest = Manifest::from_toml_str(&source).unwrap();
         let path = build.join("pkg.tapp");
@@ -804,17 +804,17 @@ fn cohort_selection_preserves_user_holds_pins_and_state_through_the_real_install
     assert_eq!(env.registry_toml(), before);
 }
 
-/// An app that pins an optional runtime by exact version (the Browser's
+/// An app that requires a further runtime by exact version (the Browser's
 /// engine) is installed and updated together with it, on every path that
-/// reaches the installer: replacing the app while its engine is absent would
-/// leave it saying "not installed".
+/// reaches the installer: an app replaced while its engine is absent would
+/// not start.
 #[test]
-fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
+fn an_app_is_not_installed_or_updated_without_the_runtimes_it_requires() {
     let env = Env::new();
     let engine = "tilo-runtime/2026.10.9-chromium";
 
     // Install: refused, naming the fix, leaving nothing behind.
-    let v1 = env.tapp_pinning_optional("1.0.0", b"one", engine);
+    let v1 = env.tapp_requiring_runtime("1.0.0", b"one", engine);
     let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
     assert!(!ok, "install must refuse: {out}{err}");
     assert!(err.contains(&format!("pins runtime `{engine}`")), "{err}");
@@ -827,7 +827,7 @@ fn an_app_is_not_installed_or_updated_without_the_optional_runtime_it_pins() {
 
     // Update: a build pinning an engine this device lacks does not replace
     // the working one.
-    let v2 = env.tapp_pinning_optional("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
+    let v2 = env.tapp_requiring_runtime("2.0.0", b"two", "tilo-runtime/2026.10.23-chromium");
     let (ok, out, err) = env.cmd(&[
         "update",
         "so.tilo.lifecycle",

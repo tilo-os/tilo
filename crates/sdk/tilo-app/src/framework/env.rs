@@ -146,6 +146,21 @@ impl<R: Resource> RecordEnv<R> {
         self.run.open_here(arguments)
     }
 
+    /// The host-owned identity of the record this window shows. A durable
+    /// activation link can name it without relying on the last-open window.
+    /// Absent in a historical view that cannot launch live work.
+    pub fn record_id(&self) -> Option<&ui_core::record::RecordId> {
+        self.run.launched.record.as_ref()
+    }
+
+    /// What [`Self::open_here`] does, kept for later: the input that asks
+    /// for another record arrives after the view is built (a file chosen in
+    /// a picker, a clicked notification). `None` in a past version and a
+    /// capture.
+    pub fn opener(&self) -> Option<super::OpenHere> {
+        self.run.opener.clone()
+    }
+
     /// The documents this app's windows started in this workspace, each as
     /// last kept, the most recently changed first, without the one this
     /// window shows: what an app whose windows each show a document of their
@@ -432,11 +447,11 @@ impl<R: Resource> RecordEnv<R> {
         }
     }
 
-    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
-    /// theirs alone, kept in their own room and synced to their other
-    /// devices, never to a collaborator, whatever room this record is in.
-    /// `None` where the host keeps no records of the person's (a view of a
-    /// past version) or the record cannot be opened.
+    /// The app's record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// one per kind, kept with the app's other records in the workspace it
+    /// is open in and synced with it. `None` where the host keeps no such
+    /// records (a view of a past version, a private window) or the record
+    /// cannot be opened.
     pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
         self.storage.person::<P>()
     }
@@ -452,11 +467,10 @@ impl<R: Resource> RecordEnv<R> {
 
     /// The person's record `P` that one app keeps for all of theirs — their
     /// accounts, which Settings keeps: the same record on every device, held
-    /// here too and converging with the keeper's over the person's own room.
-    /// Changed only by its owner and editors
-    /// ([`SharedRecord`](tilo_resource::SharedRecord),
-    /// [`PersonRecord::editable`](super::PersonRecord::editable)); for its
-    /// owner it is [`Self::person`].
+    /// here too and converging with the keeper's. Changed only by its owner
+    /// and editors ([`SharedRecord`](tilo_resource::SharedRecord),
+    /// [`PersonRecord::editable`](super::PersonRecord::editable)); its owner
+    /// opens it here too.
     pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
         self.storage.shared_person::<P>()
     }

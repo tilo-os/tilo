@@ -203,9 +203,17 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, true, |first, second| match second {
-        Some((sep, second)) => format!("{}{sep}{}", shift(first), shift(second)),
-        None => shift(first),
+    rewrite_refs(raw, true, |reference| match reference {
+        Ref::Cell(first) => shift(first),
+        Ref::Range(first, sep, second) => format!("{}{sep}{}", shift(first), shift(second)),
+        Ref::Lines(first, sep, second) => {
+            let by = if first.rows { drow } else { dcol };
+            format!(
+                "{}{sep}{}",
+                first.render(first.offset(by)),
+                second.render(second.offset(by))
+            )
+        }
     })
 }
 
@@ -224,12 +232,36 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    rewrite_refs(raw, false, |first, second| {
-        let moved = match second {
-            Some((sep, second)) => edit
+    rewrite_refs(raw, false, |reference| {
+        let moved = match reference {
+            Ref::Cell(first) => edit.map_addr(first.addr).map(|addr| first.render(addr)),
+            Ref::Range(first, sep, second) => edit
                 .map_range(first.addr, second.addr)
                 .map(|(a, b)| format!("{}{sep}{}", first.render(a), second.render(b))),
-            None => edit.map_addr(first.addr).map(|addr| first.render(addr)),
+            Ref::Lines(first, sep, second) => {
+                let rows_edit = matches!(edit, GridEdit::InsertRow(_) | GridEdit::DeleteRow(_));
+                if first.rows == rows_edit {
+                    // Whole rows move only with rows, whole columns only with
+                    // columns; the other axis spans the grid either way.
+                    let corner = |line: Line| {
+                        if line.rows {
+                            (0, line.at)
+                        } else {
+                            (line.at, 0)
+                        }
+                    };
+                    let along = |(col, row): Addr| if first.rows { row } else { col };
+                    edit.map_range(corner(first), corner(second)).map(|(a, b)| {
+                        format!("{}{sep}{}", first.render(along(a)), second.render(along(b)))
+                    })
+                } else {
+                    Some(format!(
+                        "{}{sep}{}",
+                        first.render(first.at),
+                        second.render(second.at)
+                    ))
+                }
+            }
         };
         moved.unwrap_or_else(|| "#REF!".into())
     })
@@ -291,18 +323,21 @@ pub fn fold_sheet(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// Rewrite every reference in a formula through `rewrite`, which receives a
-/// lone reference or both ends of a range with the separator between them.
+/// One reference [`rewrite_refs`] hands its callback: a cell, a range with
+/// the separator between its ends, or whole rows or columns (`1:3`, `A:C`).
+enum Ref<'a> {
+    Cell(RefToken),
+    Range(RefToken, &'a str, RefToken),
+    Lines(Line, &'a str, Line),
+}
+
+/// Rewrite every reference in a formula through `rewrite`.
 /// String literals, sheet names, function names, and numeric exponents
 /// (`1e3`) are copied verbatim; non-formula input (no leading `=`) is
 /// returned unchanged. A reference to another sheet is rewritten only when
 /// `foreign` is set: a copy shifts it as any other, but rows and columns
 /// inserted on this sheet do not move it.
-fn rewrite_refs(
-    raw: &str,
-    foreign: bool,
-    mut rewrite: impl FnMut(RefToken, Option<(&str, RefToken)>) -> String,
-) -> String {
+fn rewrite_refs(raw: &str, foreign: bool, mut rewrite: impl FnMut(Ref<'_>) -> String) -> String {
     let Some(body) = raw.strip_prefix('=') else {
         return raw.to_string();
     };
@@ -326,6 +361,11 @@ fn rewrite_refs(
                 skip_reference(&mut scan);
                 out.push_str(&scan.text_from(start));
             }
+            continue;
+        }
+        if let Some((first, sep, second, after)) = line_range(scan) {
+            scan = after;
+            out.push_str(&rewrite(Ref::Lines(first, &sep, second)));
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -356,11 +396,11 @@ fn rewrite_refs(
             ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
             if let Some(second) = RefToken::parse(&ahead.text_from(end_start)) {
                 scan = ahead;
-                out.push_str(&rewrite(first, Some((&sep, second))));
+                out.push_str(&rewrite(Ref::Range(first, &sep, second)));
                 continue;
             }
         }
-        out.push_str(&rewrite(first, None));
+        out.push_str(&rewrite(Ref::Cell(first)));
     }
     out
 }
@@ -425,6 +465,87 @@ fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
         }
     }
     (scan.bump() == Some('!')).then_some(name)
+}
+
+/// One end of a whole-row (`3`, `$3`) or whole-column (`C`, `$C`) range,
+/// remembering its `$` spelling.
+#[derive(Clone, Copy)]
+struct Line {
+    /// Zero-based row or column.
+    at: u32,
+    rows: bool,
+    abs: bool,
+}
+
+impl Line {
+    /// The line at the scan, `$` included: a row number or column letters.
+    fn parse(scan: &mut Scan<'_>) -> Option<Self> {
+        let abs = scan.peek() == Some('$');
+        if abs {
+            scan.bump();
+        }
+        let start = scan.pos();
+        let rows = scan.peek()?.is_ascii_digit();
+        if rows {
+            scan.skip_while(|c| c.is_ascii_digit());
+        } else {
+            scan.skip_while(|c| c.is_ascii_alphabetic());
+        }
+        let text = scan.text_from(start);
+        let at = if rows {
+            text.parse::<u32>().ok()?.checked_sub(1)?
+        } else if (1..=3).contains(&text.len()) {
+            crate::model::letters_to_col(&text)?
+        } else {
+            return None;
+        };
+        Some(Self { at, rows, abs })
+    }
+
+    /// The line moved by `by` for a copy or fill: an anchored one stays, a
+    /// free one clamps to the grid's start.
+    fn offset(self, by: i64) -> u32 {
+        if self.abs {
+            return self.at;
+        }
+        let moved = i64::from(self.at)
+            .saturating_add(by)
+            .clamp(0, i64::from(u32::MAX));
+        u32::try_from(moved).unwrap_or(self.at)
+    }
+
+    /// Line `at` spelled with this end's `$` anchor.
+    fn render(self, at: u32) -> String {
+        let anchor = if self.abs { "$" } else { "" };
+        if self.rows {
+            format!("{anchor}{}", at.saturating_add(1))
+        } else {
+            format!("{anchor}{}", crate::model::col_to_letters(at))
+        }
+    }
+}
+
+/// A whole-row or whole-column range at the scan (`1:3`, `$A:C`), with the
+/// separator as written and the scan past it; `None` for anything else (a
+/// cell, a number, a name).
+fn line_range(scan: Scan<'_>) -> Option<(Line, String, Line, Scan<'_>)> {
+    if scan.before(scan.pos()).is_some_and(is_name_char) {
+        return None;
+    }
+    let mut ahead = scan;
+    let first = Line::parse(&mut ahead)?;
+    let sep_start = ahead.pos();
+    ahead.skip_while(char::is_whitespace);
+    if ahead.bump() != Some(':') {
+        return None;
+    }
+    ahead.skip_while(char::is_whitespace);
+    let sep = ahead.text_from(sep_start);
+    let second = Line::parse(&mut ahead)?;
+    if second.rows != first.rows || ahead.peek().is_some_and(|c| is_name_char(c) || c == '(') {
+        return None;
+    }
+    Some((first, sep, second, ahead))
 }
 
 /// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
@@ -639,6 +760,57 @@ mod tests {
             assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
             assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
         }
+    }
+
+    #[test]
+    fn whole_rows_and_columns_move_like_ranges() {
+        // Copy/fill: rows shift with the row offset, columns with the column
+        // offset; `$` anchors hold.
+        assert_eq!(offset_refs("=SUM(1:1)", 3, 1), "=SUM(2:2)");
+        assert_eq!(offset_refs("=SUM(A:A)", 1, 3), "=SUM(B:B)");
+        assert_eq!(offset_refs("=SUM($1:3)", 0, 2), "=SUM($1:5)");
+        assert_eq!(offset_refs("=SUM(A:$C)", 2, 0), "=SUM(C:$C)");
+        assert_eq!(offset_refs("=SUM(2 : 4)", 0, -5), "=SUM(1 : 1)");
+        assert_eq!(offset_refs("=SUM(Rates!B:C)", 1, 0), "=SUM(Rates!C:D)");
+        // Numbers, cells and names are not lines.
+        assert_eq!(offset_refs("=1+2*A1", 0, 1), "=1+2*A2");
+        assert_eq!(offset_refs("=A1:B2", 0, 1), "=A2:B3");
+        assert_eq!(offset_refs("=\"1:1\"&A1", 0, 1), "=\"1:1\"&A2");
+
+        // Inserting and deleting: rows move with row edits only, columns
+        // with column edits only, anchored or not.
+        assert_eq!(remap_refs("=SUM(2:3)", GridEdit::InsertRow(0)), "=SUM(3:4)");
+        assert_eq!(
+            remap_refs("=SUM($2:$3)", GridEdit::InsertRow(2)),
+            "=SUM($2:$4)"
+        );
+        assert_eq!(remap_refs("=SUM(2:3)", GridEdit::DeleteRow(1)), "=SUM(2:2)");
+        assert_eq!(
+            remap_refs("=SUM(2:2)", GridEdit::DeleteRow(1)),
+            "=SUM(#REF!)"
+        );
+        assert_eq!(
+            remap_refs("=SUM(2:3)", GridEdit::InsertColumn(0)),
+            "=SUM(2:3)"
+        );
+        assert_eq!(
+            remap_refs("=SUM(B:C)", GridEdit::InsertColumn(0)),
+            "=SUM(C:D)"
+        );
+        assert_eq!(
+            remap_refs("=SUM(B:C)", GridEdit::DeleteColumn(2)),
+            "=SUM(B:B)"
+        );
+        assert_eq!(
+            remap_refs("=SUM(A:A)", GridEdit::DeleteColumn(0)),
+            "=SUM(#REF!)"
+        );
+        assert_eq!(remap_refs("=SUM(B:C)", GridEdit::DeleteRow(0)), "=SUM(B:C)");
+        // Rows inserted on this sheet do not move another sheet's.
+        assert_eq!(
+            remap_refs("=SUM(Rates!2:3)", GridEdit::InsertRow(0)),
+            "=SUM(Rates!2:3)"
+        );
     }
 
     #[test]

@@ -86,7 +86,7 @@ impl Runner for FixtureRunner {
     }
 }
 fn fixture(flatpak: bool) -> (tempfile::TempDir, TransferRequest, FixtureRunner) {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::qualified_tempdir();
     let root = temp.path().canonicalize().unwrap();
     let source = root.join("source");
     let journals = root.join("journals");

@@ -736,7 +736,8 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         let rows = device_fabric_pane_rows(&view, &realtime)
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(index, item)| {
                 let (title, detail, icon, selected, enabled) =
                     self.qs_device_row_face(&view, selected, item);
                 let names = Self::qs_device_row_button_names(item);
@@ -755,6 +756,7 @@ impl ShellOverlayHost {
                         .map_or(HostedActions::None, |key| HostedActions::Select(t(key))),
                 };
                 HostedRow {
+                    key: index.to_string(),
                     title,
                     detail,
                     icon,
@@ -852,6 +854,7 @@ impl ShellOverlayHost {
                     ],
                 );
                 HostedRow {
+                    key: hex::encode(item.id),
                     icon: if item.text_preview.is_some() {
                         ui::icons::Icon::FileText
                     } else {

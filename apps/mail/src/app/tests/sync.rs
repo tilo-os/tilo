@@ -4,7 +4,7 @@ use super::*;
 fn settings_mail_account_connects_after_an_empty_windows_first_sync() {
     let mut host =
         ui::framework::testing::TestApp::<settings::resource::SettingsShell>::new().unwrap();
-    let record = host.person::<PersonAccounts>().unwrap();
+    let record = host.shared_person::<PersonAccounts>().unwrap();
     let mut mail = MailApp::new_first_run();
     let (requests, outgoing) = std::sync::mpsc::channel();
     let (_events, incoming) = std::sync::mpsc::channel();
@@ -88,7 +88,7 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
 
     let mut host =
         ui::framework::testing::TestApp::<settings::resource::SettingsShell>::new().unwrap();
-    let record = host.person::<PersonAccounts>().unwrap();
+    let record = host.shared_person::<PersonAccounts>().unwrap();
     // No mail engine or remote avatars; the account projection and vault
     // are confined to this window's private temporary profile.
     let mut mail = MailApp::new_first_run();

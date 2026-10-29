@@ -230,7 +230,8 @@ impl RoamingProvenance {
         }
         for setting in &mut self.settings {
             if setting.key.len() > MAX_TEXT_BYTES
-                || crate::continuity::registered(&setting.key).is_none()
+                || crate::placement::holder_of_key(&setting.key)
+                    != Some(crate::placement::Holder::Person)
                 || setting.alternatives.len() > MAX_ORIGINS
                 || !valid_origin(&setting.winner)
                 || !setting.alternatives.iter().all(valid_origin)

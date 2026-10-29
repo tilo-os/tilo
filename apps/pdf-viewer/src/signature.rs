@@ -1,7 +1,7 @@
 //! The signature a person signs with: the name they sign as and the strokes
-//! they drew, composed once and reused on every document. It is theirs alone
-//! — a record in their own room that follows them to their other devices and
-//! never reaches a collaborator on a document they review together.
+//! they drew, composed once and reused on every document: a record of the
+//! viewer's beside the document, kept in the workspace it is open in and
+//! never part of the document.
 
 use ui::tilo_resource::{self, Model, ModelError, Refusal, resource};
 

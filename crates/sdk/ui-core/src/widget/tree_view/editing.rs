@@ -118,7 +118,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             input.apply_layout_external(rect);
         }
         self.focused = Some(TreeRowKey::Node(id));
-        self.rename = Some(RenameField { id, input });
+        self.rename = Some(Box::new(RenameField { id, input }));
         true
     }
 

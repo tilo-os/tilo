@@ -417,7 +417,7 @@ impl Whole {
             .and_then(|(app, _)| snapshot.view(app));
         let mut tree = publish_record(&self.types, &self.type_name, &self.doc, &label);
         if let (Some(view), Some(schema)) = (view, schema) {
-            for child in indexed_items(&self.types, &view, &self.doc, schema) {
+            for child in indexed_items(&self.types, &view, snapshot, &self.doc, schema) {
                 tree = tree.with_child(child);
             }
         }
@@ -434,6 +434,7 @@ impl Whole {
 fn indexed_items(
     types: &ActionTypes,
     view: &crate::index::view::View<'_>,
+    reader: &crate::store::Snapshot,
     parent: &str,
     schema: &crate::schema::TypeSchema,
 ) -> Vec<ResourceSpec> {
@@ -451,7 +452,7 @@ fn indexed_items(
                 break;
             };
             let path = crate::index::view::child(parent, &field.id, &id);
-            if let Some(item) = indexed_item(types, view, &path, field.record.as_deref()) {
+            if let Some(item) = indexed_item(types, view, reader, &path, field.record.as_deref()) {
                 out.push(item);
             }
         }
@@ -460,10 +461,12 @@ fn indexed_items(
 }
 
 /// The item at `path`, as the index holds it, published with its type's actions and its own
-/// items; `item_type` is its collection's item type, for an item the index holds no type of.
+/// items; `item_type` is its collection's item type, for an item the index holds no type of. Its
+/// label is its first text as the store's reader reads it (`reader`, [`crate::reading`]).
 fn indexed_item(
     types: &ActionTypes,
     view: &crate::index::view::View<'_>,
+    reader: &crate::store::Snapshot,
     path: &str,
     item_type: Option<&str>,
 ) -> Option<ResourceSpec> {
@@ -476,9 +479,10 @@ fn indexed_item(
         .first_text(path, schema)
         .ok()
         .flatten()
-        .map_or_else(|| schema.name.clone(), |(text, _)| text);
+        .and_then(|(text, _)| reader.said(path, text))
+        .unwrap_or_else(|| schema.name.clone());
     let mut resource = types.resource(&schema.name, path, label, false);
-    for child in indexed_items(types, view, path, schema) {
+    for child in indexed_items(types, view, reader, path, schema) {
         resource = resource.with_child(child);
     }
     Some(resource)
@@ -1118,7 +1122,7 @@ impl Published<'_> {
         let schema = self.schema_at(path)?;
         let snapshot = self.store.snapshot();
         let view = snapshot.view(&self.types.meta().app)?;
-        indexed_item(self.types, &view, path, Some(&schema.id))
+        indexed_item(self.types, &view, &snapshot, path, Some(&schema.id))
     }
 }
 

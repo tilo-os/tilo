@@ -2,13 +2,13 @@
 # review a change here like an API change (docs/architecture/compatibility.md).
 # Everything above [schema] is authored; [schema] and `version` are written.
 
-# App ↔ app host: the `app-host` service the launcher hands the Store, the
-# Browser and Settings, and nothing else. The Store's package-management door
-# (Cap'n Proto) and the runtime and language-pack requests (length-prefixed
-# JSON) share its socket and its one number, apart from the runtime interface
-# every app speaks.
+# App ↔ app host: the `app-host` service the launcher hands the Store and
+# Settings, and nothing else. The Store's package-management door (Cap'n
+# Proto) and Settings' language-pack requests (length-prefixed JSON) share its
+# socket and its one number, apart from the runtime interface every app
+# speaks.
 name = "app-host"
-version = 3
+version = 4
 version_const = "crates/packaging/app-host/src/lib.rs:APP_HOST_INTERFACE_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -27,13 +27,9 @@ capnp = ["crates/packaging/app-host/schema/app-host.capnp"]
 "Phase::installing" = "unit"
 "Phase::preparing" = "unit"
 "Request" = "enum internal tag=request"
-"Request::ensure" = "struct"
-"Request::ensure.runtime" = "String"
 "Request::install_language_pack" = "struct"
 "Request::install_language_pack.locale" = "String"
 "Request::language_packs" = "unit"
-"Request::relaunch" = "struct"
-"Request::relaunch.uri" = "Option<String> optional"
 "Response" = "enum internal tag=state"
 "Response::failed" = "struct"
 "Response::failed.message" = "String"
@@ -46,15 +42,12 @@ capnp = ["crates/packaging/app-host/schema/app-host.capnp"]
 "Response::language_packs.offered" = "Vec<OfferedLanguage>"
 "Response::refused" = "struct"
 "Response::refused.message" = "String"
-"Response::relaunched" = "unit"
 "capnp:app-host.capnp:AppHost" = "interface"
-"capnp:app-host.capnp:AppHost.acquireOptionalRuntime" = "@23 (reviewJson:Text,progress:RuntimeProgress)->()"
 "capnp:app-host.capnp:AppHost.diskUsage" = "@7 ()->(totalBytes:UInt64,byPinning:ByPinning)"
 "capnp:app-host.capnp:AppHost.flatpak" = "@10 (action:FlatpakAction,appId:Text,reference:Data)->(status:Text)"
 "capnp:app-host.capnp:AppHost.flatpakCatalogue" = "@15 (remote:Text,userManaged:Bool)->(rows:Text,refusal:CatalogueRefusal,detail:Text)"
 "capnp:app-host.capnp:AppHost.flatpakInstallRemote" = "@16 (remote:Text,appId:Text,branch:Text)->(status:Text)"
 "capnp:app-host.capnp:AppHost.flatpakStatus" = "@13 ()->(available:Bool,installed:Text,remotes:Text)"
-"capnp:app-host.capnp:AppHost.inspectOptionalRuntime" = "@22 (appId:Text,consumerRoot:Data,runtime:Text)->(reviewJson:Text)"
 "capnp:app-host.capnp:AppHost.install" = "@6 (tappBytes:Data,pinning:Pinning,expectedRoot:Data,expectedPublisher:Data,expectedAppId:Text,expectedVersion:Text,expectedSizeBytes:UInt64)->(id:Data)"
 "capnp:app-host.capnp:AppHost.installLocal" = "@19 (tappBytes:Data,reviewedRoot:Text,reviewedArchiveHash:Text)->(id:Data)"
 "capnp:app-host.capnp:AppHost.installOffer" = "@14 (registry:Text,appId:Text,version:Text,expectedRoot:Data,expectedPublisher:Data,expectedSizeBytes:UInt64)->(id:Data)"
@@ -70,7 +63,9 @@ capnp = ["crates/packaging/app-host/schema/app-host.capnp"]
 "capnp:app-host.capnp:AppHost.repositories" = "@12 ()->(json:Text)"
 "capnp:app-host.capnp:AppHost.resolve" = "@1 (id:Data)->(entry:PackageEntry)"
 "capnp:app-host.capnp:AppHost.retiredInspectionCatalogueOrdinalCollision" = "@20 ()->()"
+"capnp:app-host.capnp:AppHost.retiredRuntimeAcquisition" = "@23 ()->()"
 "capnp:app-host.capnp:AppHost.retiredRuntimeOrdinalCollision" = "@21 ()->()"
+"capnp:app-host.capnp:AppHost.retiredRuntimeReview" = "@22 ()->()"
 "capnp:app-host.capnp:AppHost.reviewLocal" = "@18 (tappBytes:Data)->(reviewJson:Text)"
 "capnp:app-host.capnp:AppHost.runtimeOffer" = "@24 (registry:Text,runtime:Text)->(offer:Text)"
 "capnp:app-host.capnp:AppHost.unpin" = "@3 (id:Data)->()"
@@ -104,5 +99,3 @@ capnp = ["crates/packaging/app-host/schema/app-host.capnp"]
 "capnp:app-host.capnp:RemoteAction.disable" = "@3"
 "capnp:app-host.capnp:RemoteAction.enable" = "@2"
 "capnp:app-host.capnp:RemoteAction.remove" = "@1"
-"capnp:app-host.capnp:RuntimeProgress" = "interface"
-"capnp:app-host.capnp:RuntimeProgress.update" = "@0 (installing:Bool,received:UInt64,total:UInt64,totalKnown:Bool)->()"

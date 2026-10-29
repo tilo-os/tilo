@@ -699,7 +699,7 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.watching       `true`: the page only watches `room`, as a
  *                               public room's spectator (`spectate`). It
  *                               reads the room and what its members seal,
- *                               with keys the room's steward hands it, and
+ *                               with keys the room's node hands it, and
  *                               writes nothing: no channel access request,
  *                               live join, presence, voice or `here`.
  * @param options.background     `true`: the page keeps this peer beside the

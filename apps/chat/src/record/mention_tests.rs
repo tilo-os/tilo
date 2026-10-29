@@ -57,6 +57,7 @@ fn a_mention_in_a_message_tells_the_person_named_once_and_opens_the_message() {
         doc: &part,
         tree: Some(&chat),
         quiet: false,
+        read: &ui::mentions::reading_nothing,
     };
 
     let mut inbox = MentionInbox::new([BO.to_owned()]);

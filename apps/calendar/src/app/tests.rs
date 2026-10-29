@@ -358,7 +358,13 @@ fn published_resource(
     if id == "calendar.calendar" {
         return Some(published_root(doc));
     }
-    if let Some(row) = app.collection_rows().into_iter().find(|row| row.id() == id) {
+    let calendar = app
+        .state()
+        .calendars
+        .iter()
+        .map(crate::actions::calendar_collection_row)
+        .find(|row| row.id() == id);
+    if let Some(row) = calendar {
         return Some(row.into_resource());
     }
     Calendar::child(&crate::resource::read_doc(doc), id)

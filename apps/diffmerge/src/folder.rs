@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use tilo_files::{Kind, VPath};
+use ui::tilo_resource::AbsolutePath;
 
 /// Most differing entries a comparison keeps.
 pub const MAX_ENTRIES: usize = 5_000;
@@ -84,19 +85,22 @@ impl FolderComparison {
         )
     }
 
-    /// The two files `entry` names, as paths on this device.
-    pub fn paths(&self, entry: &FolderEntry) -> (Option<String>, Option<String>) {
-        let left = (entry.kind != FolderKind::Removed).then(|| join(&self.left_root, &entry.path));
-        let right = (entry.kind != FolderKind::Added).then(|| join(&self.right_root, &entry.path));
+    /// The two files `entry` names, as paths on this device. The roots
+    /// are the absolute folders [`compare`] took, so a path under one is
+    /// absolute too.
+    pub fn paths(&self, entry: &FolderEntry) -> (Option<AbsolutePath>, Option<AbsolutePath>) {
+        let left = (entry.kind != FolderKind::Removed)
+            .then(|| join(&self.left_root, &entry.path))
+            .flatten();
+        let right = (entry.kind != FolderKind::Added)
+            .then(|| join(&self.right_root, &entry.path))
+            .flatten();
         (left, right)
     }
 }
 
-fn join(root: &str, relative: &str) -> String {
-    Path::new(root)
-        .join(relative)
-        .to_string_lossy()
-        .into_owned()
+fn join(root: &str, relative: &str) -> Option<AbsolutePath> {
+    AbsolutePath::new(Path::new(root).join(relative)).ok()
 }
 
 /// The name a root is listed under: its own folder name.
@@ -113,7 +117,7 @@ pub fn root_label(path: &Path) -> String {
 ///
 /// The reason a root could not be read: it is missing, or a folder on the
 /// way is not readable.
-pub fn compare(left: &Path, right: &Path) -> Result<FolderComparison, String> {
+pub fn compare(left: &AbsolutePath, right: &AbsolutePath) -> Result<FolderComparison, String> {
     let (left_tree, left_truncated) = walk(left)?;
     let (right_tree, right_truncated) = walk(right)?;
     let same_content = |relative: &str| -> bool {
@@ -130,9 +134,9 @@ pub fn compare(left: &Path, right: &Path) -> Result<FolderComparison, String> {
     let truncated = left_truncated || right_truncated || entries.len() >= MAX_ENTRIES;
     Ok(FolderComparison {
         left_label: root_label(left),
-        left_root: left.to_string_lossy().into_owned(),
+        left_root: left.to_string_lossy(),
         right_label: root_label(right),
-        right_root: right.to_string_lossy().into_owned(),
+        right_root: right.to_string_lossy(),
         entries,
         truncated,
     })
@@ -307,8 +311,8 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        let left = base.join("left");
-        let right = base.join("right");
+        let left = AbsolutePath::new(base.join("left")).unwrap();
+        let right = AbsolutePath::new(base.join("right")).unwrap();
         for tree in [&left, &right] {
             std::fs::create_dir_all(tree.join("src")).unwrap();
         }
@@ -341,7 +345,7 @@ mod tests {
         let (left_path, right_path) = comparison.paths(&comparison.entries[1]);
         assert_eq!(
             left_path.as_deref(),
-            Some(left.join("src/edited.rs").to_string_lossy().as_ref()),
+            Some(left.join("src/edited.rs").as_path()),
             "the entry names the file in each tree"
         );
         assert!(right_path.is_some());
@@ -352,7 +356,8 @@ mod tests {
     /// A root that is not there is a failure, not an empty listing.
     #[test]
     fn a_missing_folder_fails() {
-        let missing = std::env::temp_dir().join("tilo-diffmerge-no-such-folder");
+        let missing =
+            AbsolutePath::new(std::env::temp_dir().join("tilo-diffmerge-no-such-folder")).unwrap();
         let error = compare(&missing, &missing).unwrap_err();
         assert!(error.contains("tilo-diffmerge-no-such-folder"), "{error}");
     }

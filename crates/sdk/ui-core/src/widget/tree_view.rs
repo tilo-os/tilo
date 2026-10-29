@@ -959,7 +959,7 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     row_gap: f64,
     on_rename: Option<Box<dyn FnMut(NodeId, String)>>,
     rename_on_double_click: bool,
-    rename: Option<editing::RenameField>,
+    rename: Option<Box<editing::RenameField>>,
     tab_indents: bool,
     on_delete: Option<Box<dyn FnMut(NodeId)>>,
     context_menu_items: Option<TreeContextMenu<M>>,

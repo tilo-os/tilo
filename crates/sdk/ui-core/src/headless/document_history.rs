@@ -5,9 +5,9 @@ use super::{
     ElementState, FrameHarness, HashMap, InspectionSnapshot, Key, NamedKey, NodeId, Point, Rect,
     Widget, WindowEvent, collect_inspection,
 };
-use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
+use crate::host_core::HostCore as _;
+use crate::standalone_history::HistoryReadContext;
 use crate::standalone_history_host::HISTORY_OPERATION;
-use crate::widget::layout::CompositionFocus;
 
 impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
@@ -38,59 +38,6 @@ impl FrameHarness {
         }
     }
 
-    fn history_context(&self) -> HistoryReadContext<'_> {
-        HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permissions,
-        }
-    }
-
-    fn with_history<R>(
-        &mut self,
-        visit: impl FnOnce(
-            &mut crate::standalone_history_host::StandaloneHistoryHost,
-            &HistoryReadContext<'_>,
-        ) -> R,
-    ) -> R {
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permissions,
-        };
-        visit(&mut self.document_history, &context)
-    }
-
-    fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        crate::standalone_history_host::capture_history_target(
-            self.focused
-                .and_then(|node| self.bindings.binding_for(node))
-                .or_else(|| self.root.callback_binding()),
-            &self.bindings,
-            self.node_map.keys().copied(),
-            self.records.as_ref(),
-            self.state.document_identity(),
-        )
-    }
-
-    pub(super) fn remember_history_content(&mut self) {
-        if !self.history_chrome_enabled
-            || self.focused.is_some_and(|node| self.is_history_node(node))
-        {
-            return;
-        }
-        let target = self.capture_history_target();
-        let focus = CompositionFocus::capture_live(self.root.as_ref());
-        self.document_history.remember_content_target(target, focus);
-    }
-
-    pub(super) fn is_history_node(&self, node: NodeId) -> bool {
-        self.history_layout
-            .is_some_and(|layout| layout.contains(&self.taffy, node))
-    }
-
     pub(super) fn try_presentation<R>(
         &self,
         visit: impl FnOnce(&dyn Widget, NodeId) -> R,
@@ -100,7 +47,7 @@ impl FrameHarness {
         };
         self.document_history
             .with_validated_presentation(
-                &self.history_context(),
+                &self.tree().history_context(),
                 self.root.as_ref(),
                 layout,
                 Rect::new(
@@ -199,7 +146,7 @@ impl FrameHarness {
             return Ok(Vec::new());
         };
         self.document_history
-            .validated_local_resources(&self.history_context(), layout)
+            .validated_local_resources(&self.tree().history_context(), layout)
             .map_err(|error| format!("History is unavailable: {error:?}"))
     }
 
@@ -532,12 +479,7 @@ impl FrameHarness {
                 .is_ok()
         });
         self.history_layout = Some(layout);
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permissions,
-        };
+        let context = HistoryReadContext::of(&self.state, self.records.as_ref(), &self.permissions);
         let chrome = self
             .document_history
             .presentation_roots(&context)
@@ -656,7 +598,7 @@ impl FrameHarness {
         // Input must not operate a frame whose captured document is no longer readable.
         if self
             .document_history
-            .validate_presentation(&self.history_context(), layout)
+            .validate_presentation(&self.tree().history_context(), layout)
             .is_err()
         {
             self.prepare_history_frame();

@@ -7,7 +7,7 @@
 //!
 //! - **Files** are read through [`Host::metadata`], [`Host::read_dir`] and
 //!   [`Host::open_read`]; a host checks its grants there. A redirection that
-//!   writes a file asks [`Host::open_write`].
+//!   writes a file asks [`Host::open_write`], naming the run it is part of.
 //! - **The environment's file actions** (`cp`, `mv`, `rm`, …) go to
 //!   [`Host::file_action`] whole, as their command lines: each is one action
 //!   on the environment, checked and undone there.
@@ -124,7 +124,15 @@ pub trait Host: Send + Sync {
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>>;
 
-    fn open_write(&self, path: &Path, mode: WriteMode) -> io::Result<Box<dyn Write + Send>>;
+    /// A file a redirection (or `tee`, `sort -o`) writes, as part of `run`
+    /// when the shell is running one: what it writes is one change of that
+    /// run's.
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        run: Option<&Run>,
+    ) -> io::Result<Box<dyn Write + Send>>;
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
         Err(io::Error::new(

@@ -541,7 +541,6 @@ params = [
 kind = "chat.drafts"
 label = "Chat drafts"
 version = 1
-person = true
 fields = [
   { path = "drafts", type = "BTreeMap<String, RichText>" },
 ]

@@ -37,7 +37,7 @@ pub async fn member_device(
 }
 
 /// A member device that holds one record's channel keys and writes the
-/// record sealed, as a page does once the room's steward admitted it.
+/// record sealed, as a page does once a participant admitted it.
 pub struct SealingMember {
     key: SigningKey,
     keys: ChannelContentKeys,
@@ -64,7 +64,7 @@ impl SealingMember {
             record: record.into(),
         };
         let keys = rooms
-            .steward_endpoint_keys(&route, true)
+            .own_endpoint_keys(&route, true)
             .await
             .unwrap()
             .unwrap();
@@ -99,7 +99,7 @@ impl SealingMember {
             record: record.into(),
         };
         let keys = rooms
-            .steward_endpoint_keys(&route, true)
+            .own_endpoint_keys(&route, true)
             .await
             .unwrap()
             .unwrap();

@@ -5,8 +5,10 @@
 # into the cache dir even in the hermetic default build.
 #
 # Pages render in the Chromium engine, its own signed runtime bundle
-# (ui::webview::chromium::runtime). The launcher mounts it when it is
-# installed; without it the page area offers to install it.
+# (ui::webview::chromium::runtime). Browser requires it (`optional-runtimes`
+# is the key of the runtimes an app requires): installing or updating
+# Browser installs the engine in the same step or not at all, and the
+# launcher refuses to start Browser without it.
 
 
 [package]
@@ -72,7 +74,6 @@ mode = "host"
 collab = "optional@11"
 tilo-fs = "optional@11"
 shell-ui = "optional@18"
-app-host = "optional@3"
 
 [entrypoint]
 bin             = "bin/browser"

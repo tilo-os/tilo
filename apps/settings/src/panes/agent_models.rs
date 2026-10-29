@@ -74,7 +74,49 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AgentModelsArea> 
     app.areas().find()
 }
 
-pub use crate::prefs::AgentProviders;
+pub use crate::prefs::{AgentProviders, HostedAgentProviders};
+
+/// The agent providers as Settings follows them: this device's and the
+/// person's hosted ones, read and stored as one configuration.
+pub(crate) struct Providers {
+    device: Followed<AgentProviders>,
+    hosted: Followed<HostedAgentProviders>,
+}
+
+impl Providers {
+    fn new(cx: &PaneCx) -> Self {
+        Self {
+            device: cx.follow::<AgentProviders>(),
+            hosted: cx.follow::<HostedAgentProviders>(),
+        }
+    }
+
+    /// The whole configuration.
+    pub(crate) fn config(&self) -> ProviderConfig {
+        settings_sections::providers::merged(self.device.get(), self.hosted.get())
+    }
+
+    /// Follow a change made elsewhere; whether there was one.
+    fn refresh(&mut self) -> bool {
+        let device = self.device.refresh();
+        let hosted = self.hosted.refresh();
+        device || hosted
+    }
+
+    /// Store `config`: this device's providers in its section, the hosted
+    /// ones in the person's.
+    fn store(&mut self, config: ProviderConfig) -> std::io::Result<()> {
+        let (local, hosted) = config.stored();
+        self.device
+            .settings()
+            .update(|providers| providers.config = local)?;
+        self.hosted
+            .settings()
+            .update(|providers| providers.hosted = hosted)?;
+        self.refresh();
+        Ok(())
+    }
+}
 
 /// Local models on this device and the person's model providers.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -785,11 +827,10 @@ impl AgentModelsRead {
     }
 }
 
-/// The ids of the hosted providers in `providers`, whose keys this
-/// device's vault holds or not.
-fn hosted_profiles(providers: &AgentProviders) -> Vec<String> {
-    providers
-        .config
+/// The ids of the hosted providers in `config`, whose keys this device's
+/// vault holds or not.
+fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
+    config
         .profiles
         .iter()
         .filter(|profile| profile.location == EndpointLocation::Hosted)
@@ -833,7 +874,7 @@ impl AgentModelsArea {
             return false;
         }
         let control = self.control();
-        let hosted = hosted_profiles(self.cx.follow::<AgentProviders>().get());
+        let hosted = hosted_profiles(&Providers::new(&self.cx).config());
         self.read
             .start(move || AgentModelsRead::of(control.as_ref(), hosted))
     }
@@ -949,7 +990,7 @@ pub struct AgentModelsModel {
     manager_available: bool,
     /// Whether the local provider profile follows what the manager runs.
     follow_local_profile: bool,
-    providers: Followed<AgentProviders>,
+    pub(crate) providers: Providers,
     /// Whether the download of the recommended model is being reviewed.
     reviewing: LocalState<bool>,
     /// The in-process model whose download is being reviewed.
@@ -992,7 +1033,7 @@ impl std::ops::DerefMut for AgentModelsModel {
 impl AgentModelsModel {
     /// The model over `control`, starting the host's asynchronous provider read.
     fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let hosted = hosted_profiles(cx.follow::<AgentProviders>().get());
+        let hosted = hosted_profiles(&Providers::new(&cx).config());
         let read = AgentModelsRead::of(control.as_ref(), hosted);
         Self::from_read(cx, control, read)
     }
@@ -1014,10 +1055,10 @@ impl AgentModelsModel {
         let panel = ProviderPanel::new(
             cx.clone(),
             cx.provider_admin.clone(),
-            cx.follow::<AgentProviders>().get().config.clone(),
+            Providers::new(&cx).config(),
         );
         let mut model = Self {
-            providers: cx.follow::<AgentProviders>(),
+            providers: Providers::new(&cx),
             cx,
             control,
             snapshot,
@@ -1224,7 +1265,7 @@ impl AgentModelsModel {
         if self.cx.provider_admin.is_available() || !self.follow_local_profile {
             return;
         }
-        let config = &self.providers.get().config;
+        let config = self.providers.config();
         let existing = config
             .profiles
             .iter()
@@ -1234,11 +1275,10 @@ impl AgentModelsModel {
             return;
         };
         if existing.as_ref() != Some(&profile) {
-            let _ = self.providers.settings().update(|providers| {
-                providers.config.upsert(profile);
-            });
-            self.providers.refresh();
-            self.panel.offline_config = self.providers.get().config.clone();
+            let mut config = config;
+            config.upsert(profile);
+            let _ = self.providers.store(config);
+            self.panel.offline_config = self.providers.config();
         }
     }
 
@@ -1528,7 +1568,7 @@ impl AgentModelsModel {
 
     fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
         // Offline metadata remains usable, but API-key custody is never simulated.
-        self.panel.offline_config = self.providers.get().config.clone();
+        self.panel.offline_config = self.providers.config();
         let mut vertex_saved = None;
         let mut limits_ack = None;
         let config = match effect {
@@ -1538,7 +1578,7 @@ impl AgentModelsModel {
                 location,
                 model,
             } => {
-                let mut config = self.providers.get().config.clone();
+                let mut config = self.providers.config();
                 vertex_saved = Some(self.set_vertex_provider(
                     &mut config,
                     provider,
@@ -1547,20 +1587,19 @@ impl AgentModelsModel {
                 config.sanitised()
             }
             AgentModelsEffect::SetGeminiProvider { provider, project } => {
-                let mut config = self.providers.get().config.clone();
+                let mut config = self.providers.config();
                 vertex_saved = Some(self.set_gemini_provider(&mut config, provider, &project)?);
                 config.sanitised()
             }
             AgentModelsEffect::RemoveProvider { provider }
                 if self
                     .providers
-                    .get()
-                    .config
+                    .config()
                     .profiles
                     .iter()
                     .any(|profile| profile.id == provider && profile.sign_in.is_some()) =>
             {
-                let mut config = self.providers.get().config.clone();
+                let mut config = self.providers.config();
                 self.remove_vertex_provider(&mut config, &provider)?;
                 config.sanitised()
             }
@@ -1571,11 +1610,9 @@ impl AgentModelsModel {
             }
         };
         self.providers
-            .settings()
-            .update(|providers| providers.config = config)
+            .store(config)
             .map_err(|error| error.to_string())?;
-        self.providers.refresh();
-        self.panel.offline_config = self.providers.get().config.clone();
+        self.panel.offline_config = self.providers.config();
         if let Some(id) = vertex_saved {
             self.vertex_saved(&id);
         }
@@ -2440,7 +2477,7 @@ impl PaneModel for AgentModelsModel {
             }
         }
         if !self.cx.provider_admin.is_available() && self.providers.refresh() {
-            self.panel.offline_config = self.providers.get().config.clone();
+            self.panel.offline_config = self.providers.config();
             self.read_keys();
             self.read_vertex_keys();
         }

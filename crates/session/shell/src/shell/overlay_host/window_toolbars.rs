@@ -128,6 +128,30 @@ impl ShellOverlayHost {
     /// `app_id` (launched as record `instance`) asked for its window's
     /// search: its Ctrl+F, or its Ctrl+H (`opening`). Only the tab the
     /// window shows searches.
+    /// Open the session's search the way an app running as its own process
+    /// asked (Ctrl+K in it, a search button, one of its actions' arguments),
+    /// as for an app this process hosts ([`Self::open_app_search`]): the
+    /// session has one search, and the app opens none of its own.
+    pub(crate) fn open_process_app_search(
+        &mut self,
+        app_id: &str,
+        instance: Option<u64>,
+        request: &ui::search::SearchRequest,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let anchor = {
+            let state = chrome.borrow();
+            crate::shell::app_tabs::anchor_for_app(&state.tree(), app_id, instance)
+        };
+        let Some(anchor) = anchor else {
+            return false;
+        };
+        self.open_app_search(anchor.tab, request);
+        true
+    }
+
     pub(crate) fn open_app_window_search(
         &mut self,
         app_id: &str,
@@ -228,6 +252,9 @@ impl ShellOverlayHost {
             }
             Message::OpenSearch { instance, opening } => {
                 self.open_app_window_search(app_id, *instance, *opening)
+            }
+            Message::OpenAppSearch { instance, request } => {
+                self.open_process_app_search(app_id, *instance, request)
             }
             _ => return None,
         })

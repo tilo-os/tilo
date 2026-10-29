@@ -82,13 +82,11 @@ pub struct BrokerChannels {
     pub states: HashMap<ArtifactId, ChannelState>,
     pub audit: AuditLog,
     pub redactions: RedactionLog,
-    /// Registered per-route MLS journals. Their persisted gate is consulted
-    /// on every local and peer document ingress; the broker holds no MLS key.
-    pub governance: HashMap<ChannelId, channel_crypto::GovernanceJournal>,
     /// Ingress gates of the channels this device's channel encryption
-    /// service stewards or takes part in. Registered before the first op of
-    /// a channel is accepted and refreshed on every membership change; the
-    /// broker holds the gate, never a key.
+    /// service takes part in, consulted on every local and peer document
+    /// ingress. Registered before the first op of a channel is accepted and
+    /// refreshed on every membership change; the broker holds the gate,
+    /// never a key.
     pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
     /// Durable history of content-key ciphertext, so members (including
     /// ones added later) can page back past the in-memory window.
@@ -125,41 +123,30 @@ impl BrokerChannels {
         self.gates.insert(channel, gate);
     }
 
-    /// A route with neither a registered journal nor a gate has not been
-    /// opened encrypted on this device yet. Once either closes its plaintext
-    /// gate, no plaintext envelope (and no content sealed before the latest
-    /// membership change) can pass either ingress path, including after a
-    /// restart.
+    /// A route with no gate has not been opened encrypted on this device
+    /// yet. Once its gate closes plaintext, no plaintext envelope (and no
+    /// content sealed before the latest membership change) can pass either
+    /// ingress path, including after a restart.
     pub fn document_encryption_allowed(
         &self,
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.governance
+        self.gates
             .get(&channel)
-            .is_none_or(|journal| journal.accepts_document_encryption(encryption, channel))
-            && self
-                .gates
-                .get(&channel)
-                .is_none_or(|gate| gate.accepts(encryption, channel))
+            .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
-    /// The verdict on an op for `channel` from its journal's gate and the
-    /// registered one ([`channel_crypto::admission`]). This broker holds
-    /// every channel's whole governance state, so a channel with no gate is
-    /// one that is not encrypted.
+    /// The verdict on an op for `channel` from its registered gate
+    /// ([`channel_crypto::admission`]). This broker holds every channel's
+    /// whole governance state, so a channel with no gate is one that is not
+    /// encrypted.
     pub fn document_admission(
         &self,
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
-        let gates = self
-            .governance
-            .get(&channel)
-            .map(channel_crypto::GovernanceJournal::gate)
-            .into_iter()
-            .chain(self.gates.get(&channel).copied());
-        channel_crypto::admission(gates, true, channel, encryption)
+        channel_crypto::admission(self.gates.get(&channel).copied(), true, channel, encryption)
     }
 
     /// [`Self::document_encryption_allowed`] for history a workspace host
@@ -169,13 +156,9 @@ impl BrokerChannels {
         channel: ChannelId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.governance
+        self.gates
             .get(&channel)
-            .is_none_or(|journal| journal.gate().accepts_history(encryption, channel))
-            && self
-                .gates
-                .get(&channel)
-                .is_none_or(|gate| gate.accepts_history(encryption, channel))
+            .is_none_or(|gate| gate.accepts_history(encryption, channel))
     }
 
     /// Append an op validated on `route` to durable history when it belongs

@@ -374,13 +374,13 @@ fn opening_another_document_clears_save_recovery_only_after_a_successful_read() 
     let destination = dir.join("missing/a.typ");
     let other = dir.join("b.typ");
     let save = TypstEffect::Save {
-        path: Some(destination.to_string_lossy().into_owned()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(destination.clone()).unwrap()),
     };
     assert!(app.effect_confirmed(&save).is_err());
     app.settle();
     assert!(
         app.effect_confirmed(&TypstEffect::OpenFile {
-            path: Some(other.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(other.clone()).unwrap()),
         })
         .is_err()
     );
@@ -395,7 +395,7 @@ fn opening_another_document_clears_save_recovery_only_after_a_successful_read() 
     assert_eq!(retry, destination);
     std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
     app.effect_confirmed(&TypstEffect::Save {
-        path: Some(retry.to_string_lossy().into_owned()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(retry).unwrap()),
     })
     .unwrap();
     app.settle();
@@ -411,7 +411,7 @@ fn opening_another_document_clears_save_recovery_only_after_a_successful_read() 
     app.settle();
     std::fs::write(&other, "= Document B").unwrap();
     app.effect_confirmed(&TypstEffect::OpenFile {
-        path: Some(other.to_string_lossy().into_owned()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(other.clone()).unwrap()),
     })
     .unwrap();
     app.settle();
@@ -458,7 +458,7 @@ fn pdf_export_uses_the_live_source_before_the_editor_pulls_it() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("report.pdf");
     std::fs::write(&path, b"previous export").unwrap();
-    app.pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
+    app.state().pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
     app.sync(&doc, &ROOT);
     assert_eq!(
         std::fs::read(&path).unwrap(),

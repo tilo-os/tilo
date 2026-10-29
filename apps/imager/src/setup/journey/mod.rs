@@ -95,7 +95,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, ActionRef, Binds, Effect};
+use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
@@ -128,7 +128,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     SelectWindowsRoot {
         #[param(secret, "Absolute independently selected directory")]
-        source: String,
+        source: AbsolutePath,
         role: String,
     },
     /// Open the exact granted source folder in the platform file manager.
@@ -175,7 +175,7 @@ pub enum InstallerPreviewEffect {
             secret,
             "Absolute selected backup destination, separate from the image target"
         )]
-        destination: String,
+        destination: AbsolutePath,
     },
     /// Continue an unfinished preparation after verifying its exact identity custody.
     #[effect(returns)]
@@ -193,7 +193,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     SelectPreviewAvatar {
         #[param(secret, "Absolute selected image file")]
-        source_file: String,
+        source_file: AbsolutePath,
     },
     /// Choose the existing identity backup through the system file picker.
     #[effect(attended, returns)]
@@ -202,7 +202,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     SelectExistingIdentityBackup {
         #[param(secret, "Absolute selected identity backup")]
-        source_file: String,
+        source_file: AbsolutePath,
     },
     /// Enter the backup passphrase in private device-local memory.
     #[effect(returns)]
@@ -256,7 +256,7 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     ImportTargetHardwareReport {
         #[param(secret, "Absolute selected hardware report file")]
-        source_file: String,
+        source_file: AbsolutePath,
     },
     /// Stop using an imported report and name a model instead.
     #[effect(returns)]
@@ -282,7 +282,7 @@ pub enum InstallerPreviewEffect {
     /// Create the chosen new identity in fresh, durable private custody.
     #[effect(returns)]
     CreatePreparedIdentity {
-        private_custody: String,
+        private_custody: AbsolutePath,
         avatar_color: String,
     },
     /// Update the prepared identity's public profile, retaining its signing key.
@@ -290,24 +290,24 @@ pub enum InstallerPreviewEffect {
     UpdatePreparedIdentity { avatar_color: String },
     /// Export that identity encrypted with the chosen destination password.
     #[effect(returns)]
-    ExportPreparedIdentity { destination: String },
+    ExportPreparedIdentity { destination: AbsolutePath },
     /// Export selected prepared accounts in an encrypted, operation-bound artifact.
     #[effect(returns)]
     ExportPreparedAccounts {
-        destination: String,
+        destination: AbsolutePath,
         setup_binding: String,
     },
     /// Package the chosen identity and selected accounts for installation.
     #[effect(returns)]
     ExportPreparedSetup {
-        destination: String,
+        destination: AbsolutePath,
         setup_binding: String,
     },
     /// Export the encrypted, source-checked preparation without installing it.
     #[effect(returns)]
     ExportPreparedBelongings {
         #[param(secret, "Absolute private destination for the encrypted preparation")]
-        destination: String,
+        destination: AbsolutePath,
     },
     /// Include a migration category.
     #[effect(returns)]
@@ -391,14 +391,14 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     ImportAccount {
         candidate: String,
-        target_home: String,
+        target_home: AbsolutePath,
     },
     /// Begin a provider's consent flow; returns its public consent URL.
     #[effect(attended, returns)]
     ConnectAccount {
         provider: String,
         candidate: Option<String>,
-        target_home: String,
+        target_home: AbsolutePath,
     },
     /// Complete the consent flow using its private authorization handle.
     #[effect(returns)]
@@ -410,15 +410,15 @@ pub enum InstallerPreviewEffect {
     /// Retained copy receipts are revalidated after restarting the installer.
     #[effect(returns)]
     ReviewUserTransfer {
-        source: String,
-        destination: String,
-        journals: String,
+        source: AbsolutePath,
+        destination: AbsolutePath,
+        journals: AbsolutePath,
     },
     /// Grant the reviewed home directory for migration without opening a picker.
     #[effect(returns)]
     SelectMigrationHome {
         #[param(secret, "Explicit native home folder grant")]
-        source: String,
+        source: AbsolutePath,
     },
     /// Request a real platform grant for one discovered mounted Home location.
     #[effect(attended, returns)]
@@ -435,20 +435,20 @@ pub enum InstallerPreviewEffect {
     /// Save consent and stable Linux source identities for installation; no copy or mount.
     #[effect(returns)]
     SaveMigrationPlan {
-        source: String,
-        private_plans: String,
+        source: AbsolutePath,
+        private_plans: AbsolutePath,
         operation: String,
     },
     /// Mount the retained Linux source read-only and review exact target/journal grants.
     /// Retained copy receipts are revalidated after restarting the installer.
     #[effect(returns)]
     ReviewInstalledTransfer {
-        private_plans: String,
+        private_plans: AbsolutePath,
         operation: String,
-        destination: String,
-        journals: String,
+        destination: AbsolutePath,
+        journals: AbsolutePath,
         /// Retained private original Flatpak inventory, when apps were selected.
-        flatpak_inventory: Option<String>,
+        flatpak_inventory: Option<AbsolutePath>,
     },
     /// Execute the reviewed data transfer; does not install or boot an OS.
     #[effect(returns)]
@@ -460,9 +460,9 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     ReviewHomePromotion {
         #[param(secret, "Explicit target user home grant")]
-        target_home: String,
+        target_home: AbsolutePath,
         #[param(secret, "Private durable adoption journal grant")]
-        journal: String,
+        journal: AbsolutePath,
     },
     /// Adopt the reviewed copy without replacing existing files or selected identity.
     #[effect(returns)]
@@ -493,21 +493,21 @@ pub enum InstallerPreviewEffect {
     #[effect(returns)]
     SelectRecoveryDirectory {
         source_id: String,
-        directory: String,
+        directory: AbsolutePath,
     },
     /// Select an exact external recovery directory and private journal for a granted Windows root.
     #[effect(returns)]
     ReviewRecoveryDestination {
         source_id: String,
-        directory: String,
-        journal: String,
+        directory: AbsolutePath,
+        journal: AbsolutePath,
     },
     /// Reattach exact source, saved output and journal grants after interruption or restart.
     #[effect(returns)]
     ReviewExistingRecoveryCopy {
         source_id: String,
-        output: String,
-        journal: String,
+        output: AbsolutePath,
+        journal: AbsolutePath,
     },
     /// Begin the reviewed durable recovery copy without deleting its source.
     #[effect(returns)]
@@ -1690,7 +1690,7 @@ impl InstallerPreview {
             {
                 let job = self
                     .account_actions
-                    .import_selected(&candidate, std::path::Path::new(&target_home))
+                    .import_selected(&candidate, &target_home)
                     .map_err(|_| "installer-preview-account-action-failed")?;
                 self.account_answer = serde_json::json!({"job":job});
             }
@@ -1708,11 +1708,7 @@ impl InstallerPreview {
                         .ok_or("installer-preview-invalid-choice")?;
                 let consent = self
                     .account_actions
-                    .begin(
-                        provider,
-                        candidate.as_deref(),
-                        std::path::Path::new(&target_home),
-                    )
+                    .begin(provider, candidate.as_deref(), &target_home)
                     .map_err(|_| "installer-preview-account-action-failed")?;
                 self.account_answer = serde_json::json!({"consent":consent});
             }
@@ -1949,9 +1945,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::SelectPreviewAvatar { source_file }
                 if page == Page::Profile =>
             {
-                if !std::path::Path::new(&source_file).is_absolute() {
-                    return Err("installer-preview-avatar-failed");
-                }
+                let source_file = source_file.to_string_lossy();
                 if imager_backend::prepared_identity::require_supported().is_ok() {
                     self.personal.select_photo(source_file.clone())?;
                 }
@@ -2448,7 +2442,7 @@ impl InstallerPreview {
                     .as_ref()
                     .ok_or("installer-recovery-source-required")?;
                 self.recovery
-                    .review_directory(inventory, &source_id, std::path::Path::new(&directory))
+                    .review_directory(inventory, &source_id, &directory)
                     .map_err(|_| "installer-recovery-review-failed")?;
                 {
                     self.direct.prepared_belongings = None;
@@ -2465,12 +2459,7 @@ impl InstallerPreview {
                     .as_ref()
                     .ok_or("installer-recovery-source-required")?;
                 self.recovery
-                    .review(
-                        inventory,
-                        &source_id,
-                        std::path::Path::new(&directory),
-                        std::path::Path::new(&journal),
-                    )
+                    .review(inventory, &source_id, &directory, &journal)
                     .map_err(|_| "installer-recovery-review-failed")?;
                 {
                     self.direct.prepared_belongings = None;
@@ -2487,12 +2476,7 @@ impl InstallerPreview {
                     .as_ref()
                     .ok_or("installer-recovery-source-required")?;
                 self.recovery
-                    .review_existing(
-                        inventory,
-                        &source_id,
-                        std::path::Path::new(&output),
-                        std::path::Path::new(&journal),
-                    )
+                    .review_existing(inventory, &source_id, &output, &journal)
                     .map_err(|_| "installer-recovery-review-failed")?;
                 {
                     self.direct.prepared_belongings = None;
@@ -2954,8 +2938,7 @@ impl InstallerPreview {
             InstallerPreviewEffect::ImportTargetHardwareReport { source_file }
                 if page == Page::Target =>
             {
-                self.target
-                    .import_file(std::path::Path::new(&source_file))?;
+                self.target.import_file(&source_file)?;
                 self.persist_target_choices();
                 return Ok(());
             }
@@ -5973,7 +5956,7 @@ mod tests {
         assert!(catalog_availability(&mut app, "export-windows-preparation").is_available());
         assert!(
             app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-                private_custody: "/must-not-open".into(),
+                private_custody: AbsolutePath::new("/must-not-open").unwrap(),
                 avatar_color: "#123456".into()
             })
             .is_err()
@@ -6507,7 +6490,8 @@ mod tests {
             .unwrap();
             assert!(
                 app.effect(&InstallerPreviewEffect::ExportPreparedSetup {
-                    destination: "tentative-belongings-must-not-export".into(),
+                    destination: AbsolutePath::new("/tentative-belongings-must-not-export")
+                        .unwrap(),
                     setup_binding: "tentative-consent".into(),
                 })
                 .is_err()
@@ -7010,7 +6994,7 @@ mod tests {
             .unwrap();
             assert!(
                 app.effect(&InstallerPreviewEffect::ExportPreparedSetup {
-                    destination: "uncommitted-route-must-not-export".into(),
+                    destination: AbsolutePath::new("/uncommitted-route-must-not-export").unwrap(),
                     setup_binding: "uncommitted-route".into(),
                 })
                 .is_err()
@@ -7055,7 +7039,7 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-            source: root.path().join("source").to_str().unwrap().into(),
+            source: AbsolutePath::new(root.path().join("source")).unwrap(),
         })
         .unwrap();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
@@ -7269,7 +7253,7 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectExistingIdentityBackup {
-            source_file: backup.to_string_lossy().into_owned(),
+            source_file: AbsolutePath::new(&backup).unwrap(),
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SetExistingIdentityPassword {
@@ -7471,7 +7455,7 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-            source_file: source.to_string_lossy().into_owned(),
+            source_file: AbsolutePath::new(&source).unwrap(),
         })
         .unwrap();
         assert_eq!(
@@ -7522,7 +7506,7 @@ mod tests {
         // Selecting the same path again explicitly consumes a new grant and
         // refuses the now-invalid file, without modifying the accepted identity.
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-            source_file: source.to_string_lossy().into_owned(),
+            source_file: AbsolutePath::new(&source).unwrap(),
         })
         .unwrap();
         assert_eq!(
@@ -7606,14 +7590,14 @@ mod tests {
         .unwrap();
         assert!(
             app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-                private_custody: custody.to_string_lossy().into_owned(),
+                private_custody: AbsolutePath::new(&custody).unwrap(),
                 avatar_color: "invalid".into(),
             })
             .is_err()
         );
         assert!(!custody.exists());
         app.effect(&InstallerPreviewEffect::CreatePreparedIdentity {
-            private_custody: custody.to_string_lossy().into_owned(),
+            private_custody: AbsolutePath::new(&custody).unwrap(),
             avatar_color: "123456".into(),
         })
         .unwrap();
@@ -7654,7 +7638,7 @@ mod tests {
             "{resumed}"
         );
         app.effect(&InstallerPreviewEffect::ExportPreparedIdentity {
-            destination: artifact.to_string_lossy().into_owned(),
+            destination: AbsolutePath::new(&artifact).unwrap(),
         })
         .unwrap();
         let exported = wait(&mut app);
@@ -7684,7 +7668,7 @@ mod tests {
         {
             let package = root.join("setup.sealed");
             app.effect(&InstallerPreviewEffect::ExportPreparedSetup {
-                destination: package.to_string_lossy().into_owned(),
+                destination: AbsolutePath::new(&package).unwrap(),
                 setup_binding: "chosen-installation-operation".into(),
             })
             .unwrap();
@@ -7951,7 +7935,7 @@ mod tests {
         let avatar = source.path().join("review-avatar.png");
         std::fs::write(&avatar, include!("../fixtures/avatar.rs")).unwrap();
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-            source_file: avatar.to_string_lossy().into_owned(),
+            source_file: AbsolutePath::new(&avatar).unwrap(),
         })
         .unwrap();
         assert_eq!(
@@ -9326,7 +9310,7 @@ mod tests {
         .unwrap();
         assert!(!root.path().join("state/tilo/installer/migrations").exists());
         app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-            source: home.to_string_lossy().into_owned(),
+            source: AbsolutePath::new(&home).unwrap(),
         })
         .unwrap();
         assert!(
@@ -9340,7 +9324,7 @@ mod tests {
         );
         assert!(
             app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-                source: home.to_string_lossy().into_owned(),
+                source: AbsolutePath::new(&home).unwrap(),
             })
             .is_err(),
             "a second grant cannot replace an active review worker"
@@ -9489,7 +9473,7 @@ mod tests {
         assert_eq!(status(&mut app)["page"], "devices");
         assert!(
             app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-                source: home.to_string_lossy().into_owned(),
+                source: AbsolutePath::new(&home).unwrap(),
             })
             .is_err()
         );
@@ -9559,7 +9543,7 @@ mod tests {
         .unwrap();
         assert_eq!(status(&mut app)["portable_preparation"]["prepared"], false);
         app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-            source: home.to_string_lossy().into_owned(),
+            source: AbsolutePath::new(&home).unwrap(),
         })
         .unwrap();
         let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
@@ -9690,7 +9674,7 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-            source: wrong.to_string_lossy().into_owned(),
+            source: AbsolutePath::new(&wrong).unwrap(),
         })
         .unwrap();
         let deadline = tilo_test_env::hang_deadline();
@@ -9737,9 +9721,9 @@ mod tests {
                 .is_err()
         );
         app.effect(&InstallerPreviewEffect::ReviewUserTransfer {
-            source: source.to_string_lossy().into_owned(),
-            destination: destination.to_string_lossy().into_owned(),
-            journals: journals.to_string_lossy().into_owned(),
+            source: AbsolutePath::new(&source).unwrap(),
+            destination: AbsolutePath::new(&destination).unwrap(),
+            journals: AbsolutePath::new(&journals).unwrap(),
         })
         .unwrap();
         let wait = |app: &mut TestApp<ImagerShell>, expected: &str| {
@@ -9789,9 +9773,9 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ReviewUserTransfer {
-            source: source.to_string_lossy().into_owned(),
-            destination: destination.to_string_lossy().into_owned(),
-            journals: journals.to_string_lossy().into_owned(),
+            source: AbsolutePath::new(&source).unwrap(),
+            destination: AbsolutePath::new(&destination).unwrap(),
+            journals: AbsolutePath::new(&journals).unwrap(),
         })
         .unwrap();
         let recovered = wait(&mut app, "reviewed");
@@ -9830,8 +9814,8 @@ mod tests {
             (active.clone(), source.join("adoption")),
         ] {
             app.effect(&InstallerPreviewEffect::ReviewHomePromotion {
-                target_home: target.to_string_lossy().into_owned(),
-                journal: journal.to_string_lossy().into_owned(),
+                target_home: AbsolutePath::new(&target).unwrap(),
+                journal: AbsolutePath::new(&journal).unwrap(),
             })
             .unwrap();
             wait_adoption(&mut app, "failed");
@@ -9839,8 +9823,8 @@ mod tests {
             assert!(!source.join("adoption").exists());
         }
         app.effect(&InstallerPreviewEffect::ReviewHomePromotion {
-            target_home: active.to_string_lossy().into_owned(),
-            journal: journals.join("adoption").to_string_lossy().into_owned(),
+            target_home: AbsolutePath::new(&active).unwrap(),
+            journal: AbsolutePath::new(journals.join("adoption")).unwrap(),
         })
         .unwrap();
         let adoption_review = wait_adoption(&mut app, "reviewed");
@@ -10069,7 +10053,7 @@ mod tests {
         );
         let package = root.path().join("belongings.sealed");
         app.effect(&InstallerPreviewEffect::ExportPreparedBelongings {
-            destination: package.to_string_lossy().into_owned(),
+            destination: AbsolutePath::new(&package).unwrap(),
         })
         .unwrap();
         loop {
@@ -10127,11 +10111,7 @@ mod tests {
         );
         assert!(
             app.effect(&InstallerPreviewEffect::ExportPreparedBelongings {
-                destination: root
-                    .path()
-                    .join("stale.sealed")
-                    .to_string_lossy()
-                    .into_owned(),
+                destination: AbsolutePath::new(root.path().join("stale.sealed")).unwrap(),
             })
             .is_err()
         );
@@ -10365,7 +10345,7 @@ mod tests {
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-            source_file: original_path.to_string_lossy().into_owned(),
+            source_file: AbsolutePath::new(&original_path).unwrap(),
         })
         .unwrap();
         assert_eq!(
@@ -10409,7 +10389,7 @@ mod tests {
             })
             .unwrap();
             app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-                source_file: changed_path.to_string_lossy().into_owned(),
+                source_file: AbsolutePath::new(&changed_path).unwrap(),
             })
             .unwrap();
             assert_eq!(
@@ -10502,7 +10482,7 @@ mod tests {
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview
                 .apply(InstallerPreviewEffect::SelectPreviewAvatar {
-                    source_file: changed_path.to_string_lossy().into_owned(),
+                    source_file: AbsolutePath::new(&changed_path).unwrap(),
                 })
                 .unwrap();
             assert!(preview.personal.busy());
@@ -10613,7 +10593,7 @@ mod tests {
             .unwrap();
             assert!(
                 app.effect(&InstallerPreviewEffect::ExportPreparedSetup {
-                    destination: root.join("tentative.sealed").to_string_lossy().into_owned(),
+                    destination: AbsolutePath::new(root.join("tentative.sealed")).unwrap(),
                     setup_binding: "tentative-device-label".into(),
                 })
                 .is_err()
@@ -11204,6 +11184,24 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_path_argument_is_refused() {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("destination".into(), "preparation.sealed".into());
+        let error =
+            <InstallerPreviewEffect as Effect>::decode("export-prepared-belongings", &arguments)
+                .unwrap_err();
+        assert!(error.contains("absolute"), "{error}");
+        arguments.insert(
+            "destination".into(),
+            "/media/backup/preparation.sealed".into(),
+        );
+        assert!(
+            <InstallerPreviewEffect as Effect>::decode("export-prepared-belongings", &arguments)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn guided_catalog_page_actions_follow_dispatch_and_review_profile_edits() {
         let mut app = fixture();
         for (id, effect) in [
@@ -11216,13 +11214,13 @@ mod tests {
             (
                 "select-preview-avatar",
                 InstallerPreviewEffect::SelectPreviewAvatar {
-                    source_file: "/not-granted.png".into(),
+                    source_file: AbsolutePath::new("/not-granted.png").unwrap(),
                 },
             ),
             (
                 "select-existing-identity-backup",
                 InstallerPreviewEffect::SelectExistingIdentityBackup {
-                    source_file: "/not-granted.backup".into(),
+                    source_file: AbsolutePath::new("/not-granted.backup").unwrap(),
                 },
             ),
             (

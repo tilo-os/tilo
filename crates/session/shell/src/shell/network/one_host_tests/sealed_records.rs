@@ -1,6 +1,6 @@
 //! A room hosted on a person's device is sealed, as a room a relay hosts
 //! is: an app's records are channels each member device opens itself with
-//! the keys the room's steward gives it. Any member device makes a record,
+//! the keys a participant gives it. Any member device makes a record,
 //! signing as itself; the host admits it by membership and policy, and a
 //! device that is no longer a member holds no key to what is written after.
 

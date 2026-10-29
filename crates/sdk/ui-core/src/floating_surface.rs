@@ -440,6 +440,14 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default)]
         opening: crate::window_toolbar::SearchOpening,
     },
+    /// Open the session's search on this app, the way the app asked
+    /// ([`crate::search::SearchRequest`]): Ctrl+K, a search button, or one
+    /// of its actions whose arguments the search asks for. Inside a session
+    /// there is one search, the shell's; the app opens none of its own.
+    OpenAppSearch {
+        instance: Option<u64>,
+        request: crate::search::SearchRequest,
+    },
     /// Describe these changes of the resource whose History is open: the
     /// shell asks the model on this device and answers with
     /// [`FloatingSurfaceHostMessage::HistoryDescriptions`]. The app holds no

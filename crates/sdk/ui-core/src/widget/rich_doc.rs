@@ -348,17 +348,39 @@ pub fn blocks_at<Tz: chrono::TimeZone>(
     rich.blocks
         .iter()
         .enumerate()
-        .map(|(index, block)| {
-            let mut view = view_of(block, format!("p{index}"));
-            relabel(&mut view, |name, value, run| match name {
-                REFERENCE_MARK => rich.embed(value).map(|embed| reference_label(embed, run)),
-                TIME_MARK => InlineTime::of_mark(value)
-                    .map(|time| time_label(&time, reading.now, &reading.zone, reading.formats)),
-                _ => None,
-            });
-            content_of(&view)
-        })
+        .map(|(index, block)| content_of(&read_view(rich, index, block, reading)))
         .collect()
+}
+
+/// The text rich text says to the person reading here, now, a line per paragraph: each
+/// reference and time as [`blocks_at`] shows it, never a run as written (a reference's run
+/// keeps the title its resource had then, which the reader may not be allowed to read).
+#[must_use]
+pub fn plain_text(rich: &tilo_ui_graph::rich::RichText) -> String {
+    let reading = reading_here();
+    rich.blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| read_view(rich, index, block, &reading).text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The paragraph `block` (the `index`th of `rich`) as it reads for `reading`.
+fn read_view<Tz: chrono::TimeZone>(
+    rich: &tilo_ui_graph::rich::RichText,
+    index: usize,
+    block: &tilo_ui_graph::rich::Block,
+    reading: &Reading<Tz>,
+) -> BlockView {
+    let mut view = view_of(block, format!("p{index}"));
+    relabel(&mut view, |name, value, run| match name {
+        REFERENCE_MARK => rich.embed(value).map(|embed| reference_label(embed, run)),
+        TIME_MARK => InlineTime::of_mark(value)
+            .map(|time| time_label(&time, reading.now, &reading.zone, reading.formats)),
+        _ => None,
+    });
+    view
 }
 
 /// How soon, at `now`, any time in `rich` reads differently.
@@ -559,5 +581,38 @@ mod tests {
         let german = blocks_at(&rich, &reading(chrono::Utc))[0].text.clone();
         I18nManager::set_locale("en-US");
         assert!(german.contains("in 2 Std."), "{german}");
+    }
+
+    #[test]
+    fn plain_text_reads_each_reference_as_its_reader_does() {
+        use tilo_ui_graph::rich::{Embed, InlineView};
+        const TASK: &str =
+            r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
+        // Written while the task was called "Acquisition plan".
+        let read_as = |view: InlineView| RichText {
+            blocks: vec![Block {
+                kind: "paragraph".into(),
+                text: "Notes in Acquisition plan".into(),
+                marks: vec![RichMark {
+                    start: 9,
+                    end: 25,
+                    name: REFERENCE_MARK.into(),
+                    value: Attr::Text(TASK.into()),
+                }],
+                attrs: std::collections::BTreeMap::new(),
+            }],
+            embeds: vec![Embed {
+                reference: TASK.into(),
+                view,
+            }],
+        };
+        let holder = read_as(InlineView::Resource {
+            title: "Merger timeline".into(),
+            icon: None,
+            detail: None,
+        });
+        assert_eq!(plain_text(&holder), "Notes in Merger timeline");
+        let other = plain_text(&read_as(InlineView::Unreadable));
+        assert_eq!(other, "Notes in Not shared with you");
     }
 }

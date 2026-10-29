@@ -22,10 +22,14 @@ use crate::accessibility::{
 use crate::appearance::{TEXT_SCALE_MAX, TEXT_SCALE_MIN};
 use crate::hardware::KeyboardInputSource;
 
-/// Whether a person's changes to these comforts apply to the login screens
-/// too. On unless they keep the two apart.
-pub const APPLY_TO_SIGN_IN: crate::Key<bool> =
-    crate::Key::new(crate::accessibility::SECTION, "apply_to_sign_in", || true);
+/// Whether a person's changes to these comforts apply to this device's login
+/// screens too: a shared machine and a laptop of their own want different
+/// answers. On unless they keep the two apart.
+pub const APPLY_TO_SIGN_IN: crate::Key<bool> = crate::Key::new(
+    crate::accessibility::DEVICE_SECTION,
+    "apply_to_sign_in",
+    || true,
+);
 
 /// The longest language tag kept. BCP 47 tags in use are far shorter.
 const MAX_LANGUAGE_LEN: usize = 35;

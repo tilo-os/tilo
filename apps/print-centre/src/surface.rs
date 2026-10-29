@@ -1,9 +1,13 @@
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use ui::framework::{
-    Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow,
+    Dispatcher, Effect as _, EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow,
+    Publishes, RunMode, ViewCx,
 };
+use ui::widget::Element;
 
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{CropSelection, Widget};
@@ -20,9 +24,13 @@ type El = Box<dyn Widget>;
 
 use crate::resource::{PrintCentreEffect, PrintDefaults, SCAN_RESOLUTIONS};
 
+/// What the window shows and the work running on it, shared by the
+/// [`PrintCentreWindow`] and the view's effect handler.
 pub struct PrintCentre {
-    inner: El,
-    /// The page `inner` shows.
+    /// A page an effect or a finished job put up, for the window to show
+    /// next.
+    shown: Option<El>,
+    /// The page the window shows.
     page: Page,
     refresh: Option<mpsc::Receiver<Snapshot>>,
     snapshot: Option<Snapshot>,
@@ -63,7 +71,20 @@ pub struct PrintCentre {
     pub(crate) controls: Option<ui::framework::Actions<PrintDefaults>>,
     /// The window bar's entries, which run the pages' effects.
     pub(crate) bar: Option<ui::framework::BarActions<PrintDefaults>>,
-    /// An effect replaced the page since the last layout.
+}
+
+/// The [`PrintCentre`] as the window and the effect handler share it.
+pub(crate) type Shared = Rc<RefCell<PrintCentre>>;
+
+/// The window: the page the print centre shows.
+pub struct PrintCentreWindow {
+    centre: Shared,
+    page: El,
+    /// The defaults as the document holds them, shown as they change;
+    /// `None` for a window outside the framework.
+    live: Option<Live<PrintDefaults>>,
+    presented: Option<(u64, u64)>,
+    /// The page was replaced since the last layout.
     replaced: bool,
 }
 
@@ -851,7 +872,7 @@ impl PrintCentre {
     pub fn new() -> Self {
         let defaults = PrintDefaults::default();
         Self {
-            inner: loading_view(),
+            shown: None,
             page: Page::Loading,
             refresh: None,
             snapshot: None,
@@ -879,7 +900,6 @@ impl PrintCentre {
             dispatcher: None,
             controls: None,
             bar: None,
-            replaced: false,
         }
     }
 
@@ -891,8 +911,7 @@ impl PrintCentre {
     /// Ask CUPS and SANE what this machine has.
     pub(crate) fn refresh(&mut self) {
         self.page = Page::Loading;
-        self.replaced = true;
-        self.inner = loading_view();
+        self.shown = Some(loading_view());
         self.refresh = request_snapshot();
     }
 
@@ -920,17 +939,18 @@ impl PrintCentre {
     pub(crate) fn perform(
         &mut self,
         effect: PrintCentreEffect,
-        cx: &mut EffectCx<PrintDefaults, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<PrintDefaults>,
     ) -> EffectAnswer {
         match effect {
             PrintCentreEffect::Refresh => self.refresh(),
-            PrintCentreEffect::FindPrinters => return Ok(self.discover(cx)),
+            PrintCentreEffect::FindPrinters => return Ok(self.discover(me, cx)),
             effect @ (PrintCentreEffect::AddPrinter { .. }
             | PrintCentreEffect::SetDefaultPrinter { .. }
             | PrintCentreEffect::PausePrinter { .. }
             | PrintCentreEffect::ResumePrinter { .. }
             | PrintCentreEffect::CancelDocument { .. }
-            | PrintCentreEffect::RetryDocument { .. }) => return self.device_job(effect, cx),
+            | PrintCentreEffect::RetryDocument { .. }) => return self.device_job(effect, me, cx),
             PrintCentreEffect::OpenDashboard => self.open_dashboard(),
             PrintCentreEffect::OpenQueue => self.open_queue(),
             PrintCentreEffect::OpenHistory => self.open_history(),
@@ -961,7 +981,7 @@ impl PrintCentre {
                 self.set_print_option(&option, &value)?;
                 self.rebuild_print_setup();
             }
-            PrintCentreEffect::SendToPrinter => return self.send_to_printer(cx),
+            PrintCentreEffect::SendToPrinter => return self.send_to_printer(me, cx),
             PrintCentreEffect::ClosePrintSetup => self.close_print_setup(),
             PrintCentreEffect::ScanWith { scanner } => {
                 let scanner = self.known_scanner(scanner)?;
@@ -971,7 +991,7 @@ impl PrintCentre {
                 self.selected_scanner = Some(scanner);
                 self.rebuild_scan_setup();
             }
-            PrintCentreEffect::ScanPage => return self.scan_page(cx),
+            PrintCentreEffect::ScanPage => return self.scan_page(me, cx),
             PrintCentreEffect::ScanAnother => self.scan_another(),
             PrintCentreEffect::PreviousScanPage => self.previous_scan_page(),
             PrintCentreEffect::NextScanPage => self.next_scan_page(),
@@ -980,10 +1000,10 @@ impl PrintCentre {
             PrintCentreEffect::RemoveScanPage => self.remove_scan_page(),
             PrintCentreEffect::RotateScanPage => self.rotate_scan_page(),
             PrintCentreEffect::CropScanPage => self.crop_scan_page(),
-            PrintCentreEffect::RecognizeText => return self.recognize_text(cx),
+            PrintCentreEffect::RecognizeText => return self.recognize_text(me, cx),
             PrintCentreEffect::CopyRecognizedText => self.copy_recognized_text()?,
-            PrintCentreEffect::SaveScannedPage => return self.save_scan(false, cx),
-            PrintCentreEffect::SaveScannedDocument => return self.save_scan(true, cx),
+            PrintCentreEffect::SaveScannedPage => return self.save_scan(false, me, cx),
+            PrintCentreEffect::SaveScannedDocument => return self.save_scan(true, me, cx),
         }
         Ok(Effected::done())
     }
@@ -993,7 +1013,8 @@ impl PrintCentre {
     fn device_job(
         &mut self,
         effect: PrintCentreEffect,
-        cx: &mut EffectCx<PrintDefaults, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<PrintDefaults>,
     ) -> EffectAnswer {
         let retry = Retry::Effect(effect.clone());
         let (success, failure, work) = match effect {
@@ -1044,7 +1065,7 @@ impl PrintCentre {
             ),
             _ => return Err(format!("`{}` is not printer work", effect.id())),
         };
-        Ok(Self::run(cx, success, failure, work, retry))
+        Ok(Self::run(me, cx, success, failure, work, retry))
     }
 
     /// The scan and print steps that have nothing to act on right now.
@@ -1479,8 +1500,7 @@ impl PrintCentre {
     fn rebuild_print_setup(&mut self) {
         if let (Some(snapshot), Some(path)) = (&self.snapshot, &self.pending_document) {
             self.page = Page::Print;
-            self.replaced = true;
-            self.inner = print_setup_view(
+            self.shown = Some(print_setup_view(
                 snapshot,
                 path,
                 &self.print_preview,
@@ -1496,31 +1516,30 @@ impl PrintCentre {
                     pages: self.preview_pages,
                 },
                 &Door(self.dispatcher.clone(), self.controls.clone()),
-            );
+            ));
         }
     }
 
     fn rebuild_scan_setup(&mut self) {
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::Scan;
-            self.replaced = true;
-            self.inner = scan_setup_view(
+            self.shown = Some(scan_setup_view(
                 snapshot,
                 self.selected_scanner.as_deref(),
                 &self.scan,
                 &Door(self.dispatcher.clone(), self.controls.clone()),
-            );
+            ));
         }
     }
 
     fn rebuild_dashboard(&mut self) {
         self.page = Page::Dashboard;
-        self.replaced = true;
         let door = self.door();
-        self.inner = self
-            .snapshot
-            .as_ref()
-            .map_or_else(|| empty_view(&door), |snapshot| live_view(snapshot, &door));
+        self.shown = Some(
+            self.snapshot
+                .as_ref()
+                .map_or_else(|| empty_view(&door), |snapshot| live_view(snapshot, &door)),
+        );
     }
 
     fn open_dashboard(&mut self) {
@@ -1531,8 +1550,7 @@ impl PrintCentre {
         let door = self.door();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::Queue;
-            self.replaced = true;
-            self.inner = queue_view(snapshot, &door, self.pending_cancel.as_deref());
+            self.shown = Some(queue_view(snapshot, &door, self.pending_cancel.as_deref()));
         }
     }
 
@@ -1540,30 +1558,29 @@ impl PrintCentre {
         let door = self.door();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::History;
-            self.replaced = true;
-            self.inner = history_view(snapshot, &door);
+            self.shown = Some(history_view(snapshot, &door));
         }
     }
 
     /// What wants a person: the system's waiting stack, in this window.
     fn open_needs(&mut self) {
         self.page = Page::Needs;
-        self.replaced = true;
         let body = ui::widget::Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(ui::attention::Stack::with_presses(
                 self.needs.clone(),
             )));
-        self.inner = Box::new(ui::widget::Scrollable::new_vertical().with_child(Box::new(body)));
+        self.shown = Some(Box::new(
+            ui::widget::Scrollable::new_vertical().with_child(Box::new(body)),
+        ));
     }
 
     fn open_diagnostics(&mut self) {
         let door = self.door();
         if let Some(snapshot) = &self.snapshot {
             self.page = Page::Diagnostics;
-            self.replaced = true;
-            self.inner = diagnostics_view(snapshot, &door);
+            self.shown = Some(diagnostics_view(snapshot, &door));
         }
     }
 
@@ -1576,25 +1593,25 @@ impl PrintCentre {
             .and_then(|queues| queues.iter().find(|q| q.name == name))
         {
             self.page = Page::Device(name.to_owned());
-            self.replaced = true;
-            self.inner = device_view(queue, &door);
+            self.shown = Some(device_view(queue, &door));
         }
     }
 
     fn open_discovery(&mut self) {
         self.page = Page::Discovery;
-        self.replaced = true;
         let nearby = self.nearby();
-        self.inner = discovery_view(nearby.as_ref(), &self.door());
+        self.shown = Some(discovery_view(nearby.as_ref(), &self.door()));
     }
 
     /// Search the network for printers, showing the search while it runs.
-    fn discover(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> Effected {
+    fn discover(&mut self, me: &Shared, cx: &mut EffectCx<PrintDefaults>) -> Effected {
         self.discovered = None;
         self.open_discovery();
+        let me = Rc::clone(me);
         cx.thread(
             |_| os_actions::printing::discover_driverless(),
-            |app: &mut Self, found: Result<_, String>, _cx| {
+            move |(), found: Result<_, String>, _cx| {
+                let mut app = me.borrow_mut();
                 let answer = match &found {
                     Ok(_) => Ok(Effected::done()),
                     Err(_) => Err("Could not search for printers right now".to_owned()),
@@ -1612,7 +1629,8 @@ impl PrintCentre {
     /// it went, `success` or `failure` (with Try again asking for `retry`),
     /// and show what CUPS reports afterwards.
     fn run(
-        cx: &mut EffectCx<PrintDefaults, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<PrintDefaults>,
         success: String,
         failure: String,
         work: Work,
@@ -1621,6 +1639,7 @@ impl PrintCentre {
         let job = notice::job_for(&work);
         #[cfg(test)]
         let stand_in = notice::stand_in::current();
+        let me = Rc::clone(me);
         cx.thread(
             move |_| {
                 #[cfg(test)]
@@ -1629,7 +1648,8 @@ impl PrintCentre {
                 }
                 work.perform()
             },
-            move |app: &mut Self, result: Result<(), String>, _cx| {
+            move |(), result: Result<(), String>, _cx| {
+                let mut app = me.borrow_mut();
                 if result.is_ok() {
                     job.done(success.clone());
                     app.finished(OperationNotice::success(success));
@@ -1658,7 +1678,7 @@ impl PrintCentre {
     }
 
     /// Print the document being set up on the chosen printer.
-    fn send_to_printer(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+    fn send_to_printer(&mut self, me: &Shared, cx: &mut EffectCx<PrintDefaults>) -> EffectAnswer {
         let (Some(path), Some(queue)) =
             (self.pending_document.take(), self.selected_printer.take())
         else {
@@ -1708,6 +1728,7 @@ impl PrintCentre {
             settings: settings.clone(),
         };
         Ok(Self::run(
+            me,
             cx,
             format!("Document sent to printer. {filename} was sent to {shown_queue}."),
             format!(
@@ -1780,7 +1801,7 @@ impl PrintCentre {
 
     /// Scan a page with the chosen scanner and settings, recognizing its
     /// text in the person's language.
-    fn scan_page(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+    fn scan_page(&mut self, me: &Shared, cx: &mut EffectCx<PrintDefaults>) -> EffectAnswer {
         let Some(device) = self.selected_scanner.clone() else {
             return Err("Choose a scanner first".into());
         };
@@ -1821,6 +1842,7 @@ impl PrintCentre {
         let scanner = device.clone();
         #[cfg(test)]
         let stand_in = notice::stand_in::current();
+        let me = Rc::clone(me);
         Ok(cx.thread(
             move |_| {
                 #[cfg(test)]
@@ -1841,7 +1863,8 @@ impl PrintCentre {
                 )
                 .and_then(|png| decode_scanned_page(png, ocr_code, ocr_language))
             },
-            move |app: &mut Self, result: Result<ScannedPage, String>, _cx| {
+            move |(), result: Result<ScannedPage, String>, _cx| {
+                let mut app = me.borrow_mut();
                 let answer = match &result {
                     Ok(_) => {
                         job.done("Page scanned");
@@ -1963,7 +1986,7 @@ impl PrintCentre {
     }
 
     /// Recognize the text of the page under review again.
-    fn recognize_text(&mut self, cx: &mut EffectCx<PrintDefaults, Self>) -> EffectAnswer {
+    fn recognize_text(&mut self, me: &Shared, cx: &mut EffectCx<PrintDefaults>) -> EffectAnswer {
         let Some(current) = self.scan.pages.get_mut(self.scan.selected) else {
             return Err("Scan a page first".into());
         };
@@ -1983,6 +2006,7 @@ impl PrintCentre {
         );
         #[cfg(test)]
         let stand_in = notice::stand_in::current();
+        let me = Rc::clone(me);
         Ok(cx.thread(
             move |_| {
                 #[cfg(test)]
@@ -1996,7 +2020,8 @@ impl PrintCentre {
                 }
                 recognize_page(&page)
             },
-            move |app: &mut Self, result: Result<(Option<String>, String), String>, _cx| {
+            move |(), result: Result<(Option<String>, String), String>, _cx| {
+                let mut app = me.borrow_mut();
                 let answer = match &result {
                     Ok((_, note)) => {
                         job.done(note.clone());
@@ -2078,7 +2103,8 @@ impl PrintCentre {
     fn save_scan(
         &mut self,
         document: bool,
-        cx: &mut EffectCx<PrintDefaults, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<PrintDefaults>,
     ) -> EffectAnswer {
         if self.scan_saving {
             return Err("The scan is already being saved".into());
@@ -2115,9 +2141,11 @@ impl PrintCentre {
         };
         // Asked here, on the window's thread, from the desktop's chooser.
         let chooser = request.send();
+        let me = Rc::clone(me);
         Ok(cx.thread(
             move |_| write_scan(&chooser, document, &pages),
-            move |app: &mut Self, saved: ScanSaved, _cx| {
+            move |(), saved: ScanSaved, _cx| {
+                let mut app = me.borrow_mut();
                 app.scan_saving = false;
                 match &saved {
                     ScanSaved::Saved(name) => job.done(format!("The scan is in {name}")),
@@ -2245,67 +2273,159 @@ impl Default for PrintCentre {
         Self::new()
     }
 }
-impl ui::widget::Decorator for PrintCentre {
-    type Inner = dyn Widget;
+impl PrintCentre {
+    /// Take part in the resource: the controls and the window bar run their
+    /// effects through its dispatcher. A live window asks CUPS and SANE; a
+    /// screenshot shows its scenario's made-up devices, or none.
+    fn attach(&mut self, cx: &ViewCx<PrintDefaults>) {
+        self.controls = Some(cx.actions());
+        self.dispatcher = Some(cx.dispatcher());
+        self.bar = Some(ui::framework::BarActions::new(cx.dispatcher()));
+        match cx.mode() {
+            RunMode::Live => self.refresh(),
+            RunMode::Capture => self.show(cx.fixture::<Snapshot>().as_deref()),
+            RunMode::Past => self.show(None),
+        }
+    }
 
-    fn inner(&self) -> &(dyn Widget + 'static) {
-        self.inner.as_ref()
-    }
-    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.inner.as_mut()
-    }
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.take_window_toolbar_events();
-        self.take_attention();
-        self.declare_window_toolbar();
-        self.inner.sync(state, path);
-    }
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+    /// What the window bar and Needs you asked, and what came back from the
+    /// document picker, the preview, the driver and CUPS since the last
+    /// update. Returns whether the page needs its update (`Some(true)`) or
+    /// a sync (`Some(false)`) for it.
+    fn take_news(&mut self) -> Option<bool> {
         // The window bar's slots are pressed between events: send what they
         // asked through the page's own door.
         let asked = self.take_window_toolbar_events() | self.take_attention();
         self.declare_window_toolbar();
         if asked {
-            self.inner.update(state, path);
-            return true;
+            return Some(true);
         }
-        if self.poll_picker() {
-            self.inner.sync(state, path);
-            return true;
-        }
-        if self.poll_print_preview() {
-            self.inner.sync(state, path);
-            return true;
-        }
-        if self.poll_print_options() {
-            self.inner.sync(state, path);
-            return true;
+        if self.poll_picker() || self.poll_print_preview() || self.poll_print_options() {
+            return Some(false);
         }
         if let Some(snapshot) = self.refresh.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh = None;
             self.snapshot = Some(snapshot);
             self.rebuild_dashboard();
-            self.inner.sync(state, path);
-            return true;
+            return Some(false);
         }
-        self.inner.update(state, path)
+        None
+    }
+}
+
+impl PrintCentreWindow {
+    /// A window over `centre`.
+    fn new(centre: PrintCentre, live: Option<Live<PrintDefaults>>) -> Self {
+        let mut window = Self {
+            centre: Rc::new(RefCell::new(centre)),
+            page: loading_view(),
+            live,
+            presented: None,
+            replaced: false,
+        };
+        window.follow_document();
+        window.show_page();
+        window
+    }
+
+    /// Start the defaults the document holds from when they changed, here
+    /// or on another device.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(shown) = live.changed_since(&mut self.presented) else {
+            return;
+        };
+        let defaults = (*shown).clone();
+        self.centre.borrow_mut().present_defaults(&defaults);
+    }
+
+    /// Show the page an effect or a finished job put up.
+    fn show_page(&mut self) {
+        if let Some(page) = self.centre.borrow_mut().shown.take() {
+            self.page = page;
+            self.replaced = true;
+        }
+    }
+}
+
+/// The Print Centre window over this machine's printers and scanners,
+/// answering its effects and publishing its devices as live rows.
+pub(crate) fn window(cx: &ViewCx<PrintDefaults>) -> Element {
+    let mut centre = PrintCentre::new();
+    centre.attach(cx);
+    let window = PrintCentreWindow::new(centre, Some(cx.live().clone()));
+    let centre = Rc::clone(&window.centre);
+    {
+        let (answer, status) = (Rc::clone(&centre), Rc::clone(&centre));
+        cx.effects(move |effect: PrintCentreEffect, cx| {
+            answer.borrow_mut().perform(effect, &answer, cx)
+        })
+        // The scan and print steps that have nothing to act on right now.
+        .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let centre = Rc::clone(&centre);
+        cx.on_stage(move |scenario| centre.borrow_mut().stage_scenario(scenario));
+    }
+    cx.publishing(
+        // The printers, documents and scanners CUPS and SANE reported.
+        Publishes::new().live_rows(move || centre.borrow().device_rows()),
+        Box::new(window),
+    )
+}
+
+impl ui::widget::Decorator for PrintCentreWindow {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.page.as_ref()
+    }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.page.as_mut()
+    }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        {
+            let mut centre = self.centre.borrow_mut();
+            centre.take_window_toolbar_events();
+            centre.take_attention();
+            centre.declare_window_toolbar();
+        }
+        self.show_page();
+        self.page.sync(state, path);
+    }
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.follow_document();
+        let news = self.centre.borrow_mut().take_news();
+        self.show_page();
+        match news {
+            Some(true) => {
+                self.page.update(state, path);
+                true
+            }
+            Some(false) => {
+                self.page.sync(state, path);
+                true
+            }
+            None => self.page.update(state, path) || self.replaced,
+        }
     }
     fn name(&self) -> &'static str {
         "PrintCentre"
     }
     fn take_structure_dirty(&mut self) -> bool {
         // Effects replace the whole page; the new one needs a new layout.
-        self.inner.take_structure_dirty() | std::mem::take(&mut self.replaced)
+        self.show_page();
+        self.page.take_structure_dirty() | std::mem::take(&mut self.replaced)
     }
     fn needs_idle_sync(&self) -> bool {
-        self.refresh.is_some() || self.picker.is_some()
+        let centre = self.centre.borrow();
+        centre.refresh.is_some() || centre.picker.is_some()
     }
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        // Wake when the bar's notice is due to go.
-        [None, self.inner.next_wake_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
+        self.page.next_wake_deadline()
     }
 }
 

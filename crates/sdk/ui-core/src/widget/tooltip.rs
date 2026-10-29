@@ -340,6 +340,29 @@ pub fn draw_person_tooltip_on(
     );
 }
 
+/// A chip saying `label` at `anchor`, marked by a dot in `color` before it:
+/// what a control says about itself after the person used it (why it did
+/// not run, in the danger colour).
+pub fn draw_marked_tooltip_on(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    anchor: (Rect, TooltipSide),
+    marked: (&str, vello::peniko::Color),
+    viewport: Rect,
+) {
+    draw_person_tooltip_on(
+        scene,
+        transform,
+        text_renderer,
+        theme,
+        anchor,
+        marked,
+        viewport,
+    );
+}
+
 /// Where [`draw_hover_tooltip_on`] places the chip for `label`.
 pub fn hover_chip_rect_on(
     text_renderer: &mut TextRenderer,

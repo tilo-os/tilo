@@ -1,9 +1,9 @@
 //! The editor's controls, as slots in the window's bar
 //! ([`ui::window_toolbar`]): the media bin's toggle as the sidebar, the
-//! project as the location with Open, Save, Save As and the recent projects
+//! project as the location with Open project file and Export project file
 //! in its picker, and Split, Export, the inspector's toggle and Import as
-//! actions. The location says when the project has unsaved edits; a
-//! running render's progress is in the export dialog, which Export opens.
+//! actions. A running render's progress is in the export dialog, which
+//! Export opens.
 //! The bar's History control is the window's; the editor draws no header
 //! row.
 //!
@@ -37,10 +37,8 @@ pub(crate) enum BarCommand {
 }
 
 /// What a row of the project picker commits.
-const OPEN: &str = "project:open";
-const SAVE: &str = "project:save";
-const SAVE_AS: &str = "project:save-as";
-const RECENT: &str = "project:recent:";
+const OPEN: &str = "project:open-file";
+const EXPORT_FILE: &str = "project:export-file";
 
 impl VideoEditorApp {
     /// The window bar's slots for what the editor shows now.
@@ -51,9 +49,8 @@ impl VideoEditorApp {
             sidebar: Some(self.bin_flap.is_open(self.bin_layout())),
             location: Some(ToolbarLocation {
                 label: self.project_label(),
-                name: self.project_status_line(),
-                edited: self.project_is_dirty(),
-                choices: self.project_choices(),
+                name: self.project_label(),
+                choices: Self::project_choices(),
                 ..ToolbarLocation::default()
             }),
             actions: {
@@ -133,30 +130,20 @@ impl VideoEditorApp {
             .on(matches!(self.export_status, ExportStatus::Rendering { .. }))
     }
 
-    /// The project picker's rows: Open, Save and Save As, then the recent
-    /// projects in a group of their own.
-    fn project_choices(&self) -> Vec<LocationChoice> {
-        let mut first_recent = true;
-        self.project_menu_rows()
-            .into_iter()
-            .map(|(item, label)| {
-                let (value, separated) = match item {
-                    ProjectMenuItem::Open => (OPEN.to_owned(), false),
-                    ProjectMenuItem::Save => (SAVE.to_owned(), false),
-                    ProjectMenuItem::SaveAs => (SAVE_AS.to_owned(), false),
-                    ProjectMenuItem::Recent(path) => (
-                        format!("{RECENT}{}", path.display()),
-                        std::mem::take(&mut first_recent),
-                    ),
-                };
-                LocationChoice {
-                    label,
-                    value,
-                    current: false,
-                    separated,
-                }
-            })
-            .collect()
+    /// The project picker's rows: a project file in, and one out.
+    fn project_choices() -> Vec<LocationChoice> {
+        [
+            ("Open project file…", OPEN),
+            ("Export project file…", EXPORT_FILE),
+        ]
+        .into_iter()
+        .map(|(label, value)| LocationChoice {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            current: false,
+            separated: false,
+        })
+        .collect()
     }
 
     /// Whether Split would cut anything: an editable selected clip, or one
@@ -213,21 +200,16 @@ impl VideoEditorApp {
                 }
                 None => return,
             },
-            ToolbarEvent::Commit { text } => match text.as_str() {
-                OPEN => VideoEditorEffect::OpenProject { path: None },
-                SAVE => VideoEditorEffect::Save { path: None },
-                SAVE_AS => VideoEditorEffect::SaveAs { path: None },
-                other => {
-                    // A recent project opens as the published Open with its
-                    // path does.
-                    if let Some(path) = other.strip_prefix(RECENT)
-                        && self.recents.iter().any(|recent| recent == Path::new(path))
-                    {
-                        self.begin_open(PathBuf::from(path), None);
-                    }
-                    return;
-                }
-            },
+            ToolbarEvent::Commit { text } => {
+                // A project file is a job of the effect's own handler.
+                let effect = match text.as_str() {
+                    OPEN => VideoEditorEffect::OpenProjectFile { path: None },
+                    EXPORT_FILE => VideoEditorEffect::ExportProjectFile { path: None },
+                    _ => return,
+                };
+                self.invoke_effect(&effect);
+                return;
+            }
             _ => return,
         };
         // Everything one press edits is one undo step, as for a key.

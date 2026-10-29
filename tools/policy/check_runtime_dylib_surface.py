@@ -155,6 +155,8 @@ ENGINES = {
     "tilo-pc-keyboard-geometry": "the PC keyboard outlines, which Settings loads from "
                                  "libtilo_settings_engine.so",
     "tilo-zone-globe": "the time-zone globe, which Settings loads from libtilo_settings_engine.so",
+    "settings-sections": "the settings sections as resource models, which Settings loads from "
+                         "libtilo_settings_engine.so",
     # The catalogue itself is no longer here: every text field resolves
     # `:name:` and the picker opens for every app, so `emoji` is the
     # toolkit's (crates/sdk/ui-core) and belongs in the runtime every app

@@ -700,7 +700,8 @@ pub fn input_snapshot_path() -> Option<std::path::PathBuf> {
     tilo_paths::xdg::runtime_dir().map(|path| path.join("tilo/input-state.json"))
 }
 
-/// `input` key holding per-tablet settings, keyed by [`input_device_key`].
+/// [`INPUT_DEVICE_SECTION`] key holding per-tablet settings, keyed by
+/// [`input_device_key`].
 pub const TABLETS_KEY: &str = "tablets";
 
 /// What a pen barrel button does. `Default` reports the button as itself:
@@ -929,7 +930,7 @@ impl Default for TabletConfig {
     }
 }
 
-/// Every tablet's settings from an `input` section. One malformed tablet
+/// Every tablet's settings from an `input_device` section. One malformed tablet
 /// entry is skipped rather than discarding the others.
 pub fn tablets_from_section(
     section: &serde_json::Map<String, serde_json::Value>,
@@ -1265,23 +1266,33 @@ pub enum AccelProfile {
 /// while physical mouse wheels retain their conventional direction.
 pub const DEFAULT_TOUCHPAD_NATURAL_SCROLL: bool = true;
 pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
-/// `input` key for whether touchpads send events at all. Absent means on;
+/// `input_device` key for whether touchpads send events at all. Absent means on;
 /// the touchpad-toggle hardware key flips it and the compositor applies it
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
-/// `input` key for switching touchpads off while an external mouse is
+/// `input_device` key for switching touchpads off while an external mouse is
 /// connected (libinput's disabled-on-external-mouse send-events mode). Absent
 /// means off.
 pub const TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY: &str = "touchpad_disabled_on_external_mouse";
 
-/// The section of [`RichInputConfig`]: pointer, touchpad and keyboard.
+/// The person's pointer, touchpad and keyboard choices.
 pub const INPUT_SECTION: &str = "input";
-/// The section of [`DisplayConfig`] and the display toggles below.
+/// This device's input: whether its touchpads are on, its tablets, its
+/// physical keyboards' model and layouts, and what the keyboard inspector
+/// shows.
+pub const INPUT_DEVICE_SECTION: &str = "input_device";
+/// The sections [`RichInputConfig`] reads as one: the person's input and
+/// this device's.
+pub const INPUT_SECTIONS: &[&str] = &[INPUT_SECTION, INPUT_DEVICE_SECTION];
+/// This device's display toggles below and its scale.
 pub const DISPLAY_SECTION: &str = "display";
+/// The person's display comforts (the night light) and their displays'
+/// arrangement ([`crate::person_displays`]), wherever they connect them.
+pub const DISPLAY_PERSON_SECTION: &str = "display_person";
 
 /// Whether touchpads send events at all ([`TOUCHPAD_ENABLED_KEY`]).
 pub const TOUCHPAD_ENABLED: crate::Key<bool> =
-    crate::Key::new(INPUT_SECTION, TOUCHPAD_ENABLED_KEY, || true);
+    crate::Key::new(INPUT_DEVICE_SECTION, TOUCHPAD_ENABLED_KEY, || true);
 /// Mouse keys: the numeric keypad moves the pointer. The Shift+Alt+Num Lock
 /// chord flips it.
 pub const MOUSE_KEYS: crate::Key<bool> =
@@ -1294,7 +1305,8 @@ pub const ROTATION_LOCK: crate::Key<bool> =
 pub const AUTO_BRIGHTNESS: crate::Key<bool> =
     crate::Key::new(DISPLAY_SECTION, "auto_brightness", || false);
 /// Night light (the Quick Settings tile).
-pub const NIGHT_LIGHT: crate::Key<bool> = crate::Key::new(DISPLAY_SECTION, "night_light", || false);
+pub const NIGHT_LIGHT: crate::Key<bool> =
+    crate::Key::new(DISPLAY_PERSON_SECTION, "night_light", || false);
 
 /// How a clickpad (a touchpad whose whole surface is the button) decides
 /// which button a physical press means. libinput decides per device which of
@@ -1605,9 +1617,10 @@ fn valid_xkb_name(value: &str) -> bool {
 }
 
 impl RichInputConfig {
-    /// The persisted input section, parsed by [`Self::from_section`].
+    /// The persisted input sections ([`INPUT_SECTIONS`]), parsed by
+    /// [`Self::from_section`].
     pub fn load() -> Self {
-        Self::from_section(&super::load_section(INPUT_SECTION))
+        Self::from_section(&super::load_sections(INPUT_SECTIONS))
     }
 
     /// Parse the input section field by field: a missing or wrong-typed
@@ -1955,26 +1968,6 @@ impl ShortcutAction {
     }
 }
 
-/// Desktop-navigation preferences consumed directly by the shell.
-///
-/// This is deliberately separate from editable one-shot chords: Vim mode is
-/// a complete navigation layer whose keys must stay internally consistent.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DesktopControlsConfig {
-    /// Add Super+Ctrl+h/j/k/l and Super+Ctrl+Shift+h/j/k/l aliases for
-    /// window and strip navigation and for carrying the focused group. The ordinary arrow bindings remain
-    /// available.
-    pub vim_mode: bool,
-    /// Hide the desktop's top bar until the pointer reaches for the top
-    /// edge: windows take the whole height, and the bar
-    /// shows over them while it is used. Off by default, so the bar's clock,
-    /// workspace and status stay in view until the person chooses otherwise.
-    /// Per device: a small laptop panel and a large desk display want
-    /// different answers.
-    pub hide_top_bar: bool,
-}
-
 /// A stable, per-user identifier for a control that may appear in Quick
 /// Settings.  The compositor deliberately persists identifiers rather than
 /// a rendered grid: availability is a property of the current machine while
@@ -2199,26 +2192,6 @@ mod logical_extent_tests {
             logical_extent((1920, 1080), f64::NAN, OutputTransform::Normal),
             (1920, 1080)
         );
-    }
-}
-
-impl DesktopControlsConfig {
-    pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(super::load_section(
-            "desktop_controls",
-        )))
-        .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the setting cannot be serialized or persisted.
-    pub fn save(&self) -> std::io::Result<()> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        super::update_section(
-            "desktop_controls",
-            value.as_object().cloned().unwrap_or_default(),
-        )
     }
 }
 

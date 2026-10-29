@@ -8,7 +8,7 @@ use super::{
     temperature_label, transform_label,
 };
 use crate::i18n::t;
-use crate::prefs::DisplayPrefs;
+use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
 
@@ -35,7 +35,11 @@ fn selected<V>(
 }
 
 pub(crate) fn night_light_warmth(app: &SettingsApp, follows: &Follows) -> String {
-    temperature_label(prefs(app, follows).night_light_temperature)
+    temperature_label(
+        follows
+            .get::<NightLightPrefs>(app.host())
+            .night_light_temperature,
+    )
 }
 
 /// Automatic brightness, a switch once the displays were read and one has

@@ -72,7 +72,6 @@ fn pending() -> bool {
 
 /// The window starts dispatching `event`: a key press starts a record, or
 /// joins the one waiting for its frame.
-#[cfg(feature = "native")]
 pub(crate) fn key_dispatched(event: &winit::event::WindowEvent) {
     use winit::event::{ElementState, Ime, WindowEvent};
     let is_key = matches!(event,

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use neighbour_wire::NeighbourMsg;
-use neighbour_wire::{Retention, audience, retention, standalone, steward_only};
+use neighbour_wire::{Retention, audience, retention, standalone};
 
 use crate::{Checkpoint, CheckpointKind, Route, ShellPayloads};
 
@@ -85,8 +85,7 @@ impl ShellPayloads for NeighbourPayloads {
         let kind = match &msg {
             NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. } => CheckpointKind::Governance,
+            | NeighbourMsg::MlsRoutedAccessRequest { .. } => CheckpointKind::Governance,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key, ..
             } => CheckpointKind::Continuity {
@@ -110,10 +109,6 @@ impl ShellPayloads for NeighbourPayloads {
         let msg = postcard::from_bytes::<NeighbourMsg>(body).ok()?;
         let devices = audience(&msg)?;
         Some(devices.iter().map(|device| *device.as_bytes()).collect())
-    }
-
-    fn steward_only(&self, body: &[u8]) -> bool {
-        postcard::from_bytes::<NeighbourMsg>(body).is_ok_and(|msg| steward_only(&msg))
     }
 
     fn decoded_overhead(&self) -> usize {

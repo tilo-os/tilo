@@ -2741,7 +2741,9 @@ mod tests {
         drop(writer);
         assert_eq!(
             registry_types::verify_snapshot(&earlier, &owner_hex, earlier.issued_at_unix),
-            Err(registry_types::SnapshotError::Protocol)
+            Err(registry_types::SnapshotError::Protocol {
+                served: PACKAGE_FORMAT_VERSION - 1
+            })
         );
 
         let key_file = dir.path().join("owner.seed");

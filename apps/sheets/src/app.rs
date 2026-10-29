@@ -511,7 +511,7 @@ pub struct SheetsApp {
     cache: Option<ReloadCache>,
     /// The formula engine's workbook, kept between reloads so an edit
     /// re-reads only the cells it changed.
-    calc: crate::calc::Calc,
+    calc: crate::calc::WorkbookCalc,
     pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),

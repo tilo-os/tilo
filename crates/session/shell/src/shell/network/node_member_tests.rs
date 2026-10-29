@@ -1,10 +1,10 @@
 //! A company node's own session as a member of the workspace its node
 //! governs. The founder's root certifies two devices on the node: the relay
-//! (a node that hosts, governs and stewards her rooms) and the session (a
+//! (a node that hosts and governs her rooms and takes part in their channels) and the session (a
 //! plain device of hers, with its own key). Her browser creates the company
 //! workspace on the relay and writes a sealed record. The session asks its
 //! configured host for the rooms it holds for her and enters the workspace
-//! there, joins it, gets the record's channel keys from the relay's steward
+//! there, joins it, gets the record's channel keys from the relay
 //! and reads the record; a record its app writes reaches the browser the same
 //! way. The relay keeps ciphertext only.
 
@@ -216,7 +216,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_stewards(ShellNetwork::room_stewards(&net)),
+                .with_governors(ShellNetwork::room_governors(&net)),
         ),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )
@@ -262,10 +262,10 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         "a room the session holds is not joined again"
     );
 
-    // The relay's steward admits the session to the plan's channel.
+    // The relay admits the session to the plan's channel.
     let keys_for = |channels: &mut ChannelEncryption, record: &str| {
         let channel = document_channel_id(NOTES, &acme.room, record);
-        until("the steward to admit the session", || {
+        until("the relay to admit the session", || {
             net.tick();
             channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {

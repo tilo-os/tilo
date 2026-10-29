@@ -296,7 +296,7 @@ fn published_batch_copy_is_one_undoable_operation_and_cut_requires_write() {
     app.effect(&FilesEffect::CopySelection).unwrap();
     app.effect(&FilesEffect::ClearSelection).unwrap();
     app.effect(&FilesEffect::GoTo {
-        path: destination.display().to_string(),
+        path: AbsolutePath::new(&destination).unwrap(),
     })
     .unwrap();
     app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
@@ -320,7 +320,7 @@ fn published_batch_copy_is_one_undoable_operation_and_cut_requires_write() {
         TestApp::<FileExplorerShell>::with_role(ui::permissions::Role::Viewer).unwrap();
     viewer
         .effect(&FilesEffect::GoTo {
-            path: root.path().display().to_string(),
+            path: AbsolutePath::new(root.path()).unwrap(),
         })
         .unwrap();
     viewer.effect(&FilesEffect::SelectAll).unwrap();
@@ -410,7 +410,7 @@ fn copies_and_row_edits_are_undoable() {
     )
     .unwrap();
     app.effect(&FilesEffect::GoTo {
-        path: projects.clone(),
+        path: AbsolutePath::new(&projects).unwrap(),
     })
     .unwrap();
     app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
@@ -429,7 +429,7 @@ fn copies_and_row_edits_are_undoable() {
     );
 
     app.effect(&FilesEffect::GoTo {
-        path: folder.path().display().to_string(),
+        path: AbsolutePath::new(folder.path()).unwrap(),
     })
     .unwrap();
     app.effect_on(
@@ -440,7 +440,7 @@ fn copies_and_row_edits_are_undoable() {
     )
     .unwrap();
     app.effect(&FilesEffect::GoTo {
-        path: projects.clone(),
+        path: AbsolutePath::new(&projects).unwrap(),
     })
     .unwrap();
     app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
@@ -455,7 +455,7 @@ fn copies_and_row_edits_are_undoable() {
     );
 
     app.effect(&FilesEffect::GoTo {
-        path: folder.path().display().to_string(),
+        path: AbsolutePath::new(folder.path()).unwrap(),
     })
     .unwrap();
     act_on(
@@ -621,7 +621,7 @@ fn the_windows_work_is_its_effects() {
     app.effect_on(&row, &FilesEffect::Copy { entry: row.clone() })
         .unwrap();
     app.effect(&FilesEffect::GoTo {
-        path: folder.path().join("Projects").display().to_string(),
+        path: AbsolutePath::new(folder.path().join("Projects")).unwrap(),
     })
     .unwrap();
     app.effect(&FilesEffect::Paste { conflict: None }).unwrap();
@@ -762,7 +762,7 @@ fn only_the_device_a_change_names_carries_it_out() {
     laptop
         .invoke(FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
             device: "phone".into(),
-            parent,
+            parent: AbsolutePath::new(&parent).unwrap(),
             name: "Inbox".into(),
         }))
         .unwrap();
@@ -788,10 +788,13 @@ fn only_the_device_a_change_names_carries_it_out() {
 }
 
 fn import_destination(path: &std::path::Path) -> ImportDestination {
-    let path = path.display().to_string();
     ImportDestination {
-        identity: crate::cloud_transfer::pin_destination(&path, std::iter::empty()).unwrap(),
-        path,
+        identity: crate::cloud_transfer::pin_destination(
+            &path.display().to_string(),
+            std::iter::empty(),
+        )
+        .unwrap(),
+        path: AbsolutePath::new(path).unwrap(),
     }
 }
 
@@ -799,7 +802,7 @@ fn import_destination(path: &std::path::Path) -> ImportDestination {
 // serializable evidence, not permission to read a private cloud source.
 fn nonexistent_import_destination(path: &std::path::Path) -> ImportDestination {
     ImportDestination {
-        path: path.display().to_string(),
+        path: AbsolutePath::new(path).unwrap(),
         identity: serde_json::from_value(serde_json::json!({"device": 0, "inode": 0})).unwrap(),
     }
 }
@@ -1236,7 +1239,7 @@ fn mounted_import_refuses_guest_public_actions() {
             &FileExplorer::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
                 device: "test-device".into(),
                 paths: vec!["/private/Google.docx".into()],
-                folder: "/private/Copies".into(),
+                folder: "/private/Copies".parse().unwrap(),
             }),
         );
         assert!(result.is_err());
@@ -1281,7 +1284,7 @@ fn cloud_import_without_a_checked_host_binding_fails_closed() {
             account: "private-account".into(),
             entries: vec![serde_json::json!(import_entry())],
             destination: nonexistent_import_destination(std::path::Path::new(
-                "not-an-absolute-destination",
+                "/not-a-pinned-destination",
             )),
         }))
         .unwrap_err();
@@ -1473,7 +1476,7 @@ fn workspace_file_actions_remain_available_to_guests() {
         ui::tilo_actions::ActionInvoker::actor("guest-editor"),
         &FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
             device: "test-device".into(),
-            parent: folder.path().to_string_lossy().into_owned(),
+            parent: AbsolutePath::new(folder.path()).unwrap(),
             name: "Shared folder".into(),
         }),
     )
@@ -1547,10 +1550,6 @@ fn cloud_import_refuses_invalid_requests_before_queueing() {
         },
         file_explorer::CloudImport {
             entries: vec![],
-            ..valid.clone()
-        },
-        file_explorer::CloudImport {
-            destination: nonexistent_import_destination(std::path::Path::new("relative")),
             ..valid.clone()
         },
         file_explorer::CloudImport {

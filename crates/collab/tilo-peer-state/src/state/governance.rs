@@ -88,11 +88,40 @@ impl PeerGovernance<'_> {
             member_user_roots,
         })
     }
+
+    /// The member devices that may read `channel`, one of the room's record
+    /// channels, at `now`: the projection of the room's membership a
+    /// channel's MLS group follows. `route` is the channel's record when the
+    /// caller knows it ([`Self::withheld_record_readers`]).
+    ///
+    /// # Errors
+    ///
+    /// The room's governance is missing or cannot be read.
+    pub fn channel_readers(
+        self,
+        now: SystemTime,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let access = self.peer.governance().governed_access(now)?;
+        let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
+        let readers = self
+            .peer
+            .governance()
+            .withheld_record_readers(now, &routes)?;
+        let withheld = readers.withheld.get(&channel).unwrap_or(&readers.unrouted);
+        Ok(access
+            .member_devices
+            .into_iter()
+            .filter(|device| !withheld.contains(device))
+            .collect())
+    }
+
     /// The governed member devices a Read Deny keeps out of a record's
-    /// channel, as a channel steward admits them.
+    /// channel, as every participant of the channel admits them.
     ///
     /// A channel is one record's, and its id a hash of the record's route,
-    /// so a steward decides a channel by its record when it can name it: a
+    /// so a participant decides a channel by its record when it can name it: a
     /// record the room's grants name ([`collab_types::named_records`]), or one
     /// of `routes`, the routes devices proved to it
     /// ([`collab_types::ChannelRoute::proves`]). For each such record
@@ -102,7 +131,7 @@ impl PeerGovernance<'_> {
     /// Deny on the record, on its app or on any pattern over it withholds its
     /// key, and the room's other records are unaffected.
     ///
-    /// A channel whose record the steward cannot name may be any record
+    /// A channel whose record the caller cannot name may be any record
     /// nothing names. [`RecordReaders::unrouted`] lists every device that
     /// may not read one of the records a Deny over a pattern stands for
     /// ([`collab_types::pattern_read_witnesses`]): such a channel is withheld
@@ -143,13 +172,15 @@ impl PeerGovernance<'_> {
         );
         let mut withheld = std::collections::HashMap::new();
         for (app, record) in records {
-            // Only a grant below the room can decide a record otherwise than
-            // the room: a record none covers is read by every member.
+            // Only a grant below the room, or a member's own record (read by
+            // that person alone), can decide a record otherwise than the
+            // room: a record neither covers is read by every member.
             let node = collab_types::document_node(room, app, record);
-            let covered = policy
-                .grants
-                .iter()
-                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
+            let covered = collab_types::member_record(record).is_some()
+                || policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
             let devices = if covered {
                 denied(app, record)
             } else {

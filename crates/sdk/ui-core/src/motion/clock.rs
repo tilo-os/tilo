@@ -98,6 +98,13 @@ pub(crate) fn pin_frame() -> PinnedFrame {
     PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
 }
 
+/// [`pin_frame`] at `at`: a test steps a gesture through frames at the
+/// pace a display presents them, without sleeping.
+#[cfg(test)]
+pub(crate) fn pin_frame_at(at: Instant) -> PinnedFrame {
+    PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
+}
+
 /// In a debug build, fail a motion that is read while a frame's layout is
 /// pinned at any instant but the frame's: a widget that sizes or places
 /// itself by a motion must read it at [`frame_now`], or the frame's layout

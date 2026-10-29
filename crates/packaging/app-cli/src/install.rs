@@ -75,8 +75,6 @@ pub enum InstallError {
         runtime: String,
         registry: String,
     },
-    /// An explicitly requested optional capability has no usable exact runtime.
-    OptionalRuntimeUnavailable { runtime: String, registry: String },
 }
 
 impl InstallError {
@@ -86,9 +84,6 @@ impl InstallError {
             InstallError::NotOffered { package_id } => {
                 format!("no configured registry offers {package_id}")
             }
-            InstallError::OptionalRuntimeUnavailable { runtime, registry } => format!(
-                "optional runtime {runtime} is not available from {registry}; the capability is not ready"
-            ),
             InstallError::NoStagingDir => "there is nowhere writable to download it to".to_string(),
             InstallError::Download { detail } => format!("the download failed: {detail}"),
             InstallError::InstallerMissing { detail } => {
@@ -991,7 +986,7 @@ fn install_staged(
 ) -> Result<(), InstallError> {
     let dest = staged.file.path();
     let downloaded = staged.bytes;
-    install_optional_runtimes(app, dest, on_progress)?;
+    install_required_runtimes(app, dest, on_progress)?;
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if change == Change::Install {
@@ -1074,15 +1069,15 @@ fn ensure_runtime(
     }
 }
 
-/// Make the optional runtimes the downloaded app pins (`optional-runtimes`:
-/// a browser's engine) available, as [`ensure_runtime`] does for its
-/// runtime.
+/// Make the further runtimes the downloaded app requires (`optional-runtimes`
+/// in its manifest: a browser's engine) available, as [`ensure_runtime`]
+/// does for its runtime.
 ///
 /// They are part of the app: it pins them by exact version, and replacing a
 /// working build with one whose engine is absent would leave it saying "not
 /// installed" until someone fetched the engine by hand. So an engine that
 /// cannot be fetched refuses the install or update, and nothing changes.
-fn install_optional_runtimes(
+fn install_required_runtimes(
     app: &CatalogueApp,
     staged: &Path,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -1097,63 +1092,10 @@ fn install_optional_runtimes(
     .map_err(|error| InstallError::Integrity {
         detail: error.to_string(),
     })?;
-    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(&tapp.meta.manifest) {
+    for runtime in tilo_app_package::desktop::required_runtime_dependencies(&tapp.meta.manifest) {
         ensure_runtime(app, runtime, on_progress)?;
     }
     Ok(())
-}
-
-/// Acquire exactly one optional runtime after the user requests that capability.
-///
-/// App-pinned runtimes are acquired automatically during install, update and
-/// rollback. This API also supports independently requested capabilities. The
-/// caller supplies the exact runtime reference and the app's offering registry,
-/// not a guessed catalogue app ID.
-/// This uses the same signed offers, bounded downloads and verified installer as
-/// required runtimes, and returns failure rather than logging apparent success.
-/// Progress includes download and installation phases; retry checks for an
-/// already verified installed bundle. A running app must be closed and relaunched
-/// through the normal launcher to receive the new read-only sandbox mount.
-pub fn acquire_optional_runtime_reporting(
-    app: &CatalogueApp,
-    runtime: &str,
-    on_progress: &mut dyn FnMut(DownloadProgress),
-) -> Result<(), InstallError> {
-    ensure_runtime(app, runtime, on_progress).map_err(|error| match error {
-        InstallError::RuntimeUnavailable {
-            runtime, registry, ..
-        } => InstallError::OptionalRuntimeUnavailable { runtime, registry },
-        error => error,
-    })
-}
-
-/// Acquire an already admitted, exact runtime offer without resolving a newer offer.
-/// The host must validate the consuming app's signed optional declaration and
-/// revalidate this offer against its configured repository before calling.
-pub fn acquire_admitted_runtime_reporting(
-    offer: &CatalogueApp,
-    runtime: &str,
-    on_progress: &mut dyn FnMut(DownloadProgress),
-) -> Result<(), InstallError> {
-    if !registry_types::is_runtime_package_id(&offer.package_id)
-        || offer.runtime.as_deref() != Some(runtime)
-    {
-        return Err(InstallError::Integrity {
-            detail: "the admitted offer does not provide the exact runtime".into(),
-        });
-    }
-    if crate::runtime_installed(runtime) {
-        return Ok(());
-    }
-    install_or_update_app_reporting(offer, on_progress, Change::Install)?;
-    if crate::runtime_installed(runtime) {
-        Ok(())
-    } else {
-        Err(InstallError::OptionalRuntimeUnavailable {
-            runtime: runtime.to_string(),
-            registry: offer.registry.clone(),
-        })
-    }
 }
 
 /// Download and atomically update an installed app from a verified offer.
@@ -1654,10 +1596,6 @@ mod tests {
             let cases = [
                 InstallError::NotOffered {
                     package_id: "so.tilo.ghost".into(),
-                },
-                InstallError::OptionalRuntimeUnavailable {
-                    runtime: "tilo-runtime/not-offered".into(),
-                    registry: "test".into(),
                 },
                 InstallError::NoStagingDir,
                 InstallError::Download {

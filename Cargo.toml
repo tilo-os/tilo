@@ -395,6 +395,7 @@ members = [
     "crates/runtime/egress",
     "crates/runtime/ush",
     "crates/runtime/ush-shell",
+    "crates/runtime/ush-tilo",
     "crates/runtime/env-tools",
 
     # Session
@@ -420,6 +421,7 @@ members = [
     "crates/session/session-record",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
+    "crates/session/audio-service",
     "crates/session/tray-host",
     "crates/session/wayland-ext",
     "crates/session/window-share",

@@ -103,7 +103,7 @@ pub fn bwrap_argv(
     // The Tilo runtime: the loader, `LD_LIBRARY_PATH` and libraries, as for an app; the
     // tilolang bundle beside it, as an app's entrypoint runtime is.
     crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
-    let _ = crate::sandbox::push_optional_runtime(&mut argv, runtime_root, version);
+    let _ = crate::sandbox::push_required_runtime(&mut argv, runtime_root, version);
     argv.extend([
         "--bind".to_owned(),
         storage.display().to_string(),

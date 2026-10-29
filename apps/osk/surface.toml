@@ -9,7 +9,6 @@ version = 1
 kind = "osk.learned"
 label = "What the keyboard learned"
 version = 1
-person = true
 fields = [
   { path = "transitions", type = "BTreeMap<String, BTreeMap<String, BTreeMap<String, Counter>>>", readonly = true },
   { path = "kept", type = "Set<String>", readonly = true },

@@ -9,6 +9,13 @@
 //! the app, and a secret-bearing entry ([`IndexEntry::secret`]) carries what
 //! the app chose to show of it (a name, a username, a site), never a secret.
 //!
+//! Every text is the one the session's person reads: text derived from rich
+//! text reads each reference as it reads for them (a resource they hold by
+//! its title now, one they cannot read as not shared,
+//! `tilo_reference::embed::read_text`), never as the run it was written
+//! with, so the index never matches a query against a title they cannot
+//! read.
+//!
 //! The publication is incremental: a [`Publisher`] remembers what its
 //! connection last sent and sends an [`IndexDelta`] of what changed, the
 //! whole set again (`reset`) only on a new route.

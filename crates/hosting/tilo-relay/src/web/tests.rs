@@ -1173,8 +1173,8 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     );
 }
 
-/// A public room's spectator takes a channel's content keys from its
-/// steward and opens what was sealed there; nobody else does: not before it
+/// A public room's spectator takes a channel's content keys from the node
+/// and opens what was sealed there; nobody else does: not before it
 /// holds a seat, not a member, not in a room that is not public, and never
 /// for a channel nobody created.
 #[cfg(feature = "agents")]
@@ -1186,7 +1186,7 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
 async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     let signer = SigningKey::from_bytes(&[71; 32]);
     let watcher = SigningKey::from_bytes(&[72; 32]);
-    // A room service's node, which stewards its rooms' channels.
+    // A room service's node, which takes part in its rooms' channels.
     let (host_key, host) = device(
         &signer,
         73,
@@ -1249,8 +1249,8 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         .unwrap();
     // A member wrote in the chat's channel.
     let record = "@tilo:package-primary";
-    let steward = rooms
-        .steward_endpoint_keys(
+    let node = rooms
+        .own_endpoint_keys(
             &tilo_browser_peer::DocumentRoute {
                 app_id: "so.tilo.chat".into(),
                 cluster_id: room.room.clone(),
@@ -1262,7 +1262,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         .unwrap()
         .unwrap();
     let artifact = collab_types::ArtifactId::new();
-    let (metadata, sealed) = steward
+    let (metadata, sealed) = node
         .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
         .unwrap();
 

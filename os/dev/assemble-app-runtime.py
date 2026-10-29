@@ -283,7 +283,7 @@ def assemble_inside(args):
 
 
 def engine_pins(repo):
-    """The optional runtimes the cohort's apps pin by exact version (the
+    """The further runtimes the cohort's apps require by exact version (the
     Browser's engine): they ship with the apps or the cohort is refused."""
     pins = set()
     for path in sorted((repo / 'apps').glob('*/tilo-app.toml')):
@@ -291,7 +291,7 @@ def engine_pins(repo):
         pins.update(manifest['package'].get('optional-runtimes', []))
     for pin in pins:
         if not re.fullmatch(r'tilo-runtime/[0-9A-Za-z][0-9A-Za-z._+-]*', pin):
-            raise ValueError(f'invalid optional runtime {pin!r}')
+            raise ValueError(f'invalid required runtime {pin!r}')
     return sorted(pins)
 
 

@@ -94,7 +94,7 @@ pub enum SlidesEffect {
     #[effect(job, cancellable, destructive)]
     OpenPresentation {
         #[param("Absolute path of the presentation; omit to use the system picker")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save presentation
     ///
@@ -103,7 +103,7 @@ pub enum SlidesEffect {
     #[effect(job, cancellable)]
     SaveAs {
         #[param("Absolute path to write; omit to use the system picker")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Read deck as text
     ///

@@ -1466,13 +1466,10 @@ pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>
 /// Never overwrite a branch or an existing path, and never switch the caller's HEAD.
 pub fn create_worktree(
     path: &Path,
-    destination: &Path,
+    destination: &ui::tilo_resource::AbsolutePath,
     branch: &str,
     start: &str,
 ) -> anyhow::Result<()> {
-    if !destination.is_absolute() {
-        bail!("worktree destination must be an absolute path");
-    }
     if destination.symlink_metadata().is_ok() {
         bail!("worktree destination already exists");
     }

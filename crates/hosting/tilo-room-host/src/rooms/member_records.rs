@@ -116,7 +116,7 @@ impl Rooms {
         valid(request)?;
         let state = self.room(room).await?;
         let mut governed = state.lock().await;
-        if governed.stewardship.is_some() {
+        if governed.participation.is_some() {
             return Err(CollaborationError::new(
                 "this room's records are its members' sealed channels",
             ));
@@ -165,7 +165,7 @@ impl Rooms {
         governed: &mut GovernedRoom,
     ) -> Result<(), String> {
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
-        if governed.stewardship.is_some()
+        if governed.participation.is_some()
             || governed.peer().authority() != &self.inner.host.cert
             || governed
                 .peer()

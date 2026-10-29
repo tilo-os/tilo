@@ -522,24 +522,31 @@ fn a_group_of_edits_shares_its_barriers_and_is_invisible_until_they_hold() {
     );
     let before = crate::store::thread_fsyncs();
     state.group.flush().unwrap();
-    // One file barrier per record, issued together, and the generation's
-    // directory once: ungrouped, each edit costs a file and a directory
-    // barrier in turn.
+    // The generation's journal, created by this group: the file and its
+    // entry in the generation. Ungrouped, each edit costs a file and a
+    // directory barrier in turn.
     assert_eq!(
         crate::store::thread_fsyncs() - before,
-        u64::from(GROUP) + 1,
-        "a group costs its records' file barriers and one directory barrier"
+        2,
+        "a group creating its generation's journal costs the journal's two barriers"
     );
     assert_eq!(state.group.records().flushes(), 1);
     assert_eq!(
         retained_edits(&state.store),
         (0..2 + GROUP).collect::<Vec<_>>()
     );
-    // The index followed the group: the next edit lists nothing.
+    // The index followed the group: the next edit lists nothing, and its
+    // group costs one barrier, the journal's.
     let listed = crate::store::thread_listed_entries();
     let sequence = state.next_sequence_at(NOW).unwrap();
     commit_grouped(&state, sequence, 2 + GROUP);
+    let before = crate::store::thread_fsyncs();
     state.group.flush().unwrap();
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        1,
+        "one barrier per group"
+    );
     assert_eq!(crate::store::thread_listed_entries() - listed, 0);
     assert_eq!(
         retained_edits(&state.store),
@@ -683,8 +690,8 @@ async fn queued_commits_complete_in_order_after_one_shared_barrier() {
 async fn a_failed_group_barrier_fails_every_commit_it_covers() {
     let dir = tempfile::tempdir().unwrap();
     let (state, gate, receipts, running) = grouped_owner(dir.path(), 5).await;
-    let lineage = edits_lineage(&state.lock().unwrap().store);
-    let _fault = crate::store::test_barrier::fail(&lineage, "group-sync-file");
+    let generation = active_generation(&state.lock().unwrap().store);
+    let _fault = crate::store::test_barrier::fail(&generation, "journal-sync");
     gate.send(()).unwrap();
     for receipt in receipts {
         assert!(
@@ -698,5 +705,82 @@ async fn a_failed_group_barrier_fails_every_commit_it_covers() {
         retained_edits(&store),
         [0],
         "no unsynced record was published"
+    );
+}
+
+/// Leave `index`'s record as a power loss may: `cut` truncates it, else it
+/// is gone. Returns its path.
+fn lose_record(store: &WorkspaceStore, ordinal: u64, cut: bool) -> std::path::PathBuf {
+    let path = active_generation(store).join(format!("{ordinal:016x}.delta"));
+    if cut {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+    } else {
+        std::fs::remove_file(&path).unwrap();
+    }
+    path
+}
+
+#[test]
+fn opening_the_store_restores_grouped_records_a_crash_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 0);
+    for index in 1..6 {
+        let sequence = state.next_sequence_at(NOW).unwrap();
+        commit_grouped(&state, sequence, index);
+    }
+    state.group.flush().unwrap();
+    // Their files were never synced: a power loss may leave them missing
+    // or empty, with the journal's barrier holding.
+    let cut = lose_record(&state.store, 2, true);
+    lose_record(&state.store, 4, false);
+    // A torn append of a group whose commits were never acknowledged.
+    let journal = active_generation(&state.store).join(crate::store::retained::journal::JOURNAL);
+    let mut torn = std::fs::read(&journal).unwrap();
+    let whole = torn.len();
+    torn.extend_from_within(..whole / 3);
+    std::fs::write(&journal, &torn).unwrap();
+    drop(state);
+
+    let state = open(dir.path());
+    assert_eq!(retained_edits(&state.store), (0..6).collect::<Vec<_>>());
+    assert_ne!(std::fs::metadata(&cut).unwrap().len(), 0);
+}
+
+#[test]
+fn a_replacement_generation_syncs_the_journaled_records_it_keeps_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = open(dir.path());
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit(&state, sequence, 0);
+    let sequence = state.next_sequence_at(NOW).unwrap();
+    commit_grouped(&state, sequence, 1);
+    state.group.flush().unwrap();
+    // Ordinals start at one: the ungrouped edit is the first, the grouped
+    // one the second.
+    let journaled = active_generation(&state.store).join(format!("{:016x}.delta", 2));
+    let scratch = dir.path().join("linked");
+    std::fs::create_dir(&scratch).unwrap();
+    let before = crate::store::thread_fsyncs();
+    tilo_relay_store::durable::link(&journaled, &scratch.join("a")).unwrap();
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        1,
+        "a record durable only through its journal is synced before it is linked"
+    );
+    let before = crate::store::thread_fsyncs();
+    tilo_relay_store::durable::link(&journaled, &scratch.join("b")).unwrap();
+    let synced = active_generation(&state.store).join(format!("{:016x}.delta", 1));
+    tilo_relay_store::durable::link(&synced, &scratch.join("c")).unwrap();
+    assert_eq!(
+        crate::store::thread_fsyncs() - before,
+        0,
+        "a settled or synced record links without a barrier"
     );
 }

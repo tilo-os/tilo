@@ -41,7 +41,7 @@ programs, and this runner is not configured for Windows. See
 [tools/cargo-runner.sh](../../tools/cargo-runner.sh).
 
 [tools/with-test-environment.sh](../../tools/with-test-environment.sh) provides
-fresh HOME/XDG directories, a fixed locale/timezone/keyboard layout, no
+fresh HOME/TMPDIR/XDG directories, a fixed locale/timezone/keyboard layout, no
 display/session sockets, and D-Bus addresses pointing at absent sockets. It
 preserves an intact enclosing test environment and removes its temporary tree
 when the command exits.

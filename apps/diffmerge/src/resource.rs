@@ -12,7 +12,7 @@ use crate::chrome::Chrome;
 use std::rc::Rc;
 use ui::widget::NavShell;
 
-use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Atom, Derived, Invoke, Refusal, resource};
 use ui::widget::Element;
@@ -274,12 +274,26 @@ impl ResourceApp for DiffmergeShell {
         let chrome = Chrome::new();
         let mut comparison = DiffMergeApp::new();
         comparison.attach_chrome(chrome.clone());
+        comparison.attach(
+            cx.live().clone(),
+            cx.dispatcher(),
+            cx.waker(),
+            cx.read_only_state(),
+        );
+        let store = comparison.shared();
+        let effects = Rc::clone(&store);
+        cx.effects(move |effect: DiffmergeEffect, cx| crate::app::answer(&effects, effect, cx));
+        cx.on_stage(move |scenario| {
+            store
+                .borrow_mut()
+                .ask(crate::app::Asked::Stage(scenario.map(str::to_owned)));
+        });
         // One column: the shell draws the header row that holds the
         // comparison's controls.
         Box::new(
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
-                .content(cx.surface(comparison))
+                .content(Box::new(comparison))
                 .content_header("", chrome.actions()),
         )
     }
@@ -299,33 +313,6 @@ impl ResourceApp for DiffmergeShell {
             return Vec::new();
         }
         sample_invocations().into()
-    }
-}
-
-impl ResourceSurface<Session, DiffmergeEffect> for DiffMergeApp {
-    fn present(&mut self, state: &Rc<Session>) {
-        self.present_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Session>) {
-        self.attach_dispatcher(cx.dispatcher());
-        self.attach_waker(cx.waker());
-    }
-
-    fn read_only_changed(&mut self, read_only: bool) {
-        self.set_read_only(read_only);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: DiffmergeEffect,
-        cx: &mut EffectCx<Session, Self>,
-    ) -> EffectAnswer {
-        self.answer_effect(effect, cx)
     }
 }
 

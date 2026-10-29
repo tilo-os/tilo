@@ -639,13 +639,18 @@ mod tests {
                 })
                 .is_err()
         );
-        model.save(|prefs| prefs.night_light = true).unwrap();
+        model
+            .night_light
+            .settings()
+            .update(|prefs| prefs.night_light = true)
+            .unwrap();
+        model.night_light.refresh();
         model.shared_display_prefs.refresh();
         assert!(
             !model.shared_layout().displays[0].enabled,
             "comfort edits preserve the shared arrangement leaf"
         );
-        assert!(model.prefs.get().night_light);
+        assert!(model.night_light.get().night_light);
     }
 
     #[test]
@@ -924,8 +929,8 @@ mod tests {
             );
         });
         assert_eq!(
-            settings_store::continuity::classify("tilo.continuity.automatic_display_input"),
-            Some(settings_store::continuity::SettingScope::DeviceLocal)
+            settings_store::placement::holder("continuity"),
+            settings_store::placement::Holder::Device
         );
     }
 

@@ -88,8 +88,6 @@ const TRANSPORT_CONTROL_CY: f64 = 20.0;
 
 const EXPORT_CARD_W: f64 = 460.0;
 
-const DISCARD_CARD_W: f64 = 420.0;
-
 const HELP_CARD_W: f64 = 700.0;
 
 const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
@@ -940,16 +938,13 @@ struct RenderPipelineState {
     warm_waveforms_sync: bool,
 }
 
-/// Per-device project-file work deferred until the next `sync`.
+/// Project work deferred until the next `sync`.
 #[derive(Default)]
 struct ProjectSyncState {
     /// A project the host presented during a drag still waits to replace
     /// the drag's live preview, which lives only in the in-memory project:
     /// it lands the moment the drag lets go.
     reload_pending: bool,
-    save_requested: bool,
-    /// An open was submitted and the host has not applied it yet.
-    open_submitted: bool,
 }
 
 pub struct VideoEditorApp {
@@ -1081,9 +1076,6 @@ pub struct VideoEditorApp {
     /// `last_tick`, which the playhead owns: a meter has to keep falling
     /// while the transport is stopped.
     meter_tick: Instant,
-    /// The document heads the model was last loaded at — how "the document
-    /// changed" is told from "the same document was reloaded".
-    doc_heads: Vec<automerge::ChangeHash>,
     /// The GPU compositor that produces the preview picture — the *same*
     /// renderer the export runs, so what you see is byte-for-byte what you
     /// get. Built once and reused; `None` on a box with no usable adapter,
@@ -1258,56 +1250,21 @@ pub struct VideoEditorApp {
     /// destination, or why the round-trip failed. Distinct from
     /// [`ExportStatus`], which reports the *render*.
     export_notice: Option<String>,
-    /// The file this project is saved in, once it has one. `None` means the
-    /// project has never been saved: the work is still safe (the autosave
-    /// document holds it) but there is nothing on disk to hand anybody, and
-    /// the project button says so.
-    project_path: Option<PathBuf>,
-    /// Where the project was saved when that place has no path here (a
-    /// browser page's Save dialog file): kept, so every later Save writes
-    /// there quietly. Only Save As asks again.
-    project_destination: Option<ui::portal::SaveDestination>,
-    /// The document's heads a write to [`Self::project_destination`] in
-    /// flight is saving: what reads as saved once it lands.
-    saving_heads: Option<Vec<automerge::ChangeHash>>,
-    /// Whether the document has changed since the last save to
-    /// [`Self::project_path`]. Derived from the document's heads rather than
-    /// from a flag each edit remembers to set, so an edit that arrives from a
-    /// peer — or from the Ctrl+K palette, which never touches this widget —
-    /// marks the project unsaved too.
-    saved_heads: Option<Vec<automerge::ChangeHash>>,
-    /// A project open/save portal round-trip in flight, drained each `sync`
-    /// exactly like the import and export-destination ones.
-    project_rx: Option<portal::ProjectChannel>,
     /// What the last project-file operation did, said in the window's bar.
-    /// Never a fake success: a save that failed says why, and a project
+    /// Never a fake success: an export that failed says why, and a project
     /// opened with sources this device cannot read says which. Carries its
     /// own severity — see [`NoticeLevel`].
     project_notice: ui::widget::toast::Transient<Notice>,
-    /// Why the last save of this project failed, until a save succeeds: its
-    /// notice stays in the bar with Try again for as long.
-    save_failure: Option<String>,
-    /// The project file or render job an effect started, answered through
+    /// The import or render job an effect started, answered through
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
-    /// The projects opened or saved lately whose file is here, newest
-    /// first, as this device's [`crate::project_file::RecentProjects`] keeps
-    /// them (`recents_setting`; none in a capture or a test).
-    recents: ui::tilo_resource::Recents<PathBuf, 8>,
-    recents_setting: Option<ui::framework::Setting<crate::project_file::RecentProjects>>,
-    /// A project waiting for the user to say what to do about unsaved work.
-    /// Opening a file must never silently discard an unsaved project.
-    pending_open: Option<PendingOpen>,
     /// The theme the chrome was last drawn with: the default theme until the
     /// first frame, so geometry measured before that frame (an event, a
     /// test) agrees with what it paints.
     chrome_theme: Theme,
     hit_text: std::cell::RefCell<Option<TextRenderer>>,
     help_scroll: f64,
-    /// What a `Save` should do once the destination comes back: just save, or
-    /// save and then continue into the open that was interrupted.
-    save_then_open: Option<PendingOpen>,
     /// The project's format, worded once for the inspector to paint.
     ///
     /// Cached against the numbers it was built from: `draw` runs for every
@@ -1318,41 +1275,6 @@ pub struct VideoEditorApp {
     /// rate is carried as its bit pattern so the freshness test is an exact
     /// comparison rather than a float one.
     project_format_from: (u32, u32, u64),
-}
-
-/// A row in the project menu, as an intent rather than an index.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ProjectMenuItem {
-    Open,
-    Save,
-    SaveAs,
-    Recent(PathBuf),
-}
-
-/// An open the user has asked for that is waiting on an answer about the
-/// unsaved project it would replace.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PendingOpen {
-    /// The file to open; where files have no paths, only its name.
-    path: PathBuf,
-    /// The file's contents, when the chooser handed those over instead of
-    /// a path (a browser page).
-    contents: Option<Vec<u8>>,
-    /// The name of the project that would be discarded, so the question can
-    /// say what is at stake instead of "you have unsaved changes".
-    losing: String,
-}
-
-/// The three answers to that question.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DiscardChoice {
-    /// Stay where you are.
-    Cancel,
-    /// Save the current project first, then continue into the open.
-    Save,
-    /// Open anyway. Recoverable: the open is one action, so Ctrl+Z restores
-    /// the project that was replaced.
-    Discard,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -1456,7 +1378,6 @@ impl VideoEditorApp {
             mix: crate::audio::MixSnapshot::default(),
             mix_sig: None,
             meter_tick: ui::time::now(),
-            doc_heads: Vec::new(),
             compositor: None,
             composited: None,
             drag: None,
@@ -1506,22 +1427,12 @@ impl VideoEditorApp {
             export_save_rx: None,
             export_dest_rx: None,
             export_notice: None,
-            project_path: None,
-            project_destination: None,
-            saving_heads: None,
-            saved_heads: None,
-            project_rx: None,
             project_notice: ui::widget::toast::Transient::new(),
-            save_failure: None,
             resource_operation: None,
             resource_reply: None,
-            recents: ui::tilo_resource::Recents::default(),
-            recents_setting: None,
-            pending_open: None,
             chrome_theme: Theme::dark(),
             hit_text: std::cell::RefCell::new(None),
             help_scroll: 0.0,
-            save_then_open: None,
             // Filled on the first `sync`, from whatever project the document
             // actually holds -- a blank one included.
             project_format_shown: String::new(),
@@ -5141,9 +5052,6 @@ impl VideoEditorApp {
                 self.bin_flap.open();
             }
             VideoEditorEffect::Import { path: None } => self.trigger_import(),
-            VideoEditorEffect::OpenProject { path: None } => self.request_open_project(),
-            VideoEditorEffect::Save { path: None } => self.queue_save_project(),
-            VideoEditorEffect::SaveAs { path: None } => self.request_save_as(),
             VideoEditorEffect::Export { path: None } => self.request_export(),
             VideoEditorEffect::ShowExport => self.presentation.export_open = true,
             VideoEditorEffect::ToggleMedia => self.toggle_bin(),
@@ -5155,15 +5063,14 @@ impl VideoEditorApp {
                 }
             }
             VideoEditorEffect::Import { path: Some(path) } => {
-                self.pending_imports.push(PathBuf::from(path));
+                self.pending_imports.push(path.into_path_buf());
             }
             VideoEditorEffect::Export { path: Some(path) } => {
-                self.begin_export_to(PathBuf::from(path));
+                self.begin_export_to(path.into_path_buf());
             }
-            VideoEditorEffect::OpenProject { path: Some(_) }
-            | VideoEditorEffect::Save { path: Some(_) }
-            | VideoEditorEffect::SaveAs { path: Some(_) } => {
-                return Err("direct project I/O requires lifecycle dispatch".into());
+            VideoEditorEffect::OpenProjectFile { .. }
+            | VideoEditorEffect::ExportProjectFile { .. } => {
+                return Err("a project file is answered as a job of its own".into());
             }
             VideoEditorEffect::RenderTimeline { .. } => {
                 return Err("a render is answered as a job of its own".into());
@@ -5206,19 +5113,6 @@ impl VideoEditorApp {
                 if self.import_rx.is_none() && self.pending_imports.is_empty() =>
             {
                 self.import_notice.get().map(|notice| {
-                    if notice.level == NoticeLevel::Failed {
-                        Err(notice.text.clone())
-                    } else {
-                        Ok(())
-                    }
-                })
-            }
-            VideoEditorEffect::OpenProject { .. }
-            | VideoEditorEffect::Save { .. }
-            | VideoEditorEffect::SaveAs { .. }
-                if self.project_rx.is_none() && self.pending_open.is_none() =>
-            {
-                self.project_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
                         Err(notice.text.clone())
                     } else {
@@ -6013,17 +5907,6 @@ struct ExportLayout {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct DiscardLayout {
-    modal: ModalLayout,
-    type_sizes: DialogType,
-    /// Top of each body line.
-    lines: [f64; 2],
-    cancel: Rect,
-    discard: Rect,
-    save: Rect,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct HelpLayout {
     modal: ModalLayout,
     type_sizes: DialogType,
@@ -6166,15 +6049,8 @@ impl Widget for VideoEditorApp {
         dyn ui::widget::controls::ActionControls
     );
 
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document_ref(state, path);
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.take_notice_actions();
-        if std::mem::take(&mut self.project_sync.save_requested) {
-            self.save_project(state);
-        }
-        // The project arrives through `present`; the document's heads say
-        // whether it has changed since it was saved.
-        self.track_saved_heads(state.committed_heads());
         // While a clip-editing drag is in flight, the live preview lives only
         // in the in-memory project — the document isn't written until the
         // drag commits — so a project presented meanwhile waits, and lands
@@ -6192,10 +6068,6 @@ impl Widget for VideoEditorApp {
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
         self.drain_import();
-        // A project open/save chooser that has come back. Drained after the
-        // model load above so an Open replaces a project that is current, and
-        // before the passes below so they see what was opened.
-        self.drain_project_portal(state);
         self.finish_resource_file_operation_if_ready();
         // Drop selected clips that vanished (e.g. a remote delete), keeping
         // whatever is left selected rather than clearing the lot.
@@ -6321,10 +6193,6 @@ impl Widget for VideoEditorApp {
         // Keep syncing while an import is pending so its outcome is drained.
         self.import_rx.is_some()
             || !self.pending_imports.is_empty()
-            // A project chooser is a round-trip in flight exactly like an
-            // import; without this the chosen file would sit undrained until
-            // the user happened to move the mouse.
-            || self.project_rx.is_some()
             || self.waveforms.has_pending() // keep syncing until peaks land
             || self.thumbnails.has_pending() // …and until real frames land
     }
@@ -6480,9 +6348,6 @@ impl Widget for VideoEditorApp {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
         self.draw_file_drop_invite(scene, transform, tr, theme);
-        if self.pending_open.is_some() {
-            self.draw_discard_dialog(scene, transform, tr, theme);
-        }
         // The context menus float above everything else: they are children,
         // painted in the top layer by `draw_overlay`.
     }
@@ -6503,9 +6368,7 @@ impl Widget for VideoEditorApp {
             .map(ui::framework::Dispatcher::begin_group);
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
-        let modal_open = self.presentation.export_open
-            || self.pending_open.is_some()
-            || self.navigation.help_open;
+        let modal_open = self.presentation.export_open || self.navigation.help_open;
         if !modal_open && !bin_overlay_open && self.route_to_timeline_split(event, ctx) {
             return;
         }
@@ -6737,7 +6600,7 @@ impl Widget for VideoEditorApp {
                 if !bin_overlay_open || r.bin.contains(self.last_mouse) {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(&ctx.state, &r, ctx.modifiers.state().shift_key());
+                self.handle_press(&r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
@@ -7243,9 +7106,6 @@ impl Widget for VideoEditorApp {
         if let Some(status) = self.a11y_export_status() {
             kids.push(status);
         }
-        if self.pending_open.is_some() {
-            kids.push(self.a11y_discard_dialog());
-        }
         if self.navigation.help_open {
             kids.push(VideoEditorApp::a11y_help_sheet());
         }
@@ -7258,7 +7118,7 @@ impl Widget for VideoEditorApp {
                     // carry, so a reader is told which project is open AND
                     // whether it is written down. A bare name would say only
                     // the first, which is the tidier and less true story.
-                    self.project_status_line(),
+                    self.project_label(),
                     crate::timecode::timecode(self.playhead, self.project.fps),
                     self.focus.pane.label()
                 ))
@@ -7316,11 +7176,10 @@ impl Widget for VideoEditorApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
-        let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
         let _gesture = self
             .actions
@@ -7346,22 +7205,6 @@ impl Widget for VideoEditorApp {
                     return true;
                 }
                 return false;
-            }
-            if pane_key == hash_key(&"discard") {
-                let Some(&which) = key_path.get(1) else {
-                    return false;
-                };
-                if !matches!(action, Action::Activate) {
-                    return false;
-                }
-                let choice = match which {
-                    1 => DiscardChoice::Cancel,
-                    2 => DiscardChoice::Discard,
-                    3 => DiscardChoice::Save,
-                    _ => return false,
-                };
-                self.resolve_pending_open(state, choice);
-                return true;
             }
             if pane_key == hash_key(&"help") && matches!(action, Action::Activate) {
                 self.navigation.help_open = false;
@@ -7443,8 +7286,9 @@ impl ui::undo::UndoControl for VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    /// Answer `effect`. A reveal or a cancel answers at once; an import,
-    /// project open or save and an export answer once their job settles
+    /// Answer `effect`. A reveal or a cancel answers at once; a project
+    /// file answers as its own job; an import and an export answer once
+    /// their job settles
     /// ([`Self::finish_resource_file_operation_if_ready`]).
     fn answer_effect(
         &mut self,
@@ -7481,29 +7325,20 @@ impl VideoEditorApp {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
-            // Run now, with the document the invocation carries: nothing
-            // else would bring the editor a frame to run it on.
-            VideoEditorEffect::OpenProject { path: Some(path) } => {
-                self.begin_open(PathBuf::from(path), None);
+            VideoEditorEffect::OpenProjectFile { path } => {
+                return self.open_project_file(path.clone(), cx);
             }
-            VideoEditorEffect::Save { path: Some(path) }
-            | VideoEditorEffect::SaveAs { path: Some(path) } => {
-                let Some(doc) = cx.document() else {
-                    return Err("there is no project to save".into());
-                };
-                // Answered by the write itself: a saved project shows no
-                // notice to read the outcome from.
-                self.write_project_to(&doc, PathBuf::from(path))?;
-                return Ok(ui::framework::Effected::done());
+            VideoEditorEffect::ExportProjectFile { path } => {
+                return self.export_project_file(path.clone(), cx);
             }
             _ => self.perform_resource_operation(effect.clone())?,
         }
         if self.resource_reply.is_some() {
-            self.settle_resource_job(Err("a newer project or render job replaced this one".into()));
+            self.settle_resource_job(Err("a newer import or render job replaced this one".into()));
         }
         self.resource_operation = Some(effect);
         self.resource_reply = Some(cx.reply());
-        // An open or save that ran to the end above answers now.
+        // An import that ran to the end above answers now.
         self.finish_resource_file_operation_if_ready();
         Ok(ui::framework::Effected::Pending)
     }
@@ -7517,9 +7352,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     (
         "Project",
         &[
-            ("{cmd:O}", "Open a project"),
-            ("{cmd:S}", "Save"),
-            ("{cmd+shift:S}", "Save as…"),
+            ("{cmd:O}", "Open a project file"),
+            ("{cmd+shift:S}", "Export a project file"),
             ("{cmd+shift:O}", "Import media"),
             ("{cmd:E}", "Export video"),
         ],
@@ -8199,87 +8033,6 @@ impl VideoEditorApp {
         );
     }
 
-    /// Card and buttons for the unsaved-work question.
-    fn discard_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<DiscardLayout> {
-        let pending = self.pending_open.as_ref()?;
-        let type_sizes = dialog_type(theme);
-        let s1 = f64::from(theme.tokens.spacing.s1);
-        let line_sm = line_height(tr, &type_sizes.sm);
-        let (title, _) = Self::discard_words(pending);
-        let actions = Self::discard_actions();
-        let spec = ModalSpec::new(&title)
-            .actions(&actions)
-            .max_width(DISCARD_CARD_W)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        let body_h = line_sm * 2.0 + s1;
-        let modal = modal_layout_with_stacking_actions(self.rect, &spec, body_h, tr, theme);
-        let lines = [modal.body.y0, modal.body.y0 + line_sm + s1];
-        let at = |i: usize| modal.actions.get(i).copied().unwrap_or_default();
-        Some(DiscardLayout {
-            cancel: at(0),
-            discard: at(1),
-            save: at(2),
-            modal,
-            type_sizes,
-            lines,
-        })
-    }
-
-    /// Ask before an Open replaces a project that exists nowhere else.
-    fn draw_discard_dialog(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(l) = self.discard_layout(tr, theme) else {
-            return;
-        };
-        let Some((title, lines)) = self.pending_open.as_ref().map(Self::discard_words) else {
-            return;
-        };
-        let hit = l.modal.hit(self.last_mouse);
-        let mut actions = Self::discard_actions();
-        for (i, action) in actions.iter_mut().enumerate() {
-            action.hovered = hit == Some(ModalHit::Action(i));
-        }
-        let spec = ModalSpec::new(&title)
-            .actions(&actions)
-            .max_width(DISCARD_CARD_W)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        modal_dialog::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
-        let (_, dim) = modal_dialog::ink(theme);
-        let width = l.modal.body.width() as f32;
-        // Clipped to the body, as the other dialogs are: when the verbs stack
-        // on a small window the body is what is left above them, and the
-        // question must not paint under its own answers.
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            tf,
-            &l.modal.body,
-        );
-        for (line, top) in lines.iter().zip(l.lines) {
-            let shown = elide_at(line, width, &l.type_sizes.sm, tr);
-            text(
-                scene,
-                tr,
-                tf,
-                &shown,
-                &l.type_sizes.sm,
-                dim,
-                l.modal.body.x0,
-                top,
-            );
-        }
-        scene.pop_layer();
-        modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
-    }
-
     /// The shortcut sheet.
     ///
     /// Fifteen shortcuts existed and none of them were written down anywhere in
@@ -8815,28 +8568,6 @@ impl VideoEditorApp {
             ModalAction::primary("Export").enabled(self.export_is_offered()),
         ]
     }
-    fn discard_words(pending: &PendingOpen) -> (String, [String; 2]) {
-        (
-            format!("Save “{}” first?", pending.losing),
-            // Say what is true: the work is not gone if they open anyway,
-            // because the open is undoable. A dialog that overstates the
-            // danger trains people to click through it.
-            [
-                "It has never been saved to a file.".to_string(),
-                format!(
-                    "Opening {} replaces it. Ctrl+Z brings it back.",
-                    crate::project_file::label(&pending.path)
-                ),
-            ],
-        )
-    }
-    fn discard_actions() -> [ModalAction<'static>; 3] {
-        [
-            ModalAction::secondary("Cancel"),
-            ModalAction::secondary("Open anyway"),
-            ModalAction::primary("Save…"),
-        ]
-    }
 }
 
 impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> for VideoEditorApp {
@@ -8903,19 +8634,6 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
         self.content = cx.content();
         let mode = cx.mode();
         self.seed.capture = mode == ui::framework::RunMode::Capture;
-        if mode.is_live() {
-            let setting = cx.settings::<crate::project_file::RecentProjects>();
-            // A project whose file is not here is not offered, but stays
-            // remembered: an unmounted volume must not forget it.
-            self.recents = setting
-                .get()
-                .projects
-                .iter()
-                .filter(|path| path.is_file())
-                .cloned()
-                .collect();
-            self.recents_setting = Some(setting);
-        }
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();
         if launched.is_empty() {
             self.seed.hermetic = !mode.is_live();

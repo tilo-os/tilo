@@ -146,7 +146,7 @@ pub enum ImagerEffect {
     },
     /// Erase drive and write image. Offered on each drive it may write,
     /// where the host asks for the drive's name before it runs.
-    #[effect(job, cancellable, row)]
+    #[effect(job, cancellable, row, destructive, phrase = "Self::drive_name")]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -175,18 +175,18 @@ pub enum ImagerEffect {
     /// Customize a regular raw image file through the installed-root path.
     #[effect(job, returns)]
     CustomizeImage {
-        #[param("Path to the regular raw disk image; devices and symlinks are refused")]
-        image: String,
+        #[param("Absolute path of the regular raw disk image; devices and symlinks are refused")]
+        image: tilo_resource::AbsolutePath,
         #[param("Optional hostname for the image")]
         hostname: Option<String>,
         #[param("Optional Wi-Fi network name")]
         wifi_ssid: Option<String>,
-        #[param("Path to a local file containing the Wi-Fi passphrase")]
-        wifi_psk_file: Option<String>,
-        #[param("Path to an owner public-key file, one OpenSSH key per line")]
-        ssh_keys_file: Option<String>,
-        #[param("Files to place in the image account's home")]
-        home_files: Vec<String>,
+        #[param("Absolute path of a local file containing the Wi-Fi passphrase")]
+        wifi_psk_file: Option<tilo_resource::AbsolutePath>,
+        #[param("Absolute path of an owner public-key file, one OpenSSH key per line")]
+        ssh_keys_file: Option<tilo_resource::AbsolutePath>,
+        #[param("Absolute paths of files to place in the image account's home")]
+        home_files: Vec<tilo_resource::AbsolutePath>,
     },
     /// Choose a disk image.
     #[effect(job)]
@@ -219,6 +219,16 @@ pub enum ImagerEffect {
     },
     /// Cancel prepared setup delivery and wait for cleanup.
     CancelPreparedDelivery,
+}
+
+impl ImagerEffect {
+    /// What erasing a drive asks its caller to type: the drive's name.
+    fn drive_name(&self) -> String {
+        match self {
+            Self::Write { confirmation, .. } => confirmation.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// The imager: one binary, three flows over the one resource. A plain
@@ -452,6 +462,27 @@ mod tests {
             .with_widget_mut(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
             .expect("the hosted wizard");
         app
+    }
+
+    #[test]
+    fn customize_image_refuses_relative_paths() {
+        let arguments = |image: &str, psk: &str| {
+            serde_json::Map::from_iter([
+                ("image".to_owned(), serde_json::json!(image)),
+                ("wifi_ssid".to_owned(), serde_json::json!("studio")),
+                ("wifi_psk_file".to_owned(), serde_json::json!(psk)),
+                ("home_files".to_owned(), serde_json::json!([])),
+            ])
+        };
+        for (image, psk) in [("disk.raw", "/a/psk.txt"), ("/a/disk.raw", "psk.txt")] {
+            let error =
+                ImagerEffect::decode("customize-image", &arguments(image, psk)).unwrap_err();
+            assert!(error.contains("absolute"), "{error}");
+        }
+        assert!(
+            ImagerEffect::decode("customize-image", &arguments("/a/disk.raw", "/a/psk.txt"))
+                .is_ok()
+        );
     }
 
     #[test]

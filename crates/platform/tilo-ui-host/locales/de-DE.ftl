@@ -27,6 +27,7 @@ tilolang-all = Alle { $kind }
 tilolang-empty = Noch nichts hier
 tilolang-edited = Zuletzt bearbeitet
 tilolang-edited-by = Bearbeitet von
+rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen

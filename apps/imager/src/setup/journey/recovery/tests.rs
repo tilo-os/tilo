@@ -2,6 +2,7 @@ use super::super::{InstallerPreview, InstallerPreviewEffect as E, Page};
 use crate::setup::journey::belongings::Belongings;
 use imager_backend::windows_inventory::{RootRole, SelectedRoot};
 use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
+use ui::tilo_resource::AbsolutePath;
 
 fn wait(preview: &mut InstallerPreview) {
     let deadline = tilo_test_env::hang_deadline();
@@ -33,7 +34,7 @@ fn review(preview: &mut InstallerPreview, directory: &Path) {
     preview
         .apply(E::SelectRecoveryDirectory {
             source_id,
-            directory: directory.to_string_lossy().into(),
+            directory: AbsolutePath::new(directory).unwrap(),
         })
         .unwrap();
 }
@@ -62,7 +63,7 @@ fn semantic_shortage_destination_verified_copy_never_waives_review_or_source_cus
             preview
                 .apply(E::SelectRecoveryDirectory {
                     source_id,
-                    directory: source.to_string_lossy().into()
+                    directory: AbsolutePath::new(&source).unwrap()
                 })
                 .is_err()
         );
@@ -156,8 +157,8 @@ fn semantic_cancel_retry_rechecks_hashes_and_keeps_source() {
         preview
             .apply(E::ReviewExistingRecoveryCopy {
                 source_id,
-                output: output.clone(),
-                journal,
+                output: AbsolutePath::new(&output).unwrap(),
+                journal: AbsolutePath::new(journal).unwrap(),
             })
             .unwrap();
         assert!(preview.recovery.evidence().is_err());

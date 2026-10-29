@@ -67,7 +67,7 @@ zeroize = { workspace = true, optional = true }
 wire-frame = { path = "../../crates/system/wire-frame", optional = true }
 
 [dev-dependencies]
-tube = { path = ".", features = ["samples"] }
+tube-samples = { package = "tube", path = ".", features = ["samples"] }
 # Encoding-level assertions for the video-surface test; version matches `vello`.
 vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.

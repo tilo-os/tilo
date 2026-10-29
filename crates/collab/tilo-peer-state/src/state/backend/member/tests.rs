@@ -536,7 +536,7 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
     assert!(access.read(), "the room itself stays readable");
     assert!(!access.write());
 }
-/// A steward withholds a record's channel from exactly the member devices
+/// A participant withholds a record's channel from exactly the member devices
 /// that may not read the record, by the same decision as
 /// [`StatePeer::check_document_read`]: a Read Deny naming one record
 /// withholds that record's channel alone, a Deny over an app withholds every
@@ -633,4 +633,88 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
             assert!(*channel == payroll || *channel == q3 || withheld.is_empty());
         }
     }
+}
+
+/// A member's own record in the workspace is theirs alone: another member,
+/// even the room's owner, neither reads nor changes it, and a steward
+/// withholds its channel from every device but that person's, while the
+/// person reads and changes their own whatever their role.
+#[test]
+fn another_member_neither_reads_nor_writes_a_members_own_record() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", person.as_str()).unwrap();
+    room.commit();
+    let room_id = peer.room().to_owned();
+    let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
+    let own = collab_types::member_record_id(&person, "chat.drafts");
+    let member = peer.permissions(source, now).unwrap();
+    assert_eq!(
+        member.role,
+        Role::Owner,
+        "the owner, who reads everything else"
+    );
+    for (record, theirs_alone) in [(&theirs, false), (&own, true)] {
+        let node = collab_types::document_node(&room_id, "so.tilo.chat", record);
+        assert_eq!(
+            peer.check_document_read(source, "so.tilo.chat", record, now)
+                .is_ok(),
+            theirs_alone,
+            "{record}"
+        );
+        assert_eq!(
+            member.allows(&node, ActionKind::Undoable, now),
+            theirs_alone,
+            "{record}"
+        );
+    }
+    assert!(
+        peer.check_document_read(source, "so.tilo.chat", "tab:0000000000000001", now)
+            .is_ok()
+    );
+
+    let devices: std::collections::BTreeSet<[u8; 32]> = peer
+        .governance()
+        .governed_access(now)
+        .unwrap()
+        .member_devices
+        .into_iter()
+        .collect();
+    let routes = [
+        collab_types::ChannelRoute::new("so.tilo.chat", theirs.as_str()),
+        collab_types::ChannelRoute::new("so.tilo.chat", own.as_str()),
+    ];
+    let readers = peer
+        .governance()
+        .withheld_record_readers(now, &routes)
+        .unwrap();
+    assert_eq!(
+        readers.withheld.get(&collab_types::document_channel_id(
+            "so.tilo.chat",
+            &room_id,
+            &theirs
+        )),
+        Some(&devices)
+    );
+    assert!(
+        readers
+            .withheld
+            .get(&collab_types::document_channel_id(
+                "so.tilo.chat",
+                &room_id,
+                &own
+            ))
+            .is_some_and(std::collections::BTreeSet::is_empty)
+    );
+
+    // Their role does not decide their own record: a viewer still writes it.
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", "b0".repeat(32).as_str()).unwrap();
+    room.commit();
+    put_member(&mut peer, &person, Role::Viewer);
+    let viewer = peer.permissions(source, now).unwrap();
+    assert_eq!(viewer.role, Role::Viewer);
+    let own_node = collab_types::document_node(&room_id, "so.tilo.chat", &own);
+    assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
 }

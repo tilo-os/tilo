@@ -50,20 +50,9 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
         self.status_bridge = Some(bridge);
-        // A spawn failure means resource exhaustion on the host; the session
-        // still runs, just without persistent audio-balance/mono transforms.
-        self.session_audio_policy =
-            match crate::shell::session_audio_policy::SessionAudioPolicyOwner::spawn() {
-                Ok(owner) => Some(owner),
-                Err(error) => {
-                    tracing::warn!(
-                        target: "tilo::audio_policy",
-                        %error,
-                        "failed to spawn the session audio policy worker"
-                    );
-                    None
-                }
-            };
+        // Without the helper the session still runs, just without persistent
+        // audio-balance/mono transforms and hotplug policy.
+        self.audio_service = crate::shell::audio_service::AudioService::start();
         self
     }
 
@@ -71,9 +60,9 @@ impl ShellOverlayHost {
     pub fn drain_audio_device_sounds(
         &self,
     ) -> Vec<settings_store::system_sounds::SystemSoundEvent> {
-        self.session_audio_policy
+        self.audio_service
             .as_ref()
-            .map(crate::shell::session_audio_policy::SessionAudioPolicyOwner::drain_device_sounds)
+            .map(crate::shell::audio_service::AudioService::drain_device_sounds)
             .unwrap_or_default()
     }
 

@@ -5,6 +5,7 @@ use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 #[cfg(any(feature = "native", test))]
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
+use crate::host_core::HostCore as _;
 #[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
 #[cfg(any(feature = "native", test))]
@@ -299,16 +300,11 @@ impl App {
         let Ok(target) = self.capture_history_target() else {
             return Vec::new();
         };
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permission_ctx,
-        };
+        let context = HistoryReadContext::of(
+            &self.state,
+            self.persistence.records.as_ref(),
+            &self.permission_ctx,
+        );
         StandaloneHistory::open(
             target,
             &context,
@@ -322,7 +318,7 @@ impl App {
     pub(super) fn palette_presented(&self) -> bool {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
     }
 }

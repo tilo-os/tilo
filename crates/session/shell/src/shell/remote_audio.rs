@@ -172,7 +172,7 @@ struct OutboundRoute {
     pending: PendingAudio,
     /// Set for a speaker-group route: the member admitted it under its own
     /// group consent, and it captures the group's sink.
-    tap: Option<Arc<crate::shell::speaker_group_audio::GroupTap>>,
+    tap: Option<Arc<media::audio::group_tap::GroupTap>>,
     /// What the target last reported about its clock of this device, from
     /// its keepalives. `None` until the first one.
     peer_playout: Option<ClockSyncState>,
@@ -230,7 +230,7 @@ struct LocalGroupRoute {
     pending: PendingAudio,
     playback: InboundPlayback,
     sequence: u64,
-    _tap: Arc<crate::shell::speaker_group_audio::GroupTap>,
+    _tap: Arc<media::audio::group_tap::GroupTap>,
 }
 
 /// Where a group route's sound comes from on the playing device.
@@ -1343,8 +1343,8 @@ fn set_role_with(
 fn tap_for(
     state: &Mutex<RemoteAudioState>,
     source: GroupRouteSource,
-) -> Result<Arc<crate::shell::speaker_group_audio::GroupTap>, String> {
-    use crate::shell::speaker_group_audio::{TapSelection, acquire};
+) -> Result<Arc<media::audio::group_tap::GroupTap>, String> {
+    use media::audio::group_tap::{TapError, TapSelection, acquire};
     let selection = match source {
         GroupRouteSource::System => TapSelection::System,
         GroupRouteSource::Picker(token) => {
@@ -1362,7 +1362,12 @@ fn tap_for(
             }
         }
     };
-    acquire(selection)
+    acquire(selection).map_err(|error| match error {
+        TapError::Graph(message) => message,
+        TapError::AppStopped => crate::shell::i18n::t("speaker-error-app-stopped"),
+        TapError::OtherSession => crate::shell::i18n::t("speaker-error-other-session"),
+        TapError::Unavailable => crate::shell::i18n::t("speaker-error-audio-unavailable"),
+    })
 }
 
 /// Send a speaker group's audio to one member that admitted `route` under

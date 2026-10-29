@@ -43,7 +43,6 @@ params = [
 kind = "browser.personal-bookmarks"
 label = "Personal bookmarks"
 version = 2
-person = true
 fields = [
   { path = "added", type = "Map<Added>", readonly = true },
   { path = "removed", type = "Set<String>", readonly = true },
@@ -87,7 +86,6 @@ params = [
 kind = "browser.browsing-history"
 label = "Browsing history"
 version = 1
-person = true
 fields = [
   { path = "visits", type = "BTreeMap<String, Visit>", readonly = true },
   { path = "imported", type = "BTreeMap<String, ImportedVisit>", readonly = true },
@@ -134,7 +132,6 @@ kind = "undoable"
 kind = "browser.address-book"
 label = "Address book"
 version = 1
-person = true
 fields = [
   { path = "enabled", type = "bool" },
   { path = "profiles", type = "Keyed<AddressProfile>", stored = "keyed" },

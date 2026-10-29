@@ -5,7 +5,7 @@
     reason = "in a test these are the assertion"
 )]
 
-use ui::tilo_resource::{Id, Replica};
+use ui::tilo_resource::{Id, NonBlank, Replica};
 
 use crate::model::{
     Imported, ImportedMessage, MessageKind, Question, Run, RunOutcome, RunPhase, SpendLimits,
@@ -29,9 +29,14 @@ fn priced_step(step: u64, cost_micros: u64) -> StepSpend {
     }
 }
 
+/// `text` as the non-blank text an action takes.
+fn nb(text: &str) -> NonBlank {
+    NonBlank::parse(text).expect("the test's text says something")
+}
+
 fn create(title: &str, parent: Option<Id>, assignee: Option<&str>) -> tracker::Create {
     tracker::Create {
-        title: title.to_owned(),
+        title: nb(title),
         parent,
         body: None,
         status: None,
@@ -82,10 +87,8 @@ fn issues_are_numbered_nested_and_never_under_themselves() {
         "a parent cannot move under its own sub-issue"
     );
     assert!(
-        replica
-            .apply(Tracker::CREATE.with(create("  ", None, None)))
-            .is_err(),
-        "a blank title is refused"
+        serde_json::from_value::<tracker::Create>(serde_json::json!({"title": "  "})).is_err(),
+        "a blank title is refused where the arguments are read"
     );
     // Deleting the parent lifts its sub-issue to the top level.
     replica
@@ -186,7 +189,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
     person
         .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
             issue: issue.clone(),
-            text: "Keep the headings".into(),
+            text: nb("Keep the headings"),
         }))
         .unwrap();
     agent.sync_with(&mut person).unwrap();
@@ -205,7 +208,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
         Tracker::REPORT_RUN.with(tracker::ReportRun {
             issue: issue.clone(),
             phase,
-            text: Some("Read the index".into()),
+            text: Some(nb("Read the index")),
         })
     };
     assert!(
@@ -272,7 +275,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
         .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
             issue: issue.clone(),
             outcome: RunOutcome::Done,
-            summary: Some("Tidied".into()),
+            summary: Some(nb("Tidied")),
         }))
         .unwrap();
     let state = agent.state().unwrap();
@@ -340,13 +343,13 @@ fn a_task_is_a_shared_thread_two_people_take_part_in() {
     // failing for want of an agent to read it.
     ada.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
         issue: issue.clone(),
-        text: "Book the room".into(),
+        text: nb("Book the room"),
     }))
     .unwrap();
     bob.sync_with(&mut ada).unwrap();
     bob.apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
         issue: issue.clone(),
-        text: "I will write the agenda".into(),
+        text: nb("I will write the agenda"),
     }))
     .unwrap();
     ada.sync_with(&mut bob).unwrap();
@@ -543,7 +546,7 @@ fn an_issue_reads_its_goal_its_urgency_and_its_cost_and_its_agent_records_what_i
     let on_steam_deck = || {
         Tracker::RUN_ON_DEVICE.with(tracker::RunOnDevice {
             issue: issue.clone(),
-            device: "Ada's laptop".into(),
+            device: nb("Ada's laptop"),
         })
     };
     assert!(other.apply(on_steam_deck()).is_err());
@@ -824,7 +827,7 @@ fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
         Tracker::REPORT_RUN.with(tracker::ReportRun {
             issue: issue.clone(),
             phase: RunPhase::Executing,
-            text: Some(text.into()),
+            text: Some(nb(text)),
         })
     };
     let pause = || {
@@ -853,7 +856,7 @@ fn a_paused_run_takes_no_step_until_a_person_lets_it_go_on_from_its_boundary() {
     person
         .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
             issue: issue.clone(),
-            text: "Keep the headings".into(),
+            text: nb("Keep the headings"),
         }))
         .unwrap();
     person.apply(pause()).unwrap();
@@ -922,7 +925,7 @@ fn a_run_that_stopped_showing_a_step_is_ended_as_idle_and_leaves_what_it_did() {
         .apply(Tracker::REPORT_RUN.with(tracker::ReportRun {
             issue: issue.clone(),
             phase: RunPhase::Executing,
-            text: Some("Tidying".into()),
+            text: Some(nb("Tidying")),
         }))
         .unwrap();
     person.sync_with(&mut agent).unwrap();
@@ -1025,7 +1028,7 @@ fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
         .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
             issue: id.clone(),
             outcome: RunOutcome::Done,
-            summary: Some("The old depot on Mill Street seats 120.".into()),
+            summary: Some(nb("The old depot on Mill Street seats 120.")),
         }))
         .unwrap();
     let state = agent.state().unwrap();
@@ -1082,7 +1085,7 @@ fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
     let mut person = ada();
     person
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Launch".into(),
+            name: nb("Launch"),
             kind: Some(Kind::Project),
         }))
         .unwrap();
@@ -1099,13 +1102,8 @@ fn a_project_holds_the_tasks_that_work_towards_it_and_the_people_involved() {
     assert_eq!(made.name, "Launch");
     assert_eq!(made.kind, Kind::Project);
     assert!(
-        person
-            .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-                name: "  ".into(),
-                kind: None,
-            }))
-            .is_err(),
-        "a project with no name is refused"
+        serde_json::from_value::<tracker::CreateArea>(serde_json::json!({"name": "  "})).is_err(),
+        "a project with no name is refused where the arguments are read"
     );
 
     // Two tasks work towards it, one of them as a sub-task of the other, and
@@ -1157,7 +1155,7 @@ fn a_projects_people_carry_their_role_and_its_documents_are_its_tasks_links() {
     let mut person = ada();
     person
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Launch".into(),
+            name: nb("Launch"),
             kind: None,
         }))
         .unwrap();
@@ -1201,7 +1199,7 @@ fn a_projects_people_carry_their_role_and_its_documents_are_its_tasks_links() {
         person
             .apply(Tracker::INVOLVE.with(tracker::Involve {
                 area: project.clone(),
-                name: name.into(),
+                name: nb(name),
                 role: Some(role.into()),
             }))
             .unwrap();
@@ -1261,13 +1259,13 @@ fn an_area_is_a_project_that_goes_on() {
     let mut person = ada();
     person
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Support".into(),
+            name: nb("Support"),
             kind: Some(Kind::Area),
         }))
         .unwrap();
     person
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Launch".into(),
+            name: nb("Launch"),
             kind: None,
         }))
         .unwrap();
@@ -1284,7 +1282,7 @@ fn an_area_is_a_project_that_goes_on() {
     person
         .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
             area: support.clone(),
-            name: "Customer support".into(),
+            name: nb("Customer support"),
         }))
         .unwrap();
     let read = person.state().unwrap();
@@ -1295,12 +1293,10 @@ fn an_area_is_a_project_that_goes_on() {
         "the kind stays"
     );
     assert!(
-        person
-            .apply(Tracker::RENAME_AREA.with(tracker::RenameArea {
-                area: support,
-                name: " ".into(),
-            }))
-            .is_err(),
+        serde_json::from_value::<tracker::RenameArea>(
+            serde_json::json!({"area": support.to_string(), "name": " "})
+        )
+        .is_err(),
         "a project keeps a name"
     );
 }
@@ -1314,7 +1310,7 @@ fn a_projects_tasks_and_people_reach_the_other_device_and_a_restart() {
     let mut on_laptop = ada();
     on_laptop
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Launch".into(),
+            name: nb("Launch"),
             kind: Some(Kind::Project),
         }))
         .unwrap();
@@ -1329,7 +1325,7 @@ fn a_projects_tasks_and_people_reach_the_other_device_and_a_restart() {
     on_laptop
         .apply(Tracker::INVOLVE.with(tracker::Involve {
             area: project.clone(),
-            name: "ada".into(),
+            name: nb("ada"),
             role: Some("writes".into()),
         }))
         .unwrap();
@@ -1382,7 +1378,7 @@ fn the_project_is_published_with_its_verbs_and_a_resource_of_its_own() {
     let mut person = ada();
     person
         .apply(Tracker::CREATE_AREA.with(tracker::CreateArea {
-            name: "Launch".into(),
+            name: nb("Launch"),
             kind: Some(Kind::Project),
         }))
         .unwrap();
@@ -1560,21 +1556,17 @@ fn a_run_that_reaches_its_budget_pauses_saying_which_limit_it_reached() {
         .unwrap();
     let mut agent = replica.fork().as_agent_for(AGENT, "ada");
     assert!(
-        agent
-            .apply(
-                Tracker::PAUSE_RUN_FOR_BUDGET.with(tracker::PauseRunForBudget {
-                    issue: issue.clone(),
-                    reason: "   ".into(),
-                })
-            )
-            .is_err(),
+        serde_json::from_value::<tracker::PauseRunForBudget>(
+            serde_json::json!({"issue": issue.to_string(), "reason": "   "})
+        )
+        .is_err(),
         "a pause names the limit it reached"
     );
     agent
         .apply(
             Tracker::PAUSE_RUN_FOR_BUDGET.with(tracker::PauseRunForBudget {
                 issue: issue.clone(),
-                reason: "This task's budget of 1.00 EUR is spent".into(),
+                reason: nb("This task's budget of 1.00 EUR is spent"),
             }),
         )
         .unwrap();

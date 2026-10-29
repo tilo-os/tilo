@@ -2,13 +2,16 @@
 # ---------------------------------------------------------------------------
 # Give a dev image an env-runtime, or fail its build.
 #
-#   ensure-dev-env-runtime.sh SOURCE INSTALL_BIN
+#   ensure-dev-env-runtime.sh SOURCE INSTALL_BIN OUT
 #
 #   SOURCE       a sealed env-runtime directory in install-env-runtime.sh's
 #                layout, or an empty one: the runtime the same t run built
 #                from this tree's os/Containerfile.env-runtime and sealed with
 #                a throwaway key (tools/ci/publish/env-runtime.sh dev)
 #   INSTALL_BIN  tilo-install
+#   OUT          what the dev image copies in: OUT/tree, the runtime's tree, and
+#                OUT/record, its signed record and the trusted publishers; both
+#                empty when the image under it ships a runtime
 #
 # A release image ships the published, stable-signed runtime of its
 # definition, and none until stable has published one. A dev image boots the
@@ -19,15 +22,21 @@
 # publisher is recorded only in this dev image's store: release images and
 # their trust are untouched. A dev image that ends with no env-runtime fails
 # the build here.
+#
+# The throwaway key names the package, so the runtime's id is new in every
+# build while its files are not: its tree is named by its payload instead
+# (signed-records.py image) and goes into a layer of its own, the same in every
+# build of the same runtime, and the record naming it by id into a small one.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 msg() { printf '[ensure-dev-env-runtime] %s\n' "$*" >&2; }
 die() { msg "ERROR: $*"; exit 1; }
 
-[ "$#" -eq 2 ] || die "usage: $0 SOURCE INSTALL_BIN"
+[ "$#" -eq 3 ] || die "usage: $0 SOURCE INSTALL_BIN OUT"
 source_dir=$1
 install_bin=$2
+out=$3
 store=/usr/share/tilo-apps
 here=$(dirname -- "${BASH_SOURCE[0]}")
 
@@ -39,6 +48,7 @@ runtimes() {
     rm -rf "$home"
 }
 
+mkdir -p "$out/tree" "$out/record"
 held=$(runtimes)
 if [ -n "$held" ]; then
     msg "the image ships an env-runtime: $held"
@@ -49,6 +59,9 @@ fi
 a dev image without one starts no environment"
 TILO_REQUIRE_ENV_RUNTIME=1 bash "$here/install-env-runtime.sh" \
     "$source_dir" "$store" "$store" "$install_bin"
+id=$(cat "$source_dir/env-runtime-$(uname -m).id")
+python3 "$here/signed-records.py" image "$store" "${id#tapp:}" "$out"
 held=$(runtimes)
 [ -n "$held" ] || die "installed the run's env-runtime, but the system store lists none"
+[ -x "$store/pkgs/${id#tapp:}/usr/bin/bash" ] || die "the runtime's tree is not where its record names it"
 msg "the dev image ships this run's env-runtime: $held"

@@ -1944,7 +1944,7 @@ fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(
     }
     std::thread::Builder::new()
         .name("speaker-identify".into())
-        .spawn(move || play_pcm(&sink.name, &identify_chirp()))
+        .spawn(move || media::audio::group_tap::play_mono(&sink.name, &identify_chirp()))
         .map(|_| ())
         .map_err(|error| {
             crate::shell::i18n::t_args(
@@ -2009,42 +2009,6 @@ pub fn identify_chirp() -> Vec<i16> {
         })
     };
     tone(660.0).chain(tone(990.0)).collect()
-}
-
-fn play_pcm(sink_name: &str, samples: &[i16]) {
-    use std::io::Write as _;
-    let child = std::process::Command::new("pw-play")
-        .args([
-            "--target",
-            sink_name,
-            "--media-type",
-            "Audio",
-            "--media-category",
-            "Playback",
-            "--rate",
-            "48000",
-            "--channels",
-            "1",
-            "--format",
-            "s16",
-            "--raw",
-            "-",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return;
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        let bytes = samples
-            .iter()
-            .flat_map(|sample| sample.to_le_bytes())
-            .collect::<Vec<_>>();
-        let _ = stdin.write_all(&bytes);
-    }
-    let _ = child.wait();
 }
 
 /// Periodic maintenance from the fabric runtime's pump.

@@ -2,8 +2,9 @@
 
 use super::App;
 use crate::history_source::HistoryComparison;
+use crate::host_core::HostCore as _;
 use crate::search::request::SEARCH_OPERATION;
-use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
+use crate::standalone_history::{HistoryError, HistoryReadContext};
 use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
@@ -61,7 +62,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(|palette| palette.is_presented())
         {
             let root = FrameworkPresentation {
@@ -94,16 +95,11 @@ impl App {
             self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permission_ctx,
-        };
+        let context = HistoryReadContext::of(
+            &self.state,
+            self.persistence.records.as_ref(),
+            &self.permission_ctx,
+        );
         let rect = self
             .layout
             .taffy
@@ -224,7 +220,7 @@ impl App {
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
         let resources = self
-            .with_history_host(|host, context| {
+            .with_history(|host, context| {
                 let mut resources = host.local_resources(context)?;
                 for widget in host.presentation_roots(context)? {
                     crate::widget::collect_widget_resources(
@@ -331,7 +327,7 @@ impl App {
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
-        let result = self.with_history_host(
+        let result = self.with_history(
             super::super::standalone_history_host::StandaloneHistoryHost::process_pane_intents,
         );
         if let Err(error) = result {
@@ -354,7 +350,7 @@ impl App {
                 .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
                 .ok()
         });
-        self.with_history_host(|host, context| host.install_preview(root, context));
+        self.with_history(|host, context| host.install_preview(root, context));
     }
 
     /// Write a restore the History pane confirmed into the live document,
@@ -414,7 +410,7 @@ impl App {
                 }
             }
         }
-        let _ = self.with_history_host(StandaloneHistoryHost::refresh);
+        let _ = self.with_history(StandaloneHistoryHost::refresh);
         result
     }
 
@@ -425,7 +421,7 @@ impl App {
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
-        let dirty = self.with_history_host(|host, context| {
+        let dirty = self.with_history(|host, context| {
             host.presentation_roots(context)
                 .map_or(true, |roots| roots.into_iter().any(Widget::needs_redraw))
         });
@@ -503,7 +499,7 @@ impl App {
         let palette_node = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .filter(|palette| palette.is_presented())
             .map(|palette| {
                 palette.build_layout(
@@ -523,7 +519,7 @@ impl App {
             self.layout.root_node = Some(root);
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(history.as_ref(), root)];
             if let (Some(node), Some(palette)) =
-                (palette_node, self.actions.action_palette.as_ref())
+                (palette_node, self.actions.action_palette.as_deref())
             {
                 roots.push((palette, node));
             }
@@ -553,7 +549,7 @@ impl App {
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> =
                 vec![(self.root_widget.as_ref(), app)];
             if let (Some(node), Some(palette)) =
-                (palette_node, self.actions.action_palette.as_ref())
+                (palette_node, self.actions.action_palette.as_deref())
             {
                 roots.push((palette, node));
             }
@@ -577,16 +573,11 @@ impl App {
         );
         self.layout.root_node = Some(layout.root);
         self.history_layout = Some(layout);
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permission_ctx,
-        };
+        let context = HistoryReadContext::of(
+            &self.state,
+            self.persistence.records.as_ref(),
+            &self.permission_ctx,
+        );
         let chrome = self
             .document_history
             .presentation_roots(&context)
@@ -602,7 +593,8 @@ impl App {
                     .chain(layout.preview),
             ),
         );
-        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_ref()) {
+        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_deref())
+        {
             roots.push((palette, node));
         }
         // SAFETY: every root and node belongs to this same freshly built arena;
@@ -772,53 +764,6 @@ impl App {
             *handled = true;
         }
     }
-    pub(super) fn with_history_host<R>(
-        &mut self,
-        visit: impl FnOnce(&mut StandaloneHistoryHost, &HistoryReadContext<'_>) -> R,
-    ) -> R {
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permission_ctx,
-        };
-        visit(&mut self.document_history, &context)
-    }
-
-    pub(super) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        crate::standalone_history_host::capture_history_target(
-            self.focused_node
-                .and_then(|node| self.bindings.binding_for(node))
-                .or_else(|| self.root_widget.callback_binding()),
-            &self.bindings,
-            self.layout.node_map.keys().copied(),
-            self.persistence.records.as_ref(),
-            self.state.document_identity(),
-        )
-    }
-
-    pub(super) fn is_history_node(&self, node: taffy::NodeId) -> bool {
-        self.history_layout
-            .is_some_and(|layout| layout.contains(&self.layout.taffy, node))
-    }
-
-    pub(super) fn remember_history_content(&mut self) {
-        if self
-            .focused_node
-            .is_some_and(|node| self.is_history_node(node))
-        {
-            return;
-        }
-        let target = self.capture_history_target();
-        let focus =
-            crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref());
-        self.document_history.remember_content_target(target, focus);
-    }
-
     /// Omit the automatically added History and Search controls at native
     /// startup. System surfaces such as a login screen have no document to
     /// browse. Their own semantic actions and accessibility remain available.
@@ -976,7 +921,7 @@ impl App {
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
-        let result = self.with_history_host(|host, context| host.invoke_local(encoded, context));
+        let result = self.with_history(|host, context| host.invoke_local(encoded, context));
         self.apply_confirmed_history_restore();
         self.fulfil_history_preview();
         self.history_changed(revision, open);
@@ -1004,7 +949,7 @@ impl App {
                         .find(|node| self.is_history_node(*node))
                 });
             self.set_focused_node(target);
-        } else if let Some(focus) = self.with_history_host(
+        } else if let Some(focus) = self.with_history(
             super::super::standalone_history_host::StandaloneHistoryHost::take_restore_focus,
         ) {
             // SAFETY: restoration runs only after building/admitting this tree.
@@ -1030,7 +975,7 @@ impl App {
     pub fn document_history_snapshot(&mut self) -> Result<Option<DocumentHistorySnapshot>, String> {
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
-        let result = self.with_history_host(|host, context| {
+        let result = self.with_history(|host, context| {
             host.session(context).map(|session| {
                 session.map(|session| DocumentHistorySnapshot {
                     entries: session.rows().to_vec(),
@@ -1045,7 +990,7 @@ impl App {
 
     pub fn select_document_history(&mut self, entries: &[HistoryEntryId]) -> Result<(), String> {
         let resources = self
-            .with_history_host(
+            .with_history(
                 super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
             )
             .map_err(|error| format!("History is unavailable: {error:?}"))?;
@@ -1074,7 +1019,7 @@ impl App {
     }
 
     pub fn close_document_history(&mut self) {
-        let Ok(resources) = self.with_history_host(
+        let Ok(resources) = self.with_history(
             super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
         ) else {
             return;

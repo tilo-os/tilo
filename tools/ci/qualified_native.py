@@ -11,6 +11,7 @@ import subprocess
 INPUTS = (
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
     ".config/nextest.toml", ".forgejo/workflows/check.yml", "tools/test-env.sh",
+    "tools/test-env-setup.sh",
     "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "tools/cargo-runner.sh",
     ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
     "tools/ci/t-nextest.sh", "tools/ci/package_features.py",

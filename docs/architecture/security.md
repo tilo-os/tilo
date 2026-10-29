@@ -212,8 +212,8 @@ puts it on the room's governed roster, and only through
 `room_access::decide(.., RoomOperation::AgentMembership)`
 (`crates/hosting/tilo-relay/src/room_access.rs`): a live delegated agent of
 the host's own user, in a room whose admission governance owns here. Being
-on the roster is what admits it to the room and lets the steward admit it
-to the channels of the records it opens. The
+on the roster is what admits it to the room and lets the room's
+participants admit it to the channels of the records it opens. The
 roster row carries the delegation (`tilo-peer-state`, `state/agent_members.rs`),
 and every member applies one rule to it: the agent acts only while the
 delegation verifies against the certificate's root, names the device and
@@ -574,14 +574,15 @@ What it can read depends on the channel and on its certificate:
   their content, so it holds the full plaintext of every unsealed document it
   carries, unencrypted at rest in its state directory (`store`).
 - **Sealed channels, plain host certificate: nothing of the content.** A host
-  certified only to host rooms governs them without stewarding their channels
-  and holds no channel key; it routes and retains ciphertext.
+  certified only to host rooms governs them without taking part in their
+  channels and holds no channel key; it routes and retains ciphertext.
 - **Sealed channels, owner-capable certificate: everything.** A node whose
-  certificate lets it own workspaces is the person's own node: it stewards the
-  MLS channel of every record in the rooms it governs, is a member of each
-  group, holds its keys, and lends them to its own room actions and agents
-  (`rooms::stewardship`, `rooms::steward_endpoint`). Members accept a steward
-  only from a device certified to own workspaces.
+  certificate lets it own workspaces is the person's own node: it takes part
+  in the MLS channel of every record in the rooms it governs, is a member of
+  each group, holds its keys, and lends them to its own room actions and
+  agents (`rooms::participation`, `rooms::own_keys`). Every participant
+  checks each commit against the room's membership, so the node cannot admit
+  a device the membership does not name.
 - **Always, whatever the channel:** member and device lists, roles, room and
   invitee names; presence — pointers, carets, selections and typing ranges —
   except package-primary live frames, which are sealed (`presence_mailbox`);

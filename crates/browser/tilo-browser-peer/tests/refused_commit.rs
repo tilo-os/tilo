@@ -58,7 +58,7 @@ impl ResourceApp for BoardApp {
     }
 }
 
-/// The channel's content keys, as its steward holds them.
+/// The channel's content keys, as its creator holds them.
 struct Keys(channel_crypto::ChannelContentKeys);
 
 impl ContentCipher for Keys {
@@ -178,11 +178,10 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         .unwrap();
     assert_eq!(room.workspace_id, workspace());
     let route = route();
-    let steward_dir = tempfile::tempdir().unwrap();
-    let steward = channel_crypto::ChannelSteward::open_or_create(
-        steward_dir.path(),
+    let creator = channel_crypto::ChannelPeer::create_now(
+        None,
         document_channel_id(&route.app_id, &route.cluster_id, &route.record),
-        bob.clone(),
+        Box::new(bob.clone()),
         &channel_crypto::VaultKey::new([7; 32]),
     )
     .unwrap();
@@ -204,7 +203,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     .await;
     peer.install_cipher(
         route.clone(),
-        Box::new(Keys(steward.content_keys().unwrap())),
+        Box::new(Keys(creator.content_keys().unwrap())),
     )
     .unwrap();
 

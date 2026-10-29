@@ -139,12 +139,12 @@ impl ShellNetwork {
             .clone())
     }
 
-    /// Who stewards each room's channels, as the native owner, once open,
-    /// has the room: this device's enrolled device and the room's governor.
-    /// The same device when this one governs it.
-    pub(crate) fn room_stewards(
+    /// Who governs each room, as the native owner, once open, has the room:
+    /// this device's enrolled device and the room's governor. The same
+    /// device when this one governs it.
+    pub(crate) fn room_governors(
         network: &std::sync::Arc<Self>,
-    ) -> crate::shell::channel_policy::Stewards {
+    ) -> crate::shell::channel_policy::Governors {
         let network = std::sync::Arc::clone(network);
         Box::new(move |room| {
             network

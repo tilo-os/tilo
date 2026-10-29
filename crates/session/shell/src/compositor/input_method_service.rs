@@ -712,8 +712,9 @@ impl InputMethodServices {
         settings: &settings_store::live::Snapshot,
         scope: &str,
     ) {
-        let input =
-            settings_store::hardware::RichInputConfig::from_section(&settings.section("input"));
+        let input = settings_store::hardware::RichInputConfig::from_section(
+            &settings.sections(settings_store::hardware::INPUT_SECTIONS),
+        );
         let input = settings_store::keyboard_sources::effective(&input, scope);
         self.primary_layout = input
             .sources()

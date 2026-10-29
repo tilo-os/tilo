@@ -44,7 +44,7 @@ use crate::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
 pub struct EmbeddedApp {
-    app: App,
+    app: Box<App>,
     /// Its actions are offered to this device's automation only.
     device_local: bool,
     rect: KurboRect,
@@ -124,6 +124,8 @@ impl EmbeddedApp {
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
         app.set_tab_order_continues_in_host(true);
+        // The host has the one search; the tile opens none of its own.
+        app.actions.search_in_host = true;
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         if let Some(scope) = app.wake_scope.as_mut() {
             let flag = std::sync::Arc::clone(&woken);
@@ -141,7 +143,7 @@ impl EmbeddedApp {
             crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
         }
         Ok(Self {
-            app,
+            app: Box::new(app),
             rect: KurboRect::ZERO,
             region: Region {
                 size: winit::dpi::PhysicalSize::new(0, 0),

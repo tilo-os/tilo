@@ -1,9 +1,10 @@
 //! The governor's own reads and writes of records its members write sealed.
 //!
-//! In a room whose channels this relay stewards, members seal every write
-//! of a record, and the governor's copy keeps those writes as the record's
-//! ciphertext history ([`tilo_peer_state::PeerPublication::is_sealed_record`]). As the channels'
-//! steward the relay holds their content keys: it reads such a record by
+//! In a room whose channels this relay takes part in, members seal every
+//! write of a record, and the governor's copy keeps those writes as the
+//! record's ciphertext history
+//! ([`tilo_peer_state::PeerPublication::is_sealed_record`]). As a member of
+//! the channels the relay holds their content keys: it reads such a record by
 //! opening that history over the record's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
 //! its bound, so its copy goes on following the record however long the
@@ -25,7 +26,7 @@ use super::{GovernedRoom, Rooms, SystemTime};
 /// on every write opened and merged its whole history each time.
 const COMPACTION_RETRY: usize = 256;
 
-/// The content keys of one record's channel, as its steward holds them.
+/// The content keys of one record's channel, as the node holds them.
 pub(super) struct RecordKeys {
     keys: ChannelContentKeys,
     artifact: ArtifactId,
@@ -60,14 +61,19 @@ impl RecordKeys {
 }
 
 impl GovernedRoom {
-    /// Whether this relay stewards the channel of `record` of `app` and
+    /// Whether this relay takes part in the channel of `record` of `app` and
     /// holds its keys: it can then read the record's sealed writes.
-    pub(super) async fn stewards_channel(&self, app: &str, record: &str) -> bool {
-        let Some(steward) = self.stewardship.as_ref() else {
+    pub(super) async fn takes_part_in_channel(&self, app: &str, record: &str) -> bool {
+        let Some(participant) = self.participation.as_ref() else {
             return false;
         };
         let channel = collab_types::document_channel_id(app, self.room(), record);
-        steward.channels.lock().await.existing_keys(channel).is_ok()
+        participant
+            .channels
+            .lock()
+            .await
+            .existing_keys(channel)
+            .is_ok()
     }
 
     /// The keys of `record` of `app`'s channel when the record is sealed:
@@ -75,7 +81,7 @@ impl GovernedRoom {
     ///
     /// # Errors
     ///
-    /// The record is sealed and this relay does not steward its channel,
+    /// The record is sealed and this relay does not take part in its channel,
     /// or the channel's keys cannot be read.
     pub(super) async fn record_keys(
         &self,
@@ -85,13 +91,13 @@ impl GovernedRoom {
         if !self.peer.publication().is_sealed_record(app, record) {
             return Ok(None);
         }
-        let steward = self
-            .stewardship
+        let participant = self
+            .participation
             .as_ref()
-            .ok_or("the record is sealed and this relay does not steward its channel")?;
+            .ok_or("the record is sealed and this relay does not take part in its channel")?;
         let room = self.room();
         let channel = collab_types::document_channel_id(app, room, record);
-        let keys = steward.channels.lock().await.existing_keys(channel)?;
+        let keys = participant.channels.lock().await.existing_keys(channel)?;
         Ok(Some(RecordKeys {
             keys,
             artifact: collab_types::document_artifact_id(app, room, record),
@@ -100,7 +106,7 @@ impl GovernedRoom {
 
     /// The plaintext of `op`, a member's sealed write of `record` of `app`,
     /// opened with its channel's keys: `None` when this relay does not
-    /// steward the room's channels or holds no keys for this one yet.
+    /// take part in the room's channels or holds no keys for this one yet.
     ///
     /// # Errors
     ///
@@ -111,12 +117,12 @@ impl GovernedRoom {
         record: &str,
         op: &SignedOp,
     ) -> Result<Option<Vec<u8>>, String> {
-        let Some(steward) = self.stewardship.as_ref() else {
+        let Some(participant) = self.participation.as_ref() else {
             return Ok(None);
         };
         let room = self.room();
         let channel = collab_types::document_channel_id(app, room, record);
-        let Ok(keys) = steward.channels.lock().await.existing_keys(channel) else {
+        let Ok(keys) = participant.channels.lock().await.existing_keys(channel) else {
             return Ok(None);
         };
         let keys = RecordKeys {
@@ -242,9 +248,9 @@ pub(super) fn publish_changes_for(
 }
 
 /// The relay's compactor folds the sealed history of the channels this
-/// relay stewards with their keys, so a newcomer replays one snapshot and
+/// relay takes part in with their keys, so a newcomer replays one snapshot and
 /// the writes since rather than every write the room's members ever made.
-impl crate::compaction::StewardedKeys for Rooms {
+impl crate::compaction::ParticipantKeys for Rooms {
     fn keys<'a>(
         &'a self,
         route: &'a crate::compaction::Route,
@@ -252,19 +258,24 @@ impl crate::compaction::StewardedKeys for Rooms {
     {
         Box::pin(async move {
             let state = self.room(&route.cluster_id).await.ok()?;
-            let steward = state.lock().await.stewardship.clone()?;
+            let participant = state.lock().await.participation.clone()?;
             let channel = collab_types::document_channel_id(
                 &route.app_id,
                 &route.cluster_id,
                 &route.record_id,
             );
-            steward.channels.lock().await.existing_keys(channel).ok()
+            participant
+                .channels
+                .lock()
+                .await
+                .existing_keys(channel)
+                .ok()
         })
     }
 }
 
 impl Rooms {
-    /// Seal the records the rooms this relay stewards hold in the clear, from
+    /// Seal the records the rooms this relay takes part in hold in the clear, from
     /// now on: the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     pub fn reseal_existing(&self) {
@@ -280,17 +291,17 @@ impl Rooms {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Seal every record of the rooms this relay stewards: open the channel
+    /// Seal every record of the rooms this relay takes part in: open the channel
     /// of each that has none yet, and seal what each channel retains in the
     /// clear, as `compactor` does ([`crate::compaction::Compactor::reseal`]):
     /// records written before their channels were opened.
     #[cfg(feature = "agents")]
-    pub async fn reseal_stewarded(&self, compactor: &crate::compaction::Compactor) {
+    pub async fn reseal_own_channels(&self, compactor: &crate::compaction::Compactor) {
         let rooms: Vec<_> = self.inner.rooms.lock().await.values().cloned().collect();
         for state in rooms {
             let (name, workspace_id, routes) = {
                 let mut room = state.lock().await;
-                if room.stewardship.is_none() {
+                if room.participation.is_none() {
                     continue;
                 }
                 let plaintext = room.peer().plaintext_routes();
@@ -357,25 +368,30 @@ impl Rooms {
         }
     }
 
-    /// What each record channel of the rooms this relay stewards retains,
+    /// What each record channel of the rooms this relay takes part in retains,
     /// read with the channel's keys where it has a channel: per record, its
     /// workspace, store channel and `(app, record)`.
     #[cfg(feature = "agents")]
-    pub async fn stewarded_channels(
+    pub async fn own_channels(
         &self,
     ) -> Vec<(u64, [u8; 32], (String, String), crate::compaction::Retained)> {
         let payloads = self.inner.host.access.shell_payloads().clone();
         let rooms: Vec<_> = self.inner.rooms.lock().await.values().cloned().collect();
         let mut out = Vec::new();
         for state in rooms {
-            let (steward, name, workspace_id, routes) = {
+            let (participant, name, workspace_id, routes) = {
                 let room = state.lock().await;
-                let Some(steward) = room.stewardship.clone() else {
+                let Some(participant) = room.participation.clone() else {
                     continue;
                 };
                 let mut routes = room.peer().plaintext_routes();
                 routes.extend(room.peer().sealed_routes());
-                (steward, room.room().to_owned(), room.workspace_id(), routes)
+                (
+                    participant,
+                    room.room().to_owned(),
+                    room.workspace_id(),
+                    routes,
+                )
             };
             let Some(workspace) = self
                 .inner
@@ -391,7 +407,7 @@ impl Rooms {
             let store = workspace.lock().await.store.clone();
             drop(workspace);
             for (app, record) in routes {
-                let keys = steward
+                let keys = participant
                     .channels
                     .lock()
                     .await
@@ -415,12 +431,12 @@ impl Rooms {
     }
 
     /// The keys the governor writes `record` of `app` with: in a room whose
-    /// channels this relay stewards every new record is sealed from its
+    /// channels this relay takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its
     /// genesis, published before anything is written there). A record it
     /// already holds in the clear stays so until the host's operator decides
     /// to seal them ([`Rooms::reseal_existing`]). `None` in a room it does
-    /// not steward, where records are written in the clear.
+    /// not take part in, where records are written in the clear.
     ///
     /// # Errors
     ///
@@ -432,7 +448,7 @@ impl Rooms {
         app: &str,
         record: &str,
     ) -> Result<Option<RecordKeys>, String> {
-        let Some(steward) = room.stewardship.clone() else {
+        let Some(participant) = room.participation.clone() else {
             return room.record_keys(app, record).await;
         };
         let held_in_the_clear = room.peer().holds_document(app, record)
@@ -442,14 +458,14 @@ impl Rooms {
         }
         let name = room.room();
         let channel = collab_types::document_channel_id(app, name, record);
-        let mut stewardship = steward.channels.lock().await;
-        let keys = if let Ok(keys) = stewardship.existing_keys(channel) {
+        let mut participation = participant.channels.lock().await;
+        let keys = if let Ok(keys) = participation.existing_keys(channel) {
             keys
         } else {
-            steward.learn_route(channel, &collab_types::ChannelRoute::new(app, record));
-            self.open_record_channel(room, &steward, &mut stewardship, channel)
+            participant.learn_route(channel, &collab_types::ChannelRoute::new(app, record));
+            self.open_record_channel(room, &participant, &mut participation, channel)
                 .await?;
-            stewardship.existing_keys(channel)?
+            participation.existing_keys(channel)?
         };
         Ok(Some(RecordKeys {
             keys,

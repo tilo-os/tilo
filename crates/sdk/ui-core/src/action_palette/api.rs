@@ -31,6 +31,8 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>);
     fn is_open(&self) -> bool;
     fn activate_ordinary(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation);
+    fn anchor_confirmation(&mut self, anchor: Option<Rect>);
+    fn confirmation_anchor(&self) -> Option<Rect>;
     fn went_ahead(&self) -> bool;
     fn ordinary_request(&self) -> Option<&crate::bound_dispatch::OrdinaryConfirmation>;
     fn is_presented(&self) -> bool;
@@ -84,8 +86,6 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
         doc: &mut crate::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool;
-    fn show_refusal(&mut self, label: &str, reason: &str);
-    fn refusal(&self) -> Option<&str>;
     fn place_in(&mut self, window: Rect, theme: &Theme) -> (Point, f64);
 }
 
@@ -136,6 +136,12 @@ impl ActionPaletteApi for ActionPalette {
     }
     fn activate_ordinary(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) {
         ActionPalette::activate_ordinary(self, request)
+    }
+    fn anchor_confirmation(&mut self, anchor: Option<Rect>) {
+        ActionPalette::anchor_confirmation(self, anchor)
+    }
+    fn confirmation_anchor(&self) -> Option<Rect> {
+        ActionPalette::confirmation_anchor(self)
     }
     fn went_ahead(&self) -> bool {
         ActionPalette::went_ahead(self)
@@ -236,12 +242,6 @@ impl ActionPaletteApi for ActionPalette {
     ) -> bool {
         ActionPalette::handle_host_event(self, event, scale, modifiers, doc, root)
     }
-    fn show_refusal(&mut self, label: &str, reason: &str) {
-        ActionPalette::show_refusal(self, label, reason)
-    }
-    fn refusal(&self) -> Option<&str> {
-        ActionPalette::refusal(self)
-    }
     fn place_in(&mut self, window: Rect, theme: &Theme) -> (Point, f64) {
         ActionPalette::place_in(self, window, theme)
     }
@@ -263,8 +263,8 @@ pub fn builtin_action_palette() -> MakeActionPalette {
 
 crate::lazy_code! {
     /// The action palette's code: linked, or with `lazy-palettes` fetched
-    /// once a window first lays out, ahead of the first prompt, search or
-    /// refusal it shows.
+    /// once a window first lays out, ahead of the first prompt or search it
+    /// shows.
     pub static ACTION_PALETTE: MakeActionPalette = builtin_action_palette, feature = "lazy-palettes";
 }
 

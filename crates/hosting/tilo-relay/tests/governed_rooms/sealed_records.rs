@@ -1,5 +1,5 @@
 //! A member seals a write to a record the room's governor holds, as every
-//! member of a room whose channels a node stewards does. The governor keeps
+//! member of a room whose channels a node takes part in does. The governor keeps
 //! the ciphertext as the record's history and goes on governing: the next
 //! person is still let in, and so is one after the relay restarts.
 use super::*;

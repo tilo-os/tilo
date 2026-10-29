@@ -807,6 +807,12 @@ struct ForeignEntry {
     resize_anchor: Option<ResizeAnchor>,
     /// What the client declared its window to be with `xdg_surface.set_window_geometry` — everything outside it is shadow or resize border, which a tile never shows.
     geometry: Option<WindowGeometry>,
+    /// The `wl_surface.set_input_region` the client's last commit applied;
+    /// `None` is the protocol's default, the whole surface. A browser draws
+    /// its page into a subsurface with an empty input region so the press
+    /// lands on the toolkit's toplevel underneath, which is the only surface
+    /// it handles input on.
+    input_region: Option<InputRegion>,
     /// How the client's buffer lies on the surface, as its last commit said.
     scale: SurfaceScale,
     /// When this surface was first heard of (toplevel adoption) — start of the window [`ForeignFrameStore::mark_presented`] waits before giving up.
@@ -952,6 +958,7 @@ impl ForeignEntry {
             max_size: (0, 0),
             resize_anchor: None,
             geometry: None,
+            input_region: None,
             scale: SurfaceScale::default(),
             first_seen: Instant::now(),
             mapped: false,
@@ -1268,6 +1275,31 @@ fn blend_over(destination: &mut [u8; 4], [sr, sg, sb, sa]: [u8; 4]) {
     *db = blend(sb, *db);
     *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
         .unwrap_or(u8::MAX);
+}
+
+/// A `wl_region` as a client built it: rectangles added and subtracted in
+/// order, surface-local logical pixels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputRegion {
+    /// `(added, x, y, width, height)`; a later rectangle wins over an
+    /// earlier one where they overlap.
+    pub rects: Vec<(bool, i32, i32, i32, i32)>,
+}
+
+impl InputRegion {
+    /// Whether surface-local `(x, y)` lies in the region.
+    #[must_use]
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        self.rects
+            .iter()
+            .fold(false, |inside, &(added, rx, ry, rw, rh)| {
+                let hit = x >= f64::from(rx)
+                    && y >= f64::from(ry)
+                    && x < f64::from(rx) + f64::from(rw)
+                    && y < f64::from(ry) + f64::from(rh);
+                if hit { added } else { inside }
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3837,6 +3869,14 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| e.geometry = geometry);
     }
 
+    /// Record the input region `id`'s last commit applied (`None`: the whole
+    /// surface). Kept only for surfaces the store already tracks.
+    pub fn note_input_region(&self, id: SurfaceId, region: Option<InputRegion>) {
+        if let Some(entry) = self.entries.lock_recover().get_mut(&id) {
+            entry.input_region = region;
+        }
+    }
+
     /// Record how `id`'s buffer lies on the surface — buffer scale and
     /// viewport — as the commit just applied them.
     pub fn note_surface_scale(&self, id: SurfaceId, scale: SurfaceScale) {
@@ -3971,12 +4011,19 @@ impl ForeignFrameStore {
             let (width, height) = frame.buffer_placement()?.logical;
             let local_x = x - f64::from(child.x);
             let local_y = y - f64::from(child.y);
+            // A subsurface whose input region leaves the point out is not
+            // there for input: the press falls through to whatever is below
+            // it, ultimately the root, as Wayland routes it.
             (local_x >= 0.0
                 && local_y >= 0.0
                 && local_x < width
                 && local_y < height
-                && frame.mapped)
-                .then_some((child.surface, local_x, local_y))
+                && frame.mapped
+                && frame
+                    .input_region
+                    .as_ref()
+                    .is_none_or(|region| region.contains(local_x, local_y)))
+            .then_some((child.surface, local_x, local_y))
         })
     }
 
@@ -5482,6 +5529,16 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
+        // Only the fullscreen client and an audience surface are shown full
+        // screen; any other toplevel's configure says it is not, so no client
+        // is ever left told it is while it is drawn in its tile.
+        if fullscreen != Some(id) && !state.is_output_presentation_surface(id) {
+            toplevel.with_pending_state(|pending| {
+                pending.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                );
+            });
+        }
         // A window only the person's other devices show renders at the
         // size they show it, not at its hidden tab's.
         if toplevel.is_initial_configure_sent()
@@ -6904,6 +6961,42 @@ mod tests {
         // Input finds the page by its logical extent too.
         assert_eq!(frames.child_at(root, 69.5, 10.5), Some((page, 59.5, 0.5)));
         assert_eq!(frames.child_at(root, 70.5, 10.5), None);
+    }
+
+    /// A subsurface is hit only where its input region takes the point: an
+    /// empty region passes every press to what is below it, and a region
+    /// built from added and subtracted rectangles is followed in order.
+    #[test]
+    fn a_subsurface_is_hit_only_inside_its_input_region() {
+        let frames = ForeignFrameStore::default();
+        let (root, page) = (sid(66), sid(67));
+        frames.publish_rgba(root, &solid_frame(100, 100, [0, 0, 200]), 100, 100);
+        frames.publish_rgba(page, &solid_frame(80, 80, [200, 0, 0]), 80, 80);
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: page,
+                x: 10,
+                y: 10,
+            }],
+        );
+        assert_eq!(frames.child_at(root, 15.0, 15.0), Some((page, 5.0, 5.0)));
+
+        frames.note_input_region(page, Some(InputRegion::default()));
+        assert_eq!(frames.child_at(root, 15.0, 15.0), None);
+        assert_eq!(frames.route_point(root, 15.0, 15.0), PointRoute::Root);
+
+        frames.note_input_region(
+            page,
+            Some(InputRegion {
+                rects: vec![(true, 0, 0, 80, 80), (false, 0, 0, 80, 20)],
+            }),
+        );
+        assert_eq!(frames.child_at(root, 15.0, 15.0), None, "subtracted band");
+        assert_eq!(frames.child_at(root, 15.0, 45.0), Some((page, 5.0, 35.0)));
+
+        frames.note_input_region(page, None);
+        assert_eq!(frames.child_at(root, 15.0, 15.0), Some((page, 5.0, 5.0)));
     }
 
     /// The other way round, and through a viewport: a dense subsurface on a

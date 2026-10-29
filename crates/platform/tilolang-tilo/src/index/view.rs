@@ -11,7 +11,7 @@ use tilolang_runtime::store::{
     FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
 };
 
-use super::derive::{item_of, member_list};
+use super::derive::{column_field, item_of, member_list};
 use super::lists::Entry;
 use super::merged::{Base, Merged};
 use super::overlay::{ListState, Overlay};
@@ -30,7 +30,7 @@ pub(super) fn index_error(error: IndexError) -> StoreError {
 #[derive(Clone, Copy)]
 pub struct View<'a> {
     pub snapshot: &'a Arc<Snapshot>,
-    pub overlay: &'a Overlay,
+    pub overlay: &'a Arc<Overlay>,
 }
 
 /// A resource holding text, as [`View::every_text`] lists it.
@@ -38,8 +38,9 @@ pub struct View<'a> {
 pub struct Texts {
     pub path: String,
     pub schema: &'static TypeSchema,
-    /// Its texts that are not blank, in field order.
-    pub texts: Vec<String>,
+    /// Its texts that are not blank, in field order, as stored: texts and rich texts, read for
+    /// a reader by whoever shows them ([`crate::reading::said`]).
+    pub texts: Vec<FieldValue>,
     /// The resources its rich text refers to, in the one form (`tilo_reference::embed`).
     pub references: Vec<String>,
 }
@@ -56,10 +57,8 @@ impl View<'_> {
     /// # Errors
     /// The index cannot be read or is corrupt.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
-        // The versions of a resource are the log's: open writes have none yet.
-        if super::reflect::is_reflected(field) {
-            return self.snapshot.field(resource, field);
-        }
+        // A resource's versions are the log's, with the provisional ones of the actions this
+        // device committed and the record does not hold yet.
         if let Some(written) = self.overlay.field(resource, field) {
             return Ok(written);
         }
@@ -100,7 +99,7 @@ impl View<'_> {
     /// The index cannot be read or is corrupt.
     pub fn list(&self, resource: &str, field: &str) -> Result<Merged, IndexError> {
         let name = member_list(resource, field);
-        Ok(match self.overlay.list(resource, &name) {
+        let merged = match self.overlay.list(resource, &name) {
             None => Merged::new(Base::Pages(self.snapshot.pages(&name)?), Vec::new(), &[]),
             Some(ListState::Delta { added, removed }) => {
                 let removed: Vec<Entry> = removed.into_iter().collect();
@@ -111,6 +110,83 @@ impl View<'_> {
                 )
             }
             Some(ListState::Whole(entries)) => Merged::new(held(entries), Vec::new(), &[]),
+        };
+        Ok(merged.locating(self.locate((resource, field), None)))
+    }
+
+    /// What finds the entries an item of the collection `field` of `resource` has, as this
+    /// view holds them: in the list of its items, or, given an item type and a column of it,
+    /// in that column's list ([`Merged::position`]).
+    pub(super) fn locate(
+        &self,
+        (resource, field): (&str, &str),
+        column: Option<(&str, &str)>,
+    ) -> super::merged::Locate {
+        let snapshot = Arc::clone(self.snapshot);
+        let overlay = Arc::clone(self.overlay);
+        let resource = resource.to_owned();
+        let field = field.to_owned();
+        let column = column.map(|(ty, name)| (ty.to_owned(), name.to_owned()));
+        Box::new(move |id| {
+            let view = View {
+                snapshot: &snapshot,
+                overlay: &overlay,
+            };
+            let column = column
+                .as_ref()
+                .map(|(ty, name)| (ty.as_str(), name.as_str()));
+            view.entries_of((&resource, &field), id, column).ok()
+        })
+    }
+
+    /// The entries the item `id` of the collection `field` of `resource` has in the list of its
+    /// items, or in the list of the column `column` of its type: none when it is not there.
+    /// A column's are those the index holds of the item and those its fields give now (they
+    /// differ for an item the open writes changed); the list holds one of them.
+    fn entries_of(
+        &self,
+        (resource, field): (&str, &str),
+        id: &str,
+        column: Option<(&str, &str)>,
+    ) -> Result<Vec<Entry>, IndexError> {
+        let path = child(resource, field, id);
+        let Some(key) = self.text(&path, KEY)? else {
+            return Ok(Vec::new());
+        };
+        let Some((ty, column)) = column else {
+            return Ok(vec![(key, id.to_owned())]);
+        };
+        let schema = lookup(ty).ok_or(IndexError::Corrupt)?;
+        let spec = schema.column(column).ok_or(IndexError::Corrupt)?;
+        let mut values = self.column_values(&path, schema, spec)?;
+        if let Some(held) = self.snapshot.text(&path, &column_field(column))? {
+            values.extend(held.split(super::columns::SEP).map(str::to_owned));
+        }
+        values.sort();
+        values.dedup();
+        Ok(values
+            .iter()
+            .map(|value| super::columns::scope_entry(value, &key, id))
+            .collect())
+    }
+
+    /// The values the column `column` of the resource at `path` (of `schema`) holds as this
+    /// view reads its fields: a collection as how many items it holds.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub(super) fn column_values(
+        &self,
+        path: &str,
+        schema: &TypeSchema,
+        column: &crate::schema::ColumnSchema,
+    ) -> Result<Vec<String>, IndexError> {
+        super::columns::values(column, schema, &mut |f| {
+            if f.kind == MergeKind::Collection {
+                let len = self.list(path, &f.id)?.len();
+                return Ok(FieldValue::Counter(i64::try_from(len).unwrap_or(i64::MAX)));
+            }
+            Ok(self.field(path, &f.id)?.unwrap_or_else(|| default_value(f)))
         })
     }
 
@@ -168,8 +244,9 @@ impl View<'_> {
     }
 
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
-    /// another type for it), and the path of the resource holding it: fields by id, a
-    /// collection's items in order ([`crate::reads::first_text`]).
+    /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
+    /// the path of the resource holding it: fields by id, a collection's items in order
+    /// ([`crate::reads::first_text`]).
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
@@ -177,15 +254,17 @@ impl View<'_> {
         &self,
         path: &str,
         schema: &TypeSchema,
-    ) -> Result<Option<(String, String)>, IndexError> {
+    ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
         let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
         fields.sort_by(|a, b| a.id.cmp(&b.id));
         for field in fields {
             match field.kind {
                 MergeKind::Text | MergeKind::RichText => {
-                    if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
-                        && !text.is_empty()
+                    if let Some(text) = self
+                        .field(path, &field.id)?
+                        .and_then(crate::reads::text_value)
+                        && !crate::reads::is_empty(&text)
                     {
                         return Ok(Some((text, path.to_owned())));
                     }
@@ -236,12 +315,12 @@ impl View<'_> {
             let Some(schema) = held.ty.as_deref().and_then(lookup) else {
                 continue;
             };
-            let texts: Vec<String> = schema
+            let texts: Vec<FieldValue> = schema
                 .fields
                 .iter()
                 .filter(|f| f.kind.holds_text())
                 .filter_map(|f| held.texts.get(&f.id))
-                .filter(|text| !text.trim().is_empty())
+                .filter(|text| !crate::reads::is_blank(text))
                 .cloned()
                 .collect();
             if !texts.is_empty() {
@@ -317,15 +396,17 @@ impl View<'_> {
     }
 
     /// The texts of the resource at `path`, in field order, that are not blank: what search
-    /// finds it by.
+    /// finds it by, as stored (read for a reader by whoever shows them).
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
-    pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<String>, IndexError> {
+    pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<FieldValue>, IndexError> {
         let mut out = Vec::new();
         for field in schema.fields.iter().filter(|f| f.kind.holds_text()) {
-            if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
-                && !text.trim().is_empty()
+            if let Some(text) = self
+                .field(path, &field.id)?
+                .and_then(crate::reads::text_value)
+                && !crate::reads::is_blank(&text)
             {
                 out.push(text);
             }

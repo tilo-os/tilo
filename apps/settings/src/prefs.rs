@@ -6,7 +6,7 @@ pub use settings_sections::desktop::*;
 pub use settings_sections::device_vpn::DeviceVpnPrefs;
 pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
-pub use settings_sections::providers::AgentProviders;
+pub use settings_sections::providers::{AgentProviders, HostedAgentProviders};
 
 /// The catalogue key naming the mute duration `english`.
 fn mute_ftl(english: &str) -> &'static str {
@@ -177,7 +177,13 @@ mod tests {
         let path = dir.path().to_path_buf();
         store_whole(&path, &AudioPrefs::default());
         store_whole(&path, &DisplayPrefs::default());
+        store_whole(&path, &NightLightPrefs::default());
+        store_whole(&path, &AudioDevicePrefs::default());
+        store_whole(&path, &AppearanceDevicePrefs::default());
+        store_whole(&path, &DesktopControls::default());
+        store_whole(&path, &DesktopControlsDevice::default());
         store_whole(&path, &InputPrefs::default());
+        store_whole(&path, &InputDevicePrefs::default());
         store_whole(&path, &PowerPrefs::default());
         store_whole(&path, &UpdatePrefs::default());
         store_whole(&path, &AppearancePrefs::default());
@@ -186,15 +192,22 @@ mod tests {
         store_whole(&path, &tilo_locale::Locale::default());
         let document = store_whole(&path, &crate::panes::personal_apps::DefaultApps::default());
         let parsed = settings_store::parse(&document.to_string());
-        let missing = settings_store::continuity::unclassified_leaves(&parsed);
+        let undeclared: Vec<_> = parsed
+            .keys()
+            .filter(|section| {
+                !settings_store::placement::SECTIONS
+                    .iter()
+                    .any(|(declared, _)| declared == section)
+            })
+            .collect();
         assert!(
-            missing.is_empty(),
-            "new settings must explicitly choose personal, device-local, secret, or derived: \
-             {missing:?}"
+            undeclared.is_empty(),
+            "a new section must declare whether the person or the device holds it: \
+             {undeclared:?}"
         );
 
         assert!(AudioPrefs::default().system_sounds.enabled);
-        assert!(!DisplayPrefs::default().night_light);
+        assert!(!NightLightPrefs::default().night_light);
         let input = InputPrefs::default();
         assert!(input.tap_to_click);
         assert!(input.touchpad_natural_scroll);
@@ -271,31 +284,34 @@ mod tests {
         use settings_store::hardware::{
             TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY, TOUCHPAD_ENABLED_KEY,
         };
-        let defaults = InputPrefs::default();
+        let defaults = InputDevicePrefs::default();
         assert!(defaults.touchpad_enabled);
         assert!(!defaults.touchpad_disabled_on_external_mouse);
 
-        let input = InputPrefs {
+        let input = InputDevicePrefs {
             touchpad_enabled: false,
             touchpad_disabled_on_external_mouse: true,
-            ..InputPrefs::default()
+            ..InputDevicePrefs::default()
         };
         let back = round_trip(&input);
         assert!(!back.touchpad_enabled);
         assert!(back.touchpad_disabled_on_external_mouse);
 
         let root = stored("{}", &input);
-        assert_eq!(root["input"][TOUCHPAD_ENABLED_KEY], false);
-        assert_eq!(root["input"][TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY], true);
+        assert_eq!(root["input_device"][TOUCHPAD_ENABLED_KEY], false);
+        assert_eq!(
+            root["input_device"][TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY],
+            true
+        );
 
         // A key press that switched the touchpad off survives an unrelated
         // Settings save instead of being overwritten with the default.
-        let pressed = r#"{"input":{"touchpad_enabled":false}}"#;
-        let mut input = read::<InputPrefs>(pressed);
+        let pressed = r#"{"input_device":{"touchpad_enabled":false}}"#;
+        let mut input = read::<InputDevicePrefs>(pressed);
         assert!(!input.touchpad_enabled);
-        input.tap_to_click = !input.tap_to_click;
+        input.touchpad_disabled_on_external_mouse = !input.touchpad_disabled_on_external_mouse;
         assert_eq!(
-            stored(pressed, &input)["input"][TOUCHPAD_ENABLED_KEY],
+            stored(pressed, &input)["input_device"][TOUCHPAD_ENABLED_KEY],
             false
         );
     }
@@ -307,11 +323,11 @@ mod tests {
         audio.system_sounds.theme = Some("ocean".into());
         audio.system_sounds.events.error = false;
         assert_eq!(round_trip(&audio), audio);
-        let display = DisplayPrefs {
+        let night_light = NightLightPrefs {
             night_light: true,
-            ..DisplayPrefs::default()
+            ..NightLightPrefs::default()
         };
-        assert_eq!(round_trip(&display), display);
+        assert_eq!(round_trip(&night_light), night_light);
         let input = InputPrefs {
             pointer_speed: 0.9,
             keyboard_layout: "de:nodeadkeys".into(),
@@ -409,7 +425,7 @@ mod tests {
         let p = AppearancePrefs::default();
         assert_eq!(p.theme_choice(), "Dark");
         assert_eq!(
-            p.base_theme().name,
+            p.base_theme(&AppearanceDevicePrefs::default()).name,
             ui::Theme::configured_from(&serde_json::Map::new()).name,
             "Settings and the desktop agree on the theme nobody chose"
         );
@@ -447,7 +463,7 @@ mod tests {
             ),
         ];
         for (case, prefs, name, text_scale, reduce_motion) in cases {
-            let theme = prefs.resolve_theme();
+            let theme = prefs.resolve_theme(&AppearanceDevicePrefs::default());
             assert_eq!(theme.name, name, "case {case}");
             assert_eq!(theme.text_scale, text_scale, "case {case}");
             assert_eq!(theme.reduce_motion, reduce_motion, "case {case}");
@@ -464,7 +480,8 @@ mod tests {
         let base = ui::Theme::dark();
         let base_gap = base.tokens.spacing.s3;
         let base_type = base.tokens.typography.size(ui::tokens::TextRole::Body);
-        let theme = prefs("Dark", false, false, 1.2, 1.25).resolve_theme();
+        let theme =
+            prefs("Dark", false, false, 1.2, 1.25).resolve_theme(&AppearanceDevicePrefs::default());
         assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
         assert_eq!(theme.text_scale, 1.2, "text scale folds in");
         // Spacing grows by the UI factor only; type by UI × text.
@@ -477,18 +494,20 @@ mod tests {
 
         // A pinned distribution emphasis wins over the named preset's emphasis
         // only. The palette stays the one the pane shows.
-        let mut pinned = prefs("Light", false, false, 1.0, 1.0);
-        pinned.distribution_defaults = Some(ui::theme::DistributionDefaults {
-            document: Some(ui::theme::ThemeDocument {
-                emphasis: ui::tokens::Emphasis::Tinted { hue: 260.0 },
-                ..ui::theme::Preset::Dark.document()
+        let pinned = prefs("Light", false, false, 1.0, 1.0);
+        let device = AppearanceDevicePrefs {
+            distribution_defaults: Some(ui::theme::DistributionDefaults {
+                document: Some(ui::theme::ThemeDocument {
+                    emphasis: ui::tokens::Emphasis::Tinted { hue: 260.0 },
+                    ..ui::theme::Preset::Dark.document()
+                }),
+                policy: ui::theme::DistributionPolicy {
+                    pins: vec![ui::theme::PIN_EMPHASIS.into()],
+                },
+                ..ui::theme::DistributionDefaults::default()
             }),
-            policy: ui::theme::DistributionPolicy {
-                pins: vec![ui::theme::PIN_EMPHASIS.into()],
-            },
-            ..ui::theme::DistributionDefaults::default()
-        });
-        let pinned_theme = pinned.resolve_theme();
+        };
+        let pinned_theme = pinned.resolve_theme(&device);
         assert_eq!(pinned_theme.name, "Light");
         assert_eq!(
             pinned_theme.tokens.colors.emphasis,
@@ -510,12 +529,12 @@ mod tests {
         assert_eq!(out["notifications"]["do_not_disturb"], true);
         assert_eq!(out["locale"]["currency"], "EUR");
         assert_eq!(out["weather"]["city"], "Delft");
-        let display = DisplayPrefs {
+        let night_light = NightLightPrefs {
             night_light: true,
-            ..DisplayPrefs::default()
+            ..NightLightPrefs::default()
         };
-        let out = stored(&existing, &display);
-        assert_eq!(out["display"]["night_light"], true);
+        let out = stored(&existing, &night_light);
+        assert_eq!(out["display_person"]["night_light"], true);
         assert_eq!(out["locale"]["currency"], "EUR");
 
         let existing = r#"{"appearance":{"theme":"Dark","studio":{"id":"sunset","theme":{"accent":[251,146,60]}}}}"#;

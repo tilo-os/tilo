@@ -25,7 +25,7 @@ impl App {
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
             visit(dialog);
         }
-        if let Some(palette) = self.actions.action_palette.as_ref() {
+        if let Some(palette) = self.actions.action_palette.as_deref() {
             visit(palette);
         }
         self.document_history.for_each_widget(visit);

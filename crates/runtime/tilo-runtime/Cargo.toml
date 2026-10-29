@@ -119,7 +119,7 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
-# The steward channel fixtures owner tests seal writes with.
+# The channel fixtures owner tests seal writes with.
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 # The join protocol a runtime joins rooms over.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }

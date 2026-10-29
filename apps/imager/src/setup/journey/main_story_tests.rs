@@ -101,7 +101,7 @@ fn profile(
     // This selected-picture fixture is a solid orange PNG. A photo replaces
     // initials, so capture its branch separately from the default avatar.
     app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-        source_file: picture.to_str().unwrap().into(),
+        source_file: AbsolutePath::new(picture).unwrap(),
     })
     .unwrap();
     wait(app, |v| v["prepared_identity"]["state"] == "photo-selected");
@@ -383,7 +383,7 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
     app.effect(&InstallerPreviewEffect::TogglePreviewDetails)
         .unwrap();
     app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-        source: home.to_str().unwrap().into(),
+        source: AbsolutePath::new(home).unwrap(),
     })
     .unwrap();
     wait(app, |v| {
@@ -851,7 +851,7 @@ fn prepare_portable_story(
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
     app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-        source: home.to_str().unwrap().into(),
+        source: AbsolutePath::new(&home).unwrap(),
     })
     .unwrap();
     wait(app, |v| {
@@ -915,7 +915,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::SelectExistingIdentityBackup {
-        source_file: backup.to_str().unwrap().into(),
+        source_file: AbsolutePath::new(&backup).unwrap(),
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::SetExistingIdentityPassword {
@@ -963,7 +963,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
         v["page"] == "belongings" && v["belongings_checking"] == false
     });
     app.effect(&InstallerPreviewEffect::SelectMigrationHome {
-        source: home.to_str().unwrap().into(),
+        source: AbsolutePath::new(&home).unwrap(),
     })
     .unwrap();
     wait(&mut app, |v| {

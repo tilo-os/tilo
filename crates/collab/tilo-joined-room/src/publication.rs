@@ -529,10 +529,136 @@ pub(crate) fn replace_governance_checkpoint(
     Ok(())
 }
 
+/// Publish `changes`, room changes this member's device made itself, for
+/// the room's host to admit as it admits every member's: one retained
+/// delta, joined with the changes still waiting from before, which stays
+/// until the room's governance carries them all
+/// ([`retire_member_changes`]).
+pub(crate) fn add_member_changes(
+    view: &mut NativeCommittedView,
+    changes: Vec<Vec<u8>>,
+    binding: CommitBinding,
+    now: SystemTime,
+) -> Result<(), String> {
+    let mut joined = match state(view)?.governance.first() {
+        Some(existing) if existing.incremental => member_changes(&existing.bytes)?,
+        _ => Vec::new(),
+    };
+    for change in changes {
+        if !joined.contains(&change) {
+            joined.push(change);
+        }
+    }
+    let message = NeighbourMsg::SyncResp {
+        changes: joined,
+        room: view.record.room.to_string(),
+    };
+    let bytes = encode(&message, MAX_BYTES)?;
+    let old = state(view)?
+        .governance
+        .first()
+        .map_or(0, |entry| entry.bytes.len());
+    let total = bounds(state(view)?)?;
+    if total
+        .checked_sub(old)
+        .and_then(|size| size.checked_add(bytes.len()))
+        .is_none_or(|size| size > MAX_BYTES)
+    {
+        return Err("membership changes exceed outgoing capacity".into());
+    }
+    let (channel, retention) = neighbour_wire::retention(&message, false)
+        .ok_or("unsupported native membership publication")?;
+    if retention != Retention::Delta {
+        return Err("native membership publication is not a delta".into());
+    }
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    publication.version = 3;
+    let ordinal = publication.next_ordinal;
+    publication.next_ordinal = ordinal
+        .checked_add(1)
+        .ok_or("native publication ordinal exhausted")?;
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    publication.governance = vec![StoredOutgoing {
+        ordinal,
+        id: *blake3::hash(&bytes).as_bytes(),
+        bytes,
+        binding,
+        timestamp_ns: enrollment::ns(now)?,
+        channel,
+        incremental: true,
+    }];
+    Ok(())
+}
+
+/// The changes a member's published room delta carries.
+fn member_changes(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    match postcard::from_bytes(bytes).map_err(|e| e.to_string())? {
+        NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
+        _ => Err("native membership publication is not a room delta".into()),
+    }
+}
+
+/// The hashes of `changes`, encoded room changes.
+pub(crate) fn change_hashes(
+    changes: &[Vec<u8>],
+) -> Result<BTreeSet<automerge::ChangeHash>, String> {
+    changes
+        .iter()
+        .map(|bytes| {
+            automerge::Change::from_bytes(bytes.clone())
+                .map(|change| change.hash())
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// Let go of this member's published room changes once the room's
+/// governance, as one of the owner's devices sent it (`governed`), carries
+/// every one of them: the host admitted them. A room its governor started
+/// over from a newer base no longer holds them as they were made: that base
+/// is what the room is now, and they go too.
+pub(crate) fn retire_member_changes(
+    view: &mut NativeCommittedView,
+    governed: &BTreeSet<automerge::ChangeHash>,
+) -> Result<(), String> {
+    let Some(existing) = state(view)?.governance.first() else {
+        return Ok(());
+    };
+    if !existing.incremental {
+        return Ok(());
+    }
+    let made = change_hashes(&member_changes(&existing.bytes)?)?;
+    if !made.is_subset(governed) && made.iter().all(|hash| view.peer.room_holds_change(hash)) {
+        return Ok(());
+    }
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    publication.governance.clear();
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    Ok(())
+}
+
 pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
     let Some(existing) = state(view)?.governance.first().cloned() else {
         return Ok(());
     };
+    // A member's own changes stay as it made them until they are admitted.
+    if existing.incremental {
+        return Ok(());
+    }
     let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
     let binding = if matches!(
         existing.binding.target,
@@ -725,6 +851,9 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
 }
 
 fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Result<(), String> {
+    if entry.incremental {
+        return validate_member_changes(view, entry);
+    }
     let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
     if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.room.to_string())
         || encode(&view.peer.room_message(), MAX_BYTES)? != entry.bytes
@@ -766,6 +895,44 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     }
     Ok(())
 }
+/// A member's published room changes: a delta of changes this device made,
+/// every one of them in the room it holds, bound to its membership receipt.
+fn validate_member_changes(
+    view: &NativeCommittedView,
+    entry: &StoredOutgoing,
+) -> Result<(), String> {
+    let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    let NeighbourMsg::SyncResp { changes, room } = &message else {
+        return Err("native membership publication is not a room delta".into());
+    };
+    if room != &view.record.room.to_string()
+        || encode(&message, MAX_BYTES)? != entry.bytes
+        || entry.id != *blake3::hash(&entry.bytes).as_bytes()
+    {
+        return Err("native membership publication differs from its room".into());
+    }
+    let device = view.device().device_public_key;
+    for bytes in changes {
+        let change = automerge::Change::from_bytes(bytes.clone()).map_err(|e| e.to_string())?;
+        if change.actor_id().to_bytes() != device.as_slice()
+            || !view.peer.room_holds_change(&change.hash())
+        {
+            return Err("native membership publication carries a change not made here".into());
+        }
+    }
+    if neighbour_wire::retention(&message, false) != Some((entry.channel, Retention::Delta)) {
+        return Err("native membership publication transport mismatch".into());
+    }
+    if !view
+        .record
+        .workspace_memberships
+        .values()
+        .any(|receipt| receipt.receipt.binding == entry.binding)
+    {
+        return Err("native membership publication lacks its receipt".into());
+    }
+    Ok(())
+}
 /// An exact replay changes no peer state; reuse its barrier only when there
 /// is no retirement, reservation repair or checkpoint refresh to publish.
 pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool, String> {
@@ -781,8 +948,11 @@ pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool,
     {
         return Ok(false);
     }
+    // A member's own room changes wait for the governance that retires
+    // them, which any replay may bring.
     if let Some(checkpoint) = publication.governance.first()
-        && encode(&view.peer.room_message(), MAX_BYTES)? != checkpoint.bytes
+        && (checkpoint.incremental
+            || encode(&view.peer.room_message(), MAX_BYTES)? != checkpoint.bytes)
     {
         return Ok(false);
     }
