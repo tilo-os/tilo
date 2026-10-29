@@ -99,6 +99,8 @@ pub mod wallpaper;
 
 #[cfg(test)]
 mod dbus_tests;
+#[cfg(test)]
+mod session_dbus_tests;
 
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use consent::{Consents, WorkspaceGrants};

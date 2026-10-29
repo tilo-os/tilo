@@ -137,7 +137,7 @@ async fn close(from: &zbus::Connection, request: &str) -> zbus::Result<()> {
 }
 
 /// Wait until question `handle` is asked.
-async fn asked(questions: &Questions, handle: &str) {
+pub(crate) async fn asked(questions: &Questions, handle: &str) {
     for _ in 0..500 {
         if questions.question(handle).is_some() {
             return;
