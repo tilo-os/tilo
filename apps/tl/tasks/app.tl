@@ -351,7 +351,10 @@ view task_page(t: Task) {
                     button(release(t))
                 }
             } else {
-                button(take(t))
+                row(gap: .related, align: .center) {
+                    button(take(t))
+                    button(assign(t))
+                }
             }
         }
         section("Steps") {

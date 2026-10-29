@@ -1139,17 +1139,20 @@ impl Core {
         let Value::List(args) = self.val(args_h)? else {
             return trap("act_ref expects the arguments as a list");
         };
-        // How many arguments it takes, and how many of the last of them have defaults, which
-        // an application may leave out: they are computed when it is invoked.
+        // How many arguments it takes, and how many of the last of them an application may
+        // leave out: those with defaults, computed when it is invoked, and those its form asks
+        // the person for (forms-and-diagrams.md §1).
         let arity = {
             let reg = self.registry.borrow();
-            let as_action = reg.action_package(&action).and_then(|p| {
-                p.action(&action).map(|a| {
+            let as_action = reg.action_package(&action).and_then(|pkg| {
+                pkg.action(&action).map(|a| {
                     let defaulted = a
                         .params
                         .iter()
                         .rev()
-                        .take_while(|p| p.default.is_some())
+                        .take_while(|p| {
+                            p.default.is_some() || crate::platform::form_asks(&pkg.meta, &p.ty)
+                        })
                         .count();
                     (a.params.len(), defaulted)
                 })

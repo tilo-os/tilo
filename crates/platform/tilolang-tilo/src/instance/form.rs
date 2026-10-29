@@ -273,6 +273,12 @@ impl Pending {
                     ),
                 );
                 props.insert("selected".to_owned(), ui::Value::text(text));
+                let placeholder = match inner(&field.field_type) {
+                    FieldType::Principal => "Choose someone",
+                    FieldType::Resource(_) => "Choose one",
+                    _ => "Choose",
+                };
+                props.insert("placeholder".to_owned(), ui::Value::text(placeholder));
                 if !matches!(inner(&field.field_type), FieldType::Named(_)) {
                     // People and resources are picked from a menu, whatever their number.
                     props.insert("menu".to_owned(), ui::Value::Bool(true));
@@ -378,9 +384,21 @@ impl Pending {
                 }
             }
             FieldType::Principal => {
-                out.extend(host.runtime().members().into_iter().map(|member| {
-                    let label = names.name(&member.who);
-                    (member.who.0, label)
+                // The workspace's members; the person at the window is one, also while the
+                // host has not told the runtime its membership.
+                let viewer = self.view.borrow().viewer().clone();
+                let mut members: Vec<_> = host
+                    .runtime()
+                    .members()
+                    .into_iter()
+                    .map(|member| member.who)
+                    .collect();
+                if !members.contains(&viewer) {
+                    members.insert(0, viewer);
+                }
+                out.extend(members.into_iter().map(|who| {
+                    let label = names.name(&who);
+                    (who.0, label)
                 }));
             }
             FieldType::Resource(kind) => {
