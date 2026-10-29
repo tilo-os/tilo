@@ -26,6 +26,7 @@ mod faces;
 pub mod host;
 pub mod hosted;
 mod i18n;
+mod now_playing;
 mod prepare;
 pub mod resource;
 pub mod scenarios;
@@ -35,6 +36,7 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::subline;
+pub use now_playing::{MediaOutput, MediaPlayer, NowPlaying};
 pub use prepare::prepare;
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
 

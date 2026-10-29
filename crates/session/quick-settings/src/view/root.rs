@@ -33,6 +33,7 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
     if sound {
         column = column.push(super::sections::in_place(cx, QsSection::Sound, parts));
     }
+    column = column.push(super::now_playing::card(cx, &parts.now_playing));
     let tile_parts = parts.clone();
     column = column.push(cx.switch(&parts.tiles, move |cx, tiles| {
         tile_grid(cx, tiles, open, &tile_parts)
