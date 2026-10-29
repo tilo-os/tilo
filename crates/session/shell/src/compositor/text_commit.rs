@@ -404,6 +404,11 @@ impl State {
         self.advance_text_commit(now);
     }
 
+    /// Whether a requested commit is still on its way to the field.
+    pub(crate) fn text_commit_pending(&self) -> bool {
+        self.text_commit.pending.is_some()
+    }
+
     /// When an undelivered request gives up.
     pub fn text_commit_deadline(&self) -> Option<Instant> {
         self.text_commit

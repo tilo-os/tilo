@@ -22,9 +22,13 @@ mod linux {
         shm::{Shm, ShmHandler, slot::SlotPool},
     };
     use wayland_client::{
-        Connection, QueueHandle,
+        Connection, Dispatch, QueueHandle, delegate_noop,
         globals::registry_queue_init,
         protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    };
+    use wayland_protocols::wp::text_input::zv3::client::{
+        zwp_text_input_manager_v3::ZwpTextInputManagerV3,
+        zwp_text_input_v3::{self, ZwpTextInputV3},
     };
 
     /// Convert width/height to the `i32` + byte-stride triple `SlotPool::create_buffer`
@@ -51,6 +55,15 @@ mod linux {
         width: u32,
         height: u32,
         first_configure: bool,
+        /// The seat's text input, enabled while the window has the keyboard,
+        /// as a text field enables it: text an input method commits arrives
+        /// here, reported as `EVENT:TEXT`.
+        text_inputs: Option<ZwpTextInputManagerV3>,
+        text_input: Option<ZwpTextInputV3>,
+        /// Text committed since the last `done`.
+        committed: Option<String>,
+        /// Whether Control is held, from the seat's modifiers.
+        ctrl: bool,
         /// Input events from the dispatch in progress. Published together
         /// after `blocking_dispatch` returns, so a click cannot become
         /// visible while key presses already read in that queue are still
@@ -75,6 +88,7 @@ mod linux {
 
             let pool = SlotPool::new(256 * 256 * 4, &shm_state)
                 .map_err(|e| format!("failed to create pool: {e}"))?;
+            let text_inputs = globals.bind(qh, 1..=1, ()).ok();
 
             Ok(Self {
                 registry_state,
@@ -88,6 +102,10 @@ mod linux {
                 width: 256,
                 height: 256,
                 first_configure: true,
+                text_inputs,
+                text_input: None,
+                committed: None,
+                ctrl: false,
                 pending_events: Vec::new(),
             })
         }
@@ -225,6 +243,9 @@ mod linux {
                 let _ = self.seat_state.get_pointer(qh, &seat);
             } else if capability == Capability::Keyboard {
                 let _ = self.seat_state.get_keyboard(qh, &seat, None);
+                if let Some(manager) = &self.text_inputs {
+                    self.text_input = Some(manager.get_text_input(&seat, qh, ()));
+                }
             }
         }
         fn remove_capability(
@@ -271,7 +292,14 @@ mod linux {
             _: u32,
             event: KeyEvent,
         ) {
-            self.record_event(format!("EVENT:KEY PRESS {:?}", event.utf8));
+            // The text the keymap gives the key, then the keysym it names
+            // (what a shortcut matches) and whether Control is held.
+            let sym = event.keysym.key_char();
+            let ctrl = if self.ctrl { " ctrl" } else { "" };
+            self.record_event(format!(
+                "EVENT:KEY PRESS {:?} sym={sym:?}{ctrl}",
+                event.utf8
+            ));
         }
 
         fn repeat_key(
@@ -300,10 +328,11 @@ mod linux {
             _: &QueueHandle<Self>,
             _: &wl_keyboard::WlKeyboard,
             _: u32,
-            _: Modifiers,
+            modifiers: Modifiers,
             _: RawModifiers,
             _: u32,
         ) {
+            self.ctrl = modifiers.ctrl;
         }
     }
 
@@ -343,6 +372,37 @@ mod linux {
             &mut self.registry_state
         }
         registry_handlers![OutputState, SeatState];
+    }
+
+    delegate_noop!(ClientApp: ignore ZwpTextInputManagerV3);
+
+    impl Dispatch<ZwpTextInputV3, ()> for ClientApp {
+        fn event(
+            app: &mut Self,
+            text_input: &ZwpTextInputV3,
+            event: zwp_text_input_v3::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                zwp_text_input_v3::Event::Enter { .. } => {
+                    text_input.enable();
+                    text_input.commit();
+                }
+                zwp_text_input_v3::Event::Leave { .. } => {
+                    text_input.disable();
+                    text_input.commit();
+                }
+                zwp_text_input_v3::Event::CommitString { text } => app.committed = text,
+                zwp_text_input_v3::Event::Done { .. } => {
+                    if let Some(text) = app.committed.take() {
+                        app.record_event(format!("EVENT:TEXT {text:?}"));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     delegate_compositor!(ClientApp);
