@@ -139,6 +139,7 @@ impl CapnpBrokerState {
 /// receiving device resolves and authorizes independently.
 fn forwarding_descriptor() -> tilo_actions::ActionDescriptor {
     tilo_actions::ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: own_device::target().address,
         resource_kind: own_device::RESOURCE.into(),

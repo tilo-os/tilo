@@ -32,6 +32,7 @@ uuid.workspace = true
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-desktop-search = { path = "../desktop-search" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
 ed25519-dalek.workspace = true

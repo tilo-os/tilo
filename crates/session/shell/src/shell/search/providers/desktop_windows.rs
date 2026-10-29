@@ -148,7 +148,7 @@ fn begin_share(
         })
     };
     Ok(crate::shell::search::InvocationDisposition::Pending(
-        super::actions::peer_sync_ticket(chrome.clone(), request_id),
+        crate::shell::actions::peer_sync_ticket(chrome.clone(), request_id),
     ))
 }
 

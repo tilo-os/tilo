@@ -25,6 +25,7 @@ pub mod desktop_services;
 mod env;
 mod keys;
 mod panels;
+mod search;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,12 +50,14 @@ pub use config::SessionConfig;
 pub use controls::{INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE, SessionCommand};
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
+pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
 use controls::SessionControls;
 use keys::{Invocations, SessionKeys};
 use panels::{Banners, Held, Popover, Readout};
+use search::SessionSearch;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
@@ -83,6 +86,12 @@ pub struct Options {
     /// The system services the session hosts: what they publish is the
     /// session's, beside the desktop's.
     pub services: Vec<Box<dyn Service>>,
+    /// What the desktop's search reaches beyond the desktop.
+    pub search: SearchOptions,
+    /// The action host: what open apps publish and run, and where what is
+    /// chosen in search runs by address. Without one, search finds the
+    /// desktop's own and starts nothing.
+    pub apps: Option<Rc<dyn AppActions>>,
 }
 
 impl Default for Options {
@@ -96,6 +105,8 @@ impl Default for Options {
             quick_settings: None,
             config: SessionConfig::default(),
             services: Vec::new(),
+            search: SearchOptions::default(),
+            apps: None,
         }
     }
 }
@@ -111,6 +122,7 @@ struct QuickSettings {
 struct Shared {
     handle: DesktopHandle,
     desktop: DesktopHost,
+    search: Rc<SessionSearch>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
@@ -153,6 +165,36 @@ impl Shared {
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
+        let choices = self.handle.take_search_choices();
+        if choices.is_empty() {
+            return;
+        }
+        let room = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        });
+        for choice in choices {
+            self.search.perform(&room, choice, &mut |own| {
+                self.doors.invoke(&own.address, &own.arguments).map(drop)
+            });
+        }
+        // What the session's own actions asked of it.
+        self.follow_asks();
+    }
+
+    /// Read what the session publishes for search, after a frame.
+    fn observe(&self) {
+        let open_tabs = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect()
+        });
+        self.search.observe(&self.doors.resources(), open_tabs);
     }
 
     fn show_quick_settings(&self) {
@@ -405,9 +447,12 @@ impl Session {
         let services = Rc::new(RefCell::new(services));
         doors.add(Rc::new(RefCell::new(ServiceDoor(Rc::clone(&services)))));
 
+        let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         let shared = Shared {
             handle,
             desktop,
+            search,
             asks,
             intents,
             quick_settings,
@@ -417,6 +462,7 @@ impl Session {
             readings,
             services,
         };
+        shared.observe();
         Ok(Self {
             compositor,
             shared,
@@ -500,6 +546,11 @@ impl Session {
     /// take them in: what a headless run does before it reads.
     pub fn settle_services(&self) {
         self.shared.services.borrow_mut().settle();
+    }
+
+    /// A window was at `place`: where search's Continue reopens it.
+    pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
+        self.shared.search.record_place(place);
     }
 
     /// Invoke the published action `action` of resource `resource`, as
@@ -619,7 +670,9 @@ impl Session {
         self.shared.services.borrow_mut().poll();
         self.settle()?;
         self.compositor.render()?;
-        self.settle()
+        self.settle()?;
+        self.shared.observe();
+        Ok(())
     }
 
     /// Run until `stop` holds or the backend is done.

@@ -29,7 +29,7 @@ impl ShellOverlayHost {
     /// Whether the person may change the shared display layout here.
     fn shared_display_editable(&self) -> bool {
         self.chrome.as_ref().is_some_and(|chrome| {
-            crate::shell::search::providers::actions::current_shell_action_authorized(
+            crate::shell::actions::current_shell_action_authorized(
                 &chrome.borrow(),
                 crate::shell::shared_display_actions::INCLUDE_ID,
             )

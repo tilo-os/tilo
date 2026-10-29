@@ -102,6 +102,9 @@ pub struct ExportedAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     pub description: Option<String>,
+    /// What the action's row shows of the state it acts on.
+    #[serde(default, skip_serializing_if = "tilo_actions::ActionState::is_empty")]
+    pub state: tilo_actions::ActionState,
     pub operation_kind: OperationKind,
     /// The canonical typed parameter descriptors.
     pub params: Vec<ActionParam>,
@@ -139,6 +142,7 @@ impl ExportedAction {
             keywords: self.keywords.clone(),
             icon: self.icon.clone(),
             description: self.description.clone(),
+            state: self.state.clone(),
             locus,
             kind: self.operation_kind,
             contract: self.contract.clone(),
@@ -161,6 +165,7 @@ impl From<&ActionDescriptor> for ExportedAction {
             keywords: descriptor.keywords.clone(),
             icon: descriptor.icon.clone(),
             description: descriptor.description.clone(),
+            state: descriptor.state.clone(),
             operation_kind: descriptor.kind,
             params: descriptor.params.clone(),
             contract: descriptor.contract.clone(),
@@ -775,6 +780,7 @@ mod codec {
             .collect::<Result<Vec<_>, _>>()?;
         let icon = capnp_text(row.get_icon()?)?;
         Ok(ExportedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity,
             resource_kind: capnp_text(row.get_resource_kind()?)?,
             resource_label: capnp_text(row.get_resource_label()?)?,

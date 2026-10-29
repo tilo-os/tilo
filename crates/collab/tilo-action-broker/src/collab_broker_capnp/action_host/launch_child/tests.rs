@@ -857,6 +857,7 @@ fn production_retained_invoke_revoked_during_discovery_never_starts_launcher() {
         route: crate::collab_broker_capnp::CrdtRoute::app("record", &fixture.room),
         live: false,
         actions: vec![PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "document".into(),
             action: "append".into(),

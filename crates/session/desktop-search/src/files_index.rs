@@ -48,7 +48,7 @@ const BINARY_EXTS: &[&str] = &[
     "sqlite3", "db",
 ];
 
-const MAX_DEPTH: usize = 8;
+pub(crate) const MAX_DEPTH: usize = 8;
 /// Bytes of each file's body indexed — the biggest lever on tantivy's
 /// background merge memory: a 1 MB cap over a 50k-file home produced a
 /// multi-GB merge spike that OOM'd the compositor ~90s after boot.
@@ -138,8 +138,6 @@ impl FilesIndex {
     /// `~/.cache/tilo/files-index` can't be opened or created (a missing
     /// schema field, a corrupt directory, or similar).
     pub fn open_or_create(home: &Path) -> Result<Self, tilo_search::TantivyError> {
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files body index");
         let index = Arc::new(DiskIndex::open_or_create(&files_index_dir()?)?);
         let cache = Arc::new(Mutex::new(QueryCache::new(QUERY_CACHE_CAPACITY)));
 
@@ -323,7 +321,7 @@ fn walk_and_index(home: &Path, existing: &HashMap<String, u64>, writer: &mut Dis
     }
 }
 
-fn should_skip(path: &Path, home: &Path) -> bool {
+pub(crate) fn should_skip(path: &Path, home: &Path) -> bool {
     if let Ok(rel) = path.strip_prefix(home) {
         for comp in rel.components() {
             let comp = comp.as_os_str().to_string_lossy();

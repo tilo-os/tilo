@@ -14,7 +14,7 @@ use super::request_window_shortcut;
 
 /// [`super::request_window_shortcut`] for an operation on the focused window
 /// group, refused at once when no window has focus.
-pub(super) fn request_group_shortcut(
+pub(crate) fn request_group_shortcut(
     st: &mut ChromeState,
     action: ShortcutAction,
 ) -> Result<(), ActionError> {
@@ -25,14 +25,14 @@ pub(super) fn request_group_shortcut(
     Ok(())
 }
 
-pub(super) fn no_window() -> ActionError {
+pub(crate) fn no_window() -> ActionError {
     ActionError::Explained(t("search-action-window-none"))
 }
 
 /// Maximize the focused window group, or restore it when it already is.
 /// The chord and the palette row both land here, so one key and one row
 /// are one operation.
-pub(super) fn request_toggle_maximize(st: &mut ChromeState) -> Result<(), ActionError> {
+pub(crate) fn request_toggle_maximize(st: &mut ChromeState) -> Result<(), ActionError> {
     let maximized = {
         let Some(group) = crate::shell::window_actions::active_group_id(st) else {
             return Err(no_window());
@@ -61,7 +61,7 @@ pub(super) fn request_toggle_maximize(st: &mut ChromeState) -> Result<(), Action
 
 /// The display an operation moves the focused window group to has to be
 /// another one: a display the window already fills has no room for it.
-pub(super) fn other_display_needed(state: &ChromeState) -> Result<(), ActionError> {
+pub(crate) fn other_display_needed(state: &ChromeState) -> Result<(), ActionError> {
     let tree = state.tree();
     let displays = tree.desktop.outputs.displays.len();
     drop(tree);
@@ -104,7 +104,7 @@ fn unchanged_for(action_id: &str) -> ActionError {
 /// overlay host ran them, a success when any changed something and
 /// "nothing changed", with why, otherwise, so a move past the edge does
 /// not report a move.
-pub(super) fn window_outcome(
+pub(crate) fn window_outcome(
     action_id: &'static str,
     outcomes: Vec<crate::shell::chrome_state::WindowOutcome>,
 ) -> crate::shell::search::InvocationDisposition {
@@ -124,9 +124,9 @@ pub(super) fn window_outcome(
 
 /// Carrying the focused window group into a strip the caller names, as the
 /// window menu's Move to strip does.
-pub(super) const GROUP_MOVE_TO_STRIP_ID: &str = "group.move-to-strip";
+pub(crate) const GROUP_MOVE_TO_STRIP_ID: &str = "group.move-to-strip";
 
-pub(super) const GROUP_MOVE_TO_STRIP_PARAMS: &[ActionParam] = &[ActionParam::required(
+pub(crate) const GROUP_MOVE_TO_STRIP_PARAMS: &[ActionParam] = &[ActionParam::required(
     "strip",
     ParamType::Integer,
     "Which strip of the active workspace, counting from 1 at the top.",
@@ -134,7 +134,7 @@ pub(super) const GROUP_MOVE_TO_STRIP_PARAMS: &[ActionParam] = &[ActionParam::req
 
 /// [`GROUP_MOVE_TO_STRIP_PARAMS`], each strip of the active workspace
 /// offered by the name the strip switcher shows.
-pub(super) fn group_move_to_strip_params(state: &ChromeState) -> Vec<ActionParam> {
+pub(crate) fn group_move_to_strip_params(state: &ChromeState) -> Vec<ActionParam> {
     let strips: Vec<(String, String)> = {
         let tree = state.tree();
         let strips = tree
@@ -167,7 +167,7 @@ pub(super) fn group_move_to_strip_params(state: &ChromeState) -> Vec<ActionParam
 /// Queue the focused window group's move into the `strip`th strip of the
 /// active workspace for the overlay host. A group already there changes
 /// nothing, and says so.
-pub(super) fn move_group_to_strip(
+pub(crate) fn move_group_to_strip(
     st: &mut ChromeState,
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
@@ -205,8 +205,8 @@ pub(super) fn move_group_to_strip(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{chrome_with_room, invoke_shell_action};
     use crate::shell::search::action_api::ActionError;
+    use crate::shell::search::providers::actions::tests::{chrome_with_room, invoke_shell_action};
 
     /// A window action names what is wrong when no window has focus, rather
     /// than queueing a move for nothing.

@@ -41,6 +41,54 @@ pub(super) enum SearchRequest {
     Window(StripId, GroupId, ui::search::SearchRequest),
 }
 
+/// What a host adds to the desktop's search over everything, collected as
+/// it opens ([`SearchHost::feed`]).
+#[derive(Default)]
+pub struct SearchHostFeed {
+    /// The apps this host opens, beside those the desktop's tile source
+    /// lists.
+    pub applications: Vec<tilo_desktop_search::providers::AppEntry>,
+    /// What providers publish through the host's action host, run by
+    /// address there.
+    pub published: Vec<tilo_desktop_search::providers::PublishedActions>,
+    /// The host's own sources, each over what is published or a service
+    /// answers.
+    pub sources: Vec<Box<dyn tilo_desktop_search::Source>>,
+    /// The sources the person switched off.
+    pub preferences: tilo_desktop_search::SearchPreferences,
+    /// Now, in Unix seconds.
+    pub now: u64,
+}
+
+/// A host that adds to the desktop's search and carries out what is chosen
+/// there that only it can: running an action by address through its action
+/// host, starting an app, opening an address.
+pub trait SearchHost {
+    /// What to search beyond the desktop's own, in the workspace of room
+    /// `room`. Called as search opens, inside the desktop's update pass: it
+    /// reads what the host keeps, never the desktop's own tree.
+    fn feed(&self, room: &str) -> SearchHostFeed;
+    /// Whether the host carries out `target` itself; the desktop then hands
+    /// it back through [`DesktopHandle::take_search_choices`].
+    fn performs(&self, target: &Target) -> bool;
+}
+
+/// One row the open search shows, as the desktop publishes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchRow {
+    pub title: String,
+    pub subtitle: Option<String>,
+    /// The group it stands in ("Apps", "Settings").
+    pub kind: String,
+}
+
+/// What a caller of the desktop's published search asked of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SearchAsk {
+    Query(String),
+    Choose(usize, Option<String>),
+}
+
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 const WORKSPACE_PREFIX: &str = "desktop.workspace:";
@@ -209,6 +257,42 @@ impl DesktopHandle {
     pub fn search_open(&self) -> bool {
         self.shared.borrow().search_open
     }
+
+    /// Search from now on also over what `host` adds, and hand it what is
+    /// chosen that it carries out ([`SearchHost::performs`]).
+    pub fn set_search_host(&self, host: std::rc::Rc<dyn SearchHost>) {
+        self.shared.borrow_mut().search_host = Some(host);
+    }
+
+    /// The rows chosen in search since the last call that the host carries
+    /// out, in order.
+    pub fn take_search_choices(&self) -> Vec<Target> {
+        std::mem::take(&mut self.shared.borrow_mut().search_choices)
+    }
+
+    /// The open search's query and the rows it shows, as of the last update
+    /// pass; nothing while search is closed.
+    pub fn search_rows(&self) -> (String, Vec<SearchRow>) {
+        let shared = self.shared.borrow();
+        (shared.search_query.clone(), shared.search_rows.clone())
+    }
+
+    /// Type `query` into the open search, on the next update pass.
+    pub fn set_search_query(&self, query: String) {
+        self.shared
+            .borrow_mut()
+            .search_asks
+            .push(SearchAsk::Query(query));
+    }
+
+    /// Choose the open search's row `index` ([`Self::search_rows`]), with
+    /// `argument` the line its action asks for, on the next update pass.
+    pub fn choose_search_row(&self, index: usize, argument: Option<String>) {
+        self.shared
+            .borrow_mut()
+            .search_asks
+            .push(SearchAsk::Choose(index, argument));
+    }
 }
 
 /// The search chord `is_search_chord` answers to, as the keyboard spells
@@ -335,6 +419,30 @@ fn windows(
     out
 }
 
+/// The people in the active workspace, as search finds them, and its room.
+fn people(
+    tree: &DesktopTree,
+) -> (
+    String,
+    Vec<tilo_desktop_search::providers::people::PersonEntry>,
+) {
+    let Some(workspace) = tree.active_workspace() else {
+        return (String::new(), Vec::new());
+    };
+    let people = workspace
+        .collaborators
+        .iter()
+        .map(
+            |person| tilo_desktop_search::providers::people::PersonEntry {
+                id: person.id.clone(),
+                name: person.name.clone(),
+                activity: person.in_app.clone(),
+            },
+        )
+        .collect();
+    (workspace.room().to_string(), people)
+}
+
 /// What search offers to do: the host's actions, then what the focused
 /// window allows (no close for a window someone else holds, `held`), then
 /// the other workspaces.
@@ -391,20 +499,33 @@ fn commands(
 impl DesktopSurface {
     /// Open search over what the desktop has open now.
     pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
-        let (windows, commands) = {
+        let (windows, commands, (room, people), host) = {
             let shared = self.shared.borrow();
             (
                 windows(&shared.tree, &shared.holders),
                 commands(&shared.tree, &shared.host_actions, &|tab| {
                     shared.holders.contains_key(&tab)
                 }),
+                people(&shared.tree),
+                shared.search_host.clone(),
             )
         };
+        let feed = host.map(|host| host.feed(&room)).unwrap_or_default();
+        let mut applications = self.tiles.search_applications();
+        applications.extend(feed.applications);
+        let mut sources = feed.sources;
+        sources.push(Box::new(
+            tilo_desktop_search::providers::people::People::new(room, people),
+        ));
         let mut data = SearchData {
-            applications: self.tiles.search_applications(),
+            applications,
             windows,
             commands,
             answers: true,
+            published: feed.published,
+            sources,
+            preferences: feed.preferences,
+            now: feed.now,
             ..SearchData::default()
         };
         let mut owners = std::collections::HashMap::new();
@@ -528,7 +649,46 @@ impl DesktopSurface {
             }
             None => {}
         }
+        let asks = std::mem::take(&mut self.shared.borrow_mut().search_asks);
+        for ask in asks {
+            if !self.search.is_open() {
+                break;
+            }
+            match ask {
+                SearchAsk::Query(query) => self.search.set_query(&query),
+                SearchAsk::Choose(index, argument) => {
+                    self.search.choose(index, argument);
+                }
+            }
+            self.structure_dirty = true;
+        }
         self.follow_search();
+        self.publish_search_rows();
+    }
+
+    /// Keep what the open search shows where the desktop publishes it.
+    fn publish_search_rows(&self) {
+        let rows: Vec<SearchRow> = if self.search.is_open() {
+            self.search
+                .results()
+                .iter()
+                .map(|hit| SearchRow {
+                    title: hit.title.clone(),
+                    subtitle: hit.subtitle.clone(),
+                    kind: hit.kind.label().to_owned(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let query = if self.search.is_open() {
+            self.search.query().to_owned()
+        } else {
+            String::new()
+        };
+        let mut shared = self.shared.borrow_mut();
+        shared.search_rows = rows;
+        shared.search_query = query;
     }
 
     /// After the palette handled input (an event, or an assistive
@@ -635,8 +795,14 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
-    /// Queue what a chosen row does, as the matching navigation command.
+    /// Queue what a chosen row does, as the matching navigation command,
+    /// or hand it to the host where the host carries it out.
     fn perform(&self, target: Target) {
+        let host = self.shared.borrow().search_host.clone();
+        if host.is_some_and(|host| host.performs(&target)) {
+            self.shared.borrow_mut().search_choices.push(target);
+            return;
+        }
         let mut shared = self.shared.borrow_mut();
         let admitted = match target {
             // An app already open is focused, not opened twice: a new
@@ -686,17 +852,32 @@ impl DesktopSurface {
             // click or key press, so it opens now and a blocked one is
             // said; a native handler may take its time, so it opens off
             // this thread.
-            Target::Open { uri } => {
+            Target::Open { uri, fallback } => {
+                // A browser tab takes only web addresses: a scheme an app
+                // or the person's browser would take opens as its fallback.
                 #[cfg(target_arch = "wasm32")]
-                if let Err(error) = ui::widget::try_open_external_url(&uri) {
+                if let Err(error) =
+                    ui::widget::try_open_external_url(fallback.as_deref().unwrap_or(&uri))
+                {
                     shared.acknowledger.say(error.to_string());
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                ui::widget::open_external_url(&uri);
+                match fallback {
+                    Some(fallback) => {
+                        std::thread::spawn(move || {
+                            if ui::widget::try_open_external_url(&uri).is_err() {
+                                ui::widget::open_external_url(&fallback);
+                            }
+                        });
+                    }
+                    None => ui::widget::open_external_url(&uri),
+                }
                 None
             }
-            // Runs through the palette's control invocation instead.
-            Target::Action(_) => None,
+            // An app's action runs through the palette's control
+            // invocation instead. Without a host running them, a desktop
+            // lists no host-published actions or jobs.
+            Target::Action(_) | Target::Invoke(_) | Target::Cancel { .. } => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);

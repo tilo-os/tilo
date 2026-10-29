@@ -192,6 +192,10 @@ pub struct ActionDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     pub description: Option<String>,
+    /// What the action's row shows of the state it acts on
+    /// ([`ActionSpec::state`](crate::ActionType::state)).
+    #[serde(default, skip_serializing_if = "crate::ActionState::is_empty")]
+    pub state: crate::ActionState,
     pub locus: ExecutionLocus,
     pub kind: OperationKind,
     pub contract: ActionContract,
@@ -395,6 +399,7 @@ fn survey_into(resource: &ResourceSpec, out: &mut Vec<ActionDescriptor>) {
             keywords: action.keywords.clone(),
             icon: action.icon.clone(),
             description: action.description.clone(),
+            state: action.state.clone(),
             locus: action.locus,
             kind: action.kind,
             contract: action.contract.clone(),

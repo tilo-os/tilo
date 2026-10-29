@@ -579,7 +579,7 @@ fn switch_live(
         .flatten()
     });
     SearchResult {
-        badge: badge.map(super::actions::on_off_badge),
+        badge: badge.map(crate::shell::actions::on_off_badge),
         ..row.clone()
     }
 }
@@ -938,7 +938,7 @@ mod switch_tests {
             let original = stored(switch);
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(original))
+                Some(crate::shell::actions::on_off_badge(original))
             );
             if let Some(listed) = listed(setting) {
                 assert_eq!(listed.badge, row.badge, "{id}: listed as resolved");
@@ -969,7 +969,7 @@ mod switch_tests {
             let row = resolved(setting).expect("still offered");
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(!original)),
+                Some(crate::shell::actions::on_off_badge(!original)),
                 "{id}: the row shows the state it was just switched to"
             );
 
@@ -984,7 +984,7 @@ mod switch_tests {
             let row = resolved(setting).expect("still offered");
             assert_eq!(
                 row.badge,
-                Some(super::super::actions::on_off_badge(original)),
+                Some(crate::shell::actions::on_off_badge(original)),
                 "{id}: the row follows a change made elsewhere"
             );
             activate(&row, switch);

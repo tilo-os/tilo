@@ -18508,6 +18508,7 @@ dependencies = [
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
  "tilo-sort",
@@ -18578,9 +18579,22 @@ dependencies = [
 name = "tilo-desktop-search"
 version = "0.1.0"
 dependencies = [
+ "app-catalogue",
  "app-fleet",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "settings-store",
+ "tempfile",
  "tilo-actions",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-reference",
+ "tilo-search",
+ "tilo-test-env",
  "tilo-ui",
+ "tracing",
+ "walkdir",
  "workspace-hack",
 ]
 
@@ -21310,7 +21324,9 @@ dependencies = [
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-desktop",
+ "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-media",
  "tilo-network-secret-agent",

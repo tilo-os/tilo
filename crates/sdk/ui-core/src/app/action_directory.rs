@@ -89,6 +89,7 @@ impl App {
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> runtime_collab::ExportedAction {
         runtime_collab::ExportedAction {
+            state: tilo_actions::ActionState::default(),
             view: None,
             ..runtime_collab::ExportedAction::from(descriptor)
         }

@@ -36,6 +36,7 @@ use ui::widget::{
     TaffyTreeExt as _, TileContent, TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use wheel::{sideways, vertical};
 use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
@@ -56,12 +57,16 @@ mod open_motion_tests;
 mod personal_ask;
 mod search;
 mod splice;
+mod wheel;
 mod window_bars;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
+pub use search::{
+    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, is_host_offer,
+    search_chord_keys,
+};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -178,6 +183,17 @@ struct Shared {
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
+    /// What the host adds to search and carries out of it
+    /// ([`DesktopHandle::set_search_host`]).
+    search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
+    /// Rows chosen in search that the host carries out, in order.
+    search_choices: Vec<tilo_desktop_search::Target>,
+    /// What a caller of the published search asked of it, taken on the
+    /// next update pass.
+    search_asks: Vec<search::SearchAsk>,
+    /// The open search's query and rows, as last shown.
+    search_query: String,
+    search_rows: Vec<search::SearchRow>,
     /// The ask about the person themselves the bar shows from their avatar.
     personal_ask: Option<personal_ask::PersonalAsk>,
     personal_ask_revision: u64,
@@ -702,11 +718,6 @@ const SWIPE_GAP: Duration = Duration::from_millis(200);
 /// How soon search looks again for an app's answer that is still coming.
 const SEARCH_ANSWER_POLL: Duration = Duration::from_millis(50);
 
-/// Logical pixels a line of sideways wheel travels: the 40 px to the line a
-/// trackpad's pixels are weighed against when telling sideways from
-/// vertical, so both kinds of input move the strip alike.
-const WHEEL_LINE_PX: f64 = 40.0;
-
 /// Sideways travel that steps focus one window on a strip that cannot pan
 /// that way. About the width of a window: a Normal one is two thirds of a
 /// 1280 px strip, so a spin steps about as many windows on a strip that fits
@@ -735,34 +746,6 @@ struct Swipe {
     /// settle.
     pan: Option<f64>,
     last: Instant,
-}
-
-/// A wheel event's sideways travel in logical pixels when horizontal motion
-/// dominates, positive forward (toward later windows, like Super+Right).
-/// Winit's deltas are negative for a wheel turned (or fingers scrolling)
-/// rightward, which scrolls content toward its later columns and so moves
-/// forward; it reports pixels physical. The shell's overlay host classifies
-/// wheel input the same way.
-fn sideways(delta: MouseScrollDelta, scale_factor: f64) -> Option<f64> {
-    let (dx, dy) = match delta {
-        MouseScrollDelta::LineDelta(x, y) => {
-            (f64::from(x) * WHEEL_LINE_PX, f64::from(y) * WHEEL_LINE_PX)
-        }
-        MouseScrollDelta::PixelDelta(p) => {
-            let scale = scale_factor.max(f64::EPSILON);
-            (p.x / scale, p.y / scale)
-        }
-    };
-    (dx.abs() > dy.abs()).then_some(-dx)
-}
-
-/// A wheel event's vertical travel in logical pixels, positive for a wheel
-/// turned (or fingers scrolling) downward, which winit reports negative.
-fn vertical(delta: MouseScrollDelta, scale_factor: f64) -> f64 {
-    match delta {
-        MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * WHEEL_LINE_PX,
-        MouseScrollDelta::PixelDelta(p) => -p.y / scale_factor.max(f64::EPSILON),
-    }
 }
 
 /// The window a pan left the person looking at: the focused one while it is
@@ -819,6 +802,11 @@ impl DesktopSurface {
             search_open: false,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
+            search_host: None,
+            search_choices: Vec::new(),
+            search_asks: Vec::new(),
+            search_query: String::new(),
+            search_rows: Vec::new(),
             personal_ask: None,
             personal_ask_revision: 0,
             arrivals: Vec::new(),

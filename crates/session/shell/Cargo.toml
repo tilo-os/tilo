@@ -148,7 +148,7 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
-tilo-desktop-search = { path = "../desktop-search" }
+tilo-desktop-search = { path = "../desktop-search", features = ["indexes"] }
 # Tilo's link grammar, so links to the person's workspaces open in place.
 tilo-reference = { path = "../../collab/reference" }
 # Durable lockdown policy behind the Lockdown portal and native media gates.

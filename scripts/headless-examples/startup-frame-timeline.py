@@ -318,7 +318,7 @@ def main() -> None:
             while True:
                 catalog = call(str(sock), {"op": "actions_enumerate", "query": "Startup frame probe"})
                 actions = catalog.get("answer", {}).get("actions", [])
-                launch = [a for a in actions if a.get("provider") == "host-applications" and a.get("id") in (APP, APP + ".desktop")]
+                launch = [a for a in actions if a.get("provider") == "applications" and a.get("id") in (APP, APP + ".desktop")]
                 if len(launch) == 1:
                     break
                 if time.monotonic() >= deadline:

@@ -64,6 +64,7 @@ fn a_program_in_an_app_lists_and_runs_actions_with_its_workspaces_scope() {
                 presentation: None,
             },
             action: Some(tilo_actions::ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: tilo_actions::ActionAddress::new(
                     "calculator.graph:curve2d:stable-17",

@@ -1328,3 +1328,12 @@ desktop-action-move-to-display = Das Fenster auf einen anderen Bildschirm versch
 desktop-action-param-window-steps = Wie viele Fenster weiter, negativ zurück
 desktop-action-param-display-steps = Wie viele Bildschirme weiter, negativ zurück
 desktop-display-name = Bildschirm { $number }
+
+## The open search.
+desktop-actions-search = Suche
+desktop-action-show-person = Eine Person zeigen
+desktop-action-search-for = Suchen nach
+desktop-action-choose-search-row = Auswählen
+desktop-action-param-person = Wer, nach der Kennung
+desktop-action-param-query = Wonach gesucht wird
+desktop-action-param-argument = Was die gewählte Aktion erfragt, wenn sie eine Zeile erfragt

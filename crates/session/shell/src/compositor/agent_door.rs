@@ -577,6 +577,7 @@ mod tests {
                     room.to_string(),
                 ),
                 actions: vec![crate::shell::collab_broker_capnp::PublishedAction {
+                    state: tilo_actions::ActionState::default(),
                     resource: "settings.display".into(),
                     semantic_identity: None,
                     action: "inspect".into(),

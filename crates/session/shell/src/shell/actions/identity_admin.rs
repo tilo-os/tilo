@@ -20,13 +20,13 @@ use crate::shell::identity_admin::{self as engine, IdentityAdmin, Store};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ActionReceipt, InvocationDisposition};
 
-pub(super) const LIST_ID: &str = "identity.list";
-pub(super) const ACTIVATE_ID: &str = "identity.activate";
-pub(super) const REMOVE_ID: &str = "identity.remove";
-pub(super) const PROTECT_ID: &str = "identity.protect";
-pub(super) const DEVICES_ID: &str = "identity.devices.list";
-pub(super) const HOME_PEER_REMOVE_ID: &str = "identity.home-peer.remove";
-pub(super) const HOME_PEER_RETRY_ID: &str = "identity.home-peer.retry-removals";
+pub(crate) const LIST_ID: &str = "identity.list";
+pub(crate) const ACTIVATE_ID: &str = "identity.activate";
+pub(crate) const REMOVE_ID: &str = "identity.remove";
+pub(crate) const PROTECT_ID: &str = "identity.protect";
+pub(crate) const DEVICES_ID: &str = "identity.devices.list";
+pub(crate) const HOME_PEER_REMOVE_ID: &str = "identity.home-peer.remove";
+pub(crate) const HOME_PEER_RETRY_ID: &str = "identity.home-peer.retry-removals";
 
 /// Every shell action this module serves, with the engine step behind it.
 const ACTIONS: [(&str, &str); 7] = [
@@ -47,18 +47,18 @@ fn step(id: &str) -> Option<&'static str> {
         .map(|(_, step)| step)
 }
 
-pub(super) fn is_identity_action(id: &str) -> bool {
+pub(crate) fn is_identity_action(id: &str) -> bool {
     step(id).is_some()
 }
 
 /// The step's contract: the one the broker's door offers too.
-pub(super) fn contract(id: &str) -> tilo_actions::ActionContract {
+pub(crate) fn contract(id: &str) -> tilo_actions::ActionContract {
     engine::contract(step(id).unwrap_or(engine::REMOVE))
 }
 
 /// Start step `id` for whoever invoked it from the active workspace: only
 /// someone who administers that workspace's identity administers it.
-pub(super) fn begin(
+pub(crate) fn begin(
     admin: &IdentityAdmin,
     chrome: &Chrome,
     id: &str,
@@ -102,11 +102,7 @@ mod tests {
                 .find(|action| action.id == id)
                 .unwrap_or_else(|| panic!("{id} is in the catalogue"));
             assert_eq!(action.params, engine::params(step), "{id}");
-            assert_eq!(
-                super::super::shell_action_contract(id),
-                engine::contract(step),
-                "{id}"
-            );
+            assert_eq!(super::super::declared(id).0, engine::contract(step), "{id}");
             let (label, subtitle) = engine::copy_keys(step);
             assert_eq!((action.label, action.subtitle), (label, subtitle), "{id}");
         }

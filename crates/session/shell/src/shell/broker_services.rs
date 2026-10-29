@@ -2005,11 +2005,9 @@ pub fn native_services(
         shortcut_library,
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         continuations: Some(Arc::new(NativeContinuations)),
-        search_index: Some(Arc::new(
-            crate::shell::search::app_content_index::SearchIndexService(
-                crate::shell::search::app_content_index::session(),
-            ),
-        )),
+        search_index: Some(Arc::new(SearchIndexService(
+            tilo_desktop_search::content_index::session(),
+        ))),
         content_store: Some(Arc::new(SessionContentPuts)),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
@@ -2511,6 +2509,22 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
             session.lock().await.disconnect();
             Ok(())
         })
+    }
+}
+
+/// The host service the broker hands apps' search publications to: the
+/// session's content index.
+struct SearchIndexService(Arc<tilo_desktop_search::content_index::AppContentIndex>);
+
+impl tilo_action_broker::services::SearchIndexServices for SearchIndexService {
+    fn publish(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: &str,
+        record: &str,
+        delta: &[u8],
+    ) -> Result<(), String> {
+        self.0.publish(&room.to_string(), app, record, delta)
     }
 }
 

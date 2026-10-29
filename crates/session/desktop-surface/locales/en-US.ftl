@@ -1313,3 +1313,12 @@ desktop-action-move-to-display = Move the window to another display
 desktop-action-param-window-steps = How many windows on, back when negative
 desktop-action-param-display-steps = How many displays on, back when negative
 desktop-display-name = Display { $number }
+
+## The open search.
+desktop-actions-search = Search
+desktop-action-show-person = Show a person
+desktop-action-search-for = Search for
+desktop-action-choose-search-row = Choose
+desktop-action-param-person = Who, by their id
+desktop-action-param-query = What to search for
+desktop-action-param-argument = What the chosen action asks for, when it asks for a line

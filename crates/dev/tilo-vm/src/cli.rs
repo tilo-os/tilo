@@ -358,10 +358,10 @@ pub struct LocalLayerImport {
 pub enum FlightCommand {
     /// Launch an app through the desktop action model, focus it, type into it, and prove new frames present.
     #[command(
-        after_help = "Examples:\n  tilo-vm flight app org.gnome.TextEditor org.gnome.TextEditor\n  tilo-vm flight app chatgpt chatgpt --type-text 'flight input' --timeout-seconds 20\n\nDESKTOP_ID is the host-applications action id. APP_ID is the Wayland/X11 app id the compositor reports."
+        after_help = "Examples:\n  tilo-vm flight app org.gnome.TextEditor org.gnome.TextEditor\n  tilo-vm flight app chatgpt chatgpt --type-text 'flight input' --timeout-seconds 20\n\nDESKTOP_ID is the applications action id. APP_ID is the Wayland/X11 app id the compositor reports."
     )]
     App {
-        /// Desktop action id exported by the host-applications provider.
+        /// Desktop action id exported by the applications provider.
         desktop_id: String,
         /// App id expected on the presented foreign surface.
         app_id: String,

@@ -58,6 +58,7 @@ fn row(
         app_id: app.into(),
         parent_resource: String::new(),
         action: Some(ActionDescriptor {
+            state: ui::tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(&resource.id, action),
             resource_kind: resource.kind.clone(),

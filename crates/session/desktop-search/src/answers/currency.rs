@@ -1,8 +1,35 @@
 //! Money typed into search: "10 usd in eur", "€25 to $", "100 franken".
-//! The amount converts at the last reference rates the network-answers
-//! helper fetched ([`crate::shell::net_answers`]), never on the keystroke.
+//! The amount converts at the last reference rates the host fetched
+//! ([`Rates`]), never on the keystroke.
 
-use tilo_net_answers::Rates;
+use std::collections::BTreeMap;
+
+/// Reference exchange rates the host fetched, and when.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rates {
+    /// ISO 4217 code of the currency every rate is against.
+    pub base: String,
+    /// ISO 4217 code → units of it per one `base`.
+    pub rates: BTreeMap<String, f64>,
+    /// When they were fetched, in Unix seconds.
+    pub fetched_at: u64,
+}
+
+impl Rates {
+    /// `amount` of currency `from` in currency `to`, if both are known.
+    #[must_use]
+    pub fn convert(&self, amount: f64, from: &str, to: &str) -> Option<f64> {
+        let per_base = |code: &str| {
+            if code == self.base {
+                Some(1.0)
+            } else {
+                self.rates.get(code).copied().filter(|rate| *rate > 0.0)
+            }
+        };
+        let value = amount / per_base(from)? * per_base(to)?;
+        value.is_finite().then_some(value)
+    }
+}
 
 /// The ISO 4217 code a typed currency name, symbol or code stands for.
 fn code(typed: &str) -> Option<String> {
@@ -50,7 +77,7 @@ fn amount(text: &str) -> Option<(f64, String)> {
 
 /// What `typed` asks to convert: the amount, its currency and the target.
 /// Without a target, euros go to dollars and everything else to euros.
-pub(crate) fn request(typed: &str) -> Option<(f64, String, String)> {
+pub fn request(typed: &str) -> Option<(f64, String, String)> {
     let text = typed.trim().to_lowercase();
     if !text.chars().any(|c| c.is_ascii_digit()) {
         return None;
@@ -71,7 +98,7 @@ pub(crate) fn request(typed: &str) -> Option<(f64, String, String)> {
 
 /// `typed` converted at `rates`: the amount as typed and as answered
 /// ("10.00 USD", "9.25 EUR").
-pub(crate) fn convert(typed: &str, rates: &Rates) -> Option<(String, String)> {
+pub fn convert(typed: &str, rates: &Rates) -> Option<(String, String)> {
     let (value, from, to) = request(typed)?;
     let answer = rates.convert(value, &from, &to)?;
     Some((format!("{value:.2} {from}"), format!("{answer:.2} {to}")))
@@ -84,10 +111,10 @@ mod tests {
     fn rates() -> Rates {
         Rates {
             base: "EUR".into(),
-            date: "2026-10-16".into(),
             rates: [("USD".to_owned(), 1.25), ("GBP".to_owned(), 0.8)]
                 .into_iter()
                 .collect(),
+            fetched_at: 0,
         }
     }
 

@@ -392,6 +392,7 @@ mod tests {
             PROVIDER,
             "so.tilo.chat",
             ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new(wanted.id, "open"),
                 resource_kind: wanted.kind,
