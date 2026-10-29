@@ -85,7 +85,9 @@ pub use trust::{
     TrustedAttestor, TrustedAttestors, attestation_preimage, default_revoked_keys_path,
     default_trusted_attestors_path,
 };
-pub use unpack::{UnpackError, unpack, validate_materialized_payload};
+pub use unpack::{
+    UnpackError, unpack, validate_materialized_payload, validate_materialized_payload_within,
+};
 pub use validate::{
     FORMAT_PROVIDER_MODULE, ManifestError, validate_manifest, validate_manifest_with_payload,
 };
@@ -191,6 +193,19 @@ pub fn app_size_limit(manifest: &Manifest) -> Option<u64> {
                 platform_size_limit(&target.platform)
             }),
     )
+}
+
+/// The wire and materialized size limit of an application package a
+/// developer session built and signed itself, to install on its own machine:
+/// at least [`MAX_DESKTOP_APP_TAPP_BYTES`], the ceiling of a build that links
+/// the toolkit in. Such a build is compiled for build speed, not size, and is
+/// never published, so the distribution policy of [`app_size_limit`] does not
+/// apply to it; the bound on what one package may materialize still does.
+/// `None` for non-app bundles. Only a development store applies it
+/// (`package_store::dev_env`); the registry and shipped stores hold every
+/// application to [`app_size_limit`].
+pub fn local_build_size_limit(manifest: &Manifest) -> Option<u64> {
+    app_size_limit(manifest).map(|limit| limit.max(MAX_DESKTOP_APP_TAPP_BYTES))
 }
 
 #[cfg(test)]

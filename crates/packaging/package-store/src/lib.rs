@@ -12,6 +12,7 @@
 //! - [`mounts`] — which installed trees running apps have mounted.
 //! - `lease` (feature `lease`) — the hold a launch keeps on its payload
 //!   tree from choosing it until its sandbox exits.
+//! - [`size_limit`] — the size limit an application installs under here.
 //! - [`integrity`] — replay an installed package's signature chain against
 //!   its files.
 //! - `PackageStore` (feature `store`) — install, remove, pin and collect.
@@ -28,6 +29,7 @@ pub mod layout;
 pub mod lease;
 pub mod mounts;
 pub mod registry;
+pub mod size_limit;
 
 #[cfg(feature = "store")]
 mod content;
