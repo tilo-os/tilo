@@ -197,6 +197,7 @@ impl Checker<'_> {
             return n;
         };
         let list = self.expr(items, None);
+        let list = self.unhold(list, items.span);
         let Some(Ty::Record(key)) = list.ty.element().cloned() else {
             if !list.ty.is_error() {
                 let t = self.show(&list.ty);
@@ -859,6 +860,37 @@ impl Checker<'_> {
         matches!(found.kind, CKind::Action | CKind::Flow).then(|| found.clone())
     }
 
+    /// An action's `label: "Move to {col.title}"`, read with the arguments of the application
+    /// `applied` (`move_to(b, card, other)`), when its label is written so.
+    fn applied_label(&mut self, callee: &Callable, applied: &ast::Expr) -> Option<Ex> {
+        let text = callee.present.label_text.clone()?;
+        let mut call = applied;
+        while let ExprKind::Call { callee: c, .. } = &call.kind
+            && let ExprKind::Field { base, name } = &c.kind
+            && name.name == "then"
+        {
+            call = base;
+        }
+        let ExprKind::Call { args, .. } = &call.kind else {
+            return None;
+        };
+        let sig = callee.signature(&self.env.app);
+        let bound = self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig);
+        self.push_sink();
+        for (p, v) in callee.params.iter().zip(bound) {
+            if let Some(v) = v {
+                let id = self.declare(&p.name, p.ty.clone());
+                self.emit(Stmt::Set(id, v));
+            }
+        }
+        let label = self.expr_as(&text, &Ty::Text);
+        let stmts = self.pop_sink();
+        Some(Ex::new(
+            crate::ir::Ek::Seq(stmts, Box::new(label)),
+            Ty::Text,
+        ))
+    }
+
     /// `button(act(x))`: a button whose label, icon and role are the action's, and whose
     /// `press` applies it.
     fn action_button(&mut self, callee: &Callable, c: &UiCall, args: &[ast::Arg]) -> LocalId {
@@ -875,7 +907,10 @@ impl Checker<'_> {
                     applied = true;
                     let act = self.expr(value, None);
                     let p = &callee.present;
-                    self.prop(node.clone(), "label", Ex::str(&p.label), span);
+                    match self.applied_label(callee, value) {
+                        Some(label) => self.prop(node.clone(), "label", label, span),
+                        None => self.prop(node.clone(), "label", Ex::str(&p.label), span),
+                    }
                     if let Some(icon) = &p.icon {
                         self.prop(node.clone(), "icon", Ex::str(icon), span);
                     }
@@ -959,8 +994,18 @@ impl Checker<'_> {
         let others = others.as_slice();
         for opt in opts {
             let name = opt.name.name.as_str();
-            let dynamic = name == "on" || matches!(opt.value.kind, ExprKind::If { .. });
+            let dynamic = name == "on"
+                || matches!(opt.value.kind, ExprKind::If { .. })
+                || (name == "label"
+                    && matches!(&opt.value.kind, ExprKind::Str(parts) if parts.iter().any(|p| matches!(p, ast::StrPart::Interp(_)))));
             if !dynamic || !matches!(name, "label" | "icon" | "on") {
+                continue;
+            }
+            // A label that reads other arguments is read where the action is applied with them.
+            if name == "label"
+                && matches!(opt.value.kind, ExprKind::Str(_))
+                && mentions(&opt.value, others).is_some()
+            {
                 continue;
             }
             if let Some(other) = mentions(&opt.value, others) {

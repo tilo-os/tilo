@@ -18,8 +18,6 @@ use crate::parser::parse_file_at;
 
 /// The ids lock's file name in a package directory.
 pub const IDS_FILE: &str = "app.ids";
-/// The compiled module's file name in a package directory.
-pub const WASM_FILE: &str = "app.wasm";
 /// The extension of source files.
 pub const EXTENSION: &str = "tl";
 

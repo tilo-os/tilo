@@ -34,6 +34,9 @@ pub struct PackageMeta {
     /// lists and opens.
     #[serde(default)]
     pub roots: Vec<String>,
+    /// The packages it uses (`use app.id`), by app id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<String>,
     /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_roots: Vec<NamedRootMeta>,

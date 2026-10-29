@@ -1332,15 +1332,26 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        let lambda = match args {
-            [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
-            _ => None,
+        // `sort_by(key)` or `sort_by(key, desc)`: latest, largest or last first.
+        let (key_arg, desc) = match args {
+            [a] if a.name.is_none() => (Some(a), false),
+            [a, d]
+                if a.name.is_none()
+                    && matches!(&d.value.kind, ExprKind::Ident(w) if w == "desc" || w == "asc") =>
+            {
+                (
+                    Some(a),
+                    matches!(&d.value.kind, ExprKind::Ident(w) if w == "desc"),
+                )
+            }
+            _ => (None, false),
         };
+        let lambda = key_arg.and_then(|a| super::optional::lambda_of(&a.value));
         let Some((param, body)) = lambda else {
             self.err(
                 "E051",
                 span,
-                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`",
+                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`, and `desc` for the largest or latest first: `.sort_by(.due, desc)`",
             );
             return Ex::error();
         };
@@ -1348,6 +1359,11 @@ impl Checker<'_> {
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
         let key = self.expr(&body, None);
+        // A Date or a Time is ISO text, which sorts in time order.
+        let key = match key.ty {
+            Ty::Date | Ty::Time => key.typed(Ty::Text),
+            _ => key,
+        };
         if !matches!(
             key.ty,
             Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Error
@@ -1356,7 +1372,7 @@ impl Checker<'_> {
             self.err(
                 "E020",
                 name.span,
-                format!("`sort_by` keys must be Int, Float, Text or Bool, found {t}"),
+                format!("`sort_by` keys must be Int, Float, Text, Bool, Date or Time, found {t}"),
             );
         }
         let keys_ty = Ty::List(Box::new(key.ty.clone()));
@@ -1373,11 +1389,14 @@ impl Checker<'_> {
             Stmt::Set(keys, Ex::host(Imp::ListNew, Vec::new(), keys_ty.clone())),
             Stmt::ForList(Box::new(fl)),
         ];
-        let sorted = Ex::host(
+        let mut sorted = Ex::host(
             Imp::ListSortByKey,
             vec![Ex::local(list_local, Ty::Text), Ex::local(keys, keys_ty)],
             out_ty.clone(),
         );
+        if desc {
+            sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
+        }
         Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
     }
 

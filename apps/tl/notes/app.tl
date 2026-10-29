@@ -14,9 +14,7 @@ type Note {
 }
 
 /// The workspace's notes.
-type Notebook {
-    notes: Collection<Note>
-}
+type Notes = Collection<Note>
 
 /// The order a notebook lists its notes in.
 enum NoteOrder {
@@ -26,17 +24,17 @@ enum NoteOrder {
     title
 }
 
-root Notebook
+root notes: Notes
 
-default view notebook for Notebook
+default view notebook for notes
 
 default view note_editor for Note
 
 row view note_row for Note
 
 /// Starts a note.
-primary action new_note(nb: Notebook) -> Note (icon: .plus) {
-    nb.notes.insert(Note(title: "Untitled"))
+primary action new_note(notes: Notes) -> Note (icon: .plus) {
+    notes.insert(Note(title: "Untitled"))
 }
 
 /// Pins or unpins a note.
@@ -45,8 +43,8 @@ action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } els
 }
 
 /// Deletes a note.
-destructive action delete(nb: Notebook, n: Note) (icon: .trash) {
-    nb.notes.remove(n)
+destructive action delete(notes: Notes, n: Note) (icon: .trash) {
+    notes.remove(n)
 }
 
 /// Renames a note.
@@ -64,20 +62,19 @@ action untag(n: Note, t: Text) {
     n.tags.remove(t)
 }
 
-/// The notes of a notebook, in its order.
-fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
-    let notes: List<Note> = nb.notes
+/// The notes in an order.
+fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
     match order {
         .created => notes,
-        .title => notes.sort_by(n -> n.title),
+        .title => notes.sort_by(.title),
     }
 }
 
 /// The notebook's window: its notes, each opening in a window of its own. The order is the
 /// window's, so everyone looking at it sees the same list.
-view notebook(nb: Notebook) {
+view notebook(notes: Notes) {
     window order: NoteOrder = .created
-    std.list(nb, listed(nb, order), sort: order, empty: "No notes yet")
+    std.list(notes, listed(notes, order), sort: order, empty: "No notes yet")
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
@@ -105,29 +102,27 @@ view note_editor(n: Note) {
 
 /// A notebook a week into a project: enough notes to scroll, a few of them pinned.
 scenario "a week of notes" -> Note {
-    let nb = root Notebook
-    let plan = nb.notes.insert(Note(title: "Q3 plan", body: "Ship the offline editor, then sharing. Hiring stays flat until October.", pinned: true))
+    let plan = notes.insert(Note(title: "Q3 plan", body: "Ship the offline editor, then sharing. Hiring stays flat until October.", pinned: true))
     plan.tags.add("planning")
     plan.tags.add("work")
     plan.tags.add("q3")
-    nb.notes.insert(Note(title: "Standup, Monday", body: "Ada is on the sync bug. Bo pairs with Chen on the importer."))
-    nb.notes.insert(Note(title: "Groceries", body: "Oat milk, eggs, sourdough, two lemons, coffee beans.", pinned: true))
-    nb.notes.insert(Note(title: "Interview questions", body: "Ask about the last project they were proud of, and what they would change."))
-    nb.notes.insert(Note(title: "Standup, Tuesday", body: "Sync bug reproduced on two laptops. Importer handles tables now."))
-    nb.notes.insert(Note(title: "Book list", body: "The Dispossessed, Piranesi, A Psalm for the Wild-Built."))
-    nb.notes.insert(Note(title: "Flat viewing", body: "Saturday at eleven. Bring the deposit papers and measure the bedroom."))
-    nb.notes.insert(Note(title: "Standup, Wednesday", body: "Release candidate cut. Docs still need the new screenshots."))
-    nb.notes.insert(Note(title: "Gift ideas", body: "A good kitchen knife for Sam, concert tickets for Mia."))
-    nb.notes.insert(Note(title: "Retro notes", body: "Fewer meetings on Thursdays. Keep the demo at the end of each week."))
-    nb.notes.insert(Note(title: "Standup, Thursday", body: "Two blockers left. Chen is out on Friday."))
-    nb.notes.insert(Note(title: "Running plan", body: "Three easy runs and one long run a week, up to fifteen kilometres.", pinned: true))
-    nb.notes.insert(Note(title: "Recipe: lentil soup", body: "Onion, carrot, red lentils, cumin, a tin of tomatoes, lemon at the end."))
-    nb.notes.insert(Note(title: "Standup, Friday", body: "Release went out at four. Nobody deploys over the weekend."))
+    notes.insert(Note(title: "Standup, Monday", body: "Ada is on the sync bug. Bo pairs with Chen on the importer."))
+    notes.insert(Note(title: "Groceries", body: "Oat milk, eggs, sourdough, two lemons, coffee beans.", pinned: true))
+    notes.insert(Note(title: "Interview questions", body: "Ask about the last project they were proud of, and what they would change."))
+    notes.insert(Note(title: "Standup, Tuesday", body: "Sync bug reproduced on two laptops. Importer handles tables now."))
+    notes.insert(Note(title: "Book list", body: "The Dispossessed, Piranesi, A Psalm for the Wild-Built."))
+    notes.insert(Note(title: "Flat viewing", body: "Saturday at eleven. Bring the deposit papers and measure the bedroom."))
+    notes.insert(Note(title: "Standup, Wednesday", body: "Release candidate cut. Docs still need the new screenshots."))
+    notes.insert(Note(title: "Gift ideas", body: "A good kitchen knife for Sam, concert tickets for Mia."))
+    notes.insert(Note(title: "Retro notes", body: "Fewer meetings on Thursdays. Keep the demo at the end of each week."))
+    notes.insert(Note(title: "Standup, Thursday", body: "Two blockers left. Chen is out on Friday."))
+    notes.insert(Note(title: "Running plan", body: "Three easy runs and one long run a week, up to fifteen kilometres.", pinned: true))
+    notes.insert(Note(title: "Recipe: lentil soup", body: "Onion, carrot, red lentils, cumin, a tin of tomatoes, lemon at the end."))
+    notes.insert(Note(title: "Standup, Friday", body: "Release went out at four. Nobody deploys over the weekend."))
     plan
 }
 
 /// A notebook just started: one note, half written.
 scenario "a first note" {
-    let nb = root Notebook
-    nb.notes.insert(Note(title: "Ideas for the garden", body: "Tomatoes along the south wall, herbs by the door."))
+    notes.insert(Note(title: "Ideas for the garden", body: "Tomatoes along the south wall, herbs by the door."))
 }

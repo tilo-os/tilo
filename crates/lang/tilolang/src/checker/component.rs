@@ -703,8 +703,17 @@ impl Checker<'_> {
                     let Accepts::Component(want) = &slot.accepts else {
                         continue;
                     };
-                    let fits = component_of(c)
-                        .is_some_and(|(base, name)| name == want && self.names_toolkit(base));
+                    // A view of this package whose body is the component is one too.
+                    let own_view = match &c.call.kind {
+                        ExprKind::Call { callee, .. } => match &callee.kind {
+                            ExprKind::Ident(v) => self.env.view_makes.get(v) == Some(want),
+                            _ => false,
+                        },
+                        _ => false,
+                    };
+                    let fits = own_view
+                        || component_of(c)
+                            .is_some_and(|(base, name)| name == want && self.names_toolkit(base));
                     if !fits {
                         self.err(
                             "E063",
@@ -720,7 +729,7 @@ impl Checker<'_> {
                     }
                 }
                 UiKind::For { body, .. } => self.slot_calls(d, slot, body, calls),
-                UiKind::If { then, els, .. } => {
+                UiKind::If { then, els, .. } | UiKind::IfLet { then, els, .. } => {
                     self.slot_calls(d, slot, then, calls);
                     if let Some(els) = els {
                         self.slot_calls(d, slot, els, calls);

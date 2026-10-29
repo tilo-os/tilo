@@ -1903,6 +1903,9 @@ fn used_packages(host: &Host, app: &str) -> Vec<Package> {
         .into_iter()
         .filter(|other| other.meta.app != app)
         .filter(|other| {
+            if own.meta.uses.contains(&other.meta.app) {
+                return true;
+            }
             let prefix = format!("{}.", other.meta.app);
             own.meta
                 .types

@@ -55,6 +55,7 @@ imports! {
     ListGetF = "list_get_f" ([H, I64] -> [F64]);
     ListGetH = "list_get_h" ([H, I64] -> [H]);
     ListSortByKey = "list_sort_by_key" ([H, H] -> [H]);
+    ListReverse = "list_reverse" ([H] -> [H]);
     ListEnd = "list_end" ([H, I32] -> [H]);
 
     TupleNew = "tuple_new" ([I32] -> [H]);

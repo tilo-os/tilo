@@ -117,6 +117,10 @@ struct FnState {
 
 /// Where the UI being lowered stands, saved and restored around each block.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about where the UI stands"
+)]
 pub(crate) struct UiPlace {
     /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
     /// `inspector` sit directly in a frame, a fact directly in `facts`.

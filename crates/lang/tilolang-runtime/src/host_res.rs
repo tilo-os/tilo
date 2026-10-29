@@ -698,6 +698,29 @@ impl Core {
         Ok(())
     }
 
+    /// `@app.Type:id` or a root: the reference, checked against the store; a root nobody
+    /// opened yet is still the root and reads as it would start.
+    fn ref_lit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let (_app, ty, id) = (
+            self.text(a.h(0)?)?,
+            self.text(a.h(1)?)?,
+            self.text(a.h(2)?)?,
+        );
+        let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+            return trap(format!("`{id}` is not a reference id"));
+        };
+        self.type_of_ref(&ty)?;
+        // A root nobody opened yet is still the root: it reads as it would start.
+        if !target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok() {
+            self.verify_ref(&target)?;
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Ref(RefValue {
+            target: Rc::new(target),
+            author,
+        }))
+    }
+
     pub(crate) fn resource_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ResGetI => {
@@ -753,7 +776,7 @@ impl Core {
                 let Some(at) = others.iter().position(|id| **id == *neighbour.as_str()) else {
                     return trap("the neighbour is not in this collection");
                 };
-                let index = if after { at + 1 } else { at };
+                let index = if after { at.saturating_add(1) } else { at };
                 let field = ctx.field.id.clone();
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()
@@ -763,23 +786,7 @@ impl Core {
             }
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
-            Imp::RefLit => {
-                let (_app, ty, id) = (
-                    self.text(a.h(0)?)?,
-                    self.text(a.h(1)?)?,
-                    self.text(a.h(2)?)?,
-                );
-                let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
-                    return trap(format!("`{id}` is not a reference id"));
-                };
-                self.type_of_ref(&ty)?;
-                self.verify_ref(&target)?;
-                let author = Some(self.module_of_frame()?);
-                self.ret_h(Value::Ref(RefValue {
-                    target: Rc::new(target),
-                    author,
-                }))
-            }
+            Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
                 ret_i32(i32::from(x.target == y.target))
