@@ -68,8 +68,7 @@ impl Presentation {
     /// that asked.
     pub(crate) fn shown(mut self, shown: Shown) {
         let (time, sequence, flags) = shown.report(Clock::<Monotonic>::new().now());
-        self.feedback
-            .presented(time, self.refresh, sequence, flags);
+        self.feedback.presented(time, self.refresh, sequence, flags);
     }
 }
 
@@ -141,8 +140,14 @@ mod tests {
     fn host_and_headless_frames_are_timed_now() {
         let now = Time::from(Duration::from_secs(9));
         let (time, sequence, flags) = Shown::Host.report(now);
-        assert_eq!((Duration::from(time), sequence, flags), (Duration::from_secs(9), 0, Kind::Vsync));
+        assert_eq!(
+            (Duration::from(time), sequence, flags),
+            (Duration::from_secs(9), 0, Kind::Vsync)
+        );
         let (time, _, flags) = Shown::Immediately.report(now);
-        assert_eq!((Duration::from(time), flags), (Duration::from_secs(9), Kind::empty()));
+        assert_eq!(
+            (Duration::from(time), flags),
+            (Duration::from_secs(9), Kind::empty())
+        );
     }
 }

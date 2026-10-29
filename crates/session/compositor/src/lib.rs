@@ -24,13 +24,17 @@
 
 pub mod backend;
 mod cursor;
+pub mod dim;
 pub mod gestures;
 pub mod host;
+pub mod idle;
 pub mod input;
 mod lock;
 pub mod output;
 mod output_management;
+mod output_power;
 pub mod policy;
+mod power;
 mod present;
 mod protocols;
 pub mod render;
@@ -52,7 +56,9 @@ pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
+pub use dim::Backlight;
 pub use host::{HostLayer, SurfaceHost};
+pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
 };
@@ -256,8 +262,120 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         self.configure_from_clients();
+        self.data.state.tick_idle();
+        self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Switch the panels whose wanted power changed.
+    fn sync_power(&mut self) {
+        let LoopData { state, backend } = &mut self.data;
+        backend.sync_power(state);
+    }
+
+    /// Apply idle transitions a session request caused, at once.
+    fn apply_idle(&mut self, transitions: Vec<SessionTransition>) -> Result<(), Error> {
+        self.data.state.apply_idle(transitions);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// When the displays dim, blank, and the session locks or suspends
+    /// with no input. Applied to the current idle episode: a shorter
+    /// timeout can fire at the next dispatch.
+    pub fn set_idle_config(&mut self, config: IdleConfig) {
+        let session = &mut self.data.state.idle.session;
+        session.set_blank_timeout(config.blank_timeout);
+        session.set_lock_timeout(config.lock_timeout);
+        session.set_suspend_timeout(config.suspend_timeout);
+    }
+
+    /// The panel's backlight, which the idle dim lowers; without one the
+    /// scene is darkened instead.
+    pub fn set_backlight(&mut self, backlight: Box<dyn Backlight>) {
+        self.data.state.idle.dimmer = dim::ScreenDimmer::new(backlight);
+    }
+
+    /// What the session has to act on since the last call:
+    /// [`SessionTransition::Locked`] (start the lock client),
+    /// [`SessionTransition::Unlocked`] and [`SessionTransition::Suspend`]
+    /// (ask logind, unless something vetoes it).
+    pub fn take_session_events(&mut self) -> Vec<SessionTransition> {
+        std::mem::take(&mut self.data.state.idle.events)
+    }
+
+    /// Something outside the compositor (a download, a remote session, a
+    /// keep-awake lease) holds the machine awake: it does not suspend when
+    /// idle, though the screen still dims, blanks and locks.
+    pub fn hold_awake(&mut self, held: bool) {
+        self.data.state.idle.suspend_held = held;
+    }
+
+    /// Lock now (a key or a command): reported as
+    /// [`SessionTransition::Locked`] for the session to start its lock
+    /// client.
+    pub fn lock_now(&mut self) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .request_lock(std::time::Instant::now());
+        self.apply_idle(transitions)
+    }
+
+    /// Switch every panel off now, as the idle timeout would (the power
+    /// key); input lights them again.
+    pub fn blank_now(&mut self) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .blank_now(std::time::Instant::now());
+        self.apply_idle(transitions)
+    }
+
+    /// Light the panels without counting as input (a notification that
+    /// wakes the screen): the lock and idle timers stay as they are.
+    pub fn wake_displays(&mut self) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .request_display_wake(std::time::Instant::now());
+        self.apply_idle(transitions)
+    }
+
+    /// The machine is about to sleep: lock first when `lock_on_sleep`.
+    pub fn prepare_for_sleep(&mut self, lock_on_sleep: bool) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .prepare_for_sleep(std::time::Instant::now(), lock_on_sleep);
+        self.apply_idle(transitions)
+    }
+
+    /// The machine woke: light the panels, keep the lock.
+    pub fn resume_from_sleep(&mut self) -> Result<(), Error> {
+        let transitions = self
+            .data
+            .state
+            .idle
+            .session
+            .resume_from_sleep(std::time::Instant::now());
+        self.apply_idle(transitions)
+    }
+
+    /// Whether the panel of the output named `name` is lit (not blanked,
+    /// switched off by a tool or turned off).
+    pub fn output_lit(&self, name: &str) -> bool {
+        self.data.state.output_power.lit(name)
     }
 
     /// Apply (or test) the display configurations clients sent and tell
@@ -265,7 +383,11 @@ impl Compositor {
     fn configure_from_clients(&mut self) {
         let state = &mut self.data.state;
         for pending in state.output_management.take_pending() {
-            match self.data.backend.configure_checked(state, &pending.changes, pending.test) {
+            match self
+                .data
+                .backend
+                .configure_checked(state, &pending.changes, pending.test)
+            {
                 Ok(()) => pending.configuration.succeeded(),
                 Err(error) => {
                     tracing::info!(%error, "display configuration refused");
@@ -274,7 +396,17 @@ impl Compositor {
             }
         }
         let display = state.display.clone();
-        let outputs: Vec<smithay::output::Output> = state.space.outputs().cloned().collect();
+        let outputs: Vec<(smithay::output::Output, bool)> = state
+            .space
+            .outputs()
+            .map(|output| (output.clone(), true))
+            .chain(
+                state
+                    .disabled_outputs
+                    .iter()
+                    .map(|output| (output.clone(), false)),
+            )
+            .collect();
         state.output_management.publish(&display, outputs.iter());
     }
 
@@ -300,6 +432,8 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         self.data.state.handle_input(event);
+        // Input wakes blanked panels at once.
+        self.sync_power();
         self.display.flush_clients()?;
         Ok(())
     }

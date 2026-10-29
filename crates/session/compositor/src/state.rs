@@ -20,9 +20,7 @@ use smithay::input::keyboard::{FilterResult, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
-use smithay::reexports::wayland_server::backend::{
-    ClientData, ClientId, DisconnectReason, GlobalId,
-};
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -110,6 +108,10 @@ pub struct State {
     pub(crate) xwm: Option<smithay::xwayland::X11Wm>,
     pub(crate) touch: crate::touch::Touches,
     pub(crate) tablets: crate::tablet::Tablets,
+    pub(crate) output_power: crate::output_power::OutputPower,
+    /// Outputs turned off by a display configuration: known, not shown.
+    pub(crate) disabled_outputs: Vec<Output>,
+    pub(crate) idle: crate::power::Idle,
 }
 
 impl State {
@@ -156,6 +158,9 @@ impl State {
             xwm: None,
             touch: crate::touch::Touches::default(),
             tablets: crate::tablet::Tablets::default(),
+            output_power: crate::output_power::OutputPower::new(display),
+            disabled_outputs: Vec::new(),
+            idle: crate::power::Idle::new(),
         }
     }
 
@@ -177,10 +182,11 @@ impl State {
 
     /// Stop showing anything on `output` (it was disconnected) and
     /// withdraw its global.
-    pub(crate) fn remove_output(&mut self, output: &Output, global: GlobalId) {
+    pub(crate) fn remove_output(&mut self, output: &Output) {
         self.space.unmap_output(output);
         self.space.refresh();
-        self.display.remove_global::<Self>(global);
+        self.disabled_outputs.retain(|disabled| disabled != output);
+        crate::output::withdraw(output, &self.display);
         self.rearrange();
     }
 
@@ -232,6 +238,7 @@ impl State {
 
     /// Route one input event to the hosted surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
+        self.note_input();
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {

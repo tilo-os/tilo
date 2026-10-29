@@ -38,19 +38,16 @@ use smithay::backend::session::{Event as SessionEvent, Session as _};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
+use smithay::reexports::drm::Device as _;
 use smithay::reexports::drm::control::{
     Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc,
 };
-use smithay::reexports::drm::Device as _;
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
-use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{DeviceFd, Point, Transform};
 
-use super::{Backend, BackendError, failed, refuse_disabling};
-use crate::output::{
-    ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval,
-};
+use super::{Backend, BackendError, failed};
+use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
@@ -83,13 +80,14 @@ type Surface = DrmOutput<Allocator, Exporter, Queued, DrmDeviceFd>;
 /// One lit output.
 struct Lit {
     output: Output,
-    global: GlobalId,
     connector: connector::Handle,
     /// The modes the connector advertised when it was lit.
     modes: Vec<DrmMode>,
     surface: Surface,
     /// A frame is queued and its vertical blank has not come yet.
     queued: bool,
+    /// The panel is switched off (its CRTC inactive); nothing is drawn.
+    dark: bool,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
@@ -230,7 +228,6 @@ impl Backend for DrmBackend {
         changes: &[OutputChange],
         test: bool,
     ) -> Result<(), BackendError> {
-        refuse_disabling(changes)?;
         let mut inner = self.inner.borrow_mut();
         let gpu = inner
             .gpu
@@ -278,6 +275,36 @@ impl Backend for DrmBackend {
         Ok(())
     }
 
+    fn set_power(&mut self, _state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        let lit = inner
+            .gpu
+            .as_mut()
+            .and_then(|gpu| {
+                gpu.outputs
+                    .values_mut()
+                    .find(|lit| lit.output.name() == name)
+            })
+            .ok_or_else(|| BackendError(format!("{name}: not lit")))?;
+        if on != lit.dark {
+            return Ok(());
+        }
+        if on {
+            // The next queued frame commits the CRTC active again; it has
+            // to be a whole frame, the old buffers are gone.
+            lit.surface.reset_buffers();
+            lit.next_frame = Instant::now();
+        } else {
+            lit.surface
+                .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
+                .map_err(|error| failed(&format!("{name}: switch off"), error))?;
+            lit.queued = false;
+        }
+        lit.dark = !on;
+        tracing::info!(output = name, on, "panel power");
+        Ok(())
+    }
+
     fn set_input_config(&mut self, state: &mut State, config: input_config::InputConfig) {
         self.input.borrow_mut().set_config(config, state);
     }
@@ -287,7 +314,7 @@ impl Backend for DrmBackend {
         let gpu = inner.gpu.as_ref()?;
         gpu.outputs
             .values()
-            .filter(|lit| !lit.queued)
+            .filter(|lit| !lit.queued && !lit.dark)
             .map(|lit| lit.next_frame)
             .min()
     }
@@ -305,7 +332,7 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     };
     let now = Instant::now();
     for lit in gpu.outputs.values_mut() {
-        if lit.queued || now < lit.next_frame {
+        if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
         // The pointer in front, where DrmCompositor can give it the cursor
@@ -412,7 +439,7 @@ fn remove_gpu(
     let gpu = inner.borrow_mut().gpu.take();
     if let Some(gpu) = gpu {
         for lit in gpu.outputs.values() {
-            state.remove_output(&lit.output, lit.global.clone());
+            state.remove_output(&lit.output);
         }
         handle.remove(gpu.token);
     }
@@ -507,7 +534,9 @@ fn gles_renderer(context: EGLContext, device: &DrmDevice) -> Result<GlesRenderer
         let capabilities = unsafe { GlesRenderer::supported_capabilities(&context) }
             .map_err(|error| failed("GLES capabilities", error))?
             .into_iter()
-            .filter(|capability| !matches!(capability, Capability::Fencing | Capability::ExportFence));
+            .filter(|capability| {
+                !matches!(capability, Capability::Fencing | Capability::ExportFence)
+            });
         unsafe { GlesRenderer::with_capabilities(context, capabilities) }
     } else {
         unsafe { GlesRenderer::new(context) }
@@ -545,7 +574,7 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     for crtc in gone {
         if let Some(lit) = gpu.outputs.remove(&crtc) {
             tracing::info!(output = lit.output.name(), "output disconnected");
-            state.remove_output(&lit.output, lit.global.clone());
+            state.remove_output(&lit.output);
         }
     }
 
@@ -591,7 +620,14 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
 /// left to right in their current order after the configured ones, so an
 /// unplugged display leaves no hole for the pointer to get lost in.
 fn arrange_outputs(gpu: &Gpu, config: &DisplayConfig, state: &mut State) {
-    let mut lit: Vec<&Output> = gpu.outputs.values().map(|lit| &lit.output).collect();
+    // Outputs a configuration turned off keep their place for when they
+    // come back but take none in the layout.
+    let mut lit: Vec<&Output> = gpu
+        .outputs
+        .values()
+        .map(|lit| &lit.output)
+        .filter(|output| !state.disabled_outputs.contains(output))
+        .collect();
     lit.sort_by_key(|output| (output.current_location().x, output.name()));
     let outputs: Vec<(String, i32)> = lit
         .iter()
@@ -671,17 +707,17 @@ fn light(
         )
         .map_err(|error| tracing::warn!(?error, output = name, "output not lit"))
         .ok()?;
-    let global = output.create_global::<State>(&state.display);
+    crate::output::advertise(&output, &state.display);
     state.add_output(&output, location);
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
     Some(Lit {
         output,
-        global,
         connector: info.handle(),
         modes: info.modes().to_vec(),
         surface,
         queued: false,
+        dark: false,
         next_frame: Instant::now(),
         interval,
     })

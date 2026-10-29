@@ -14,7 +14,7 @@ use smithay::output::Output;
 use smithay::reexports::pixman::Image;
 use smithay::utils::{Buffer, Rectangle, Size};
 
-use super::{Backend, BackendError, Screenshot, failed, refuse_disabling};
+use super::{Backend, BackendError, Screenshot, failed};
 use crate::output::{OutputChange, OutputConfig, apply_placement};
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
@@ -26,6 +26,8 @@ struct HeadlessOutput {
     /// Whether the target holds the previous frame (the damage tracker's
     /// buffer age is then 1, else 0).
     drawn: bool,
+    /// Switched off: nothing is drawn, the image goes black.
+    dark: bool,
 }
 
 /// The CPU renderer and every headless output's image.
@@ -62,6 +64,7 @@ impl Backend for HeadlessBackend {
             damage,
             target,
             drawn: false,
+            dark: false,
         });
         Ok(())
     }
@@ -72,7 +75,6 @@ impl Backend for HeadlessBackend {
         changes: &[OutputChange],
         test: bool,
     ) -> Result<(), BackendError> {
-        refuse_disabling(changes)?;
         if test {
             return Ok(());
         }
@@ -94,7 +96,9 @@ impl Backend for HeadlessBackend {
                     .renderer
                     .create_buffer(Fourcc::Argb8888, Size::<i32, Buffer>::from(request.size))
                     .map_err(|error| failed("output image", error))?;
-                output.output.change_current_state(Some(mode), None, None, None);
+                output
+                    .output
+                    .change_current_state(Some(mode), None, None, None);
                 output.output.add_mode(mode);
                 output.drawn = false;
             }
@@ -106,6 +110,9 @@ impl Backend for HeadlessBackend {
 
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         for output in &mut self.outputs {
+            if output.dark {
+                continue;
+            }
             let elements = output_elements(&mut self.renderer, state, &output.output);
             let mut framebuffer = self
                 .renderer
@@ -125,6 +132,45 @@ impl Backend for HeadlessBackend {
             output.drawn = true;
             state.frame_shown(&output.output);
         }
+        Ok(())
+    }
+
+    fn set_power(&mut self, _state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
+        let output = self
+            .outputs
+            .iter_mut()
+            .find(|output| output.output.name() == name)
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
+        if !on && !output.dark {
+            // A dark panel shows black, as a switched-off one would.
+            let mut framebuffer = self
+                .renderer
+                .bind(&mut output.target)
+                .map_err(|error| failed("bind output", error))?;
+            let size = output
+                .output
+                .current_mode()
+                .map_or_else(Size::default, |mode| mode.size);
+            let mut frame = smithay::backend::renderer::Renderer::render(
+                &mut self.renderer,
+                &mut framebuffer,
+                size,
+                smithay::utils::Transform::Normal,
+            )
+            .map_err(|error| failed("clear output", error))?;
+            smithay::backend::renderer::Frame::clear(
+                &mut frame,
+                smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0),
+                &[Rectangle::from_size(size)],
+            )
+            .map_err(|error| failed("clear output", error))?;
+            let _ = smithay::backend::renderer::Frame::finish(frame)
+                .map_err(|error| failed("clear output", error))?;
+        }
+        output.dark = !on;
+        // The image no longer holds the last frame.
+        output.drawn = false;
+        output.damage = OutputDamageTracker::from_output(&output.output);
         Ok(())
     }
 

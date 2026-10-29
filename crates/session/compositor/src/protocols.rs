@@ -119,7 +119,10 @@ impl State {
                 .protocols
                 .dmabuf
                 .create_global_with_default_feedback::<Self>(&display, &feedback),
-            None => self.protocols.dmabuf.create_global::<Self>(&display, formats),
+            None => self
+                .protocols
+                .dmabuf
+                .create_global::<Self>(&display, formats),
         };
         self.protocols.dmabuf_global = Some(global);
     }
