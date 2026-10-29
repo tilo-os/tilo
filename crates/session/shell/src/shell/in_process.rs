@@ -793,9 +793,6 @@ mod tests {
     include!("in_process_files_clipboard_tests.rs");
     include!("in_process_publication_tests.rs");
 
-    const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
-    const TAB: u64 = 41;
-
     fn session_socket_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -931,15 +928,6 @@ mod tests {
                 &ui::theme::Theme::default(),
                 &ui::presence::PresenceCtx::empty(),
             );
-        }
-    }
-
-    /// What a wait last saw, said when it never ends.
-    struct LastSeen<'a>(&'static str, &'a std::cell::RefCell<String>);
-
-    impl std::fmt::Display for LastSeen<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{} ({})", self.0, self.1.borrow())
         }
     }
 

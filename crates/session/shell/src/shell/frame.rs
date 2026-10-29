@@ -1544,14 +1544,6 @@ impl FrameBuilder {
         })
     }
 
-    #[cfg(test)]
-    fn widget_name(&self, id: NodeId) -> Option<&'static str> {
-        self.node_map.get(&id).map(|&widget| {
-            // SAFETY: this map belongs to the current, live layout tree.
-            unsafe { (*widget).name() }
-        })
-    }
-
     /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W,
     /// Ctrl+Shift+T, Ctrl+Tab and Ctrl+Shift+Tab that the app left unhandled
     /// are the desktop's tab chords — another instance beside it, close its
