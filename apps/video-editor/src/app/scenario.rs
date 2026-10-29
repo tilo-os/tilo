@@ -69,9 +69,6 @@ pub enum ShotScenario {
     /// The window while the OS is hovering a file over it, so the drop
     /// invitation can be seen to cover everything a drop actually reaches.
     FileDrop,
-    /// The question asked before an Open replaces a project that was never
-    /// saved anywhere.
-    DiscardOpen,
     /// The tone-curve editor, shaped: an S on the master with the amount
     /// keyed, so the box, the channel chooser, the amount slider and its
     /// key control are all on screen at once.
@@ -184,7 +181,6 @@ impl ShotScenario {
         "help",
         "goto",
         "filedrop",
-        "discard",
         "curves",
         "collaborators",
         "exportdialog",
@@ -222,7 +218,6 @@ impl ShotScenario {
             "help" => ShotScenario::HelpSheet,
             "goto" => ShotScenario::GotoTimecode,
             "filedrop" => ShotScenario::FileDrop,
-            "discard" => ShotScenario::DiscardOpen,
             "curves" => ShotScenario::Curves,
             "collaborators" => ShotScenario::Collaborators,
             "exportdialog" => ShotScenario::ExportDialog,
@@ -410,13 +405,6 @@ impl VideoEditorApp {
             ShotScenario::HelpSheet => self.navigation.help_open = true,
             ShotScenario::GotoTimecode => self.goto_entry = Some(interaction::goto_field("1:30")),
             ShotScenario::FileDrop => self.presentation.file_hovering = true,
-            ShotScenario::DiscardOpen => {
-                self.pending_open = Some(PendingOpen {
-                    path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
-                    contents: None,
-                    losing: self.project.name.clone(),
-                });
-            }
             ShotScenario::ExportDialog => self.presentation.export_open = true,
             ShotScenario::ExportFailedDialog => {
                 self.presentation.export_open = true;

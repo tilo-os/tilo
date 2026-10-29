@@ -292,7 +292,7 @@ impl WorkspaceStore {
             let kept = archive.join(lineage.file_name().unwrap_or_default());
             fs::create_dir_all(&kept)?;
             for name in &names {
-                fs::hard_link(active.join(name), kept.join(name))?;
+                tilo_relay_store::durable::link(&active.join(name), &kept.join(name))?;
             }
             sync_dir(&kept)?;
             rewrite(self, &lineage, &[], &[], 0)?;
@@ -347,7 +347,7 @@ fn rewrite(
         } else {
             generation.join(format!("{:016x}.delta", index.saturating_add(offset)))
         };
-        fs::hard_link(source, target)?;
+        tilo_relay_store::durable::link(source, &target)?;
     }
     sync_dir(&generation)?;
     durable_write(&lineage.join("CURRENT"), name.as_bytes())?;

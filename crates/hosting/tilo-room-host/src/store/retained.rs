@@ -31,6 +31,7 @@ use tilo_relay_store::frames::framed_envelope;
 pub(crate) use tilo_relay_store::frames::{body_of, complete_coedit_payload, payload};
 
 mod group;
+pub(crate) mod journal;
 mod tail_index;
 pub(crate) use group::SharedGroup;
 
@@ -502,7 +503,10 @@ fn commit_generation(
         durable_write(&generation.join("checkpoint.delta"), bytes)?;
     }
     for (index, entry) in retained.iter().enumerate() {
-        fs::hard_link(&entry.path, generation.join(format!("{index:016x}.delta")))?;
+        tilo_relay_store::durable::link(
+            &entry.path,
+            &generation.join(format!("{index:016x}.delta")),
+        )?;
     }
     // A checkpoint alone was synced with its directory by `durable_write`,
     // and an empty generation has no entries to sync.
@@ -1215,7 +1219,7 @@ impl RetainBuild {
                         let source = record.path.clone();
                         drop(record);
                         self.staged_synced = false;
-                        fs::hard_link(&source, &destination)?;
+                        tilo_relay_store::durable::link(&source, &destination)?;
                         super::continuity::copy_measured(
                             &self.store,
                             &source,
@@ -1443,9 +1447,6 @@ impl WorkspaceStore {
             }
             _ => return Ok(None),
         };
-        for directory in self.root.ancestors().take(3) {
-            sync_dir_once(directory)?;
-        }
         match fs::create_dir(&lineage) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1666,9 +1667,6 @@ impl WorkspaceStore {
             // Every other write changes retained history the cached cursors
             // were computed from; the next clean selection seeds them again.
             self.tail_cache.invalidate();
-        }
-        for directory in self.root.ancestors().take(3) {
-            sync_dir_once(directory)?;
         }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
