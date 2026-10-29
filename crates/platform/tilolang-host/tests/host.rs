@@ -16,7 +16,13 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::action_directory::{
+    ActionDirectoryPage, ActionDirectoryQuery, ActionDirectoryResolution,
+};
+use collaboration::{
+    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
+    RouteSpec,
+};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Lane, ToApp, ToUi, Transport as _};
@@ -44,6 +50,14 @@ fn counter() -> Bundle {
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 
+/// The instance's action directory as the broker holds it: the apps it was offered under, and
+/// what the test asks of it.
+#[derive(Default)]
+struct Directory {
+    offered: Vec<String>,
+    asked: Vec<ActionDirectoryRequest>,
+}
+
 /// The broker's end of the instance's connection: what the instance sent, and what the test
 /// delivers.
 struct Broker {
@@ -51,6 +65,7 @@ struct Broker {
     sent: Sent,
     inbox: Inbox,
     joined: Option<RouteSpec>,
+    directory: Rc<RefCell<Directory>>,
 }
 
 impl PeerTransport for Broker {
@@ -72,6 +87,15 @@ impl PeerTransport for Broker {
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
+    }
+
+    fn publish_action_directory(&mut self, app_id: String) -> Result<(), String> {
+        self.directory.borrow_mut().offered.push(app_id);
+        Ok(())
+    }
+
+    fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        std::mem::take(&mut self.directory.borrow_mut().asked)
     }
 }
 
@@ -152,6 +176,14 @@ fn wake() -> tilolang_tilo::background::Waker {
 }
 
 fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
+    running_with(person, Rc::default())
+}
+
+/// [`running`], the broker holding the instance's action directory in `directory`.
+fn running_with(
+    person: &str,
+    directory: Rc<RefCell<Directory>>,
+) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -160,6 +192,7 @@ fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
         sent: Rc::clone(&sent),
         inbox: Rc::clone(&inbox),
         joined: None,
+        directory,
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -637,4 +670,135 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     }
     assert_eq!(host.opening(), 0);
     assert_eq!(host.instances().count(), 2);
+}
+
+/// Ask the instance's directory `query`, as the broker does, and take its answer.
+fn page(
+    host: &mut TilolangHost,
+    window: &mut Window,
+    directory: &Rc<RefCell<Directory>>,
+    query: ActionDirectoryQuery,
+) -> ActionDirectoryPage {
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    directory
+        .borrow_mut()
+        .asked
+        .push(ActionDirectoryRequest::Query { query, reply });
+    host.turn();
+    settle(host, window);
+    answer.try_recv().expect("the instance answered the query")
+}
+
+fn query() -> ActionDirectoryQuery {
+    ActionDirectoryQuery {
+        peer_id: 1,
+        revision: String::new(),
+        cursor: Vec::new(),
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 64,
+        max_bytes: 64 * 1024,
+        max_work: 512,
+        max_depth: 4,
+        resource_name: String::new(),
+    }
+}
+
+#[test]
+fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) = running_with("ada", Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    assert_eq!(
+        directory.borrow().offered,
+        [APP],
+        "the instance offers its directory on its connection, under its app, once"
+    );
+    let published = host.instances().next().unwrap().published().to_vec();
+
+    // The top level names the app's resources: what makes the instance browsable.
+    let top = page(&mut host, &mut window, &directory, query());
+    assert!(top.exhausted && !top.revision.is_empty(), "{top:?}");
+    let app = format!("tl:{APP}");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource == app)
+        .unwrap_or_else(|| panic!("the app's resource is at the top: {:?}", top.rows))
+        .clone();
+    assert!(root.action.is_none() && root.has_children);
+
+    // Its level lists its actions, each as published.
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: app.clone(),
+            ..query()
+        },
+    );
+    let read = level
+        .rows
+        .iter()
+        .find(|row| row.resource == app && row.action.as_deref() == Some("read"))
+        .unwrap_or_else(|| panic!("read is on the app's level: {:?}", level.rows));
+    assert!(read.descriptor.is_some());
+
+    // A name finds the app's resource by its kind.
+    let named = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            resource_name: root.resource_kind,
+            ..query()
+        },
+    );
+    assert!(
+        named.rows.iter().any(|row| row.resource == app),
+        "{named:?}"
+    );
+
+    // A search finds the counter's Increment, and it resolves at the page's revision.
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: "increment".into(),
+            ..query()
+        },
+    );
+    let increment = found
+        .rows
+        .iter()
+        .find(|row| {
+            row.descriptor
+                .as_ref()
+                .is_some_and(|action| action.action_label == "Increment")
+        })
+        .unwrap_or_else(|| panic!("the search finds Increment: {:?}", found.rows));
+    assert!(published.iter().any(|action| {
+        action.address.resource == increment.resource
+            && Some(action.address.action.as_str()) == increment.action.as_deref()
+    }));
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    directory
+        .borrow_mut()
+        .asked
+        .push(ActionDirectoryRequest::Resolve {
+            revision: found.revision.clone(),
+            resource: increment.resource.clone(),
+            action: increment.action.clone().unwrap(),
+            reply,
+        });
+    host.turn();
+    match answer.try_recv().expect("the instance resolved it") {
+        ActionDirectoryResolution::Found { row, revision } => {
+            assert_eq!(row.action, increment.action);
+            assert_eq!(revision.as_deref(), Some(found.revision.as_str()));
+        }
+        other => panic!("Increment resolves: {other:?}"),
+    }
 }
