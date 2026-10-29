@@ -101,7 +101,7 @@ pub enum MobileEffect {
         #[param("Choose the APN from the operator database")]
         automatic: Option<bool>,
         #[param("The access point name, such as internet.telekom")]
-        apn: Option<String>,
+        apn: Option<ui::tilo_resource::NonBlank>,
     },
     /// Count mobile data against a limit, or let the network say.
     #[effect(job, idempotent, label = "Metered connection")]
@@ -1181,12 +1181,12 @@ impl MobileModel {
                 let apn = if automatic {
                     None
                 } else {
-                    let apn = apn.unwrap_or_else(|| self.apn_text.get());
-                    let apn = apn.trim().to_owned();
-                    if apn.is_empty() {
-                        return Err(t("net-mobile-apn-empty"));
-                    }
-                    Some(apn)
+                    let apn = match apn {
+                        Some(apn) => apn,
+                        None => ui::tilo_resource::NonBlank::parse(&self.apn_text.get())
+                            .ok_or_else(|| t("net-mobile-apn-empty"))?,
+                    };
+                    Some(apn.into_string())
                 };
                 self.apn_open = false;
                 self.change(MobileChange::Apn { uuid, apn })

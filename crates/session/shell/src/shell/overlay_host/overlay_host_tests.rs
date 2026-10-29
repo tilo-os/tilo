@@ -1296,7 +1296,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_replaces_every_transient_desktop_surface_atomically() {
         let mut h = build_harness();
         h.host.palette_visible = true;
-        h.host.shortcut_guide_focus = Some(ShortcutGuideFocus::Done);
         {
             let mut state = h.chrome.borrow_mut();
             state.overlays.shortcut_help = true;
@@ -1320,7 +1319,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             ui::widget::CaptureMode::Screenshot
         );
         assert!(!h.host.palette_visible);
-        assert!(h.host.shortcut_guide_focus.is_none());
         let state = h.chrome.borrow();
         assert!(!state.overlays.shortcut_help);
         assert!(!state.overlays.overview);

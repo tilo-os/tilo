@@ -12,7 +12,7 @@ use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, Collection, Edit, Id, Model, Path, Refusal, Set, resource,
+    self, ActionCx, Collection, Edit, Id, Model, NonBlank, Path, Refusal, Set, resource,
 };
 use ui::widget::Element;
 
@@ -64,25 +64,21 @@ impl Library {
     pub fn reply_to_comment(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The comment's id: its row id after `tube.comment:`")] comment: String,
-        #[param("The reply")] text: String,
+        #[param("The comment's id: its row id after `tube.comment:`")] comment: NonBlank,
+        #[param("The reply")] text: NonBlank,
     ) -> Result<(), Refusal> {
-        let text = text.trim();
-        if comment.trim().is_empty() || text.is_empty() {
-            return Err(Refusal::new("a reply names its comment and says something"));
-        }
         if self
             .replies
             .values()
-            .any(|reply| reply.comment == comment && reply.text == text)
+            .any(|reply| reply.comment == comment.as_str() && reply.text == text.as_str())
         {
             return Ok(());
         }
         self.replies.push(
             cx.id(),
             Reply {
-                comment,
-                text: text.to_owned(),
+                comment: comment.into_string(),
+                text: text.into_string(),
             },
         );
         Ok(())
@@ -495,8 +491,8 @@ mod tests {
         .unwrap();
         let reply = || {
             Library::REPLY_TO_COMMENT.with(library::ReplyToComment {
-                comment: comment.clone(),
-                text: " Agreed ".into(),
+                comment: NonBlank::parse(&comment).unwrap(),
+                text: NonBlank::parse(" Agreed ").unwrap(),
             })
         };
         app.invoke(reply()).unwrap();
@@ -514,12 +510,11 @@ mod tests {
             }
         );
         assert!(
-            app.invoke(Library::REPLY_TO_COMMENT.with(library::ReplyToComment {
-                comment: comment.clone(),
-                text: "   ".into(),
-            }))
+            serde_json::from_value::<library::ReplyToComment>(
+                serde_json::json!({"comment": comment, "text": "   "})
+            )
             .is_err(),
-            "a blank reply is refused"
+            "a blank reply is refused where the arguments are read"
         );
 
         let item = item_resource_id::<Library>("replies", replies[0].0);
@@ -616,8 +611,8 @@ mod tests {
             .unwrap();
         theirs
             .apply(Library::REPLY_TO_COMMENT.with(library::ReplyToComment {
-                comment: "c1".into(),
-                text: "Nice".into(),
+                comment: NonBlank::parse("c1").unwrap(),
+                text: NonBlank::parse("Nice").unwrap(),
             }))
             .unwrap();
         ours.sync_with(&mut theirs).unwrap();

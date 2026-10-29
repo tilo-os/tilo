@@ -2,6 +2,7 @@
 //! one: a pointer move before the next layout (its cursor and tooltip
 //! lookups) reached a dropped colour picker and crashed Canvas.
 
+use crate::host_core::HostCore as _;
 use crate::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::collections::HashSet;

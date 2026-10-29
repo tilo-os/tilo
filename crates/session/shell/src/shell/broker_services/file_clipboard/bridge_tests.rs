@@ -8,7 +8,6 @@ use crate::shell::state::{RoomId, Workspace, WorkspaceId};
 use ed25519_dalek::{Signer as _, SigningKey};
 use runtime_collab::file_clipboard::ObjectIdentity;
 use tilo_action_broker::collab_broker::{BrokerChannels, BrokerHandle, FanoutState};
-use tilo_action_policy::roles::owner_commands::{GRANT_SANDBOX, REVOKE_SANDBOX};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 use std::os::unix::fs::PermissionsExt as _;
@@ -91,21 +90,18 @@ impl HostedRoom {
         member
     }
 
-    /// Ask the room's host, as its owner, for `action` with `arguments`,
-    /// and wait until the room here shows what `shown` looks for.
+    /// Write `request` into the room as its owner, and wait until the room
+    /// here shows what `shown` looks for.
     fn govern(
         &self,
-        action: &str,
-        arguments: serde_json::Value,
+        request: crate::shell::state::GovernanceRequest,
         what: &str,
         shown: impl Fn(&Workspace) -> bool,
     ) {
-        let serde_json::Value::Object(arguments) = arguments else {
-            panic!("governance arguments are an object");
-        };
         self.device
-            .govern(self.room, action, arguments)
-            .unwrap_or_else(|error| panic!("the room's host takes the change: {error}"));
+            .net()
+            .write_governance(self.room, request)
+            .unwrap_or_else(|error| panic!("the room takes the change: {error}"));
         until(&[&self.device], what, || {
             self.workspace(|workspace| shown(workspace)).then_some(())
         });
@@ -124,8 +120,7 @@ impl HostedRoom {
         );
         for capability in &asked.sandbox {
             self.govern(
-                GRANT_SANDBOX,
-                serde_json::json!({ "capability": capability }),
+                crate::shell::state::GovernanceRequest::GrantSandbox(capability.clone()),
                 "the Files grant to reach the room",
                 |workspace| {
                     workspace.sandbox.iter().any(|held| {
@@ -149,8 +144,7 @@ impl HostedRoom {
         });
         for id in held {
             self.govern(
-                REVOKE_SANDBOX,
-                serde_json::json!({ "capability": id }),
+                crate::shell::state::GovernanceRequest::RevokeSandbox(id.clone()),
                 "the revoked grant to leave the room",
                 |workspace| !workspace.sandbox.iter().any(|held| held.id == id),
             );

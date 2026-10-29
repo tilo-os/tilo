@@ -22,7 +22,7 @@ fields = [
 id = "create-playlist"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

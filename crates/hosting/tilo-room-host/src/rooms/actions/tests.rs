@@ -209,9 +209,9 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let granted = offered(&host, workspace, &caller(&ada)).await;
     assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
 
-    // A Moderator is offered unbanning members below them and naming the
-    // workspace, but no invitations. Roles and restrictions are written by
-    // a member's own device, not asked of the host.
+    // A Moderator is offered unbanning members below them, but no
+    // invitations. Roles, restrictions and the room's settings are written
+    // by a member's own device, not asked of the host.
     rooms
         .set_member_role(
             &room,
@@ -225,10 +225,7 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         .await
         .unwrap();
     let moderator = offered(&host, workspace, &caller(&bo)).await;
-    assert_eq!(
-        moderator,
-        [governance::UNBAN, super::owner::RENAME].map(str::to_owned)
-    );
+    assert_eq!(moderator, [governance::UNBAN].map(str::to_owned));
 
     // An agent governs nothing, even on the relay person's own key, and a
     // workspace that carries no governed room offers nothing.

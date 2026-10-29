@@ -6,7 +6,7 @@ use super::*;
 use crate::record::uuid_of;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
-use ui::tilo_resource::{Edit, Replica, Resource as _};
+use ui::tilo_resource::{Edit, NonBlank, Replica, Resource as _};
 
 fn edit(workspace: &mut Replica<Workspace>, edit: &Edit<Workspace>) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
@@ -143,6 +143,13 @@ fn queries_are_saved_from_sql_or_the_buffer() {
             .is_err(),
         "there is no SQL to save"
     );
+    assert!(
+        serde_json::from_value::<workspace::SaveQuery>(
+            serde_json::json!({"name": "Blank", "sql": "  "})
+        )
+        .is_err(),
+        "blank SQL is refused where the arguments are read"
+    );
     edit(&mut workspace, &Workspace::paths().sql.replace("SELECT 1")).unwrap();
     workspace
         .apply(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
@@ -153,7 +160,7 @@ fn queries_are_saved_from_sql_or_the_buffer() {
     workspace
         .apply(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
             name: "Totals".into(),
-            sql: Some("SELECT count(*) FROM orders".into()),
+            sql: Some(NonBlank::parse("SELECT count(*) FROM orders").unwrap()),
         }))
         .unwrap();
     let state = workspace.state().unwrap();
@@ -188,7 +195,7 @@ fn concurrent_edits_converge() {
         replica
             .apply(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
                 name: name.into(),
-                sql: Some("SELECT 1".into()),
+                sql: Some(NonBlank::parse("SELECT 1").unwrap()),
             }))
             .unwrap();
     }
@@ -226,7 +233,7 @@ fn records_offer_their_verbs_and_search_names_them() {
     workspace
         .apply(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
             name: "Daily totals".into(),
-            sql: Some("SELECT 'sk-token'".into()),
+            sql: Some(NonBlank::parse("SELECT 'sk-token'").unwrap()),
         }))
         .unwrap();
     let state = workspace.state().unwrap();
@@ -286,7 +293,7 @@ fn the_workspace_publishes_its_items_with_their_actions_and_live_rows_beside_the
     app.invoke(crate::record::adding(&profile, 0)).unwrap();
     app.invoke(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
         name: "Daily totals".into(),
-        sql: Some("SELECT 1".into()),
+        sql: Some(NonBlank::parse("SELECT 1").unwrap()),
     }))
     .unwrap();
     app.settle();

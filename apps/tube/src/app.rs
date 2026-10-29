@@ -446,11 +446,7 @@ impl Tube {
                 self.request_live(Request::PlaylistPage(playlist));
             }
             TubeEffect::Search { query } => {
-                let query = query.trim();
-                if query.is_empty() {
-                    return Err("Say what to search for".into());
-                }
-                self.search_query.set(query.to_owned());
+                self.search_query.set(query.into_string());
                 self.apply(Action::SubmitSearch);
                 self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }

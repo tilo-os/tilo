@@ -57,6 +57,7 @@ use ui::TextRole;
 
 mod controller;
 mod desk;
+mod desk_paint;
 mod desktop_control_chips;
 mod fullscreen_hint;
 pub use desk::SuperSurface;
@@ -127,12 +128,9 @@ use history::{
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_app_tab_note, shortcut_chord_from_event,
-    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
-    shortcut_navigation_columns, shortcut_navigation_height, shortcut_navigation_step,
-    shortcut_note_lines, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_groups, shortcut_reference_rows, shortcut_reference_step,
+    configured_shortcut_action, shortcut_action_label, shortcut_action_summary,
+    shortcut_app_tab_note, shortcut_chord_from_event, shortcut_chord_keycaps,
+    shortcut_reference_groups,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -174,6 +172,7 @@ use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
+#[cfg(test)]
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::DrillInList;
 use tilo_desktop::notifications::{
@@ -268,6 +267,7 @@ mod palette_run;
 mod palette_search;
 mod people_overlay;
 use palette_search::LaunchpadMark;
+mod display_confirm_sheet;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
@@ -288,6 +288,7 @@ mod qs_wifi_radio_tests;
 mod queries;
 mod room_activity;
 mod scene;
+mod shortcut_guide_sheet;
 pub(crate) use scene::take_section_spans;
 mod services;
 mod setup;
@@ -327,7 +328,7 @@ use room_activity::{
     ACTIVITY_AWARENESS_FALLBACK, enter_activity_workspace, grounded_intent_fallback,
     prepare_status_evidence, should_reveal_activity_on_entry, take_pending_activity_reveal,
 };
-use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
+use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS};
 
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
@@ -472,29 +473,10 @@ pub struct ShellOverlayHost {
     /// Direct-touch arena for shell-owned three-finger navigation and pinch
     /// overview. One-finger streams continue to the ordinary widget tree.
     touch_gestures: ui::gesture::TouchGestureArena,
-    /// Geometry painted by the keyboard guide, reused by pointer dispatch so
-    /// the visible keycaps themselves are the edit targets.
-    shortcut_binding_rects: Vec<(settings_store::hardware::ShortcutAction, Rect)>,
-    shortcut_reset_rects: Vec<(
-        settings_store::hardware::ShortcutAction,
-        settings_store::hardware::ShortcutAction,
-        Rect,
-    )>,
     /// The action waiting for its next pressed chord. Escape clears this
     /// without touching the persisted binding.
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
-    shortcut_guide_focus: Option<ShortcutGuideFocus>,
-    /// How far the keyboard guide's body is scrolled, in logical pixels.
-    /// Only non-zero when the window is shorter than the guide's content.
-    shortcut_guide_scroll: f64,
-    /// The scroll range measured by the last paint, so the wheel clamps to
-    /// what is actually there.
-    shortcut_guide_max_scroll: f64,
-    /// The guide's Done button as wide as its label, measured by the last
-    /// paint (the label is localised and the type scale is the person's),
-    /// so the button never elides it and hit-testing matches what is drawn.
-    shortcut_help_done_width: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// Saved preferences, kept separate from windowed-session defaults so
@@ -696,9 +678,6 @@ pub struct ShellOverlayHost {
     overview_metrics: OverviewMetrics,
     /// Layout-only theme snapshot for the shared compact-modal rule.
     overview_layout_theme: Theme,
-    /// The keyboard guide's navigation row step for the theme of the last
-    /// layout pass, so the guide's hit-testing and paint share one answer.
-    shortcut_navigation_step: f64,
     overview_layout_viewport: Rect,
     /// Quick Settings' appear, drill and height motion (`ui::motion`).
     qs_motion: qs_motion::QsMotion,

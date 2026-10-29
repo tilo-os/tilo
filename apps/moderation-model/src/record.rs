@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use ui::automerge::ObjId;
 use ui::tilo_actions::ActorKind;
 use ui::tilo_resource::{
-    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal, resource,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, ModelError, NonBlank, Refusal,
+    resource,
 };
 
 /// The longest reason a reporter may give.
@@ -237,7 +238,7 @@ impl Moderation {
         #[param("The app of the reported content")] app: Option<String>,
         #[param("The record of the reported content")] record: Option<String>,
         #[param("The reported item, such as a message")] item: Option<String>,
-        #[param("What they did")] reason: String,
+        #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
         let reporter = reporter(cx)?;
         id_like(&person, "the person")?;
@@ -247,12 +248,12 @@ impl Moderation {
         if person == reporter {
             return Err(Refusal::new("you cannot report yourself"));
         }
-        let reason = reason.trim().to_owned();
-        if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS {
+        if reason.chars().count() > MAX_REASON_CHARS {
             return Err(Refusal::new(format!(
-                "a reason is 1 to {MAX_REASON_CHARS} characters"
+                "a reason is at most {MAX_REASON_CHARS} characters"
             )));
         }
+        let reason = reason.into_string();
         let open = self
             .open_reports()
             .filter(|r| r.reporter == reporter)

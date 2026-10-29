@@ -120,6 +120,17 @@ for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
     build_targets+=(--bin "$engine-check")
     engine_targets+=(--bin "$engine-check")
 done
+# An engine no workspace crate depends on (Settings', whose app binary calls
+# it by an unmangled name; the ad-block compiler, which the toolkit opens with
+# dlopen) is reached only through its unmangled entry points: the wrapper
+# links it exporting only those, so the code they do not reach goes too.
+entry_engines=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
+    | python3 -c '
+import json, sys
+packages = json.load(sys.stdin)["packages"]
+engines = {p["name"] for p in packages if "/crates/runtime/engines/" in p["manifest_path"].replace("\\", "/")}
+named = {d["name"] for p in packages for d in p["dependencies"] if p["name"] != d["name"]}
+print(":".join(sorted(e.replace("-", "_") for e in engines - named)))')
 [ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
@@ -227,6 +238,7 @@ thin_build() {
         --config "build.rustc-workspace-wrapper=\"$THIN_APP_WRAPPER\"" \
         --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
         --config "env.TILO_THIN_OPTIMIZE=\"$optimize\"" \
+        --config "env.TILO_THIN_ENTRY_ENGINES=\"$entry_engines\"" \
         ${app_profiles[@]+"${app_profiles[@]}"} ${keep_symbols[@]+"${keep_symbols[@]}"} \
         -p runtime-dylib "${packages[@]}" "$@"
 }

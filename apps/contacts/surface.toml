@@ -42,7 +42,7 @@ fields = [
 id = "new-contact"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

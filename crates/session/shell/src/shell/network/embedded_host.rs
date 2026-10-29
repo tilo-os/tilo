@@ -843,8 +843,8 @@ fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, 
 }
 
 /// This device's room host as the governor of the rooms placed on it: a
-/// governance change to one of them is the host's own room governance
-/// action, asked through its in-process caller.
+/// receipt for one of them is recorded there, through its in-process
+/// caller.
 struct OwnHostGovernor {
     host: Arc<RoomHost>,
     identity: tilo_network_actor::HostIdentity,
@@ -859,27 +859,6 @@ impl super::governance_requests::LocalGovernor for OwnHostGovernor {
             .read()
             .native_authority
             .hosted_on(room, &self.device)
-    }
-
-    fn ask(
-        &self,
-        room: RoomId,
-        route: super::governance_requests::GovernanceRoute,
-    ) -> Result<(), String> {
-        let invoke = relay_rooms::invocation(
-            tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
-            tilo_actions::remote::room_governance_resource(&room.to_string()),
-            route.action,
-            route.arguments,
-        );
-        serve_in_process(
-            &self.host,
-            &self.identity,
-            &self.runtime,
-            room_topic_id(room),
-            invoke,
-        )
-        .map(drop)
     }
 
     fn record_receipt(

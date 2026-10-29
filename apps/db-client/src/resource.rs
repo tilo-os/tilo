@@ -13,7 +13,7 @@ use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::items::item_resource_id;
-use ui::tilo_resource::{self, ActionCx, Effect, Id, Refusal, SearchEntry, resource};
+use ui::tilo_resource::{self, ActionCx, Effect, Id, NonBlank, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 use uuid::Uuid;
 
@@ -94,12 +94,15 @@ impl Workspace {
         &mut self,
         cx: &mut ActionCx,
         #[param("Query name")] name: String,
-        #[param("SQL; the query being written when none")] sql: Option<String>,
+        #[param("SQL; the query being written when none")] sql: Option<NonBlank>,
     ) -> Result<(), Refusal> {
-        let sql = sql.unwrap_or_else(|| self.sql.clone());
-        if sql.trim().is_empty() {
-            return Err(Refusal::new("there is no SQL to save"));
-        }
+        let sql = match sql {
+            Some(sql) => sql.into_string(),
+            None if self.sql.trim().is_empty() => {
+                return Err(Refusal::new("there is no SQL to save"));
+            }
+            None => self.sql.clone(),
+        };
         self.saved_queries.push(
             id_of(cx.uuid()),
             SavedQuery {

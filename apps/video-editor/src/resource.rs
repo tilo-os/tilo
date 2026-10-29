@@ -12,7 +12,7 @@ use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
-use ui::tilo_resource::{self, Id, Path, Refusal, resource};
+use ui::tilo_resource::{self, Id, NonBlank, Path, Refusal, resource};
 use ui::widget::Element;
 use uuid::Uuid;
 
@@ -149,7 +149,7 @@ impl Project {
     pub fn set_title(
         &mut self,
         #[param("The title's id, or the words it shows now")] media: &Id,
-        #[param("New words; the bin name follows their first line")] text: Option<String>,
+        #[param("New words; the bin name follows their first line")] text: Option<NonBlank>,
         #[param("The words' colour, #rrggbb or a colour word")] colour: Option<String>,
         #[param("Letter height as a fraction of the frame height, 0.02 to 0.5")] size: Option<f64>,
         #[param("left, center or right")] align: Option<String>,

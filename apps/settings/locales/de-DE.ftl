@@ -2734,16 +2734,10 @@ settings-desk-team = Leute in diesem Arbeitsbereich
 settings-desk-calendar = Kalender
 settings-desk-system-monitor = Systemmonitor
 settings-desk-when = Erscheint
-settings-desk-edge = Wartet am
 settings-desk-show-pause = Wenn ich beim Tippen innehalte
 settings-desk-show-always = Immer, auf den Streifen, an die ich es anhefte
 settings-desk-show-ask = Nur, wenn ich frage
-settings-desk-edge-left = Linken Rand
-settings-desk-edge-right = Rechten Rand
-settings-desk-edge-bottom = Unteren Rand
-settings-desk-edge-bottom-left = Unten links
-settings-desk-edge-bottom-right = Unten rechts
-settings-desk-note = Widgets weichen aus, während du tippst, und kommen zurück, wenn du innehältst oder zu ihrem Rand greifst. Halte oder tippe Super, um alle zu sehen. Zieh eins an einen anderen Rand; seine Nadel hält es auf dem Streifen, auf dem du bist.
+settings-desk-note = Widgets weichen beim Tippen aus und kommen zurück, wenn du innehältst oder nach ihnen greifst. Tippe eines an, um es zu öffnen; tippe daneben oder drücke Escape, um es einzuklappen. Halte oder tippe Super, um alle zu sehen. Ziehe eines an jede Stelle auf jedem Bildschirm; ziehe an seiner Ecke, um die Größe zu ändern; zeige darauf, um es zu entfernen. Seine Nadel hält es auf dem aktuellen Streifen.
 
 settings-drives-title = Gemerkte Laufwerke
 settings-drives-intro = Gemerkte Laufwerke öffnen sich ohne erneute Nachfrage. Ein Laufwerk in diesem Computer öffnet sich, wenn du es in Dateien öffnest; bei einem externen wirst du bei jedem Anschließen gefragt.

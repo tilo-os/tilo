@@ -1,4 +1,5 @@
-//! The room's name, which its governor alone writes.
+//! The room's name, which its owner and those the room lets rename it
+//! write (`room::membership`).
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     NeighbourMsg, ROOT, ReadDoc, SigningKey, SystemTime, Transactable, TransportOrigin, err,
@@ -19,15 +20,15 @@ impl PeerGovernance<'_> {
     }
 }
 impl PeerGovernanceMut<'_> {
-    /// Rename the room to `name`, authored by the governor `key`. Naming it
-    /// what it is already called changes nothing.
+    /// Rename the room to `name`, written by `key`. Naming it what it is
+    /// already called changes nothing.
     pub fn author_room_name(
         self,
         name: &str,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_member_writer(key, now)?;
         if self.peer.governance().room_name().as_deref() == Some(name) {
             return Ok(());
         }

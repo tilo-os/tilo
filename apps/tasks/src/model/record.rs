@@ -623,30 +623,27 @@ impl Tracker {
     /// Link an issue to another resource.
     ///
     /// # Errors
-    /// Refuses a link that names no resource.
+    /// Refuses an issue that no longer exists.
     #[action(item = issues, writes = issues)]
     pub fn link(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("The app that keeps the resource")] app: String,
+        #[param("The app that keeps the resource")] app: NonBlank,
         #[param("The resource's kind")] kind: String,
-        #[param("The resource's address in its app")] resource: String,
+        #[param("The resource's address in its app")] resource: NonBlank,
         #[param("How the link reads")] label: String,
         #[param("The app's record that keeps it; its record of the workspace without")]
         record: Option<String>,
     ) -> Result<(), Refusal> {
-        if resource.trim().is_empty() || app.trim().is_empty() {
-            return Err(Refusal::new("A link names a resource"));
-        }
         let id = cx.id();
         self.issue_mut(issue)?.links.push(
             id,
             Link {
                 label,
-                app,
+                app: app.into_string(),
                 kind,
-                resource,
+                resource: resource.into_string(),
                 record: record.filter(|record| !record.is_empty()),
             },
         );
@@ -666,15 +663,21 @@ impl Tracker {
         issue: &Id,
         #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt,
     ) -> Result<(), Refusal> {
+        let (Some(app), Some(resource)) = (
+            NonBlank::parse(&note.app),
+            NonBlank::parse(&note.reference.id),
+        ) else {
+            return Err(Refusal::new("That is not a note"));
+        };
         if note.app != crate::NOTES || note.reference.kind != crate::note::NOTE_KIND {
             return Err(Refusal::new("That is not a note"));
         }
         self.link(
             cx,
             issue,
-            note.app,
+            app,
             note.reference.kind,
-            note.reference.id,
+            resource,
             note.reference.label,
             note.record,
         )
