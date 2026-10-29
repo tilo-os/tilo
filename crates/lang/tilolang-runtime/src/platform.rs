@@ -122,6 +122,24 @@ struct Offered<'m> {
 }
 
 impl Core {
+    /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
+    /// person's zone, as a `host.Dated` tuple of the rest of the text, the day and the moment.
+    fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let text = self.text(a.h(0)?)?;
+        let at = self.text(a.h(1)?)?;
+        let Some(now) = tilolang::calendar::instant(&at) else {
+            return trap(format!("dated: `{at}` is not a time"));
+        };
+        let offset = self.zone.borrow().as_ref().map_or(0, |zone| zone());
+        let read = tilolang::natural::dated(&text, now, offset);
+        let opt = |v: Option<String>| Value::Opt(v.map(|t| Box::new(Value::Text(t))));
+        self.ret_h(Value::Tuple(vec![
+            Value::Text(read.text),
+            opt(read.day),
+            opt(read.at),
+        ]))
+    }
+
     pub(crate) fn platform_import(
         &self,
         imp: crate::abi::Imp,
@@ -188,6 +206,7 @@ impl Core {
                 };
                 self.ret_h(meta)
             }
+            Imp::Dated => self.dated(a),
             Imp::Phrase => {
                 let id = self.text(a.h(0)?)?;
                 let args = match self.val(a.h(1)?)? {
@@ -226,7 +245,7 @@ impl Core {
 
     /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
     /// field of the resource changes, which is a new version.
-    fn read_versions_of(&self, target: &crate::value::ResourceRef) -> HResult<()> {
+    pub(crate) fn read_versions_of(&self, target: &crate::value::ResourceRef) -> HResult<()> {
         let id = target.id_string();
         let fields: Vec<String> = self
             .type_of_ref(&target.ty)
@@ -254,7 +273,12 @@ impl Core {
     }
 
     /// Take a view state slot read into the running view's reads, when a view runs.
-    fn note_state_read(&self, key: StateKey, generation: u64, seen: &Value) -> HResult<()> {
+    pub(crate) fn note_state_read(
+        &self,
+        key: StateKey,
+        generation: u64,
+        seen: &Value,
+    ) -> HResult<()> {
         let mut frames = self.frames.borrow_mut();
         if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
             vs.state_reads.push((key.clone(), generation));
@@ -304,30 +328,40 @@ impl Core {
     }
 
     /// The title of `target`: its field marked `title`, when it holds more than spaces; else,
-    /// for a root of its package, the package's title; else its type's name.
+    /// for a type without one, the first line of its field marked `body` (a message is called
+    /// by what it says, rich text as its reader reads it); else, for a root of its package, the
+    /// package's title; else its type's name.
     pub(crate) fn title_of(
         &self,
         target: &ResourceRef,
         meta: &Meta,
         ty: &TypeMeta,
     ) -> HResult<String> {
-        if let Some(field) = ty
-            .fields
-            .iter()
-            .find(|field| field.role.as_deref() == Some("title"))
-        {
+        let role = |name: &str| {
+            ty.fields
+                .iter()
+                .find(|field| field.role.as_deref() == Some(name))
+        };
+        let titled = role("title").map(|field| (field, false));
+        if let Some((field, body)) = titled.or_else(|| role("body").map(|field| (field, true))) {
             let (_, info) = self.lookup_field(target, &field.id)?;
             self.note_reads([(target.id_string(), field.id.clone())])?;
             let value = self.read_value(target, &info, None)?;
             let text = match value {
+                Value::Text(text) if body => text
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default()
+                    .to_owned(),
                 Value::Text(text) => text,
+                Value::Rich(rich) => self.read_rich(&rich, true)?,
                 _ => String::new(),
             };
             if !text.trim().is_empty() {
                 return Ok(text);
             }
         }
-        if target.path.is_empty() && meta.roots.contains(&ty.id) {
+        if target.item.is_none() && meta.roots.contains(&ty.id) {
             return Ok(meta.title.clone());
         }
         Ok(sentence(&ty.name))
@@ -405,16 +439,9 @@ impl Core {
         Ok(out)
     }
 
-    /// The resource holding the item `target`, with its type: the reference without its last
-    /// step.
+    /// The resource holding the item `target`, with its type: where the store has it now.
     fn holder_of(&self, target: &ResourceRef) -> Option<ResourceRef> {
-        let (_, path) = target.path.split_last()?;
-        let mut holder = ResourceRef {
-            doc: target.doc.clone(),
-            path: path.to_vec(),
-            ty: String::new(),
-        };
-        holder.ty = self.store.borrow().type_of(&holder).ok()?;
+        let (holder, _) = self.store.borrow().container(target).ok()??;
         Some(holder)
     }
 

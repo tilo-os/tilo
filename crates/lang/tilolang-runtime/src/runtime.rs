@@ -527,6 +527,12 @@ impl Runtime {
         *self.core.clock.borrow_mut() = Some(Box::new(clock));
     }
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. Until it is set, UTC.
+    pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
+        *self.core.zone.borrow_mut() = Some(Box::new(zone));
+    }
+
     /// What `phrase(id, ...)` reads: the platform's phrases in the person's language. Until
     /// it is set, a phrase is its id.
     pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
@@ -557,6 +563,18 @@ impl Runtime {
         if states.get(&key) != Some(&value) {
             states.set(key, value);
         }
+    }
+
+    /// The workspace's members now, from its membership, and how its grants decide who of
+    /// them reads a resource (`None`: everyone reads everything the workspace holds). What
+    /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
+    /// again whenever membership or grants change, and every view that read them runs again.
+    pub fn set_members(
+        &self,
+        members: Vec<crate::members::Member>,
+        reads: Option<Rc<crate::members::Reads>>,
+    ) {
+        self.core.set_members(members, reads);
     }
 
     /// Where settled outside effects go.

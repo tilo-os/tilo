@@ -329,6 +329,96 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
         .unwrap_or_default()
 }
 
+/// The room's membership as its policy records it: the person at the window owns it, Mia
+/// edits, Leo views, and the agent `planner` was admitted. Zoe is in the room's roster, but no
+/// member.
+fn members_of_the_room(app: &mut TestApp<TlApp>) {
+    use ui::permissions::policy::{self, Role, Subject, roles::AgentPreset};
+    let me = app.permissions().standing().person.clone();
+    let room = app.permissions().standing().room().to_owned();
+    let mut workspace = policy::RoomPolicy::new(&room, &me);
+    workspace.members.insert("u_mia".to_owned(), Role::Editor);
+    workspace.members.insert("u_leo".to_owned(), Role::Viewer);
+    workspace.grants.extend(AgentPreset::Contributor.grants(
+        &room,
+        "planner",
+        &Subject::person(&me),
+    ));
+    let standing = policy::Standing::person(workspace, me);
+    app.set_permissions(ui::permissions::PermissionContext::from_standing(
+        &room, standing,
+    ));
+    let mut presence = ui::presence::PresenceCtx::default();
+    // Mia is here from her laptop, which the room's host paired with her person; Leo is named
+    // as himself.
+    for (id, name) in [
+        ("mia-laptop", "Mia"),
+        ("u_leo", "Leo"),
+        ("u_zoe", "Zoe"),
+        ("agent:planner", "Planner"),
+    ] {
+        presence
+            .names
+            .insert(ui::permissions::UserId(id.to_owned()), name.to_owned());
+    }
+    presence.set_participant_kind(
+        ui::permissions::UserId("agent:planner".to_owned()),
+        ui::presence::ParticipantKind::Agent,
+    );
+    presence.set_persons([(
+        ui::permissions::UserId("mia-laptop".to_owned()),
+        ui::permissions::UserId("u_mia".to_owned()),
+    )]);
+    app.harness().set_presence_context(presence);
+    settle(app);
+}
+
+#[test]
+fn the_composers_drawer_offers_the_members_of_the_conversation() {
+    let _settled = ui::motion::testing::settled();
+    let mut app = staged(DESKTOP);
+    members_of_the_room(&mut app);
+    let (x, y) = composer(&mut app);
+    app.harness().click_at(x, y);
+    app.harness().type_text("@");
+    app.harness().relayout();
+    let people = drawer_rows(&mut app);
+    // Who spoke last in the conversation first (its scenario's people), then its members.
+    let members = people.iter().position(|row| row == "Members").map_or_else(
+        || panic!("the members have their header: {people:?}"),
+        |at| &people[at + 1..],
+    );
+    assert!(
+        people
+            .first()
+            .is_some_and(|row| row == "In this conversation"),
+        "{people:?}"
+    );
+    for member in ["Mia", "Leo"] {
+        assert!(
+            members.iter().any(|row| row.contains(member)),
+            "{member} is a member and is offered: {people:?}"
+        );
+    }
+    assert!(
+        !people.iter().any(|row| row.contains("Zoe")),
+        "who is in the roster but no member is not offered: {people:?}"
+    );
+    // The drawer shows its first rows; typing finds the rest.
+    app.harness().type_text("pla");
+    app.harness().relayout();
+    let found = drawer_rows(&mut app);
+    assert!(
+        found.len() == 1 && found[0].contains("Planner"),
+        "the admitted agent is a member too: {found:?}"
+    );
+    app.harness().key("Enter");
+    settle(&mut app);
+    // An agent's mention reads as one: `@Planner · Agent`.
+    let draft = draft(&mut app);
+    assert!(draft.starts_with("@Planner"), "{draft:?}");
+}
+
 #[test]
 fn the_composers_drawer_offers_the_rooms_people_and_writes_a_mention_that_is_sent() {
     let _settled = ui::motion::testing::settled();

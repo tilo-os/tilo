@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use tilolang_cli::dev::{self, DevOptions};
 use tilolang_cli::package::{self, BuildOptions};
+use tilolang_cli::repl::{self, ReplOptions};
 use tilolang_cli::run::{self, RunOptions};
 
 const USAGE: &str = "\
@@ -28,8 +29,18 @@ usage:
       --runtime BIN runs the apps on a tilolang runtime binary of your own build, and a new
       build of it restarts them on it; --build-runtime builds it from the checkout and again
       on every change of its sources with cargo. See docs/tilolang-dev.md.
+  tilolang describe [DIR] [--search DIR]...
+      print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
+      a native app (its committed surface.toml) and a tilolang package alike
+  tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
+      tilolang typed against a running session through its agent door: the nested session
+      started last by default (SESSION: its --ready file, runtime directory or control socket,
+      where the REPL is admitted as the person's agent, its answers theirs), another session's
+      door, or the person's own session (--real), where the person admits it. Each entry is a
+      program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
+      what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
   tilolang check|fmt|ids ...
-      the compiler's commands (tilolangc --help)";
+      the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,11 +49,16 @@ fn main() -> ExitCode {
         Some("build") => build(rest),
         Some("run") => run_command(rest),
         Some("dev") => dev_command(rest),
+        Some("describe") => describe_command(rest),
+        Some("repl") => repl_command(rest),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        Some(_) => return tilolang::cli::main(&args),
+        // A package may `use` a native app: its published types are found among --path too.
+        Some(_) => {
+            return tilolang::cli::main_with(&args, tilolang_tilo::catalogue::native_apps);
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -100,6 +116,21 @@ fn build(args: &[String]) -> Result<(), String> {
     for app in package::build(&options, &identity)? {
         println!("{} ({}): {}", app.app, app.title, app.tapp.display());
     }
+    Ok(())
+}
+
+fn describe_command(args: &[String]) -> Result<(), String> {
+    let mut dir = PathBuf::from(".");
+    let mut search = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--search" | "--path" => search.push(value(&mut iter, arg)?.into()),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
+            other => dir = other.into(),
+        }
+    }
+    print!("{}", tilolang_cli::describe::describe(&dir, &search)?);
     Ok(())
 }
 
@@ -174,4 +205,26 @@ fn dev_command(args: &[String]) -> Result<(), String> {
         runtime_identity,
         repo,
     })
+}
+
+fn repl_command(args: &[String]) -> Result<(), String> {
+    let mut options = ReplOptions::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--session" => options.session = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--door" => options.door = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--real" => options.real = true,
+            "--color" => {
+                options.color = match value(&mut iter, arg)?.as_str() {
+                    "always" => Some(true),
+                    "never" => Some(false),
+                    "auto" => None,
+                    other => return Err(format!("--color is always, never or auto, not {other}")),
+                }
+            }
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    repl::repl(&options)
 }

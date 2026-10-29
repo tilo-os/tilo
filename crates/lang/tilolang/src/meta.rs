@@ -20,6 +20,14 @@ pub struct PackageMeta {
     /// The launcher category (`app ... (category: .office)`), lower case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The ids the app was published under before (`app ... (previously: so.tilo.old)`): the
+    /// platform reads its records, grants and windows under them as the app's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previously: Vec<String>,
+    /// Each member keeps the app's records in their own record of the workspace
+    /// (`app ... (records: .own)`), which only that person's devices read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_records: bool,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
@@ -34,7 +42,8 @@ pub struct PackageMeta {
     /// lists and opens.
     #[serde(default)]
     pub roots: Vec<String>,
-    /// The packages it uses (`use app.id`), by app id.
+    /// The packages it uses (`use app.id`), by their app ids now (a `use` of an id one had
+    /// before names it by its current one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
     /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.
@@ -141,6 +150,10 @@ pub struct TypeMeta {
     /// `type Notes = Collection<Note>`: a resource that is its one field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub holder: bool,
+    /// `(origin: imap.message)`: the kind of an outside service's resource the type holds,
+    /// which the system keeps in step with the service (`crate::origin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):
@@ -372,6 +385,15 @@ pub struct ActionMeta {
     pub toggles: Option<String>,
 }
 
+impl ActionMeta {
+    /// Whether it is a `migration action`: never offered, run by the platform once on each
+    /// resource of its subject's type that an earlier version wrote.
+    #[must_use]
+    pub fn is_migration(&self) -> bool {
+        self.role.as_deref() == Some("migration")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorMeta {
     pub id: String,
@@ -435,9 +457,17 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios.
+    /// The actions the platform offers: every action but the hidden ones of scenarios and the
+    /// migrations, which the platform runs itself.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
-        self.actions.iter().filter(|a| !a.scenario)
+        self.actions
+            .iter()
+            .filter(|a| !a.scenario && !a.is_migration())
+    }
+
+    /// The package's migrations (`migration action`), in declaration order.
+    pub fn migrations(&self) -> impl Iterator<Item = &ActionMeta> {
+        self.actions.iter().filter(|a| a.is_migration())
     }
 
     /// The views a person or an agent can open or apply: every view but the hidden ones that

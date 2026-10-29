@@ -97,11 +97,13 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
 }
 
 /// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
-/// in: its parent resource and the collection's field, and the item's id.
-fn item_in(resource: &str) -> Option<(&str, &str, &str)> {
-    let (parent, step) = resource.rsplit_once('/')?;
-    let (field, id) = step.split_once(':')?;
-    Some((parent, field, id))
+/// in, as the store has it: its holder (written the same way) and the collection's field, and
+/// the item's id.
+fn item_in(core: &Core, resource: &str) -> Option<(String, String, String)> {
+    let at = crate::value::ResourceRef::parse_id(resource, String::new())?;
+    let item = at.item.clone()?;
+    let (holder, field) = core.store.borrow().container(&at).ok()??;
+    Some((holder.id_string(), field, item))
 }
 
 /// Which boundaries read what.
@@ -493,7 +495,8 @@ impl Live {
             // A field of an item of a collection decides whether the item is in a filtered
             // view of it, and where in a sorted one: the readers of those views look again,
             // and the rows of a virtual list over one find where the item is now.
-            if let Some((parent, coll, item)) = item_in(&key.resource) {
+            if let Some((parent, coll, item)) = item_in(core, &key.resource) {
+                let (parent, coll) = (parent.as_str(), coll.as_str());
                 self.reach_colls(core, parent, coll, true, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
@@ -505,7 +508,7 @@ impl Live {
                             reach.steps.push(Pending {
                                 holder: id,
                                 rows: Rc::clone(rows),
-                                steps: Steps::Moved(BTreeSet::from([item.to_owned()])),
+                                steps: Steps::Moved(BTreeSet::from([item.clone()])),
                             });
                         } else {
                             reach.hit.push(id);

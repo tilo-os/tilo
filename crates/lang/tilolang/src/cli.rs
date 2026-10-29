@@ -16,9 +16,14 @@ use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
-    BuildError, BuiltPackage, PackageSource, Stamp, compile_dirs, dependency_order, read_ids,
-    write_ids,
+    BuildError, BuiltPackage, PackageSource, Stamp, compile_dirs, dependency_order,
+    dependency_order_with, read_ids, search_of, write_ids,
 };
+
+/// Finds the published packages that are no tilolang package directory among the directories
+/// imports are looked for in: native apps, by the catalogue entries they publish. The language's
+/// tool passes one ([`main_with`]); the compiler alone knows tilolang packages only.
+pub type Published = fn(&[PathBuf]) -> Result<Vec<PackageMeta>, String>;
 
 pub const USAGE: &str = "usage:
   tilolangc check [dir] [--json] [--watch] [--write-ids] [--path <dir>]... [--import <app.wasm>]...
@@ -51,6 +56,7 @@ struct Options {
     imports: Vec<PathBuf>,
     search: Vec<PathBuf>,
     rename: Option<(String, String)>,
+    published: Option<Published>,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -118,8 +124,12 @@ fn build_all(
     o: &Options,
     entropy: &mut dyn crate::ids::Entropy,
 ) -> Result<Vec<BuiltPackage>, BuildError> {
-    let dirs = dependency_order(dir, &o.search).map_err(BuildError::Read)?;
-    let extra = read_imports(&o.imports).map_err(BuildError::Read)?;
+    let mut extra = read_imports(&o.imports).map_err(BuildError::Read)?;
+    if let Some(published) = o.published {
+        extra.extend(published(&search_of(dir, &o.search)).map_err(BuildError::Read)?);
+    }
+    let provided: Vec<String> = extra.iter().map(|meta| meta.app.clone()).collect();
+    let dirs = dependency_order_with(dir, &o.search, &provided).map_err(BuildError::Read)?;
     compile_dirs(&dirs, &extra, entropy)
 }
 
@@ -340,13 +350,23 @@ fn ids(dir: &Path, o: &Options) -> Result<bool, String> {
 
 /// Runs the command line `args` (without the program name).
 pub fn main(args: &[String]) -> ExitCode {
+    run(args, None)
+}
+
+/// [`main`], with imports also found among the packages `published` finds.
+pub fn main_with(args: &[String], published: Published) -> ExitCode {
+    run(args, Some(published))
+}
+
+fn run(args: &[String], published: Option<Published>) -> ExitCode {
     let result = (|| {
         let (cmd, rest) = args.split_first().ok_or(USAGE)?;
         if matches!(cmd.as_str(), "-h" | "--help" | "help") {
             eprintln!("{USAGE}");
             return Ok(true);
         }
-        let o = parse_options(rest)?;
+        let mut o = parse_options(rest)?;
+        o.published = published;
         let dir = o.dir.clone().unwrap_or_else(|| PathBuf::from("."));
         match cmd.as_str() {
             "check" => check(&dir, &o),

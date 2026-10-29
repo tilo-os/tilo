@@ -42,6 +42,7 @@ pub mod calendar;
 mod checker;
 pub mod cli;
 mod codegen;
+pub mod describe;
 pub mod diag;
 pub mod duration;
 mod effects;
@@ -52,6 +53,8 @@ pub mod ids;
 pub mod ir;
 pub mod lexer;
 pub mod meta;
+pub mod natural;
+pub mod origin;
 mod package;
 pub mod parser;
 pub mod pred;
@@ -76,7 +79,7 @@ pub use package::{
     Binding, BlockKind, Compiled, CompiledBlock, CompiledProgram, FileSyntax, PROGRAM_APP_PREFIX,
     check, check_package, compile_block, compile_block_for, compile_package,
     compile_package_source, compile_package_source_with, compile_package_with, compile_program,
-    parse, parse_package, parse_package_files,
+    compile_program_reading, parse, parse_package, parse_package_files,
 };
 pub use print::{print_file, print_module};
 pub use source::{PackageSource, SourceFile};

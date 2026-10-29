@@ -4231,6 +4231,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Construction work counted at the workspace's factories, and the
         // workspace whose content those factories last reconciled.
         if let Some(fields) = dump.as_object_mut() {
+            // The canvas as this device shows it: the lens, the caret, the
+            // selection, each window's place and rect, answers on their way.
+            fields.insert("canvas".into(), self.fb.host().canvas_state());
             fields.insert(
                 "workspace_work".into(),
                 serde_json::json!(crate::shell::work_accounting::snapshot()),

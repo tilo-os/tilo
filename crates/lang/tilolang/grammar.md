@@ -10,7 +10,8 @@ starts with `.name` (a method call continuing the previous line) don't end anyth
 ```
 file       = [ header ] { item } ;                    (* one file of the package has the header *)
 header     = "app" app_id string [ "(" app_opt { "," app_opt } ")" ] ;
-app_opt    = ( "icon" | "category" ) ":" "." ident ;
+app_opt    = ( "icon" | "category" ) ":" "." ident
+           | "previously" ":" ( app_id | "[" app_id { "," app_id } "]" ) ;
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
@@ -20,10 +21,10 @@ root       = "root" [ ident ":" ] type ;                      (* `root notes: No
 alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
-role       = "primary" | "destructive" ;
+role       = "primary" | "destructive" | "migration" ;
 
-type_decl  = "type" Ident "{" { field | search } "}" ;
-field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" ) ")" ]
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
+field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" | "previously" ) ")" ]
              [ "=" expr ] ;
 merge_kind = "register" | "counter" | "text" ;
 search     = "search" "{" { search_line NL } "}" ;
@@ -101,15 +102,16 @@ Tokens:
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
   Keywords: `app use as type enum action flow view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
-  `primary` and `destructive` are keywords only where the grammar above uses them.
+  `primary`, `destructive` and `migration` are keywords only where the grammar above uses them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or
   `2026-06-29T07:02:30Z` (a Time, in UTC), or a month `2026-08` (only as a filter's value), as
   search writes them.
 - `string` is `"..."`; `{expr}` inside it interpolates.
-- `reference` is `@app.Type:id`, with `/field:item` steps for a nested resource and an optional
-  `@version` (`@so.tilo.todo.Todo:01J8/items:3K`).
+- `reference` is `@app.Type:id`, `doc/item` for an item of a document, and an optional
+  `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
+  read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
 - `//` starts a comment to the end of the line. `///` is a doc comment: it belongs to the
   declaration that follows, is kept in the metadata, and is what agents read.

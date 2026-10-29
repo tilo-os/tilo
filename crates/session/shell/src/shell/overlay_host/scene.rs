@@ -219,6 +219,7 @@ impl ShellOverlayHost {
         }
         phase_at = scene_phase("scene/sections/strips", phase_at);
         ui::backdrop::layer_scene(workspace, backdrop_layer::WORKSPACE);
+        self.draw_canvas_marks(workspace, transform, text_renderer, theme);
         if unbaked {
             self.draw_real_peers(
                 workspace_overlays,

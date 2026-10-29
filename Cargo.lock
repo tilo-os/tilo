@@ -19359,6 +19359,7 @@ dependencies = [
  "desktop-policy",
  "package-store",
  "tempfile",
+ "tilo-action-policy",
  "tilo-app-package",
  "workspace-hack",
 ]
@@ -22142,19 +22143,26 @@ name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "collaboration",
  "libc",
+ "mail",
  "runtime-dylib",
  "serde_json",
  "thiserror 2.0.21",
  "tilo-app",
  "tilo-automerge",
+ "tilo-automerge-fork",
+ "tilo-content",
  "tilo-files",
  "tilo-render-protocol",
  "tilo-startup-metrics",
  "tilo-ui-host",
  "tilolang",
+ "tilolang-host",
  "tilolang-tilo",
+ "tokio",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -22206,6 +22214,7 @@ dependencies = [
  "tilo-wake",
  "tilolang",
  "tilolang-tilo",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -22218,6 +22227,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash 0.1.5",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -22225,6 +22235,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-doc",
  "tilo-reference",
+ "tilo-resource",
  "tilolang",
  "wasmi",
  "wasmtime",

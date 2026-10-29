@@ -87,7 +87,17 @@ pub struct McpServer<H> {
     /// The content uploads this session has open; dropped with it, they
     /// store nothing.
     uploads: std::sync::Mutex<put::Uploads>,
+    /// The `tilo` tool's session: the references its answers showed, and the steps its
+    /// programs made, for `undo` and `history task`.
+    programs: std::sync::Mutex<agent::Programs>,
+    /// Where this door starts its task's tilolang host; `None` for a door that runs no
+    /// programs (one outside a desktop session).
+    task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
+    /// The program connection to the task's host, once its first program started it.
+    task: tokio::sync::Mutex<Option<agent::TaskLink>>,
 }
+
+pub use agent::TaskHosts;
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -627,7 +637,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
             surface: Surface::Classic,
             uploads: std::sync::Mutex::default(),
+            programs: std::sync::Mutex::default(),
+            task_hosts: None,
+            task: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Run the `tilo` tool's programs in task hosts `hosts` starts.
+    #[must_use]
+    pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
+        self.task_hosts = hosts;
+        self
     }
     /// Offer the tools `surface` names.
     #[must_use]

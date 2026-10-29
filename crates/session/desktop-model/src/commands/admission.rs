@@ -84,6 +84,7 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
             group,
             before,
         } => own_all(&[Some(*strip), Some(*group), *before]),
+        DesktopCommand::PlaceGroup { group, .. } => own(*group),
         DesktopCommand::MoveTab {
             location: l,
             placement: p,
@@ -102,7 +103,8 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::GrantAppAction { .. }
-        | DesktopCommand::RevokeAppAction { .. } => Ok(()),
+        | DesktopCommand::RevokeAppAction { .. }
+        | DesktopCommand::SetArrangement { .. } => Ok(()),
     }
 }
 

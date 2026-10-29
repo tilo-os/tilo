@@ -3161,7 +3161,7 @@ impl App {
 
 /// Room for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
-const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
+const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and

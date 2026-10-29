@@ -34,7 +34,7 @@ pub(crate) use shortcuts::action_shortcut;
 pub(crate) use strips::valid_strip_name;
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
-    move_strip, remove_strip, rename_strip,
+    move_strip, remove_strip, rename_strip, show_canvas, show_strips,
 };
 use tabs::{
     TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
@@ -420,8 +420,15 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
-        | "strip.move" | "strip.remove" | "tab.rename" => {
+        "workspace.create"
+        | "workspace.rename"
+        | "strip.create"
+        | "strip.rename"
+        | "strip.move"
+        | "strip.remove"
+        | "tab.rename"
+        | "workspace.show-canvas"
+        | "workspace.show-strips" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -525,9 +532,19 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.connect"
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
-        "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
-        | "strip.move" | "strip.remove" | "tab.rename" => tilo_actions::OperationKind::Document,
+        "record.bring"
+        | "peer.invite.named"
+        | "agent.invite"
+        | "agent.remove"
+        | "workspace.create"
+        | "workspace.rename"
+        | "strip.create"
+        | "strip.rename"
+        | "strip.move"
+        | "strip.remove"
+        | "tab.rename"
+        | "workspace.show-canvas"
+        | "workspace.show-strips" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -2563,6 +2580,22 @@ impl Action {
             "search-kw-strip-focus-next",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
+        Action {
+            id: "workspace.show-canvas",
+            label: "search-action-workspace-show-canvas",
+            subtitle: "search-action-workspace-show-canvas-subtitle",
+            keywords: "search-kw-workspace-show-canvas",
+            params: &[],
+            apply: show_canvas,
+        },
+        Action {
+            id: "workspace.show-strips",
+            label: "search-action-workspace-show-strips",
+            subtitle: "search-action-workspace-show-strips-subtitle",
+            keywords: "search-kw-workspace-show-strips",
+            params: &[],
+            apply: show_strips,
+        },
         Action {
             id: "strip.create",
             label: "search-action-strip-create",

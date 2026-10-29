@@ -4,6 +4,7 @@
 //! Both report the emoji as data (`on toggle(e)`, `on pick(e)`); the app's action does the rest.
 
 use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use tilo_resource::{ReactionGroup, Reactor};
@@ -25,10 +26,14 @@ use crate::widget::{
 #[derive(Component, Default)]
 #[component(name = "Reactions", role = "Toolbar")]
 pub struct ReactionsProps {
-    /// The emoji reacted with, in the order they were first used.
-    #[component(required, positional)]
+    /// Who reacted, by emoji: the reactions as the message holds them
+    /// (`Map<Text, Set<Principal>>`).
+    pub reactions: BTreeMap<String, BTreeSet<Person>>,
+    /// The emoji reacted with, in the order they were first used: the older form, with `by`,
+    /// read while `reactions` is not given.
+    #[component(positional)]
     pub emoji: Vec<String>,
-    /// Who reacted with each, in the same order.
+    /// Who reacted with each of `emoji`, in the same order.
     pub by: Vec<Vec<Person>>,
     /// Whether the person may react; they may unless it says not.
     pub can_react: Option<bool>,
@@ -38,33 +43,56 @@ pub struct ReactionsProps {
     pub toggle: Event,
 }
 
+impl ReactionsProps {
+    /// Each emoji with who reacted with it, in the order shown: the map's, else the older
+    /// form's.
+    fn groups(
+        reactions: BTreeMap<String, BTreeSet<Person>>,
+        emoji: Vec<String>,
+        by: Vec<Vec<Person>>,
+    ) -> Vec<(String, Vec<Person>)> {
+        if reactions.is_empty() {
+            let mut by = by.into_iter();
+            emoji
+                .into_iter()
+                .map(|emoji| (emoji, by.next().unwrap_or_default()))
+                .collect()
+        } else {
+            reactions
+                .into_iter()
+                .map(|(emoji, people)| (emoji, people.into_iter().collect()))
+                .collect()
+        }
+    }
+}
+
 impl Described for ReactionStripWidget {
     type Props = ReactionsProps;
 
     fn from_props(key: &str, props: ReactionsProps) -> Self {
         let ReactionsProps {
+            reactions,
             emoji,
             by,
             can_react,
             toggle,
         } = props;
         let mut names = std::collections::HashMap::new();
-        let groups = emoji
+        let groups = ReactionsProps::groups(reactions, emoji, by)
             .into_iter()
             .enumerate()
-            .map(|(at, emoji)| ReactionGroup {
+            .map(|(at, (emoji, people))| ReactionGroup {
                 emoji,
-                reactors: by
-                    .get(at)
+                reactors: people
                     .into_iter()
-                    .flatten()
                     .map(|person| {
-                        names.insert(person.identity.clone(), person.name.clone());
-                        Reactor {
+                        let reactor = Reactor {
                             by: person.identity.clone(),
                             persona: None,
                             name: None,
-                        }
+                        };
+                        names.insert(person.identity, person.name);
+                        reactor
                     })
                     .collect(),
                 first_at: i64::try_from(at).unwrap_or(i64::MAX),

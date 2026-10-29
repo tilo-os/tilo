@@ -173,6 +173,7 @@ title several resources share has the level listed to decide.
 | `tilo_read` | a resource as compact text: markdown whose blocks end in their id, a list of what an app holds | `{path: "notes/Todo"}` |
 | `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
 | `tilo_find` | ranked one-line hits, ready to pass to `tilo_do`; `app` narrows by name or id | `{query: "checklist add", app: "notes"}` |
+| `tilo` | a tilolang program's output, run as this task in its own tilolang host (below) | `{program: "notes.notes.filter(.pinned)"}` |
 | `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
 
 ```text
@@ -237,12 +238,72 @@ does not answer is named as not searched rather than failing the search; a
 search that no app answered fails and says so. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
 parameters when it is wanted. Results are text, with no structured copy beside them unless a program asks for one (below). Measured (the
-`mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of
+`mcp_agent` tests keep these in bounds): the agent tool list is under 3,500 bytes of
 JSON against 4,546 for the classic one, and a four-block Notes page reads as 71
 bytes of markdown against 370 for the structured `read` answer of the same page.
 
-A program (an agent's tilolang program, run for its task) reads and acts
-through the same tools, with two things a model does not need, both asked
+### Programs: the `tilo` tool
+
+`tilo {program, confirm?}` runs a tilolang program
+(`docs/designs/app-language/agents.md`) as this task, in a tilolang host of
+the task's own: its code author is the task, the session starts it on the
+task's first program, and it lives as long as the connection, holding the
+task's `let`s and no records. A program names any installed app's types and
+actions; what it reads it reads through each app as the task, and what it
+changes it changes only by invoking: a method is its type's declared action,
+an assignment (`t.done = true`) the resource's field edit. Each invocation is
+the task's, in this call's step, decided at that action's own node by the
+workspace's policy: asked about or refused, never done silently. For now the
+apps a program reads must be open.
+
+```text
+> tilo {program: "notes.notes.filter(.pinned)"}
+n1 "Q3 plan"
+n2 "Groceries"
+
+> tilo {program: "for n in notes.notes.filter(.pinned) { notes.pin(n, false) }"}
+preview: 2 actions on 3 resources
+  pin ×2
+nothing changed; send the same program with confirm: true to apply it
+
+> tilo {program: "…the same…", confirm: true}
+step 1: 2 changes in notes; `undo` takes it back
+```
+
+- **References.** Each resource an answer shows is named by a short
+  reference (`n1`: the letter of its type and a number) at the start of its
+  line; later programs of the session use it like a name. A reference the
+  session never showed, or a resource literal typed by hand, is refused, so
+  none can be invented.
+- **One program is one step.** Every invocation it makes carries the call's
+  undo step and the task's run; a program that fails takes back what it
+  changed. One that would change more than three resources, or destroy
+  something, answers with a preview of the invocations a provisional run
+  listed (it sends none) and changes nothing until it is sent again with
+  `confirm: true`.
+- **Undo.** `undo` takes back the last step in every app it changed, `undo
+  task` every step of this session, newest first, through each app's own
+  undo; `history task` lists the steps.
+- **Reading across apps.** `grep`, `find`, `read` and `describe` read every
+  running app the task may use: what a program asks of an app is answered by
+  that app's host (`read-for-program`, a read, through the same gate as every
+  other action, as the task) while the program runs, and what it holds comes
+  as the app's own resources, whose fields read by name.
+
+```text
+> tilo {program: "grep(/\\bChen\\b/, in: notes + chat).count_by(.doc)"}
+grep /\bChen\b/: 3 matches in 3 of 26 resources searched (notes 14, chat 12)
+n1 "Standup, Monday"  1
+…
+```
+
+`tilolang repl` is a terminal for the same tool: it connects to a session's
+door (a nested session by default, `--real` for the person's own) and sends
+each entry as a program, with line editing, history, completion and colour.
+A door without the `tilo` tool is refused with what it does serve.
+
+A program (an agent's tilolang program, run for its task) also reads and acts
+through the other tools, with two things a model does not need, both asked
 for in the call's `_meta`:
 
 - **One undo step per task step.** `{"so.tilo.mcp": {"step": "<name>"}}`

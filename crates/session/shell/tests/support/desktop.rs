@@ -285,6 +285,12 @@ impl Desktop {
         desktop
     }
 
+    /// Where the compositor keeps its desktop between runs: what a restart
+    /// reads back.
+    pub fn state_path(&self) -> PathBuf {
+        self.runtime_dir.join("state.json")
+    }
+
     /// A connection to the compositor's public Wayland socket.
     pub fn connect_wayland(&self) -> UnixStream {
         UnixStream::connect(&self.wayland_socket).expect("connect to the Wayland socket")

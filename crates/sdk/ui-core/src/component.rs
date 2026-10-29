@@ -74,7 +74,7 @@ use crate::widget::Element;
 
 pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, Event as EventDescription,
-    FORMAT_VERSION, Merge, Prop, Semantics, Slot, State as StateDescription, Type, Value,
+    FORMAT_VERSION, Merge, Offered, Prop, Semantics, Slot, State as StateDescription, Type, Value,
 };
 pub use tilo_ui_macros::Component;
 
@@ -137,6 +137,16 @@ pub trait PropType: Sized {
     /// # Errors
     /// The value is of another type.
     fn from_value(value: &Value) -> Result<Self, String>;
+
+    /// The value as the instance `source` gives it: what it reads beside the value itself (the
+    /// event an offered action fires) is the instance's.
+    ///
+    /// # Errors
+    /// The value is of another type.
+    fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
+        let _ = source;
+        Self::from_value(value)
+    }
 }
 
 fn wrong(want: &Type, found: &Value) -> String {
@@ -212,6 +222,13 @@ impl<T: PropType> PropType for Option<T> {
             other => T::from_value(other).map(Some),
         }
     }
+
+    fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
+        match value {
+            Value::None => Ok(None),
+            other => T::read(other, source).map(Some),
+        }
+    }
 }
 
 impl<T: PropType> PropType for Vec<T> {
@@ -224,6 +241,100 @@ impl<T: PropType> PropType for Vec<T> {
             Value::List(items) => items.iter().map(T::from_value).collect(),
             other => Err(wrong(&Self::ty(), other)),
         }
+    }
+
+    fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
+        match value {
+            Value::List(items) => items.iter().map(|item| T::read(item, source)).collect(),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
+impl<T: PropType + Ord> PropType for std::collections::BTreeSet<T> {
+    fn ty() -> Type {
+        Type::Set(Box::new(T::ty()))
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::List(items) => items.iter().map(T::from_value).collect(),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
+impl<K: PropType + Ord, V: PropType> PropType for std::collections::BTreeMap<K, V> {
+    fn ty() -> Type {
+        Type::Map {
+            key: Box::new(K::ty()),
+            value: Box::new(V::ty()),
+        }
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        match value {
+            Value::Map(entries) => entries
+                .iter()
+                .map(|(key, value)| Ok((K::from_value(key)?, V::from_value(value)?)))
+                .collect(),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+
+    fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
+        match value {
+            Value::Map(entries) => entries
+                .iter()
+                .map(|(key, value)| Ok((K::read(key, source)?, V::read(value, source)?)))
+                .collect(),
+            other => Err(wrong(&Self::ty(), other)),
+        }
+    }
+}
+
+/// An action offered to the person, as a widget takes one: how it shows, and the event
+/// choosing it fires (data, never a closure).
+#[derive(Clone, Debug, Default)]
+pub struct OfferedAction {
+    pub label: String,
+    pub icon: Option<Icon>,
+    pub primary: bool,
+    pub destructive: bool,
+    /// Whether the state it toggles is on, when it toggles one.
+    pub on: Option<bool>,
+    pub run: Event,
+}
+
+impl PropType for OfferedAction {
+    fn ty() -> Type {
+        Type::Action
+    }
+
+    /// An action read without its instance runs nothing.
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let Value::Action(offered) = value else {
+            return Err(wrong(&Self::ty(), value));
+        };
+        Ok(Self {
+            label: offered.label.clone(),
+            icon: offered
+                .icon
+                .as_deref()
+                .and_then(|name| Icon::from_name(&name.replace('_', "-"))),
+            primary: offered.primary,
+            destructive: offered.destructive,
+            on: offered.on,
+            run: Event::None,
+        })
+    }
+
+    fn read(value: &Value, source: &mut dyn Source) -> Result<Self, String> {
+        let mut action = Self::from_value(value)?;
+        if let Value::Action(offered) = value {
+            action.run = source.event(&offered.event);
+        }
+        Ok(action)
     }
 }
 
@@ -242,7 +353,7 @@ impl PropType for Icon {
 }
 
 /// A participant, as a component shows one: their identity and what the room calls them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Person {
     pub identity: String,
     pub name: String,
@@ -945,14 +1056,15 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 }
 
 /// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places, a menu's commands, separators and emoji bar, a
+/// list's facts, a navigation list's places and sections, a menu's commands, separators and emoji bar, a
 /// row's swipe, the items of a virtual list, and what a view attaches to the element it stands
 /// in (its context menu, hover toolbar and swipe).
 #[must_use]
-pub fn parts() -> [fn() -> Description; 12] {
+pub fn parts() -> [fn() -> Description; 13] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
+        crate::widget::NavSectionProps::describe,
         crate::widget::MenuItemProps::describe,
         crate::widget::MenuSeparatorProps::describe,
         crate::widget::EmojiBarProps::describe,

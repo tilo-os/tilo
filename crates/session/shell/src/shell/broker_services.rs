@@ -876,6 +876,9 @@ impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        super::launcher::installed_earlier_ids()
+    }
     fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
         launchable_applications_for(
             app_id,
