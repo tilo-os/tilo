@@ -780,6 +780,7 @@ impl OverviewPanel {
     }
 
     /// Bounds of the `index`th pictured window in reading order.
+    #[cfg(test)]
     pub(super) fn window_tile_rect(&self, index: usize) -> Rect {
         let picture = self.picture();
         picture
