@@ -1,12 +1,12 @@
 //! What the pointer, a shortcut and the volume controls do, and the preferences they persist.
 
 use super::{
-    ContentsOutcome, ElementState, LibraryTab, PLAYBACK_RATES, Picked, PickerChannel, PlayerApp,
-    PlayerResource, PlayerSettingEvent, PortalOpenOutcome, PortalOutcome, TogetherStep,
-    VOLUME_SETTLE_MS, VideoEffect, configure_player_settings, unix_now_ms, verbs,
+    ContentsOutcome, ElementState, LibraryTab, PLAYBACK_RATES, Picked, PickerChannel,
+    PlayerResource, PlayerSettingEvent, PlayerState, PortalOpenOutcome, PortalOutcome,
+    TogetherStep, VOLUME_SETTLE_MS, VideoEffect, configure_player_settings, unix_now_ms, verbs,
 };
 
-impl PlayerApp {
+impl PlayerState {
     /// Show and keep the preferences just changed.
     pub(super) fn preferences_changed(&mut self) {
         configure_player_settings(&mut self.player, self.preferences);

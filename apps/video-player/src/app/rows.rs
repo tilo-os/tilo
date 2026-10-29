@@ -1,11 +1,10 @@
 //! The rows the window's chrome reads: what is playing, what the library holds and what each row says, the tab it shows, and the rect of its own control.
 
 use super::{
-    DECODER_FAILURE, LibraryTab, LocalMediaEntry, PlayerApp, Rect, VideoPlayer,
-    shared_accessibility_targets,
+    DECODER_FAILURE, LibraryTab, LocalMediaEntry, PlayerState, Rect, shared_accessibility_targets,
 };
 
-impl PlayerApp {
+impl PlayerState {
     /// What the player shows that the document does not hold, for its live
     /// rows.
     pub(crate) fn player_rows(&self) -> crate::actions::PlayerRows<'_> {
@@ -54,23 +53,27 @@ impl PlayerApp {
 
     /// The open video's shareable identity, which the shared library's
     /// notes and transport name it by; never a path.
-    pub fn media_ref(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn media_ref(&self) -> Option<&str> {
         self.current_media_ref.as_deref()
     }
 
     /// Whether the library panel shows.
-    pub fn library_visible(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn library_visible(&self) -> bool {
         self.library_visible
     }
 
     /// The library tab shown or last shown: `queue`, `recent` or `shared`.
-    pub fn library_tab_name(&self) -> &'static str {
+    #[cfg(test)]
+    pub(crate) fn library_tab_name(&self) -> &'static str {
         self.library_tab.name()
     }
 
     /// Shared read access to the inner video surface, for tests that assert
     /// a decoded frame landed.
-    pub fn player(&self) -> &VideoPlayer {
+    #[cfg(test)]
+    pub(crate) fn player(&self) -> &super::VideoPlayer {
         &self.player
     }
 
@@ -84,7 +87,8 @@ impl PlayerApp {
     /// Whether a decoded picture is currently on the surface. The `--shots`
     /// path pumps `sync` until this is true so a real (asynchronously prerolled)
     /// decode is captured, not a blank frame.
-    pub fn has_media_frame(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn has_media_frame(&self) -> bool {
         self.player.latest_frame().is_some()
     }
 
