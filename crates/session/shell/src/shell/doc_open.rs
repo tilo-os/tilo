@@ -1845,164 +1845,9 @@ mod tests {
         explicit_drop_placement_survives_launch_until_toplevel_adoption();
     }
 
-    /// Files as the shell mounts it on a session without startup inputs of
-    /// its own (a Linux session): its own component, starting at `files`,
-    /// opening documents through the shell's opener.
-    fn mounted_files(
-        profile: &std::path::Path,
-        files: &std::path::Path,
-    ) -> ui::headless::FrameHarness {
-        let mut apps = crate::shell::in_process::InProcessApps::at(
-            &profile.join("profile"),
-            &profile.join("profile").join("person"),
-            "fixture-person",
-        )
-        .unwrap();
-        let startup = file_explorer::StartupInputs {
-            initial_dir: files.to_path_buf(),
-            workspace_roots: Vec::new(),
-            record_roots: Vec::new(),
-            remote_accounts: Vec::new(),
-            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-        };
-        let component = apps
-            .mount(
-                file_explorer::definition(),
-                "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc",
-                9,
-                ui::record::RecordId::room_default(),
-                |context| context.lend(startup),
-            )
-            .unwrap();
-        let mut harness = ui::headless::FrameHarness::from_component(
-            component,
-            (1000, 700),
-            ui::application::ComponentRunnerInputs::from_native_process(),
-        )
-        .unwrap();
-        harness.relayout();
-        harness
-    }
-
     #[test]
     #[serial_test::serial(process_env)]
     fn file_explorer_opens_documents_in_their_owning_app_or_reports_none() {
-        /// Driven through the explorer's own `open_entry` and the
-        /// production route ([`crate::shell::install_document_opener`]) —
-        /// the wiring is under test, not a direct call.
-        fn the_file_explorer_opens_a_document_in_the_app_that_owns_it() {
-            let tmp = tempfile::tempdir().unwrap();
-            let apps = tmp.path().join("apps");
-            std::fs::create_dir_all(&apps).unwrap();
-            install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
-            let files = tmp.path().join("files");
-            std::fs::create_dir_all(&files).unwrap();
-            let doc = files.join("agenda.odt");
-            std::fs::write(&doc, b"x").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", &apps);
-            let log = install_recording_launcher(tmp.path(), &mut env);
-            reset_session_state();
-
-            let chrome = chrome_with_workspace();
-            crate::shell::install_document_opener(&chrome);
-
-            let mut harness = mounted_files(tmp.path(), &files);
-            let explorer =
-                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.state().navigate(files);
-            let idx = explorer
-                .state()
-                .displayed_entries()
-                .iter()
-                .position(|e| e.name == "agenda.odt")
-                .expect("the explorer lists the document");
-            let mut runner = file_explorer::files_app::SystemRunner;
-            assert!(
-                explorer.state().open_entry(idx, &mut runner).unwrap(),
-                "activating a file row hands it off"
-            );
-
-            let commands = launched_commands(&log, 1);
-            assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
-            assert!(
-                commands[0].contains("--app-id so.tilo.word-processor")
-                    && commands[0].contains(&format!("--open {}", doc.display())),
-                "the explorer's activation had to reach the owning app with the \
-                 document: {}",
-                commands[0]
-            );
-
-            {
-                use crate::shell::state::{Effect, Scope, Subject};
-                let st = chrome.borrow();
-                let tree = st.tree();
-                let ws = tree.desktop.active_workspace().unwrap();
-                let want = Subject::app("so.tilo.word-processor");
-                let scopes: Vec<Scope> = ws
-                    .sandbox
-                    .iter()
-                    .filter(|c| c.subject == want && c.effect == Effect::Grant)
-                    .map(|c| c.scope.clone())
-                    .collect();
-                drop(tree);
-                assert_eq!(scopes, vec![Scope::FsPath(doc.display().to_string())]);
-            }
-
-            file_explorer::files_app::clear_document_opener();
-            clear_launch_env();
-        }
-
-        /// A type nothing claims is refused in words the explorer shows.
-        fn the_file_explorer_reports_a_type_nothing_opens() {
-            let tmp = tempfile::tempdir().unwrap();
-            let apps = tmp.path().join("apps");
-            std::fs::create_dir_all(&apps).unwrap();
-            install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
-            let files = tmp.path().join("files");
-            std::fs::create_dir_all(&files).unwrap();
-            std::fs::write(files.join("archive.zzz"), b"x").unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", &apps);
-            let log = install_recording_launcher(tmp.path(), &mut env);
-            reset_session_state();
-
-            let chrome = chrome_with_workspace();
-            crate::shell::install_document_opener(&chrome);
-
-            let mut harness = mounted_files(tmp.path(), &files);
-            let explorer =
-                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.state().navigate(files);
-            let idx = explorer
-                .state()
-                .displayed_entries()
-                .iter()
-                .position(|e| e.name == "archive.zzz")
-                .expect("the explorer lists the file");
-            let mut runner = file_explorer::files_app::SystemRunner;
-            explorer.state().open_entry(idx, &mut runner).unwrap();
-
-            // Files says what failed in its notice card (ef59750fad), not
-            // the fading status bubble.
-            let status = explorer
-                .state()
-                .notice_line()
-                .unwrap_or_else(|| panic!("the refusal must reach the user"));
-            assert!(
-                status.contains("archive.zzz") && status.contains(".zzz"),
-                "the message must name the file and its type: {status}"
-            );
-            assert!(
-                !log.exists(),
-                "nothing may be launched for a type nothing claims: {:?}",
-                std::fs::read_to_string(&log)
-            );
-
-            file_explorer::files_app::clear_document_opener();
-            clear_launch_env();
-        }
-
         /// Opening a document must leave a read capability for exactly that
         /// path, addressed to exactly that package — or the app launches
         /// into a sandbox the file is not in. The launch itself fails here
@@ -2078,8 +1923,6 @@ mod tests {
             launcher::invalidate_app_cache();
         }
 
-        the_file_explorer_opens_a_document_in_the_app_that_owns_it();
-        the_file_explorer_reports_a_type_nothing_opens();
         opening_a_document_grants_read_for_that_path();
     }
 
@@ -2089,7 +1932,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env, launch_events)]
     fn open_with_lists_claiming_packages_launches_the_pick_and_remembers_always() {
-        use file_explorer::open_with::OpenWithRoute as _;
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
         std::fs::create_dir_all(&apps).unwrap();
@@ -2114,10 +1956,19 @@ mod tests {
         reset_session_state();
         let chrome = chrome_with_workspace();
 
-        let route = crate::shell::ShellOpenWithRoute { chrome };
-        let candidates = route.candidates(&doc);
+        let choices = |doc: &Path| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            open_with_choices(
+                doc,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        let candidates = choices(&doc);
         let packages: Vec<(&str, bool)> = candidates
-            .apps
             .iter()
             .filter(|app| desktop_policy::host_desktop_id(&app.id).is_none())
             .map(|app| (app.id.as_str(), app.is_default))
@@ -2127,10 +1978,10 @@ mod tests {
             vec![("so.tilo.pdf-viewer", true), ("so.tilo.zine", false)],
             "only claiming packages, the activation default first"
         );
-        assert_eq!(candidates.apps[0].id, "so.tilo.pdf-viewer");
-        assert_eq!(candidates.type_label, ".pdf files");
+        assert_eq!(candidates[0].id, "so.tilo.pdf-viewer");
+        assert_eq!(type_label(&doc), ".pdf files");
 
-        route.open_with(&doc, "so.tilo.zine").unwrap();
+        open_with_app(&doc, &chrome, "so.tilo.zine").unwrap();
         let commands = launched_commands(&log, 1);
         assert!(
             commands[0].contains("--app-id so.tilo.zine")
@@ -2139,20 +1990,17 @@ mod tests {
             commands[0]
         );
         assert!(
-            route.open_with(&doc, "so.tilo.text-editor").is_err(),
+            open_with_app(&doc, &chrome, "so.tilo.text-editor").is_err(),
             "an app that does not claim the type is refused"
         );
 
-        route.set_default(&doc, "so.tilo.zine").unwrap();
+        set_personal_default(&doc, "so.tilo.zine").unwrap();
         assert!(matches!(
             resolve_for(&doc, "", None),
             DocumentTarget::App { ref app, .. } if app.package_id == "so.tilo.zine"
         ));
-        assert!(
-            route.candidates(&doc).apps[0].is_default
-                && route.candidates(&doc).apps[0].id == "so.tilo.zine"
-        );
-        assert!(route.set_default(&doc, "so.tilo.text-editor").is_err());
+        assert!(choices(&doc)[0].is_default && choices(&doc)[0].id == "so.tilo.zine");
+        assert!(set_personal_default(&doc, "so.tilo.text-editor").is_err());
         clear_launch_env();
     }
 

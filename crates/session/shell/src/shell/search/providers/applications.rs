@@ -2362,7 +2362,7 @@ mod native_application_tests {
     };
 
     #[test]
-    fn native_files_search_opens_the_real_hosted_app_and_revalidates_availability() {
+    fn native_app_search_opens_the_hosted_app_and_revalidates_availability() {
         let directory = tempfile::tempdir().unwrap();
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
         chrome.borrow_mut().hosted_inputs =
@@ -2371,14 +2371,14 @@ mod native_application_tests {
         let results = NativeApplicationsProvider::default().query(SearchContext {
             query_scope: None,
             include_programmatic: false,
-            needle: "Files",
+            needle: "Feedback",
             wanted: &[ResourceKind::Application],
             chrome: &chrome.borrow(),
             doc: &doc,
             doc_root: &automerge::ROOT,
         });
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
+        assert_eq!(results[0].id, tilo_desktop::feedback::PACKAGE);
         (results[0].on_open)(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
@@ -2386,7 +2386,10 @@ mod native_application_tests {
             &ActionArgs::none(),
         )
         .unwrap();
-        assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
+        assert_eq!(
+            chrome.borrow().active_app_title().as_deref(),
+            Some(tilo_desktop::feedback::definition().title())
+        );
         assert!(
             chrome
                 .borrow()
@@ -2401,9 +2404,9 @@ mod native_application_tests {
                 .any(|tab| matches!(
                     &tab.tile,
                     crate::shell::state::TileContent::AppPlaceholder {
-                        kind: AppKind::FileExplorer,
+                        kind: AppKind::Other(kind),
                         ..
-                    }
+                    } if kind == tilo_desktop::feedback::KIND
                 ))
         );
         chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
@@ -2466,7 +2469,7 @@ mod native_application_tests {
         let results = NativeApplicationsProvider::default().query(SearchContext {
             query_scope: None,
             include_programmatic: false,
-            needle: "Files",
+            needle: "Feedback",
             wanted: &[ResourceKind::Application],
             chrome: &chrome.borrow(),
             doc: &doc,
@@ -2486,18 +2489,18 @@ mod native_application_tests {
         let files_group = groups
             .iter()
             .find(|group| !ids.contains(&group.id))
-            .expect("Files search result created a group");
+            .expect("the search result created a group");
         assert!(
             files_group.tabs.iter().any(|tab| {
                 matches!(
                     &tab.tile,
                     crate::shell::state::TileContent::AppPlaceholder {
-                        kind: AppKind::FileExplorer,
+                        kind: AppKind::Other(kind),
                         ..
-                    }
+                    } if kind == tilo_desktop::feedback::KIND
                 )
             }),
-            "the new group contains the real hosted Files app",
+            "the new group contains the hosted app",
         );
         let files_group = files_group.id;
         assert_eq!(

@@ -69,59 +69,18 @@ impl ShellOverlayHost {
                     st.bump();
                     self.host_shell_allows.push(pending);
                 }
-                ui::widget::AppHostIntent::OpenDocument {
-                    path,
-                    capability,
-                    token,
-                    reply,
-                } => {
-                    let Some(reply) = reply.upgrade() else {
-                        continue;
-                    };
-                    let Ok(mut reply) = reply.try_borrow_mut() else {
-                        continue;
-                    };
-                    if !reply.is_pending(token) {
-                        continue;
+                // Only Files drawn in this process asked to open documents
+                // here; no app is drawn here any more.
+                ui::widget::AppHostIntent::OpenDocument { token, reply, .. } => {
+                    if let Some(reply) = reply.upgrade()
+                        && let Ok(mut reply) = reply.try_borrow_mut()
+                        && reply.is_pending(token)
+                    {
+                        reply.cancel(token);
                     }
-                    Self::complete_document_open_request(
-                        &chrome,
-                        source_tab,
-                        &path,
-                        &capability,
-                        token,
-                        &mut reply,
-                    );
                 }
             }
         }
-    }
-
-    /// Resolve the one capability-bound Files request that drain admitted.
-    /// Keeping the authorization immediately beside the actual opener avoids
-    /// any generic app intent becoming a filesystem-read capability.
-    pub(super) fn complete_document_open_request(
-        chrome: &crate::shell::chrome_state::Chrome,
-        source_tab: crate::shell::state::TabId,
-        path: &std::path::Path,
-        capability: &ui::widget::DocumentOpenCapability,
-        token: u64,
-        reply: &mut ui::widget::DocumentOpenReply,
-    ) {
-        let authorized_source = {
-            let state = chrome.borrow();
-            let files_app_id = crate::shell::state::AppKind::FileExplorer.app_id();
-            state.active_tab_id() == Some(source_tab)
-                && state.active_app_id().as_deref() == Some(files_app_id.as_str())
-                && state
-                    .hosted_inputs
-                    .accepts_document_open_capability(capability)
-        };
-        if !authorized_source {
-            reply.cancel(token);
-            return;
-        }
-        reply.complete(token, crate::shell::open_document_from_files(chrome, path));
     }
 
     /// Reconciles the shared desktop surface with the live tree. Groups and

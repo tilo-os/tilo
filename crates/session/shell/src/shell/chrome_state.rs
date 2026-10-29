@@ -2410,24 +2410,8 @@ impl ChromeState {
         path: &std::path::Path,
         placement: crate::shell::tab_binding::Placement,
     ) -> Option<u64> {
-        let mut files_directory = None;
         if path.exists() {
-            let canonical = path.canonicalize().ok()?;
-            if canonical.is_dir() {
-                files_directory = Some(canonical);
-            } else {
-                let is_editor = canonical
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|extension| {
-                        super::workspace_drop::EDITOR_EXTENSIONS
-                            .iter()
-                            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-                    });
-                if !is_editor {
-                    files_directory = canonical.parent().map(std::path::Path::to_path_buf);
-                }
-            }
+            path.canonicalize().ok()?;
         }
         let tab_id = {
             let mut tree = self.tree_mut();
@@ -2451,11 +2435,6 @@ impl ChromeState {
         };
         if let Some((strip, group)) = address {
             self.grant_dropped_file_access(path, strip, group, tab_id);
-        }
-        // Synthetic/nonexistent paths used by shell layout fixtures retain the
-        // historical placeholder behaviour; a real folder is bound here.
-        if let Some(directory) = files_directory {
-            self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
         self.bump();
         Some(tab_id)

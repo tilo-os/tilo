@@ -1,18 +1,14 @@
-//! What the shell hands the apps it mounts in its own process: where Files
-//! starts, the services they borrow from the shell, and the
-//! [`InProcessApps`](super::in_process::InProcessApps) that keeps their
-//! records. File paths are presentation data; they grant no filesystem
+//! What the shell hands the surfaces it draws itself: the feedback app and
+//! the [`InProcessApps`](super::in_process::InProcessApps) that keeps its
+//! records, and a fixture's own folder. Every packaged app runs as its own
+//! process. File paths are presentation data; they grant no filesystem
 //! authority.
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use super::state::{AppKind, TabId};
-
-/// The Files widget is the Files package; it registers under that id.
-pub const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
+use super::state::AppKind;
 
 /// An application the native shell can construct in-process.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,13 +22,13 @@ pub struct NativeAppRegistration {
 
 #[derive(Clone, Default)]
 pub struct HostedTileInputs {
-    pub files: Option<file_explorer::StartupInputs>,
     pub picker_scope: Option<crate::portal::PickerScope>,
     fixture: Option<Arc<FixtureDirectory>>,
     fixture_clock: Option<tilo_desktop::chrome::ClockSnapshot>,
-    file_services: Option<file_explorer::files_app::HostedFileServices>,
+    /// Whether this host stands in for a person's own files (a capture's
+    /// or a test's folder): it shows the shipped wallpaper, never theirs.
+    owns_files: bool,
     native_apps: Arc<[NativeAppRegistration]>,
-    file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
     /// The framework apps this host mounts in its own process; without
     /// them a tab of such an app says it is unavailable.
     in_process: Option<super::in_process::SharedInProcessApps>,
@@ -54,8 +50,8 @@ impl Drop for FixtureDirectory {
 }
 
 impl HostedTileInputs {
-    /// Native host startup data for the Files widget. This chooses its
-    /// initial directory; it does not claim to sandbox filesystem access.
+    /// A host standing in for a person's own folder `directory`, drawing the
+    /// shell's feedback through `apps`. It grants no filesystem access.
     /// # Errors
     /// Returns an error if the directory cannot be resolved or is not a directory.
     pub fn for_host_directory(
@@ -70,32 +66,14 @@ impl HostedTileInputs {
             ));
         }
         Ok(Self {
-            files: Some(file_explorer::StartupInputs {
-                initial_dir: directory,
-                workspace_roots: Vec::new(),
-                record_roots: Vec::new(),
-                remote_accounts: Vec::new(),
-                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-            }),
-            file_services: Some(
-                file_explorer::files_app::HostedFileServices::deferred_document_open(),
-            ),
-            native_apps: Arc::from([
-                NativeAppRegistration {
-                    package_id: tilo_desktop::feedback::PACKAGE,
-                    display_name: tilo_desktop::feedback::definition().title(),
-                    kind: AppKind::Other(tilo_desktop::feedback::KIND.into()),
-                    opens_extensions: &[],
-                    opens_mime_types: &[],
-                },
-                NativeAppRegistration {
-                    package_id: FILES_PACKAGE_ID,
-                    display_name: "Files",
-                    kind: AppKind::FileExplorer,
-                    opens_extensions: &[],
-                    opens_mime_types: &[],
-                },
-            ]),
+            owns_files: true,
+            native_apps: Arc::from([NativeAppRegistration {
+                package_id: tilo_desktop::feedback::PACKAGE,
+                display_name: tilo_desktop::feedback::definition().title(),
+                kind: AppKind::Other(tilo_desktop::feedback::KIND.into()),
+                opens_extensions: &[],
+                opens_mime_types: &[],
+            }]),
             in_process: Some(Rc::new(RefCell::new(apps))),
             ..Self::default()
         })
@@ -126,7 +104,7 @@ impl HostedTileInputs {
     /// session, and the apps keep their records in a profile of the
     /// fixture's own. This does not advertise a host provider.
     pub fn fixture() -> std::io::Result<Self> {
-        Self::create_fixture(&std::env::temp_dir(), None)
+        Self::create_fixture(&std::env::temp_dir(), false)
     }
 
     /// Create an owned fixture child with thumbnails and document opening absent.
@@ -139,21 +117,10 @@ impl HostedTileInputs {
                 "fixture parent must be an existing absolute private directory",
             ));
         }
-        Self::create_fixture(
-            parent,
-            Some(file_explorer::files_app::HostedFileServices {
-                thumbnails: None,
-                document_opener: file_explorer::files_app::DocumentOpenRoute::Unavailable,
-                open_with: None,
-                local_clipboard: false,
-            }),
-        )
+        Self::create_fixture(parent, true)
     }
 
-    fn create_fixture(
-        parent: &std::path::Path,
-        file_services: Option<file_explorer::files_app::HostedFileServices>,
-    ) -> std::io::Result<Self> {
+    fn create_fixture(parent: &std::path::Path, owns_files: bool) -> std::io::Result<Self> {
         let id = uuid::Uuid::new_v4();
         let directory = parent.join(format!("tilo-shell-fixture-{id}"));
         let profile = parent.join(format!("tilo-shell-fixture-apps-{id}"));
@@ -174,18 +141,10 @@ impl HostedTileInputs {
                 roots: vec![directory.clone()],
                 home: Some(directory.clone()),
             }),
-            files: Some(file_explorer::StartupInputs {
-                initial_dir: directory,
-                workspace_roots: Vec::new(),
-                record_roots: Vec::new(),
-                remote_accounts: Vec::new(),
-                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-            }),
             fixture: Some(fixture),
             fixture_clock: None,
-            file_services,
+            owns_files,
             native_apps: Arc::default(),
-            file_directories: Rc::default(),
             in_process: Some(Rc::new(RefCell::new(apps))),
             private_profile: None,
         })
@@ -202,20 +161,8 @@ impl HostedTileInputs {
         self.in_process.as_ref()
     }
 
-    pub(crate) fn file_services(&self) -> Option<&file_explorer::files_app::HostedFileServices> {
-        self.file_services.as_ref()
-    }
-
-    /// Accept only the opaque deferred-open capability installed with this
-    /// host's real Files services. Other mounted apps can construct the public
-    /// intent shape, but cannot authorize a native document read/publication.
-    pub(crate) fn accepts_document_open_capability(
-        &self,
-        capability: &ui::widget::DocumentOpenCapability,
-    ) -> bool {
-        self.file_services
-            .as_ref()
-            .is_some_and(|services| services.accepts_document_open_capability(capability))
+    pub(crate) fn owns_files(&self) -> bool {
+        self.owns_files
     }
 
     pub(crate) fn is_fixture(&self) -> bool {
@@ -274,61 +221,6 @@ impl HostedTileInputs {
     pub fn native_apps(&self) -> &[NativeAppRegistration] {
         &self.native_apps
     }
-
-    /// Choose the directory a newly-created hosted Files tab presents. The
-    /// binding is device-local launch data, just like [`Self::bind_document`];
-    /// filesystem authority is granted separately by chrome.
-    pub(crate) fn bind_files_directory(&self, tab: TabId, directory: PathBuf) {
-        self.file_directories.borrow_mut().insert(tab, directory);
-    }
-
-    pub(crate) fn files_for_tab(&self, tab: TabId) -> Option<file_explorer::StartupInputs> {
-        let directory = self.file_directories.borrow().get(&tab).cloned()?;
-        let mut inputs = self
-            .files
-            .clone()
-            .unwrap_or_else(|| file_explorer::StartupInputs {
-                initial_dir: directory.clone(),
-                workspace_roots: Vec::new(),
-                record_roots: Vec::new(),
-                remote_accounts: Vec::new(),
-                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-            });
-        inputs.initial_dir = directory;
-        Some(inputs)
-    }
-
-    /// Mount Files for tab `tab` of `room`, starting where the shell says,
-    /// as a window of Files shows it. `None` for a host that mounts no apps
-    /// in-process or names no place to start.
-    pub fn mount_files(
-        &self,
-        room: &str,
-        tab: TabId,
-    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-        let apps = self.in_process.as_ref()?;
-        let startup = self.files_for_tab(tab).or_else(|| self.files.clone())?;
-        let services = self.file_services().cloned();
-        Some(apps.borrow_mut().mount(
-            file_explorer::definition(),
-            room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |context| {
-                context.lend(startup);
-                if let Some(services) = services {
-                    context.lend(services);
-                }
-            },
-        ))
-    }
-
-    /// Where Files starts when the shell names no place for a tab: a
-    /// fixture's own directory.
-    #[must_use]
-    pub fn files_directory(&self) -> Option<&std::path::Path> {
-        self.files.as_ref().map(|files| files.initial_dir.as_path())
-    }
 }
 
 #[derive(Debug)]
@@ -354,122 +246,8 @@ impl std::fmt::Debug for HostedTileInputs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HostedTileInputs")
-            .field("has_files", &self.files.is_some())
+            .field("owns_files", &self.owns_files)
             .field("fixture", &self.is_fixture())
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn files_tile() -> crate::shell::state::TileContent {
-        crate::shell::state::TileContent::AppPlaceholder {
-            kind: crate::shell::state::AppKind::FileExplorer,
-            label: "Files".into(),
-        }
-    }
-
-    /// The Files tab a host's inputs mount, as the shell's tile resolver
-    /// mounts it.
-    fn mounted_files(
-        inputs: &HostedTileInputs,
-    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-        let tab = crate::shell::state::Tab {
-            id: 7,
-            title: "Files".into(),
-            tile: files_tile(),
-            app_title: None,
-        };
-        let request = tilo_desktop::resolver::TileRequest {
-            room: crate::shell::state::RoomId::new(),
-            tab: &tab,
-        };
-        crate::shell::mount_in_process(&request, inputs).map(|resolution| match resolution {
-            tilo_desktop::resolver::TileResolution::App(component, _) => Ok(component),
-            tilo_desktop::resolver::TileResolution::Failed(error) => Err(error),
-            _ => Err(ui::launch::LaunchError::Operation("not a component".into())),
-        })
-    }
-
-    #[test]
-    fn hosted_file_inputs_live_through_clones_and_never_fall_back() {
-        fn fixture_directory_lives_through_last_input_clone() {
-            let parent = tempfile::tempdir().unwrap();
-            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-            let child = inputs.files.as_ref().unwrap().initial_dir.clone();
-            assert_eq!(child.parent(), Some(parent.path()));
-            assert_eq!(
-                std::fs::read(child.join("Welcome.txt")).unwrap(),
-                b"Shell capture fixture\n"
-            );
-            let last = inputs.clone();
-            drop(inputs);
-            assert!(child.is_dir());
-            let component = mounted_files(&last)
-                .expect("a fixture mounts Files in-process")
-                .unwrap();
-            let mut harness = ui::headless::FrameHarness::from_component(
-                component,
-                (1000, 700),
-                ui::application::ComponentRunnerInputs::from_native_process(),
-            )
-            .unwrap();
-            harness.relayout();
-            assert!(
-                harness.inspection_json().unwrap().contains("Welcome.txt"),
-                "Files lists the fixture's own folder"
-            );
-            harness.close_components();
-            drop(harness);
-            assert!(child.is_dir());
-            drop(last);
-            assert!(!child.exists());
-            assert!(parent.path().is_dir());
-        }
-
-        fn fixture_missing_files_input_does_not_fall_back_on_linux() {
-            let parent = tempfile::tempdir().unwrap();
-            let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-            inputs.files = None;
-            assert!(mounted_files(&inputs).is_none(), "nothing is mounted");
-            let result = crate::shell::try_to_ui_tile(&files_tile(), &inputs);
-            assert!(matches!(
-                result,
-                Err(HostedTileError::RequiredServiceMissing("Files startup"))
-            ));
-        }
-
-        fn a_files_tab_can_start_in_its_dropped_directory() {
-            let parent = tempfile::tempdir().unwrap();
-            let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
-            let dropped = parent.path().join("dropped");
-            std::fs::create_dir(&dropped).unwrap();
-            inputs.bind_files_directory(42, dropped.clone());
-            assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
-            assert!(inputs.files_for_tab(43).is_none());
-        }
-
-        fixture_directory_lives_through_last_input_clone();
-        fixture_missing_files_input_does_not_fall_back_on_linux();
-        a_files_tab_can_start_in_its_dropped_directory();
-    }
-}
-
-#[cfg(test)]
-mod desktop_catalog_tests {
-    use super::*;
-
-    #[test]
-    fn desktop_native_catalog_includes_constructible_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::for_host_directory_privately(dir.path()).unwrap();
-        assert!(
-            inputs
-                .native_apps()
-                .iter()
-                .any(|app| app.display_name == "Files" && app.kind == AppKind::FileExplorer)
-        );
     }
 }

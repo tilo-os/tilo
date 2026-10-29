@@ -497,15 +497,6 @@ fn try_to_ui_tile_for_tab(
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // These are their apps' own components, mounted in this process
             // by `mount_in_process`; reaching here, the host mounts none.
-            ShellKind::FileExplorer
-                if inputs.files.is_none()
-                    && tab.and_then(|tab| inputs.files_for_tab(tab)).is_none()
-                    && (inputs.is_fixture() || !cfg!(target_os = "linux")) =>
-            {
-                return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
-                    "Files startup",
-                ));
-            }
             ShellKind::Terminal | ShellKind::FileExplorer | ShellKind::Browser => {
                 return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
                     "in-process apps",
@@ -596,80 +587,6 @@ pub fn to_ui_window_group_with_inputs(
         })
         .collect();
     UiGroup::new(g.id, tabs_with_content, g.active_tab, g.width).with_maximized(g.maximized)
-}
-
-/// Wires the hosted file explorer's document activation to
-/// [`doc_open::open_in_workspace`] — the explorer asks, the compositor
-/// answers. Named so a test can install it against its own chrome too.
-pub fn install_document_opener(chrome: &chrome_state::Chrome) {
-    file_explorer::open_with::set_open_with_route(std::rc::Rc::new(ShellOpenWithRoute {
-        chrome: chrome.clone(),
-    }));
-    let chrome = chrome.clone();
-    file_explorer::files_app::set_document_opener(move |path| {
-        open_legacy_document_from_files(&chrome, path)
-    });
-}
-
-/// Files opens a document through the shell: in the app that owns it.
-fn open_legacy_document_from_files(
-    chrome: &chrome_state::Chrome,
-    path: &std::path::Path,
-) -> Result<(), String> {
-    doc_open::open_in_workspace(path, chrome)
-        .map(|_| ())
-        .map_err(|error| error.user_message())
-}
-
-/// The owning Files open route, called after its record loan has ended.
-pub(crate) fn open_document_from_files(
-    chrome: &chrome_state::Chrome,
-    path: &std::path::Path,
-) -> Result<(), String> {
-    open_legacy_document_from_files(chrome, path)
-}
-
-/// Files' "Open With": candidates, launches and defaults all come from
-/// [`doc_open`], under the active workspace's policy and the local person.
-struct ShellOpenWithRoute {
-    chrome: chrome_state::Chrome,
-}
-
-impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
-    fn candidates(&self, path: &std::path::Path) -> file_explorer::open_with::OpenWithCandidates {
-        let apps = {
-            let state = self.chrome.borrow();
-            let tree = state.tree();
-            doc_open::open_with_choices(
-                path,
-                &state.local_user_id,
-                tree.desktop
-                    .active_workspace()
-                    .map(|workspace| &workspace.default_apps),
-            )
-        };
-        file_explorer::open_with::OpenWithCandidates {
-            type_label: doc_open::type_label(path),
-            apps: apps
-                .into_iter()
-                .map(|choice| file_explorer::open_with::OpenWithApp {
-                    id: choice.id,
-                    name: choice.name,
-                    is_default: choice.is_default,
-                })
-                .collect(),
-        }
-    }
-
-    fn open_with(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
-        doc_open::open_with_app(path, &self.chrome, app_id)
-            .map(|_| ())
-            .map_err(|error| error.user_message())
-    }
-
-    fn set_default(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
-        doc_open::set_personal_default(path, app_id)
-    }
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)
@@ -830,7 +747,7 @@ pub(crate) fn workspace_surface_chrome(
             let workspace_id = workspace.id.0.to_string();
             // Scratch scenes and captures host their own files and read no
             // private wallpaper; they show the shipped one.
-            let backdrop = if chrome.borrow().hosted_inputs.file_services().is_some() {
+            let backdrop = if chrome.borrow().hosted_inputs.owns_files() {
                 desktop_backdrop::shipped_backdrop(
                     desktop_backdrop::DesktopBackdrop::for_workspace(workspace_id),
                 )
@@ -979,12 +896,6 @@ pub fn build_tilo_overlay_host_with_inputs(
     let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
     chrome.borrow_mut().hosted_inputs = inputs;
     chrome.borrow_mut().set_records(records);
-    // Points every hosted file explorer at the desktop's one open path, so
-    // activating a row resolves the owning app and focuses an already-open
-    // document exactly as a palette hit does. Installed once here and
-    // picked up by explorers this host creates later without threading a
-    // handle through each constructor.
-    install_document_opener(&chrome);
     // Snapshot to walk without holding the read lock across widget
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
