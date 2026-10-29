@@ -277,9 +277,7 @@ fn an_administrators_own_device_changes_the_rooms_settings_and_an_editors_cannot
         Scope::NetHost("example.org".into()),
         Access::Read,
     );
-    let sandbox = SettingsChange::GrantSandbox {
-        capability: capability.clone(),
-    };
+    let sandbox = SettingsChange::GrantSandbox { capability };
     let save = SettingsChange::SavePreset { preset: readers() };
     for change in [rename.clone(), sandbox.clone(), save.clone()] {
         assert!(

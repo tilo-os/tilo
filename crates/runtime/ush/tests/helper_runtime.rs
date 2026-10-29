@@ -26,12 +26,9 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         seccomp_blob: root.join("unused"),
         command: Vec::new(),
         shell: PathBuf::from("/usr/bin/sh"),
-        runs: None,
-        shell_rc: false,
         term: "xterm".into(),
         env: Vec::new(),
         resolver: None,
-        editor: None,
         terminal: None,
         control: None,
     })

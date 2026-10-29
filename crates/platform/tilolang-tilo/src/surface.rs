@@ -32,6 +32,7 @@ pub const VERSION: u32 = 1;
 /// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
 #[must_use]
 pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
+    // optional-decode: a probe: a type that does not parse names no other app's record.
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app).ok()? {
         tilolang_runtime::meta::Ty::Record(key) if key.app != meta.app => {
             Some((format!("tl.{}.{}", key.app, key.name), key.name))
@@ -80,6 +81,9 @@ fn plain_cases(
 /// field, as a native model's derive publishes its fields.
 #[must_use]
 pub fn field_type_of_type(meta: &Meta, ty: &str, types: &mut TypeSet) -> FieldType {
+    // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
+    // loaded); one that does not is published as any value.
+    // optional-decode: checked where the package is loaded
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
         Ok(parsed) => field_type_of(meta, &parsed, types),
         Err(_) => FieldType::Any,
@@ -152,6 +156,9 @@ fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
 /// a plain enum as the names of its cases, a principal as the workspace subject it is.
 #[must_use]
 pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
+    // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
+    // loaded); one that does not takes any value.
+    // optional-decode: checked where the package is loaded
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
         Ok(parsed) => schema_of(meta, &parsed),
         Err(_) => json!({}),
@@ -220,6 +227,7 @@ fn subject_schema() -> Json {
 /// binds, a palette offers and the generated surface describes, one declaration for all three.
 #[must_use]
 pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
+    // optional-decode: a loaded package's parameter types all parse (`meta::unreadable_types`).
     let parsed = tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok();
     // What the parameter takes when it is given: an `Option` is its value, left out.
     let present = match &parsed {

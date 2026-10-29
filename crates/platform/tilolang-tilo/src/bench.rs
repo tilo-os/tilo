@@ -37,9 +37,10 @@
 //!   process of its own.
 //! * `idle`: ten seconds with nothing happening: how often the process was woken, and how
 //!   many views ran.
-//! * `thread_open`, `thread_keystroke`, `thread_post`, `thread_scroll`: for a package whose
-//!   items hold a collection of their own (a conversation's messages), one item holding N of
-//!   them, in its own window ([`thread`]).
+//! * `thread_open`, `thread_keystroke`, `thread_post`, `thread_send`, `thread_scroll`: for a
+//!   package whose items hold a collection of their own (a conversation's messages), one item
+//!   holding N of them, in its own window ([`thread`]). A sidebar of places (a chat's channels
+//!   among its categories, [`List::places`]) holds a few at every size: N grows only here.
 //!
 //! Beside its times each scenario records the work it did ([`Work`]), in counts that do not
 //! depend on the machine; `tests/budgets.rs` holds those to how they grow with the room. The
@@ -239,7 +240,14 @@ struct List {
     flags: Vec<String>,
     /// The item's own collection, when it has one: a conversation's messages.
     nested: Option<Nested>,
+    /// The items are places of a sidebar of several kinds of thing (a chat's channels among
+    /// its categories): the root holds [`PLACES`] of them whatever the size, and what grows
+    /// is a place's own collection, which the transcript scenarios measure ([`thread`]).
+    places: bool,
 }
+
+/// How many places a sidebar of places holds (see [`List::places`]).
+const PLACES: usize = 20;
 
 /// The collection an item holds.
 struct Nested {
@@ -277,36 +285,23 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
         .iter()
         .filter(|f| f.kind == MergeKind::Collection)
         .find_map(|f| {
-            let item_ty = f.record.clone()?;
-            let texts = lookup(&item_ty)?
-                .fields
-                .iter()
-                .filter(|f| f.kind == MergeKind::Text)
-                .map(|f| f.id.clone())
+            let mut lists = item_types(meta, root_ty, f)
+                .into_iter()
+                .filter_map(|item_ty| list_of(&f.id, item_ty))
                 .collect::<Vec<_>>();
-            let flags = lookup(&item_ty)?
-                .fields
+            // Of a collection of several types (a sidebar of categories and channels), the
+            // type with a window of its own and a collection in it: a channel and its messages.
+            // Such a sidebar holds a few places; what grows is a place's own collection.
+            let several = lists.len() > 1;
+            let chosen = lists
                 .iter()
-                .filter(|f| f.kind == MergeKind::Register && f.default.is_boolean())
-                .map(|f| f.id.clone())
-                .collect::<Vec<_>>();
-            let nested = lookup(&item_ty)?
-                .fields
-                .iter()
-                .find(|f| f.kind == MergeKind::Collection)
-                .and_then(|f| {
-                    Some(Nested {
-                        field: f.id.clone(),
-                        item_ty: f.record.clone()?,
-                    })
-                });
-            (!texts.is_empty()).then(|| List {
-                field: f.id.clone(),
-                item_ty,
-                texts,
-                flags,
-                nested,
-            })
+                .position(|l| l.nested.is_some() && meta.default_view(&l.item_ty).is_some());
+            let mut list = match chosen {
+                Some(at) => lists.swap_remove(at),
+                None => (!lists.is_empty()).then(|| lists.swap_remove(0))?,
+            };
+            list.places = several && chosen.is_some();
+            Some(list)
         });
     let counter = schema
         .fields
@@ -348,17 +343,82 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
     })
 }
 
+/// The types of the items the root's collection `field` holds: its one record type, or each
+/// type of the union it holds (`Collection<Category | TextChannel>`).
+fn item_types(
+    meta: &Meta,
+    root_ty: &tilolang_runtime::meta::TypeMeta,
+    field: &crate::schema::FieldSchema,
+) -> Vec<String> {
+    if let Some(item_ty) = &field.record {
+        return vec![item_ty.clone()];
+    }
+    let Some(declared) = root_ty.fields.iter().find(|f| f.id == field.id) else {
+        return Vec::new();
+    };
+    match tilolang_runtime::meta::parse_ty(&declared.ty, &meta.app) {
+        Ok(tilolang_runtime::meta::Ty::Collection(inner)) => match *inner {
+            tilolang_runtime::meta::Ty::Union(keys) => keys
+                .iter()
+                .filter(|key| key.app == meta.app)
+                .filter_map(|key| {
+                    crate::meta::MetaExt::type_named(meta, &key.name).map(|t| t.id.clone())
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// The root's collection `field` as a list of items of `item_ty`, when the items have text to
+/// fill.
+fn list_of(field: &str, item_ty: String) -> Option<List> {
+    let schema = lookup(&item_ty)?;
+    let texts = schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == MergeKind::Text)
+        .map(|f| f.id.clone())
+        .collect::<Vec<_>>();
+    let flags = schema
+        .fields
+        .iter()
+        .filter(|f| f.kind == MergeKind::Register && f.default.is_boolean())
+        .map(|f| f.id.clone())
+        .collect::<Vec<_>>();
+    let nested = schema
+        .fields
+        .iter()
+        .find(|f| f.kind == MergeKind::Collection)
+        .and_then(|f| {
+            Some(Nested {
+                field: f.id.clone(),
+                item_ty: f.record.clone()?,
+            })
+        });
+    (!texts.is_empty()).then(|| List {
+        field: field.to_owned(),
+        item_ty,
+        texts,
+        flags,
+        nested,
+        places: false,
+    })
+}
+
 /// The id the seeded item number `i` has.
 fn item_id(i: usize) -> String {
     format!("seed-{i:06}")
 }
 
-/// The root record with `n` items in its collection, each with its number in every text
-/// field, and referring to the roots it links.
+/// The root record with `n` items in its collection (a sidebar of places, its [`PLACES`]),
+/// each with its number in every text field, and referring to the roots it links.
 fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
     if let Some(list) = &shape.list {
+        let n = if list.places { n.min(PLACES) } else { n };
         let item_schema = lookup(&list.item_ty).ok_or("unregistered item type")?;
         let mut items = Collection::default();
         for i in 0..n {
@@ -1125,6 +1185,7 @@ fn context_switches() -> (u64, u64) {
             .lines()
             // A wakeup is a voluntary switch; the kernel preempting a running thread is not one.
             .filter(|l| l.starts_with("voluntary_ctxt_switches"))
+            // optional-decode: a benchmark probe of /proc: a line without a count adds nothing
             .filter_map(|l| l.split(':').nth(1)?.trim().parse::<u64>().ok())
             .sum::<u64>()
     };
@@ -1193,6 +1254,19 @@ impl Sized<'_> {
     }
 }
 
+/// The sizes of the rooms the scenarios run in: each of `sizes`. A root without a collection
+/// holds no items to count: one room, of none. A sidebar of places holds its few places at every
+/// size: one room, of them; what grows is a place's own collection ([`thread`]).
+fn room_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
+    if shape.list.as_ref().is_some_and(|l| l.places) {
+        vec![PLACES]
+    } else if shape.subject().is_some() {
+        sizes.to_vec()
+    } else {
+        vec![0]
+    }
+}
+
 /// Run every scenario at every size.
 ///
 /// # Errors
@@ -1216,12 +1290,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         .filter(|m| m.app != meta.app)
         .collect();
     let shape = shape_of(&meta, &others)?;
-    // A root without a collection holds no items to count: one room, of none.
-    let counts = if shape.subject().is_some() {
-        config.sizes.clone()
-    } else {
-        vec![0]
-    };
+    let counts = room_sizes(&shape, &config.sizes);
     let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
     let mut out = Recorder {
         records: Vec::new(),
@@ -1313,6 +1382,7 @@ fn anon_mib() -> Option<f64> {
         .trim()
         .strip_suffix("kB")?
         .trim()
+        // optional-decode: a benchmark probe of /proc: a kernel without the field measures nothing
         .parse::<u32>()
         .ok()?;
     Some(f64::from(kib) / 1024.0)
@@ -1361,6 +1431,7 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
     let mib = stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix(MEMORY_LINE))
+        // optional-decode: a line that is not the measurement is reported below as nothing measured
         .and_then(|v| v.parse::<f64>().ok())
         .ok_or_else(|| {
             format!(
@@ -1552,13 +1623,15 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
             let after_frame = Instant::now();
             // Where the keystroke phase types: an item's window, else the main window.
             let (typing, text) = typing(sized, &host, list.tree())?;
-            let value = Value::text(format!("{text}x"));
+            let text = format!("{text}x");
             let mut editor = match typing {
                 Typing::Item(editor, input) => {
+                    let value = typed(&editor, &input, &text);
                     editor.edit(&input, &value).map_err(|e| e.to_string())?;
                     Some(editor)
                 }
                 Typing::Main(input) => {
+                    let value = typed(&list, &input, &text);
                     list.edit(&input, &value).map_err(|e| e.to_string())?;
                     None
                 }
@@ -1689,14 +1762,25 @@ fn text_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
 }
 
 /// The key and text of the first input of `node` bound to the view's own state: the text a
-/// person composes (a conversation's composer).
+/// person composes (a conversation's composer), plain or rich.
 pub(crate) fn composer_input(view: &ViewInstance, node: &UiNode) -> Option<(String, String)> {
-    if node.binding.as_ref().is_some_and(|b| b.field().is_none())
-        && let Some(Value::Text(text)) = view.bound_value(&node.key)
-    {
-        return Some((node.key.clone(), text));
+    if node.binding.as_ref().is_some_and(|b| b.field().is_none()) {
+        match view.bound_value(&node.key) {
+            Some(Value::Text(text)) => return Some((node.key.clone(), text)),
+            Some(Value::Rich(rich)) => return Some((node.key.clone(), rich.written_text())),
+            _ => {}
+        }
     }
     node.children.iter().find_map(|c| composer_input(view, c))
+}
+
+/// `text` as what the input `input` of `view` holds: rich text in a rich input (a chat's
+/// composer), else plain text.
+pub(crate) fn typed(view: &ViewInstance, input: &str, text: &str) -> Value {
+    match view.bound_value(input) {
+        Some(Value::Rich(_)) => Value::Rich(tilolang_runtime::rich::RichValue::from_text(text)),
+        _ => Value::text(text),
+    }
 }
 
 /// Where a person types in the window `main` of `host` shows.
@@ -1731,7 +1815,10 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
-        let value = Value::text(text.clone());
+        let value = match &typing {
+            Typing::Item(editor, input) => typed(editor, input, &text),
+            Typing::Main(input) => typed(&room.list, input, &text),
+        };
         let editor_of = |typing: &Typing| match typing {
             Typing::Item(editor, _) => Some(editor.stats().renders),
             Typing::Main(_) => None,

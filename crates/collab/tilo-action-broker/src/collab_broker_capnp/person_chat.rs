@@ -146,7 +146,7 @@ impl CapnpChannelHandle {
                 .clone()
                 .ok_or("original private app actor unavailable")?;
             drop(pending);
-            if let Some(token) = original.private_draft_token() {
+            if let Some(token) = original.private_draft_token()? {
                 let (actor, draft) = self.private_draft_authority(token, id.as_bytes())?;
                 let runtime_collab::private_draft::Target::Person { public_key } = draft.target;
                 if !matches!(&command,
