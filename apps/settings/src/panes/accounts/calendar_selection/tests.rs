@@ -1,5 +1,5 @@
 use super::AccountsPane;
-use crate::{SettingsApp, SettingsShell};
+use crate::SettingsShell;
 
 pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDir, AccountsPane) {
     let root = tempfile::tempdir().unwrap();

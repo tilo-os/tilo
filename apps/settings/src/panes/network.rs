@@ -458,12 +458,16 @@ pub(crate) fn answer(
         .model()
         .borrow_mut()
         .begin(effect)?;
-    Ok(answer_begun(begun, cx))
+    Ok(answer_begun(app, begun, cx))
 }
 
 /// Carry out what an effect began: nothing more, or its work on a worker,
 /// landing in the model.
-pub(crate) fn answer_begun(begun: Begun, cx: &mut EffectCx<Settings>) -> Effected {
+pub(crate) fn answer_begun(
+    app: &SettingsApp,
+    begun: Begun,
+    cx: &mut EffectCx<Settings>,
+) -> Effected {
     match begun {
         Begun::Done => Effected::done(),
         Begun::Work(work) => app.job(cx, work, |app: &SettingsApp, landed: Landed, _| {

@@ -239,7 +239,10 @@ fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         serde_json::json!({"x":0,"y":1080}),
     )
     .unwrap();
-    let intent = app.with_widget::<crate::window::SettingsWindow, _>(<SettingsApp as ui::framework::ResourceSurface<Settings, SettingsEffect>>::take_host_intent).flatten().expect("the real mounted surface carries the typed host intent");
+    let intent = app
+        .harness()
+        .take_host_intent()
+        .expect("the real mounted surface carries the typed host intent");
     let ui::widget::AppHostIntent::MoveDeviceDisplay { request, .. } = intent else {
         panic!("typed topology request");
     };

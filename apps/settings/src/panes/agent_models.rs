@@ -522,7 +522,7 @@ pub(crate) fn answer(
         | AgentModelsEffect::RemoveHubToken
         | AgentModelsEffect::SignInWithHuggingFace
         | AgentModelsEffect::SignInWithHuggingFaceCode
-        | AgentModelsEffect::CancelHuggingFaceSignIn) => hub::answer(model, effect, cx),
+        | AgentModelsEffect::CancelHuggingFaceSignIn) => hub::answer(app, model, effect, cx),
         AgentModelsEffect::SetUpAccelerator
         | AgentModelsEffect::InstallModel { .. }
         | AgentModelsEffect::StartModel { .. }

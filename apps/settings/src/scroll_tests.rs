@@ -2,7 +2,7 @@
 //! controls, in the hosted window whose controls are bound to the
 //! settings document.
 
-use crate::{SettingsShell, categories::Category, settings_app::SettingsApp};
+use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;

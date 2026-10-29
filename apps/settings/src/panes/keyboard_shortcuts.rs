@@ -57,7 +57,7 @@ pub enum ShortcutEffect {
     reason = "the signature every effect family answers with"
 )]
 pub(crate) fn answer(
-    _app: &SettingsApp,
+    app: &SettingsApp,
     effect: ShortcutEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {

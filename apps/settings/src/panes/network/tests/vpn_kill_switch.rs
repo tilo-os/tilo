@@ -16,7 +16,6 @@ use ui::widget::Widget;
 use super::super::{NetworkService, SAMPLE_VPN_HOME, SampleNetwork};
 use super::{FakeNetwork, hosted_model, mount_network, rendered_enabled, settle_until, work_vpn};
 use crate::i18n::t;
-use crate::settings_app::SettingsApp;
 
 type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 

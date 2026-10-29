@@ -5,8 +5,8 @@
 //! committing the document's pending changes: the observer is a witness, not
 //! a writer.
 
+use crate::SettingsWindow;
 use crate::categories::Category;
-use SettingsWindow;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use ui::headless::Framed;

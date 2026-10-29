@@ -615,6 +615,7 @@ impl crate::area::PaneQuery for super::AgentModelsArea {
 /// Answer one of the Hub's effects; the download itself is manager work
 /// ([`super::ManagerWork`]).
 pub(crate) fn answer(
+    app: &SettingsApp,
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
     effect: AgentModelsEffect,
     cx: &mut EffectCx<Settings>,
@@ -633,7 +634,9 @@ pub(crate) fn answer(
             drop(model.opener.open(&model_page_url(&reference.repo)));
             Ok(Effected::done())
         }
-        AgentModelsEffect::SearchHubModels { query, format } => search(model, &query, format, cx),
+        AgentModelsEffect::SearchHubModels { query, format } => {
+            search(app, model, &query, format, cx)
+        }
         AgentModelsEffect::SetHubFormat { format } => {
             model.hub.format =
                 parse_format(&format).ok_or_else(|| t("agent-hub-format-unknown"))?;
@@ -672,7 +675,7 @@ pub(crate) fn answer(
             }
             let control = Arc::clone(&model.control);
             drop(model);
-            Ok(token_job(cx, control, move |control| {
+            Ok(token_job(app, cx, control, move |control| {
                 control
                     .save_hub_token(&token)
                     .map(|()| t("agent-hub-token-saved"))
@@ -682,7 +685,7 @@ pub(crate) fn answer(
             model.hub.cancel_sign_in();
             let control = Arc::clone(&model.control);
             drop(model);
-            Ok(token_job(cx, control, |control| {
+            Ok(token_job(app, cx, control, |control| {
                 control
                     .forget_hub_token()
                     .map(|()| t("agent-hub-token-removed"))
@@ -709,6 +712,7 @@ pub(crate) fn answer(
 /// Search the Hub for `query` in `format` (GGUF when none): a search the
 /// window bar's search starts, or an agent's.
 fn search(
+    app: &SettingsApp,
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
     query: &str,
     format: Option<String>,
@@ -751,6 +755,7 @@ fn search(
 /// Change the stored Hugging Face token on a worker, then read back
 /// whether one is stored, which the token group shows.
 fn token_job(
+    app: &SettingsApp,
     cx: &mut EffectCx<Settings>,
     control: Arc<dyn LocalModelControl>,
     change: impl FnOnce(&dyn LocalModelControl) -> Result<String, String> + Send + 'static,

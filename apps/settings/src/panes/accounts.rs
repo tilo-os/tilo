@@ -444,16 +444,18 @@ fn answer_model(
             return Ok(Effected::Pending);
         }
         AccountsEffect::SyncNow { account } => {
-            return cloud(model, CloudRequest::SyncNow { account }, cx);
+            return cloud(app, model, CloudRequest::SyncNow { account }, cx);
         }
         AccountsEffect::PauseSync { account } => {
-            return cloud(model, CloudRequest::Pause { account }, cx);
+            return cloud(app, model, CloudRequest::Pause { account }, cx);
         }
         AccountsEffect::ResumeSync { account } => {
-            return cloud(model, CloudRequest::Resume { account }, cx);
+            return cloud(app, model, CloudRequest::Resume { account }, cx);
         }
-        AccountsEffect::RecoverCloudMode { account } => return recover_mode(model, account, cx),
-        AccountsEffect::TestAccount { account } => return test_account(model, &account, cx),
+        AccountsEffect::RecoverCloudMode { account } => {
+            return recover_mode(app, model, account, cx);
+        }
+        AccountsEffect::TestAccount { account } => return test_account(app, model, &account, cx),
     }
     Ok(Effected::done())
 }
@@ -504,6 +506,7 @@ fn commit_thunderbird_import(
 }
 
 fn recover_mode(
+    app: &SettingsApp,
     model: std::cell::RefMut<'_, AccountsPane>,
     account: String,
     cx: &mut EffectCx<Settings>,
@@ -511,10 +514,11 @@ fn recover_mode(
     if model.sign_in.is_some() {
         return Err("Close the account connection form before recovering its mode change".into());
     }
-    cloud(model, CloudRequest::RecoverImport { account }, cx)
+    cloud(app, model, CloudRequest::RecoverImport { account }, cx)
 }
 
 fn test_account(
+    app: &SettingsApp,
     model: std::cell::RefMut<'_, AccountsPane>,
     account: &str,
     cx: &mut EffectCx<Settings>,
@@ -535,6 +539,7 @@ fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
 /// Send `request` to the cloud account service on a worker; the pane asks
 /// the service for its mounts again once it answered.
 fn cloud(
+    app: &SettingsApp,
     model: std::cell::RefMut<'_, AccountsPane>,
     request: CloudRequest,
     cx: &mut EffectCx<Settings>,

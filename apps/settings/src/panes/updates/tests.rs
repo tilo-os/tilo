@@ -1152,7 +1152,6 @@ impl UpdateControl for GatedControl {
 )]
 fn a_stalled_update_control_never_holds_the_window() {
     use crate::resource::SettingsShell;
-    use crate::settings_app::SettingsApp;
     use ui::prelude::TestApp;
 
     ui::i18n::I18nManager::init("en-US");

@@ -359,7 +359,6 @@ fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, b
 mod tests {
     use super::*;
     use crate::host::PaneCx;
-    use crate::settings_app::SettingsApp;
 
     fn devices() -> Vec<settings_store::person_displays::PersonDevice> {
         vec![settings_store::person_displays::PersonDevice {

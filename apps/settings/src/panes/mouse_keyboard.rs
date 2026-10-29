@@ -1138,7 +1138,7 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
         .map_err(|error| format!("the input settings could not be saved: {error}"))
 }
 
-fn input_picker_snapshot(widget: &dyn Widget) -> Option<serde_json::Value> {
+pub(crate) fn input_picker_snapshot(widget: &dyn Widget) -> Option<serde_json::Value> {
     if widget.test_id() == Some("input.source.add_picker") {
         let dropdown = widget.as_any()?.downcast_ref::<Dropdown>()?;
         let accessible = dropdown.accessibility();
@@ -1190,7 +1190,7 @@ fn inspect_input_sources(
             "can_add": !configured && crate::input_sources::has_room_for(&prefs.keyboard_layouts, &entry.id)})
     }).collect();
     let add_picker = (app.selected() == crate::categories::Category::Keyboard)
-        .then(|| input_picker_snapshot(app))
+        .then(|| app.input_picker())
         .flatten();
     Ok(serde_json::json!({"active_source": prefs.keyboard_layout,
         "configured_sources": prefs.keyboard_layouts, "page": page, "pages": pages,

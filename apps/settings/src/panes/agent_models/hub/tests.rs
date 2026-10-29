@@ -230,7 +230,6 @@ fn an_ended_sign_in_asks_to_sign_in_again() {
 #[test]
 fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     use crate::categories::Category;
-    use crate::settings_app::SettingsApp;
 
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
         .expect("settings opens headlessly");

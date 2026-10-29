@@ -11,7 +11,6 @@ use settings_store::device_vpn::{
 
 use super::super::NetworkService;
 use super::{FakeNetwork, hosted_model, mount_network, rendered_enabled, settle_until};
-use crate::settings_app::SettingsApp;
 
 const DESK: &str = "desk-id";
 const PHONE: &str = "phone-id";

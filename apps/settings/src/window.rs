@@ -561,11 +561,16 @@ impl SettingsWindow {
         mounted_map(self).map(ui::KeyboardMap::inspection_snapshot)
     }
 
-    /// Hand the effects what the drawn keyboard shows now: whatever moved
-    /// it (a key held, a layout, a key inspected) went through the window.
+    /// Hand the effects what the drawn keyboard and the add-source picker
+    /// show now: whatever moved them (a key held, a layout, a key inspected,
+    /// a filter typed) went through the window.
     fn share_keyboard(&self) {
         self.app
             .keyboard_drawn(self.keyboard_now().and_then(Result::ok));
+        let picker = (self.app.selected() == Category::Keyboard)
+            .then(|| crate::panes::mouse_keyboard::input_picker_snapshot(self))
+            .flatten();
+        self.app.input_picker_drawn(picker);
     }
 }
 
@@ -1914,7 +1919,7 @@ mod tests {
         // read lands; that rebuild is not the query's.
         tilo_test_env::wait_for("the pane shown has read", || {
             let _ = Framed::harness_mut(&mut app).poll_frame();
-            (!app.pane_waits.get() && !app.pane_reading()).then_some(())
+            (!app.pane_waits().get() && !app.pane_reading()).then_some(())
         });
         let _ = app.take_structure_dirty();
         assert_eq!(app.search_query(), "", "starts with no query");

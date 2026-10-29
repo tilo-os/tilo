@@ -59,7 +59,7 @@ pub struct Setting<'a, R: Resource> {
     enabled: bool,
 }
 
-impl<R: Resource<State = R>> Setting<'_, R> {
+impl<R: Resource<State = R> + Model> Setting<'_, R> {
     /// With a helper line under the label.
     pub fn described(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
@@ -334,7 +334,7 @@ impl<R: Resource<State = R>> Setting<'_, R> {
     /// app, a verb of the record), its id the row's.
     pub fn button(self, text: &str, bind: impl FnOnce(Button) -> Button) -> Item {
         let id = self.id.clone().unwrap_or_else(|| self.label.clone());
-        let button = bind(Button::new(id, text).with_enabled(self.enabled));
+        let button = bind(Button::new(&id, text).with_enabled(self.enabled));
         self.control(Box::new(button))
     }
 

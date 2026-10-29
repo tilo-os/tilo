@@ -3,7 +3,7 @@
 //! while typing" in the desktop palette lands on that switch, not on the
 //! top of a long page.
 
-use crate::{SettingsShell, categories::Category, settings_app::SettingsApp};
+use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;

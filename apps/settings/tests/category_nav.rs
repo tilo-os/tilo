@@ -18,7 +18,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;

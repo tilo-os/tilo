@@ -6,9 +6,9 @@ use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
+use crate::SettingsShell;
 use crate::categories::Category;
 use crate::prefs::AppearancePrefs;
-use crate::{SettingsShell, settings_app::SettingsApp};
 
 const VIEWPORT: (u32, u32) = (1472, 920);
 
@@ -80,7 +80,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             found(&mut app)
         );
         match entry.shown {
-            super::Shown::Row(_) => assert!(
+            super::Shown::Row(_) | super::Shown::Bound(_) => assert!(
                 control(app.harness().root_widget(), setting, content_left()).is_some(),
                 "{}: its row is shown with its control",
                 entry.id

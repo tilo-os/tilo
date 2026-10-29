@@ -128,6 +128,7 @@ impl Areas {
     }
 
     /// Put `area` in place of the area of its type.
+    #[cfg(test)]
     fn replace(&mut self, area: Box<dyn PaneArea>) {
         let wanted = area.as_any().type_id();
         if let Some(slot) = self

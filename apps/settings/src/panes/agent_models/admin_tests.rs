@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agent_provider_config::management::AdminFuture;
 use ui::framework::testing::TestApp;
 
-use super::{AgentModelsEffect, PaneCx, ProviderPanel, SettingsApp, SettingsEffect};
+use super::{AgentModelsEffect, PaneCx, ProviderPanel, SettingsEffect};
 use crate::panes::model::PaneModel;
 use crate::{SettingsShell, effects::NavigationEffect};
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};

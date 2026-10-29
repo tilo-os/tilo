@@ -263,6 +263,7 @@ pub(crate) fn answer(
             Ok(Effected::Pending)
         }
         StorageEffect::OpenDisks => Ok(open_tool(
+            app,
             area,
             cx,
             ToolIntent::Disks {
@@ -271,6 +272,7 @@ pub(crate) fn answer(
             "settings-storage-opened-disks",
         )),
         StorageEffect::OpenBackups => Ok(open_tool(
+            app,
             area,
             cx,
             ToolIntent::Backups {
@@ -284,6 +286,7 @@ pub(crate) fn answer(
 /// Ask the shell to open `intent` off the UI thread; `opened` names the
 /// message it answers with once the shell took it.
 fn open_tool(
+    app: &SettingsApp,
     area: &StorageArea,
     cx: &mut EffectCx<Settings>,
     intent: ToolIntent,

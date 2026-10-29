@@ -325,7 +325,7 @@ pub(crate) fn answer(
         .model()
         .borrow_mut()
         .begin_vpn(effect)?;
-    Ok(super::answer_begun(begun, cx))
+    Ok(super::answer_begun(app, begun, cx))
 }
 
 /// A way out the VPN list offers beside the profiles, from another source

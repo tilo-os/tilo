@@ -43,6 +43,9 @@ pub struct SettingsApp {
     /// What the keyboard drawn on the Keyboard pane shows, as the window
     /// last read it; `None` while no keyboard is drawn.
     keyboard_shown: RefCell<Option<serde_json::Value>>,
+    /// What the Keyboard pane's add-source picker shows, as the window
+    /// last read it; `None` while no picker is drawn.
+    input_picker_shown: RefCell<Option<serde_json::Value>>,
 }
 
 impl Default for SettingsApp {
@@ -88,6 +91,7 @@ impl SettingsApp {
             keyboard_partial: Cell::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
+            input_picker_shown: RefCell::new(None),
         }
     }
 
@@ -340,6 +344,17 @@ impl SettingsApp {
     /// The window read the keyboard it draws: `shown`, or none drawn.
     pub(crate) fn keyboard_drawn(&self, shown: Option<serde_json::Value>) {
         *self.keyboard_shown.borrow_mut() = shown;
+    }
+
+    /// What the Keyboard pane's add-source picker shows; `None` while none
+    /// is drawn.
+    pub(crate) fn input_picker(&self) -> Option<serde_json::Value> {
+        self.input_picker_shown.borrow().clone()
+    }
+
+    /// The window read the add-source picker it draws: `shown`, or none.
+    pub(crate) fn input_picker_drawn(&self, shown: Option<serde_json::Value>) {
+        *self.input_picker_shown.borrow_mut() = shown;
     }
 
     pub fn host(&self) -> &crate::host::PaneCx {
