@@ -95,7 +95,7 @@ impl ProgramStep {
         }
         if lines > MAX_ANSWER_LINES {
             // The last line kept gives way to saying so, so it is left out too.
-            let left = lines - MAX_ANSWER_LINES + 1;
+            let left = lines.saturating_sub(MAX_ANSWER_LINES).saturating_add(1);
             if let Some(last) = self.answer.last_mut() {
                 *last = format!("// {left} more lines");
             }

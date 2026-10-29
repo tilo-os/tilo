@@ -185,7 +185,7 @@ impl ProgramStepView {
         }
         let mut row = Row::new().with_rhythm(Rhythm::Related).push(Box::new(chip));
         if !rest.is_empty() {
-            row = row.push(code_line(rest));
+            row = row.push(code_line(&labelled_only(rest)));
         }
         Box::new(row)
     }
@@ -231,8 +231,8 @@ impl ProgramStepView {
             card = card.with_footer(
                 Actions::new(
                     Button::new(
-                        &format!("{id}-confirm"),
-                        &widget_format("program-step-confirm", &[]),
+                        &format!("{id}-approve"),
+                        &widget_format("program-step-approve", &[]),
                     )
                     .role(ButtonRole::Primary)
                     .on_click(move || confirm(&confirmed)),
@@ -271,6 +271,28 @@ fn diagnostic_line(line: &str) -> Element {
             .with_wrap_mode(TextWrapMode::WordOrGlyph)
             .tone(Tone::Danger),
     )
+}
+
+/// `fields` with each reference literal that its label follows left out: `column:
+/// @board.Column:root/columns:todo "To do"` reads `column: "To do"`. The chip beside them
+/// already says which record the line is; the fields' references are read by their labels.
+fn labelled_only(fields: &str) -> String {
+    let (tokens, _) = lexer::lex(fields);
+    let mut shown = String::with_capacity(fields.len());
+    let mut from = 0;
+    for pair in tokens.windows(2) {
+        if let (Tok::Ref(_), Tok::Str(_)) = (&pair[0].tok, &pair[1].tok)
+            && let (Some(kept), true) = (
+                fields.get(from..pair[0].span.start),
+                pair[1].span.start <= fields.len(),
+            )
+        {
+            shown.push_str(kept);
+            from = pair[1].span.start;
+        }
+    }
+    shown.push_str(fields.get(from..).unwrap_or(""));
+    shown
 }
 
 /// The reference `line` starts with, among `refs`, and what follows it: the rest of the line
@@ -336,6 +358,8 @@ mod tests {
             rest, r#"column: @board.Column:root/columns:todo "To do""#,
             "the label is the chip's, the fields stay"
         );
+        assert_eq!(labelled_only(rest), r#"column: "To do""#);
+        assert_eq!(labelled_only("due: 2026-10-30"), "due: 2026-10-30");
         assert!(leading_reference("// 3 items", &refs).is_none());
         assert!(
             leading_reference(r#"@board.Card:root/cards:c9 "Other""#, &refs).is_none(),
@@ -381,7 +405,7 @@ mod tests {
         );
         assert!(bare.iter().any(|id| id == "s1-answer"), "{bare:?}");
         assert!(!bare.iter().any(|id| id.ends_with("-undo")), "{bare:?}");
-        assert!(!bare.iter().any(|id| id.ends_with("-confirm")), "{bare:?}");
+        assert!(!bare.iter().any(|id| id.ends_with("-approve")), "{bare:?}");
 
         let mut full = Vec::new();
         ids(
@@ -395,7 +419,7 @@ mod tests {
         );
         for id in [
             "s1-change-0-undo",
-            "s1-preview-0-confirm",
+            "s1-preview-0-approve",
             "s1-preview-0-decline",
         ] {
             assert!(full.iter().any(|shown| shown == id), "{id} in {full:?}");

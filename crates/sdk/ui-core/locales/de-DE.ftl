@@ -969,7 +969,7 @@ reference-open = { $label } öffnen
 program-step-program = Programm, das der Agent ausgeführt hat
 program-step-show-all = Alle { $count } Zeilen zeigen
 program-step-undo = Rückgängig
-program-step-confirm = Bestätigen
+program-step-approve = Genehmigen
 program-step-decline = Ablehnen
 program-step-waits = Wartet auf deine Bestätigung.
 

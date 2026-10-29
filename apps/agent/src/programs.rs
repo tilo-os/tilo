@@ -171,25 +171,29 @@ pub fn named<'a>(source: &str, mounted: &'a [Mounted]) -> Vec<&'a Mounted> {
     let mut index = 0;
     let mut in_string = false;
     while index < bytes.len() {
-        let byte = bytes[index];
-        if byte == b'"' && (index == 0 || bytes[index - 1] != b'\\') {
+        let Some(&byte) = bytes.get(index) else {
+            break;
+        };
+        let before = index.checked_sub(1).and_then(|at| bytes.get(at)).copied();
+        if byte == b'"' && before != Some(b'\\') {
             in_string = !in_string;
             index += 1;
             continue;
         }
         let starts_word = byte.is_ascii_alphabetic() || byte == b'_';
-        let after_dot = index > 0 && bytes[index - 1] == b'.';
-        let in_word =
-            index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_');
+        let after_dot = before == Some(b'.');
+        let in_word = before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_');
         if in_string || !starts_word || after_dot || in_word {
             index += 1;
             continue;
         }
-        let end = bytes[index..]
+        let end = bytes
+            .get(index..)
+            .unwrap_or_default()
             .iter()
             .position(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
             .map_or(bytes.len(), |n| index + n);
-        let word = &source[index..end];
+        let word = source.get(index..end).unwrap_or_default();
         if bytes.get(end) == Some(&b'.')
             && let Some(app) = mounted.iter().find(|m| m.alias == word)
             && !found.iter().any(|f| f.app == app.app)
@@ -433,7 +437,7 @@ fn invocation(value: &Value, naming: &Naming<'_>, step: &mut ProgramStep) {
             step.answer.push(format!("// {action}: done"));
             let before = step.refs.len();
             show(&result, naming, step, 0);
-            let changed: Vec<ResourceAt> = step.refs[before..].to_vec();
+            let changed: Vec<ResourceAt> = step.refs.get(before..).unwrap_or_default().to_vec();
             if changed.is_empty() {
                 // An action that returns nothing changed the resources it was given; the
                 // program names them.

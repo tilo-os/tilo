@@ -30,6 +30,7 @@ pub use broker_services::decide_receipt_against_surfaces;
 pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
+pub(crate) mod answer_window;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;

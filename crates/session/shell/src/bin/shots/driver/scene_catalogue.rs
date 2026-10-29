@@ -141,6 +141,8 @@ impl ShellDriver {
         "agent-composer-typed",
         "agent-composer-answer",
         "agent-composer-working",
+        "agent-composer-steps",
+        "agent-composer-answer-view",
         "notifications",
         "notifications-one",
         "notifications-dnd",

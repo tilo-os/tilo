@@ -197,6 +197,7 @@ fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<E
                 };
                 let query = wire::RecordQuery {
                     range: range.clone(),
+                    task: None,
                     app_id: changed.app_id.clone(),
                     id: changed.id.clone(),
                 };

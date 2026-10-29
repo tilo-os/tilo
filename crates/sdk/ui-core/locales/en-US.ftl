@@ -980,7 +980,7 @@ reference-open = Open { $label }
 program-step-program = Program the agent ran
 program-step-show-all = Show all { $count } lines
 program-step-undo = Undo
-program-step-confirm = Confirm
+program-step-approve = Approve
 program-step-decline = Decline
 program-step-waits = Waits for you to confirm it.
 
