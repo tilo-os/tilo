@@ -20320,6 +20320,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-portal"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-accessibility-settings",
+ "tilo-actions",
+ "tilo-dialogs",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-lockdown-policy",
+ "tilo-paths",
+ "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-ui",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
