@@ -976,8 +976,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
 /// one widget type every surface shares.
 pub(crate) struct HostedSurface {
     host: Box<dyn SurfaceDriver>,
-    /// The empty states the surface painted itself, described for it.
-    painted: ui_core::widget::empty_state::PaintedEmptyStates,
 }
 
 impl HostedSurface {
@@ -986,17 +984,14 @@ impl HostedSurface {
     /// compiled once in the shared runtime rather than in every app.
     #[inline(never)]
     pub(crate) fn element(host: Box<dyn SurfaceDriver>) -> ui_core::widget::Element {
-        Box::new(Self {
-            host,
-            painted: ui_core::widget::empty_state::PaintedEmptyStates::default(),
-        })
+        Box::new(Self { host })
     }
 }
 
-// The host adds four things to the surface — presenting new resource state
-// before the surface syncs, answering its effects, publishing what it says
-// of them, and describing the empty states it paints itself — and forwards
-// everything else to it.
+// The host adds three things to the surface — presenting new resource state
+// before the surface syncs, answering its effects and publishing what it
+// says of them — and forwards everything else to it. The empty states it
+// paints itself are described by the root, as every view's are.
 impl Decorator for HostedSurface {
     fn provide<'a>(&'a self, request: &mut ui_core::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn SurfacePublication>() {
@@ -1045,42 +1040,6 @@ impl Decorator for HostedSurface {
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         self.host.view_only_scroll(event)
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut ui_core::vello::Scene,
-        transform: ui_core::vello::kurbo::Affine,
-        text_renderer: &mut ui_core::TextRenderer,
-        theme: &ui_core::Theme,
-        presence: &ui_core::PresenceCtx,
-    ) {
-        let surface = self.host.surface_mut();
-        self.painted.draw(transform, || {
-            surface.draw(scene, transform, text_renderer, theme, presence);
-        });
-    }
-
-    // An empty state drawn as pixels is described as well, its action a
-    // button that clicks where it is drawn: often the only way on from a
-    // first-use screen, for a screen reader as much as for anyone.
-    fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
-        let surface = self.host.surface();
-        self.painted.describe(surface.accessibility(), surface)
-    }
-
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<ui_core::vello::kurbo::Rect> {
-        // Asked once per node without bounds of its own while the tree is
-        // built, so describing the whole surface here made a build
-        // quadratic in its nodes (a long Chat channel: tens of
-        // milliseconds). With no empty state painted there is nothing of
-        // the host's own to place.
-        if self.painted.is_empty() {
-            return self.host.surface().synthetic_accessibility_rect(path);
-        }
-        Decorator::accessibility(self)
-            .and_then(|described| self.painted.action_rect(&described, path))
-            .or_else(|| self.host.surface().synthetic_accessibility_rect(path))
     }
 
     // The host adds no structure of its own: a change its surface can
