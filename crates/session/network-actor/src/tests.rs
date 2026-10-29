@@ -454,7 +454,7 @@ pub(super) async fn linked(ws: WorkspaceId, count: usize) -> Vec<Device> {
 /// Two linked devices, by name.
 pub(super) fn two(devices: Vec<Device>) -> [Device; 2] {
     let Ok(two) = <[Device; 2]>::try_from(devices) else {
-        unreachable!("two devices were linked")
+        panic!("two devices were linked")
     };
     two
 }
@@ -462,7 +462,7 @@ pub(super) fn two(devices: Vec<Device>) -> [Device; 2] {
 /// Three linked devices, by name.
 pub(super) fn three(devices: Vec<Device>) -> [Device; 3] {
     let Ok(three) = <[Device; 3]>::try_from(devices) else {
-        unreachable!("three devices were linked")
+        panic!("three devices were linked")
     };
     three
 }

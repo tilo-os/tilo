@@ -1845,9 +1845,7 @@ impl ActorState {
             Some(NetCmd::LocalHostReady) => {
                 self.retry_native_routes();
                 self.watch_siblings();
-                for ws in self.topics.keys().copied().collect::<Vec<_>>() {
-                    self.schedule_topic_sessions(ws);
-                }
+                self.schedule_all_topic_sessions();
             }
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::AskHost(request)) => self.ask_host(*request),
@@ -2121,9 +2119,7 @@ impl ActorState {
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.own_devices.insert(addr.id, addr);
-                for ws in self.topics.keys().copied().collect::<Vec<_>>() {
-                    self.schedule_topic_sessions(ws);
-                }
+                self.schedule_all_topic_sessions();
             }
             Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
@@ -2141,16 +2137,13 @@ impl ActorState {
                     self.teardown_host(id, false);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
-                self.hosts.insert(id, (addr.clone(), expectation.clone()));
+                self.hosts.insert(id, (addr.clone(), expectation));
                 let Some(identity) = self.host_identity.as_ref() else {
                     tracing::warn!(peer = %id, "cannot connect workspace host without a device certificate");
                     return true;
                 };
-                self.agent_questions
-                    .start(&self.endpoint, addr.clone(), identity);
-                for ws in self.topics.keys().copied().collect::<Vec<_>>() {
-                    self.schedule_topic_sessions(ws);
-                }
+                self.agent_questions.start(&self.endpoint, addr, identity);
+                self.schedule_all_topic_sessions();
             }
             Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
             None => return false,
@@ -2994,7 +2987,7 @@ impl ActorState {
     /// Record content that could not go to `target` directly: through the
     /// workspace hosts to that device alone.
     fn relay_record_content(
-        &mut self,
+        &self,
         ws: WorkspaceId,
         target: Option<EndpointId>,
         msg: &NeighbourMsg,
@@ -3475,12 +3468,11 @@ impl ActorState {
             return;
         }
         let local = peer == self.endpoint.id();
-        let reach = if local {
-            Reach::Host
-        } else if self
-            .hosts
-            .get(&peer)
-            .is_some_and(|(current, _)| current == attempted_addr)
+        let reach = if local
+            || self
+                .hosts
+                .get(&peer)
+                .is_some_and(|(current, _)| current == attempted_addr)
         {
             Reach::Host
         } else if self.own_devices.get(&peer) == Some(attempted_addr) {
@@ -3997,9 +3989,7 @@ impl ActorState {
             self.drive_native_publication(ws);
         }
         self.sealed_records.retry();
-        for ws in self.topics.keys().copied().collect::<Vec<_>>() {
-            self.schedule_topic_sessions(ws);
-        }
+        self.schedule_all_topic_sessions();
     }
 
     /// Each session heard this device's identity when it started; from here
@@ -4756,13 +4746,16 @@ fn publish_on(ws: WorkspaceId, session: &RelayCoeditSession, msg: &NeighbourMsg)
     }
 }
 
-/// `msg` encoded for a host, with what the host keeps it as: a checkpoint
-/// or delta on its channel, or live traffic it only hands on (`None`).
+/// What a host keeps a message as: a checkpoint or delta on its channel, or
+/// live traffic it only hands on (`None`).
+type HostRetention = Option<([u8; 32], Retention)>;
+
+/// `msg` encoded for a host, with what the host keeps it as.
 fn encode_for_hosts(
     ws: WorkspaceId,
     msg: &NeighbourMsg,
     shell_checkpoint: bool,
-) -> Option<(Vec<u8>, Option<([u8; 32], Retention)>)> {
+) -> Option<(Vec<u8>, HostRetention)> {
     match postcard::to_allocvec(msg) {
         Ok(bytes) => Some((bytes, retention(msg, shell_checkpoint))),
         Err(error) => {
@@ -4777,7 +4770,7 @@ fn send_encoded(
     ws: WorkspaceId,
     session: &RelayCoeditSession,
     bytes: Vec<u8>,
-    retention: Option<([u8; 32], Retention)>,
+    retention: HostRetention,
 ) {
     let result = match retention {
         Some((channel, Retention::Checkpoint)) => session.publish_checkpoint(channel, bytes),

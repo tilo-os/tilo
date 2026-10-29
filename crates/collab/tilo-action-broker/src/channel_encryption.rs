@@ -274,6 +274,15 @@ impl Backoff {
     }
 }
 
+/// When this device may create a channel's group itself.
+struct Founding {
+    /// When it creates the group if no genesis has arrived.
+    at: Instant,
+    /// Whether the policy, when last read, let this device read the channel
+    /// and so create its group.
+    allowed: bool,
+}
+
 /// One channel this device takes part in.
 struct PeerEntry {
     room: RoomId,
@@ -292,11 +301,7 @@ struct PeerEntry {
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
-    /// When this device creates the group if no genesis has arrived.
-    found_at: Instant,
-    /// Whether the policy, when last read, let this device read the channel
-    /// and so create its group.
-    may_found: bool,
+    founding: Founding,
     /// An endpoint of this device opened the route. A channel taken up only
     /// because another device asked is left once a genesis arrives.
     wanted: bool,
@@ -738,8 +743,10 @@ impl ChannelEncryption {
         let founding = self
             .peers
             .values()
-            .filter(|entry| entry.may_found && entry.found_at > now && !entry.peer.knows_group())
-            .map(|entry| entry.found_at)
+            .filter(|entry| {
+                entry.founding.allowed && entry.founding.at > now && !entry.peer.knows_group()
+            })
+            .map(|entry| entry.founding.at)
             .min();
         let unopened = self
             .unopened
@@ -1090,8 +1097,8 @@ impl ChannelEncryption {
             return;
         };
         // Looked at again on every pass, a policy re-check's included.
-        entry.may_found = reads;
-        if !reads || now < entry.found_at {
+        entry.founding.allowed = reads;
+        if !reads || now < entry.founding.at {
             return;
         }
         match entry.peer.found_now(&store.vault) {
@@ -1150,8 +1157,10 @@ impl ChannelEncryption {
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
                 rejoin: false,
-                found_at,
-                may_found: true,
+                founding: Founding {
+                    at: found_at,
+                    allowed: true,
+                },
                 wanted: true,
             },
         );
@@ -1862,7 +1871,7 @@ mod tests {
     ) -> ChannelAccess {
         device.service.access(room_id, channel, now);
         if let Some(entry) = device.service.peers.get_mut(&channel) {
-            entry.found_at = now;
+            entry.founding.at = now;
         }
         device.service.found(channel, now, 1_000);
         device.service.access(room_id, channel, now)

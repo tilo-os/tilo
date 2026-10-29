@@ -331,15 +331,27 @@ impl PeerWorkspaceMut<'_> {
             return self.peer.apply_unshare(caller, share, key, now);
         }
         self.peer
-            .workspace()
+            .apply_administered_command(caller, command, key, now)
+    }
+}
+
+impl StatePeer {
+    /// Apply a command only the room's administrators may give: letting a
+    /// person author apps, or adding or removing an agent.
+    fn apply_administered_command(
+        &mut self,
+        caller: &DeviceCert,
+        command: &WorkspaceMembershipCommand,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.workspace()
             .check_workspace_administration(caller.device_public_key, now)?;
-        let member = self.peer.permissions(caller.device_public_key, now)?;
+        let member = self.permissions(caller.device_public_key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            self.peer.require_governance_writer(key, now)?;
-            let grant =
-                roles::app_authorship(&self.peer.core.room, app, Subject::Person(member.person));
+            self.require_governance_writer(key, now)?;
+            let grant = roles::app_authorship(&self.core.room, app, Subject::Person(member.person));
             return self
-                .peer
                 .governance_mut()
                 .put_governed_grants(&[grant], key, now);
         }
@@ -358,14 +370,13 @@ impl PeerWorkspaceMut<'_> {
             .collect::<Vec<GrantId>>();
         // Work on a clone: an invalid later addition must not leave a removal
         // applied to the caller's candidate.
-        let mut candidate = self.peer.clone();
+        let mut candidate = self.clone();
         let removed = candidate
             .governance_mut()
             .remove_governed_grants(&removals, key, now)?;
         let added = match command {
             WorkspaceMembershipCommand::AddAgent { agent, preset } => {
-                let grants =
-                    preset.grants(&self.peer.core.room, agent, &Subject::Person(member.person));
+                let grants = preset.grants(&self.core.room, agent, &Subject::Person(member.person));
                 candidate
                     .governance_mut()
                     .put_governed_grants(&grants, key, now)?
@@ -394,7 +405,7 @@ impl PeerWorkspaceMut<'_> {
                 return Err("a command entered the agent membership branch".into());
             }
         };
-        *self.peer = candidate;
+        *self = candidate;
         Ok(removed || added)
     }
 }

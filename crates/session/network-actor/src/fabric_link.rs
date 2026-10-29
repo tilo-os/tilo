@@ -170,6 +170,7 @@ impl Dialer {
         let incarnation = self.incarnations.fetch_add(1, Ordering::Relaxed).max(1);
         read_personal_fabric(connection.clone(), self.internal_tx.clone(), incarnation);
         *held = Some(connection.clone());
+        drop(held);
         Some(connection)
     }
 }

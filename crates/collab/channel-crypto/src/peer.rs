@@ -187,51 +187,6 @@ struct PeerFile {
     genesis_frame: Option<MlsGovernanceFrame>,
 }
 
-/// [`PeerFile`] before it kept the content keys of states left behind.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PeerFileV1 {
-    version: u8,
-    channel: ChannelId,
-    record: Vec<u8>,
-    parent: Option<Vec<u8>>,
-    head: Option<MlsGovernanceFrame>,
-    genesis: Option<[u8; 32]>,
-    seen_epoch: Option<u64>,
-    requests: Vec<MlsAccessRequestV1>,
-    outbox: Vec<MlsGovernanceFrame>,
-    issued: u64,
-}
-
-impl PeerFile {
-    fn decode(plaintext: &[u8]) -> Result<Self> {
-        let error = |error: postcard::Error| Error::Serialization(error.to_string());
-        if plaintext.first() == Some(&PEER_VERSION) {
-            return postcard::from_bytes(plaintext).map_err(error);
-        }
-        let old: PeerFileV1 = postcard::from_bytes(plaintext).map_err(error)?;
-        if old.version != 1 {
-            return Err(Error::InvalidState(
-                "peer state is of another version".into(),
-            ));
-        }
-        Ok(Self {
-            version: PEER_VERSION,
-            channel: old.channel,
-            record: old.record,
-            parent: old.parent,
-            head: old.head,
-            genesis: old.genesis,
-            seen_epoch: old.seen_epoch,
-            requests: old.requests,
-            outbox: old.outbox,
-            issued: old.issued,
-            orphaned: Vec::new(),
-            genesis_frame: None,
-        })
-    }
-}
-
 fn digest(frame: &MlsGovernanceFrame) -> Result<[u8; 32]> {
     frame
         .digest()
@@ -442,10 +397,16 @@ impl ChannelPeer {
             bytes,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
-        let file = PeerFile::decode(&plaintext)?;
+        if plaintext.first() != Some(&PEER_VERSION) {
+            return Err(Error::InvalidState(
+                "peer state is of another version".into(),
+            ));
+        }
+        let file: PeerFile = postcard::from_bytes(&plaintext)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         if file.channel != channel {
             return Err(Error::InvalidState(
-                "peer state is of another version or channel".into(),
+                "peer state is of another channel".into(),
             ));
         }
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());

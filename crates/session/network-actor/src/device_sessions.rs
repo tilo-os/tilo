@@ -49,6 +49,14 @@ use crate::local_host::LocalHost;
 const DEVICE_DIAL: Duration = Duration::from_secs(10);
 
 impl ActorState {
+    /// [`Self::schedule_topic_sessions`] for every personal topic.
+    pub(super) fn schedule_all_topic_sessions(&mut self) {
+        let workspaces: Vec<WorkspaceId> = self.topics.keys().copied().collect();
+        for ws in workspaces {
+            self.schedule_topic_sessions(ws);
+        }
+    }
+
     /// Open whatever session of personal topic `ws` is missing and not
     /// being opened: with each workspace host, with this device's own host,
     /// and with each of the person's other devices.
@@ -94,7 +102,11 @@ impl ActorState {
         {
             return;
         }
-        let Some(host) = self.local_host.as_ref().and_then(|local| local.get()) else {
+        let Some(host) = self
+            .local_host
+            .as_ref()
+            .and_then(super::local_host::LocalHost::get)
+        else {
             return;
         };
         self.connecting_hosts.insert((ws, own));
@@ -201,15 +213,17 @@ impl ActorState {
             .entry(connection.remote_id())
             .or_default()
             .offer(connection, self.endpoint.id());
-        for ws in self.topics.keys().copied().collect::<Vec<_>>() {
-            self.schedule_topic_sessions(ws);
-        }
+        self.schedule_all_topic_sessions();
     }
 
     /// Hear the connections the person's other devices dial this device's
     /// host on, from the host open now.
     pub(super) fn watch_siblings(&mut self) {
-        let Some(host) = self.local_host.as_ref().and_then(|local| local.get()) else {
+        let Some(host) = self
+            .local_host
+            .as_ref()
+            .and_then(super::local_host::LocalHost::get)
+        else {
             return;
         };
         let mut siblings = host.siblings();
@@ -338,7 +352,9 @@ impl SiblingLink {
             .waiting
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
-        if let Some(previous) = held.replace(connection.clone())
+        let previous = held.replace(connection.clone());
+        drop(held);
+        if let Some(previous) = previous
             && previous.stable_id() != connection.stable_id()
         {
             previous.close(0_u32.into(), b"replaced");

@@ -128,7 +128,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
     assert_eq!(before, json!({ "read": true, "undoable": false }));
 
     // Bo cannot hand out more than he holds.
-    assert!(matches!(invoke(rooms, &bo, share("edit")).await, Err(_)));
+    assert!(invoke(rooms, &bo, share("edit")).await.is_err());
 
     // A view share gives no writes.
     let viewed = invoke(rooms, &ada, share("view")).await.unwrap();
@@ -296,10 +296,11 @@ async fn a_share_to_edit_lifts_no_restriction() {
     );
     // Nor may he hand out what his restriction keeps from him.
     let reshare = json!({ "share": "m2", "node": p1, "access": "view" });
-    assert!(matches!(
-        invoke(rooms, &bo, member_request(&room, SHARE_RESOURCE, reshare)).await,
-        Err(_)
-    ));
+    assert!(
+        invoke(rooms, &bo, member_request(&room, SHARE_RESOURCE, reshare))
+            .await
+            .is_err()
+    );
 
     // Lifted, the share lets him write again.
     rooms

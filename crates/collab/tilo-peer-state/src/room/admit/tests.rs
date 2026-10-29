@@ -483,13 +483,11 @@ fn a_member_shares_only_what_they_hold_and_ends_only_their_own_shares() {
     );
 
     let mut shared = before.clone();
-    shared
-        .apply_changes(
-            regranting(&before, &edit, &[])
-                .into_iter()
-                .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
-        )
-        .unwrap();
+    let changes: Vec<_> = regranting(&before, &edit, &[])
+        .into_iter()
+        .map(|bytes| automerge::Change::from_bytes(bytes).unwrap())
+        .collect();
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut shared, changes).unwrap();
     assert!(
         matches!(
             admit(
