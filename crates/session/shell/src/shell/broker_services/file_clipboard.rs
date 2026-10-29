@@ -2792,7 +2792,7 @@ mod tests {
         let mut workspace = Workspace::new(WorkspaceId(1), "Clipboard descriptor test");
         let room = workspace.room().to_string();
         workspace.grant_app(
-            tilo_nearby_service::FILES_APP_ID,
+            super::super::nearby_transfer::FILES_APP_ID,
             &Capability::Filesystem {
                 path: directory.to_path_buf(),
                 mode: FsMode::ReadWrite,
@@ -2893,7 +2893,7 @@ mod tests {
         let mut workspace = Workspace::new(WorkspaceId(1), "Read-only clipboard test");
         let room = workspace.room().to_string();
         workspace.grant_app(
-            tilo_nearby_service::FILES_APP_ID,
+            super::super::nearby_transfer::FILES_APP_ID,
             &Capability::Filesystem {
                 path: directory.path().to_path_buf(),
                 mode: FsMode::Read,
@@ -2962,7 +2962,7 @@ mod tests {
             let mut tree = tree.write();
             let workspace = tree.workspaces.first_mut().expect("test workspace");
             let grants = workspace
-                .app_grant_ids_at(tilo_nearby_service::FILES_APP_ID, tilo_clock::unix_now());
+                .app_grant_ids_at(super::super::nearby_transfer::FILES_APP_ID, tilo_clock::unix_now());
             assert!(!grants.is_empty());
             for grant in grants {
                 assert!(workspace.revoke_sandbox(&grant));

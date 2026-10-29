@@ -33,5 +33,8 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+p256 = { version = "0.14", features = ["ecdsa"] }
+
 [lints]
 workspace = true

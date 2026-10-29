@@ -18592,6 +18592,7 @@ dependencies = [
  "hex",
  "libc",
  "os-actions",
+ "p256 0.14.0",
  "postcard",
  "runtime-collab",
  "serde",
