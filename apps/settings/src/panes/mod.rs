@@ -55,8 +55,8 @@ pub use part::PART;
 pub const PARTS: &[&crate::area::Part] = &[&crate::effects::PART, &PART];
 
 /// `category`'s pane as view code over the settings sections it binds
-/// (`cx.record(&section, ..)`), for the panes built that way; `None` for a
-/// pane its area builds ([`crate::area::PaneEntry`]).
+/// (`cx.record(&section, ..)`) and the area it shows; `None` where the
+/// window holds no such area.
 pub(crate) fn view(
     cx: &ui::framework::ViewCx<crate::resource::Settings>,
     app: &std::rc::Rc<crate::settings_app::SettingsApp>,
@@ -94,6 +94,5 @@ pub(crate) fn view(
         crate::categories::Category::About => about::view(cx, app),
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
-        _ => None,
     }
 }
