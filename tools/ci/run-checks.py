@@ -85,7 +85,10 @@ def needs_of(check: dict, project: dict) -> list[str]:
     return needs
 
 
-def closure(names: list[str], checks: dict[str, dict], project: dict) -> list[str]:
+def closure(names: list[str], checks: dict[str, dict], project: dict,
+            given: frozenset[str] = frozenset()) -> list[str]:
+    """The checks NAMES need, each after what it needs. A given check's outputs are there
+    already, so what it needs is not, unless something else needs it."""
     order: list[str] = []
     visiting: set[str] = set()
 
@@ -97,7 +100,7 @@ def closure(names: list[str], checks: dict[str, dict], project: dict) -> list[st
         if name in visiting:
             die(f"{name} needs itself")
         visiting.add(name)
-        for need in needs_of(checks[name], project):
+        for need in () if name in given else needs_of(checks[name], project):
             visit(need)
         visiting.discard(name)
         order.append(name)
@@ -286,7 +289,7 @@ class Runner:
         say(f"{name}: passed in {took:.0f} s")
 
     def main(self) -> int:
-        order = closure(self.args.checks, self.checks, self.project)
+        order = closure(self.args.checks, self.checks, self.project, frozenset(self.args.given))
         self.state.mkdir(parents=True, exist_ok=True)
         self.work.mkdir(parents=True, exist_ok=True)
         for name in self.args.given:
