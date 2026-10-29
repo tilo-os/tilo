@@ -140,6 +140,10 @@ struct LocalWrite {
     touched: Vec<FieldKey>,
     /// The collection items it added, removed or moved.
     items: Vec<(FieldKey, String)>,
+    /// For the last write of a committed action, the versions it made, provisional until the
+    /// record holds the action: per resource it changed, the invoker and the invocation's
+    /// recorded time ([`Inner::provisional_versions`]).
+    versions: Option<Ends>,
 }
 
 impl LocalWrite {
@@ -1727,9 +1731,70 @@ impl Inner {
                 };
                 let mut derive = Derive::new(&mirror, &self.index);
                 let _ = derive.changes(&mut sink, &write.app, &write.reached());
+                if let Some(ends) = &write.versions {
+                    let _ = derive.versions(&mut sink, &write.app, ends);
+                }
             }
         }
         self.overlay = Arc::new(overlay);
+    }
+
+    /// Take in the versions an action this device committed made, provisional until the
+    /// record holds it: each resource it changed was last changed by its invoker at the time
+    /// the invocation recorded, and one it made was made then. Reflection (`created(r)`,
+    /// `updated(r)`) and the lists ordered by them read these until the record's own replace
+    /// them with the record's next change; the record's carry the same time, so nothing moves
+    /// then. Returns the fields that changed: each resource's versions.
+    fn provisional_versions(
+        &mut self,
+        app: &str,
+        start: usize,
+        note: &ChangeNote,
+        resources: Vec<String>,
+    ) -> BTreeMap<DocId, Vec<FieldKey>> {
+        let at = note.at.clone().unwrap_or_else(crate::host::system_time);
+        let stamp = idx::reflect::Stamp {
+            version: Version {
+                who: note.invoker.clone(),
+                at,
+                action: note.action.clone(),
+            },
+            // No change yet: it orders before the record's own at the same time.
+            change: String::new(),
+        };
+        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+        let mut ends = Ends::new();
+        for resource in resources {
+            for field in [idx::reflect::CREATED, idx::reflect::UPDATED] {
+                reached
+                    .entry(tilolang_runtime::store::doc_of(&resource).to_owned())
+                    .or_default()
+                    .push(FieldKey {
+                        resource: resource.clone(),
+                        field: field.to_owned(),
+                    });
+            }
+            ends.insert(resource, (stamp.clone(), stamp.clone()));
+        }
+        // Kept with the action's last write, so they go when its writes go.
+        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
+            return BTreeMap::new();
+        };
+        write.versions = Some(ends.clone());
+        if let (Some(mirror), Some(held)) = (
+            self.mirror.clone(),
+            self.apps.get(app).filter(|held| held.ready()),
+        ) {
+            let snapshot = Arc::clone(&held.snapshot);
+            let mut sink = OverlaySink {
+                overlay: Arc::make_mut(&mut self.overlay),
+                snapshot: Some(&snapshot),
+            };
+            let mut derive = Derive::new(&mirror, &self.index);
+            let _ = derive.versions(&mut sink, app, &ends);
+        }
+        self.changed_within(&reached);
+        reached
     }
 
     /// Apply one edit to the mirror's open transaction and derive what it changed into the
@@ -1755,6 +1820,7 @@ impl Inner {
             seed,
             touched,
             items,
+            versions: None,
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
@@ -2312,6 +2378,7 @@ impl Store for TiloStore {
         if state.edits.is_empty() {
             return Ok(());
         }
+        let versioned = app.clone();
         let action = DynAction {
             app,
             kind,
@@ -2325,9 +2392,14 @@ impl Store for TiloStore {
             },
             edits: state.edits,
         };
+        let changed = action.changed();
         inner.enqueue(action);
+        let mut touched = state.touched;
+        for (doc, keys) in inner.provisional_versions(&versioned, state.start, note, changed) {
+            touched.entry(doc).or_default().extend(keys);
+        }
         let mut listings = state.listings;
-        for (doc, fields) in state.touched {
+        for (doc, fields) in touched {
             inner
                 .notes
                 .entry(doc.clone())
