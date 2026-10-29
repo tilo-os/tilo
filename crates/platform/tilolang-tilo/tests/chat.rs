@@ -333,7 +333,7 @@ fn shown_in(row: &UiNode) -> Vec<String> {
 }
 
 #[test]
-fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
+fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
@@ -346,7 +346,7 @@ fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
     post(&mut ada, &ada_design, "The bulid is on the test machines.");
 
     // Edit on Ada's message puts an editor holding what it says in its place; Save keeps the
-    // new text, which both see, marked as edited.
+    // new text, which both see.
     let row = rows(&mut ada_design).remove(0);
     let edit = button(&row, "Edit").expect("Edit on a message");
     ada_design.press(&edit).unwrap();
@@ -374,11 +374,6 @@ fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
         assert_eq!(said(view), ["The build is on the test machines."]);
         let row = rows(view).remove(0);
         assert!(find(&row, "ui.RichInput").is_none(), "the editor is gone");
-        assert!(
-            shown_in(&row).contains(&"edited".to_owned()),
-            "{:?}",
-            shown_in(&row)
-        );
     }
 
     // Only its author edits a message: Ben has no Edit on Ada's, and editing it as Ben is

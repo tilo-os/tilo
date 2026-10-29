@@ -88,7 +88,7 @@ action send(to: TextChannel | Thread, body: RichText, reply_to: Option<Message> 
     }
 }
 
-/// Changes what a message says; the message shows it was edited. Only its author may.
+/// Changes what a message says. Only its author may.
 action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
     require created(m)?.who == .some(invoker) "Only its author can edit a message"
     require not body.is_empty() "Type a message first"
@@ -102,16 +102,8 @@ action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } 
 
 /// Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
 action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
-    let mine = if let who = m.reactions.get(emoji) {
-        who.any(p -> p == invoker)
-    } else {
-        false
-    }
-    if mine {
-        m.reactions.remove(emoji, invoker)
-    } else {
-        m.reactions.add(emoji, invoker)
-    }
+    let mine = if let who = m.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { m.reactions.remove(emoji, invoker) } else { m.reactions.add(emoji, invoker) }
 }
 
 /// Starts a thread from a message of a channel, named after what the message says.
@@ -189,7 +181,7 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
             button(start_thread(c, m), icon_only: true)
         }
         edit_button(m, editing, revised)
-        button(pin(m), icon_only: true)
+        pin_button(m)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -218,7 +210,7 @@ view thread_message(m: Message, replying: State<Option<Message>>, editing: State
             on press: set(replying, m)
         }
         edit_button(m, editing, revised)
-        button(pin(m), icon_only: true)
+        pin_button(m)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -244,6 +236,15 @@ view edit_button(m: Message, editing: State<Option<Message>>, revised: State<Ric
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }
+    }
+}
+
+/// Pin, or Unpin on a pinned message.
+/// TODO(runtime): `button(pin(m), icon_only: true)`; in a hover toolbar its label stays as it was
+/// first presented when the message is pinned.
+view pin_button(m: Message) {
+    ui.Button(if m.pinned { "Unpin" } else { "Pin" }, icon: .pin, icon_only: true) {
+        on press: pin(m)
     }
 }
 
@@ -275,16 +276,15 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
     }
 }
 
-/// What a message says, and that it was edited when its last change was an edit.
+/// What a message says.
+/// TODO(language): "edited" once a view can read when the body last changed (a field's own
+/// versions); the message's last version is any change of it, a pin or a reaction too.
 view said(m: Message) {
     if not m.body.is_empty() {
         rich_text(m.body)
     }
     for p in m.parts {
         text(p.body)
-    }
-    if (updated(m)?.what ?? "") == "Edit" {
-        ui.Text("edited", role: .caption, secondary: true)
     }
 }
 
@@ -322,7 +322,18 @@ scenario "a team's channels" -> TextChannel {
         send(design, RichText("The new onboarding build is on the test machines."))
     }
     as mia at 2026-06-29T07:03Z {
-        send(design, RichText("First launch is down to a second and a half on the old ThinkPad."))
+        let launch = send(design, RichText("First launch is down to a second and a half on the old ThinkPad."))
+        as leo at 2026-06-29T07:05Z {
+            react(launch, "🎉")
+        }
+        as ada at 2026-06-29T07:06Z {
+            react(launch, "🎉")
+            react(launch, "🚀")
+            pin(launch)
+        }
+        as invoker at 2026-06-29T07:07Z {
+            react(launch, "👍")
+        }
     }
     as leo at 2026-06-29T07:20Z {
         let ask = send(design, RichText("Can we move the account step to the end?"))
