@@ -8682,6 +8682,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "launcher-app"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "launcher-macos"
 version = "0.1.0"
 dependencies = [
@@ -26715,6 +26724,7 @@ dependencies = [
  "kurbo",
  "landlock",
  "launcher",
+ "launcher-app",
  "launcher-macos",
  "lazy_static",
  "leb128",

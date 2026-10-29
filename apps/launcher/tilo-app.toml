@@ -1,0 +1,55 @@
+# Search — Tilo application manifest.
+#
+# The desktop's launcher: the shell mounts it in its own process and lends
+# it what the desktop can find. `kind = "service"` keeps it out of the
+# launcher it is.
+
+[package]
+id       = "so.tilo.launcher"
+name     = "Search"
+category = "System"
+version  = "0.1.0"
+kind     = "service"
+runtime  = "tilo-runtime/2026.07"
+
+[package.names]
+de = "Suche"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = []
+optional = []
+
+[resources]
+kinds = ["launcher.search"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no socket of
+# its own; what it searches is lent by the shell that hosts it.
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+
+[entrypoint]
+bin             = "bin/launcher"
+type            = "gui"
+splash-segments = ["bin/launcher[0x0:0x400000]"]
+splash-budget   = 250

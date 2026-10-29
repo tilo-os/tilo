@@ -119,6 +119,7 @@ members = [
     "apps/git-client",
     "apps/hex-editor",
     "apps/imager",
+    "apps/launcher",
     "apps/logs",
     "apps/mail",
     "apps/maps",
