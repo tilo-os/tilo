@@ -30,6 +30,9 @@ smithay = { version = "0.7", default-features = false, features = [
 # Turns an output's ICC profile into the lookup table its colour pass reads.
 qcms.workspace = true
 tracing.workspace = true
+# Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
+# smithay's window manager speaks selections but not XDND.
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
 # Named pointer shapes from the XCursor theme.
 xcursor = "0.3"
 workspace-hack = { version = "0.1" }

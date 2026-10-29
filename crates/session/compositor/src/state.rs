@@ -31,9 +31,7 @@ use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::selection::data_device::{
-    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-};
+use smithay::wayland::selection::data_device::{DataDeviceHandler, DataDeviceState};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
@@ -115,6 +113,7 @@ pub struct State {
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
     pub(crate) selections: crate::selection::Selections,
+    pub(crate) dnd: crate::dnd::Dnd,
     pub(crate) display_changes: crate::display_change::DisplayChanges,
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
@@ -173,6 +172,7 @@ impl State {
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             selections,
+            dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             loop_handle: None,
         }
@@ -401,7 +401,17 @@ impl State {
     pub(crate) fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
         self.pointer = self.clamp_to_outputs(to);
         let location = self.pointer;
-        let target = if self.locked() {
+        if self.drag_motion(location, serial, time) {
+            return;
+        }
+        self.x11_drag_motion(location);
+        // A client's press keeps the pointer until it is released, over
+        // hosted surfaces too.
+        let grabbed = self
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed());
+        let target = if self.locked() || grabbed {
             PointerTarget::Clients
         } else {
             self.host_under(location)
@@ -443,6 +453,9 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        if self.drag_button(button, pressed, serial, time) {
+            return;
+        }
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(button, pressed);
@@ -470,6 +483,9 @@ impl State {
             },
         );
         pointer.frame(self);
+        if !pressed {
+            self.x11_drag_motion(self.pointer);
+        }
     }
 
     pub(crate) fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -911,9 +927,6 @@ impl DataDeviceHandler for State {
         &self.data_device_state
     }
 }
-
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
 
 impl OutputHandler for State {}
 

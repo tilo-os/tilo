@@ -18249,6 +18249,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "workspace-hack",
+ "x11rb",
  "xcursor",
 ]
 
