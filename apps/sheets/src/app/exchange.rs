@@ -411,15 +411,7 @@ impl SheetsApp {
         snap: &crate::workbook::SheetSnapshot,
     ) -> crate::xlsx::SheetTable {
         let values = crate::calc::recalculate_snapshot(snap);
-        let mut fmt = snap.fmt.clone();
-        for (addr, raw) in &snap.raw {
-            if !snap.fmt.contains_key(addr)
-                && let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = crate::calc::infer_result_format(body, &snap.fmt)
-            {
-                fmt.insert(*addr, inferred);
-            }
-        }
+        let fmt = crate::calc::effective_formats(snap);
         crate::xlsx::SheetTable {
             hidden: snap.hidden,
             ..crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
