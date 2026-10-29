@@ -425,7 +425,7 @@ fn identify_puts_a_numbered_card_on_every_display() {
         assert_eq!(
             label.output,
             Rect::new(output.x, 0.0, output.x + output.width, output.height),
-            "each card is centred on its own display"
+            "each card belongs to its own display"
         );
     }
     let named: Vec<(usize, &str)> = labels
@@ -434,6 +434,38 @@ fn identify_puts_a_numbered_card_on_every_display() {
         .collect();
     // An unnamed monitor reads as what it is, never as its port.
     assert_eq!(named, [(1, "Built-in display"), (2, "External display")]);
+    // The cards sit small in a corner of each display, off its centre, in
+    // the corner the window the person arranges displays in covers least.
+    paint(&mut host);
+    let cards = host.display_identify_cards();
+    assert_eq!(cards.len(), outputs.len());
+    let window = host.focused_window_rect();
+    for (card, output) in cards.iter().zip(&outputs) {
+        let output = output.rect();
+        assert!(
+            card.width() <= 320.0 && card.height() <= 64.0,
+            "a compact card: {card:?}"
+        );
+        assert!(!card.contains(output.center()), "never over the centre");
+        let top_band = f64::from(shell::shell::topbar_chrome::TOPBAR_HEIGHT_PX);
+        let corner = |a: f64, b: f64| (a - b).abs() <= 32.0;
+        assert!(
+            output.union(*card) == output
+                && (corner(card.x0, output.x0) || corner(card.x1, output.x1))
+                && (corner(card.y0, output.y0 + top_band) || corner(card.y1, output.y1)),
+            "in a corner of its display, below the top bar: {card:?} on {output:?}"
+        );
+        assert_eq!(
+            *card,
+            shell::shell::display_identify::card_rect(
+                output,
+                (card.width(), card.height()),
+                top_band,
+                window
+            ),
+            "the corner the focused window covers least"
+        );
+    }
     assert!(
         !host.poll_display_identify(),
         "one request shows the numbers once"

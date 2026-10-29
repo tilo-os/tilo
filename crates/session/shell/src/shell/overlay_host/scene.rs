@@ -402,8 +402,19 @@ impl ShellOverlayHost {
             },
         );
         overlay_part(above_quick_settings, "shell.displays", desktop, |scene| {
+            let now = Instant::now();
+            // The cards keep clear of the window the person works in:
+            // Settings, with the arrangement canvas they asked from.
+            let clear = crate::shell::display_identify::KeepClear {
+                top_band: f64::from(self.chrome_top_y),
+                window: self
+                    .display_identify
+                    .showing(now)
+                    .then(|| self.focused_window_rect())
+                    .flatten(),
+            };
             self.display_identify
-                .draw(scene, transform, text_renderer, theme, Instant::now());
+                .draw(scene, transform, text_renderer, theme, now, clear);
             if self.layers.tick(Instant::now())
                 && let Some(chrome) = self.chrome.as_ref()
             {
