@@ -380,6 +380,8 @@ class Run:
         self.recovery: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
+        # The items this variant's steps report; each one it leaves unreported is not-run.
+        self.planned: set[str] = set()
         self.avcs: dict[str, list[str]] = {}
         self.boot_denials: dict[str, dict] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
@@ -1674,6 +1676,7 @@ cryptsetup close e2e-target
                      ("migration", self.migrate, ("6", "7")),
                      ("separate disk secret", self.separate_disk_secret, ("7",)),
                      ("recovery key", self.recovery_path, ("6",))]
+        self.planned = {key for _, _, items in steps for key in items}
         for name, step, items in steps:
             try:
                 step()
@@ -1848,10 +1851,10 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "12": "The boot sign-in and the greeter after switch-root show the same card",
         "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
         "14": "The boot sign-in's clock moves on by itself, with no input",
+        "9": "Rollback to an image from before pam_tilo still signs in with the old password",
     }
-    if any(r.variant == "rollback" for r in runs):
-        names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
-    for key in names:
+    # Only the variants that ran owe their items: the rollback variant alone owes item 9.
+    for key in {key for r in runs for key in r.planned}:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
     document = {"items": {k: {"name": names[k], **items[k]} for k in sorted(items)},
                 "facts": {r.variant: r.facts for r in runs},
