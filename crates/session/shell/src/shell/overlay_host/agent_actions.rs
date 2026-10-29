@@ -437,13 +437,14 @@ impl AgentActions {
         source: ActionSessionSource,
         owner: &ComposerOwner,
         (title, body): (&str, &str),
+        about: Option<&SelectionSeed>,
         show: bool,
         quick: bool,
     ) -> bool {
         if !self.open(source, owner.clone()) {
             return false;
         }
-        let mut operation = queue_operation(owner, None, (title, body), None, None, quick);
+        let mut operation = queue_operation(owner, None, (title, body), about, None, quick);
         if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
             *shown = show;
         }
@@ -1885,6 +1886,7 @@ mod tests {
                 ),
                 &owner,
                 (query, query),
+                None,
                 show,
                 show,
             ));

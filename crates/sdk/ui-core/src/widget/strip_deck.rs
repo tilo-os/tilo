@@ -82,6 +82,10 @@ pub struct StripDeck {
     /// A strip the deck went to on its own (a drag reaching it), for the
     /// host to focus ([`Self::take_requested_strip`]).
     requested: Option<usize>,
+    /// The workspace shows its canvas: every strip's windows stand on one
+    /// surface, each where the canvas places it, so every row is laid over
+    /// the whole deck at once and none slides.
+    canvas: bool,
 }
 
 impl StripDeck {
@@ -105,7 +109,29 @@ impl StripDeck {
             drawn: None,
             edge_reach: None,
             requested: None,
+            canvas: false,
         }
+    }
+
+    /// Show every strip's windows on one canvas (`true`), or one strip at a
+    /// time.
+    pub fn set_canvas(&mut self, canvas: bool) {
+        if self.canvas != canvas {
+            self.canvas = canvas;
+            crate::widget::note_layout_moved();
+        }
+    }
+
+    /// Whether the deck shows the workspace's canvas.
+    #[must_use]
+    pub fn shows_canvas(&self) -> bool {
+        self.canvas
+    }
+
+    /// The deck's rect as last laid out.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
     }
 
     pub fn len(&self) -> usize {
@@ -296,6 +322,9 @@ impl StripDeck {
 
     /// Whether the strip at `index` is on screen at the last layout.
     pub fn on_screen(&self, index: usize) -> bool {
+        if self.canvas {
+            return index < self.rows.len();
+        }
         #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
         let at = index as f64;
         (at - self.laid).abs() < 1.0 - POSITION_TOLERANCE
@@ -304,6 +333,9 @@ impl StripDeck {
     /// How far down (up, when negative) the strip at `index` is moved from
     /// where it rests, at the last layout.
     pub fn shift_of(&self, index: usize) -> f64 {
+        if self.canvas {
+            return 0.0;
+        }
         #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
         let at = index as f64;
         (at - self.laid) * self.rect.height()
@@ -492,9 +524,14 @@ impl Widget for StripDeck {
         }
         let height = self.rect.height();
         let top_left = Point::new(self.rect.x0, self.rect.y0);
+        let canvas = self.canvas;
         for (i, (row, &child)) in self.rows.iter_mut().zip(&self.nodes).enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
-            let shift = (i as f64 - self.laid) * height;
+            let shift = if canvas {
+                0.0
+            } else {
+                (i as f64 - self.laid) * height
+            };
             row.set_deck_shift(shift);
             row.apply_layout(taffy, child, top_left + Vec2::new(0.0, shift));
         }
@@ -512,7 +549,7 @@ impl Widget for StripDeck {
         self.drawn = Some(self.laid);
         // Between two strips, each is cut at the deck's edge, so the one
         // leaving never draws over the top bar or past the display.
-        let between = self.laid.fract().abs() > POSITION_TOLERANCE;
+        let between = !self.canvas && self.laid.fract().abs() > POSITION_TOLERANCE;
         if between {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -523,9 +560,10 @@ impl Widget for StripDeck {
             );
         }
         let laid = self.laid;
+        let canvas = self.canvas;
         for (i, row) in self.rows.iter_mut().enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
-            let on_screen = (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
+            let on_screen = canvas || (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
             if on_screen {
                 crate::widget::draw_child(
                     row.as_mut(),
@@ -546,6 +584,7 @@ impl Widget for StripDeck {
     /// drag it began) keeps it wherever it is.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let laid = self.laid;
+        let canvas = self.canvas;
         let owner = self
             .rows
             .iter()
@@ -563,7 +602,7 @@ impl Widget for StripDeck {
         }
         for (i, (row, &node)) in self.rows.iter_mut().zip(&self.nodes).enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
-            let on_screen = (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
+            let on_screen = canvas || (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
             if !on_screen {
                 continue;
             }
@@ -612,9 +651,10 @@ impl Widget for StripDeck {
 
     fn mark_drawn(&mut self) {
         let laid = self.laid;
+        let canvas = self.canvas;
         for (i, row) in self.rows.iter_mut().enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
-            let on_screen = (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
+            let on_screen = canvas || (i as f64 - laid).abs() < 1.0 - POSITION_TOLERANCE;
             if on_screen {
                 row.mark_drawn();
             }

@@ -628,6 +628,7 @@ impl ShellOverlayHost {
             agent_quick_composer_node: None,
             bar_popovers: bar_popovers::BarPopovers::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
+            canvas: canvas::CanvasLayer::default(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             feedback_picker: crate::shell::feedback_pick::NativePicker::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),

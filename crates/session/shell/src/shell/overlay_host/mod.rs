@@ -18,6 +18,7 @@ mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod canvas;
 mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
@@ -1098,6 +1099,9 @@ pub struct ShellOverlayHost {
     bar_popovers: bar_popovers::BarPopovers,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// This device's side of the canvas: the lens, the caret, a selection
+    /// and the answers on their way to a window ([`canvas`]).
+    canvas: canvas::CanvasLayer,
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,

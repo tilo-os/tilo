@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod apps;
+pub mod arrangement;
 pub mod bots;
 pub mod capability;
 pub mod collaborator;
@@ -38,6 +39,7 @@ pub mod window_share;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};
+pub use arrangement::{Arrangement, ArrangementKind, CANVAS_GAP, CanvasPlace};
 pub use bots::RoomBot;
 pub use capability::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope};
 pub use collaborator::Collaborator;
