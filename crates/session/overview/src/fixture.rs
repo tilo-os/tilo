@@ -88,27 +88,47 @@ fn chat() -> WindowApp {
     )
 }
 
-/// The desktop the overview shows on its own.
-pub fn desk() -> OverviewDesk {
-    let maya = person("maya", "Maya", true, false);
-    let theo = person("theo", "Theo", false, false);
-    let you = person("you", "You", true, true);
+/// A workspace card with one strip, "Main", holding `groups`.
+fn single_strip(
+    id: u64,
+    name: &str,
+    people: Vec<RoomPerson>,
+    strip: u64,
+    groups: Vec<OverviewGroup>,
+) -> RoomCard {
+    RoomCard {
+        id: WorkspaceId(id),
+        name: name.to_owned(),
+        is_current: false,
+        people,
+        shares: Vec::new(),
+        strips: vec![OverviewStrip {
+            id: StripId(strip),
+            name: "Main".to_owned(),
+            is_current: false,
+            groups,
+        }],
+    }
+}
 
+/// The workspace this desktop is on: writing beside reading, shared.
+fn launch(maya: RoomPerson, theo: RoomPerson, you: RoomPerson) -> RoomCard {
     let mut review = tab(101, "Design review.md", notes(), true);
     review.people = vec![maya.clone()];
-    let mut work_groups = vec![
-        group(
-            1001,
-            600,
-            vec![
-                review,
-                tab(102, "Roadmap 2027.md", notes(), false),
-                tab(103, "Q3 notes.md", notes(), false),
-            ],
-        ),
+    let mut writing = group(
+        1001,
+        600,
+        vec![
+            review,
+            tab(102, "Roadmap 2027.md", notes(), false),
+            tab(103, "Q3 notes.md", notes(), false),
+        ],
+    );
+    writing.is_current = true;
+    let work_groups = vec![
+        writing,
         group(1002, 400, vec![tab(104, "~/src/tilo", terminal(), true)]),
     ];
-    work_groups[0].is_current = true;
     let reading_groups = vec![
         group(
             1003,
@@ -117,11 +137,11 @@ pub fn desk() -> OverviewDesk {
         ),
         group(1004, 500, vec![tab(106, "Week 44", calendar(), true)]),
     ];
-    let here = RoomCard {
+    RoomCard {
         id: HERE,
         name: "Launch".to_owned(),
         is_current: true,
-        people: vec![you.clone(), maya.clone(), theo],
+        people: vec![you, maya, theo],
         shares: vec![RoomShare {
             what: "Press kit".to_owned(),
             with: vec!["Ada".to_owned(), "Bo".to_owned()],
@@ -141,52 +161,38 @@ pub fn desk() -> OverviewDesk {
                 groups: reading_groups,
             },
         ],
-    };
+    }
+}
+
+/// The desktop the overview shows on its own.
+pub fn desk() -> OverviewDesk {
+    let maya = person("maya", "Maya", true, false);
+    let theo = person("theo", "Theo", false, false);
+    let you = person("you", "You", true, true);
+    let ada = || person("ada", "Ada", true, false);
+
+    let here = launch(maya, theo, you.clone());
     let mut standup = tab(201, "Team chat", chat(), true);
-    standup.people = vec![person("ada", "Ada", true, false)];
-    let research = RoomCard {
-        id: WorkspaceId(2),
-        name: "Research".to_owned(),
-        is_current: false,
-        people: vec![you.clone(), person("ada", "Ada", true, false)],
-        shares: Vec::new(),
-        strips: vec![OverviewStrip {
-            id: StripId(21),
-            name: "Main".to_owned(),
-            is_current: false,
-            groups: vec![group(2001, 1000, vec![standup])],
-        }],
-    };
-    let community = RoomCard {
-        id: WorkspaceId(3),
-        name: "Typography club".to_owned(),
-        is_current: false,
-        people: Vec::new(),
-        shares: Vec::new(),
-        strips: vec![OverviewStrip {
-            id: StripId(31),
-            name: "Main".to_owned(),
-            is_current: false,
-            groups: vec![group(
-                3001,
-                1000,
-                vec![tab(301, "Kerning", browser(), true)],
-            )],
-        }],
-    };
-    let empty = RoomCard {
-        id: WorkspaceId(4),
-        name: "Taxes".to_owned(),
-        is_current: false,
-        people: vec![you],
-        shares: Vec::new(),
-        strips: vec![OverviewStrip {
-            id: StripId(41),
-            name: "Main".to_owned(),
-            is_current: false,
-            groups: Vec::new(),
-        }],
-    };
+    standup.people = vec![ada()];
+    let research = single_strip(
+        2,
+        "Research",
+        vec![you.clone(), ada()],
+        21,
+        vec![group(2001, 1000, vec![standup])],
+    );
+    let community = single_strip(
+        3,
+        "Typography club",
+        Vec::new(),
+        31,
+        vec![group(
+            3001,
+            1000,
+            vec![tab(301, "Kerning", browser(), true)],
+        )],
+    );
+    let empty = single_strip(4, "Taxes", vec![you], 41, Vec::new());
     let mut desk = OverviewDesk::of(vec![here, research, community, empty]);
     desk.renamable = [WORK, READING].into_iter().collect();
     desk.colors = [
@@ -207,13 +213,14 @@ pub fn desk() -> OverviewDesk {
 /// The desktop with `count` workspaces more than fit: a list that scrolls.
 pub fn crowded(count: u64) -> OverviewDesk {
     let mut desk = desk();
-    desk.cards.extend((10..10 + count).map(|id| RoomCard {
-        id: WorkspaceId(id),
-        name: format!("Project {id}"),
-        is_current: false,
-        people: Vec::new(),
-        shares: Vec::new(),
-        strips: Vec::new(),
-    }));
+    desk.cards
+        .extend((10..count.saturating_add(10)).map(|id| RoomCard {
+            id: WorkspaceId(id),
+            name: format!("Project {id}"),
+            is_current: false,
+            people: Vec::new(),
+            shares: Vec::new(),
+            strips: Vec::new(),
+        }));
     desk
 }
