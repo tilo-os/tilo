@@ -21442,6 +21442,8 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-audio-service",
+ "tilo-bluetooth-agent",
+ "tilo-bluez",
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-desktop",
@@ -21450,6 +21452,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-media",
+ "tilo-network-secret-agent",
  "tilo-notification-banners",
  "tilo-onboarding",
  "tilo-onboarding-host",
@@ -21458,10 +21461,13 @@ dependencies = [
  "tilo-surface-host",
  "tilo-system-service",
  "tilo-ui",
+ "tokio",
  "tracing",
+ "url",
  "wayland-client",
  "wayland-protocols",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
