@@ -397,9 +397,9 @@ fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
     );
 }
 
-/// A new session's shell is ush's own: in a real guest, `ls | wc -l` runs as
-/// two of Tilo's own commands over the guest's files, and the run is marked
-/// with its line, directory and status.
+/// A new session's shell is ush's own, on the Tilo side: `ls | wc -l` runs
+/// as two of Tilo's own commands over the granted files, and the run is
+/// marked with its line, directory and status.
 #[test]
 fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
@@ -438,6 +438,114 @@ fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
     assert!(seen.contains("133;C;"), "and as it starts:\n{seen:?}");
     let printed = seen.rsplit('\x07').nth(1).unwrap_or_default();
     assert!(printed.contains('3'), "three files in the grant:\n{seen:?}");
+}
+
+/// The sessions' directories in which a guest was set up: a guest's root
+/// gets its generated `/etc` there when it starts.
+fn guests_started(store: &Store) -> usize {
+    let sessions = store.session_dir("probe");
+    let Some(sessions) = sessions.parent() else {
+        return 0;
+    };
+    std::fs::read_dir(sessions).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| entry.path().join("root/etc/passwd").is_file())
+            .count()
+    })
+}
+
+/// A new session's shell runs on the Tilo side: Tilo's own commands and a
+/// redirect into the grant need no guest, and the redirect is the
+/// environment's action. The first program starts the session's guest and
+/// runs in it, its output piped back; the next ones run in the same guest.
+#[test]
+fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, granted) = serve_fixture(dir.path());
+    std::fs::write(granted.join("notes.md"), "one\ntwo\n").unwrap();
+    let key = "k3y0fth1ss3ss10n";
+    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Ush);
+    let fd = master.as_raw_fd();
+    let prompt = format!("\x1b]133;A;k={key}\x07");
+    let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
+    assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
+
+    let type_line = |line: &str| {
+        // SAFETY: `fd` is a live pty master.
+        let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+        assert!(written > 0, "could not write to the pty");
+    };
+    type_line(&format!(
+        "cd {} && grep -c . notes.md && echo hi > made.txt\r",
+        granted.display()
+    ));
+    let ended = format!("\x1b]133;D;0;k={key};t=1\x07");
+    let seen = read_until(fd, &ended, tilo_test_env::hang_bound());
+    assert!(seen.contains(&ended), "the first line ended:\n{seen:?}");
+    assert_eq!(
+        std::fs::read_to_string(granted.join("made.txt")).unwrap(),
+        "hi\n"
+    );
+    let records = Records::at(store.records_root());
+    let writes = records
+        .history(DEFAULT_RECORD)
+        .unwrap()
+        .into_iter()
+        .filter_map(|version| version.context)
+        .filter(|context| {
+            matches!(
+                &context.what,
+                Some(tilo_actions::Did::Verb(call)) if call.action.action == "write"
+            )
+        })
+        .count();
+    assert_eq!(writes, 1, "the redirect is the environment's write");
+    assert_eq!(
+        guests_started(&store),
+        0,
+        "no guest for Tilo's own commands"
+    );
+
+    type_line(&format!(
+        "id -u; {TOOL_COMMAND}; sh -c 'echo PARENT_$PPID'; sh -c 'echo PARENT_$PPID'\r"
+    ));
+    let ended = format!("\x1b]133;D;0;k={key};t=2\x07");
+    let seen = read_until(fd, &ended, tilo_test_env::hang_bound());
+    assert!(seen.contains(&ended), "the programs ended:\n{seen:?}");
+    let uid = rustix::process::geteuid().as_raw();
+    assert!(seen.contains(&uid.to_string()), "`id -u` ran:\n{seen}");
+    assert!(
+        seen.contains("from the tool image"),
+        "the environment's tool ran in its guest:\n{seen}"
+    );
+    let parents: Vec<&str> = seen
+        .split("PARENT_")
+        .skip(1)
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter(|pid| pid.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    assert_eq!(parents.len(), 2, "{seen}");
+    assert_eq!(
+        parents[0], parents[1],
+        "one guest serves the session:\n{seen}"
+    );
+    assert_eq!(
+        guests_started(&store),
+        1,
+        "started once, for the first program"
+    );
 }
 
 /// The installed public spelling creates Default on first use and runs a
