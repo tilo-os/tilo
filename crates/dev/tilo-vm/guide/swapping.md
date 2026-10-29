@@ -351,8 +351,7 @@ use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
 
 Without a remote builder (CI, or a host whose architecture has none) the same
-cohort comes from CI: `t dispatch vm-acceptance-cohort --ref <branch>`. CI
-builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
+cohort comes from CI: the vm-acceptance cohort run builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
 installs them in that order through the daemon's normal signed-cohort checks,
 from a checkout at exactly the producing commit
 (`scripts/vm-acceptance/README.md`). `--builder host`

@@ -197,7 +197,7 @@ work on a device too, beside the device's session.
 
   ```toml
   [remote_builders]
-  aarch64 = ["dist/dev/t-builder.sh", "aarch64"]   # t's aarch64 nodes build it
+  aarch64 = ["my-arm-cargo"]   # any cargo drop-in that runs on an aarch64 machine
   ```
 
   ```sh
@@ -238,8 +238,7 @@ A board's image is sealed, so an upgrade takes a published image through the
 device's own update path and reboots, never a
 local build. `--ref` and `--from sha:<commit>` read the board the device's
 image was built for (`/usr/lib/tilo/hardware-profile.json`) and take that
-board's image of the build, `tilo-vm:main-<sha7>-<board>` or a branch's
-`tilo-vm-ref:ref-<branch>-<sha7>-<board>`: the generic dev image has no board
+board's image of the build, `tilo-vm:main-<sha7>-<board>`: the generic dev image has no board
 firmware or device tree and would not boot it. The board follows
 `tilo-vm:<board>-ci`, its dev channel, otherwise.
 Board dev images are public today; when the registry refuses the device's

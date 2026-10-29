@@ -22,16 +22,6 @@ channel() {
   esac
 }
 
-# The branch of a `branch` run as a tag part: lower case, every run of other characters a dash,
-# at most 48 characters (tilo-vm's ci.rs ref_slug computes the same).
-ref_slug() {
-  local slug
-  slug=$(printf '%s' "${T_REF:?}" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9.' '-' | sed 's/^[-.]*//; s/-*$//' | cut -c1-48)
-  slug=${slug%-}
-  [[ -n $slug ]] || die "no tag can name the branch $T_REF"
-  printf '%s' "$slug"
-}
-
 require_commit() {
   [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a commit: ${T_COMMIT:-unset}"
 }
