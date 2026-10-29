@@ -35,7 +35,24 @@ pub enum Target {
         uri: String,
         fallback: Option<String>,
     },
+    /// Ask a running invocation of `app` in `room` to stop: a job's own
+    /// cancel row ([`crate::providers::jobs`]).
+    Cancel {
+        app: String,
+        room: String,
+        invocation: String,
+    },
 }
+
+/// The provider name of what the desktop itself publishes (its chrome's and
+/// its desk's actions): a row the desktop runs on itself, by address, as
+/// every other caller of the action protocol does.
+pub const DESKTOP_APP: &str = "tilo.desktop";
+
+/// The action every framework app publishes to show the item at an anchor
+/// (`tilo_app::framework`'s `open`), and its parameter.
+pub const OPEN_ACTION: &str = "open";
+pub const OPEN_ANCHOR: &str = "anchor";
 
 /// An application action as the palette offers it.
 #[derive(Clone)]
@@ -92,6 +109,56 @@ pub struct InvokeTarget {
     pub descriptor: Option<ActionDescriptor>,
 }
 
+impl InvokeTarget {
+    /// `app`'s `open` at `anchor`, in `room`: the item an anchor names, the
+    /// app launched first when it is closed.
+    #[must_use]
+    pub fn open(
+        app: impl Into<String>,
+        room: impl Into<String>,
+        anchor: impl Into<String>,
+    ) -> Self {
+        let anchor = anchor.into();
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            OPEN_ANCHOR.into(),
+            serde_json::Value::String(anchor.clone()),
+        );
+        Self {
+            app: app.into(),
+            room: room.into(),
+            address: ActionAddress::new(anchor, OPEN_ACTION),
+            arguments,
+            descriptor: None,
+        }
+    }
+
+    /// The action `action` of resource `resource` that `app` publishes in
+    /// `room`, run with no arguments.
+    #[must_use]
+    pub fn action(
+        app: impl Into<String>,
+        room: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            room: room.into(),
+            address: ActionAddress::new(resource, action),
+            arguments: serde_json::Map::new(),
+            descriptor: None,
+        }
+    }
+
+    /// With argument `name` set to `value`.
+    #[must_use]
+    pub fn with_argument(mut self, name: &str, value: impl Into<serde_json::Value>) -> Self {
+        self.arguments.insert(name.to_owned(), value.into());
+        self
+    }
+}
+
 /// One row a source offers for a needle. `score` is on the source's own
 /// scale, topped by [`Source::max_score`].
 #[derive(Clone, Debug, PartialEq)]
@@ -130,9 +197,37 @@ pub trait Source {
     }
 }
 
+/// A source a host keeps between searches (its index built once) is
+/// searched through a shared handle.
+impl<S: Source + ?Sized> Source for std::rc::Rc<S> {
+    fn id(&self) -> &str {
+        (**self).id()
+    }
+    fn max_score(&self) -> i32 {
+        (**self).max_score()
+    }
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        (**self).query(needle)
+    }
+    fn intent(&self, hit: &Hit) -> f32 {
+        (**self).intent(hit)
+    }
+}
+
 /// Fan `needle` out to `sources`, merge their hits on the shared ranking
 /// and group them by kind under a shared `row_budget` (zero keeps all).
 pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<KindGroup<Hit>> {
+    search_with(needle, sources, row_budget, &|_| 0.0)
+}
+
+/// [`search`], each hit's strength raised by `used`: what the person's
+/// earlier choices add to it ([`crate::usage::Usage::strength`]).
+pub fn search_with(
+    needle: &str,
+    sources: &[&dyn Source],
+    row_budget: usize,
+    used: &dyn Fn(&Hit) -> f32,
+) -> Vec<KindGroup<Hit>> {
     if !system::query_input_is_bounded(needle) {
         return Vec::new();
     }
@@ -148,7 +243,7 @@ pub fn search(needle: &str, sources: &[&dyn Source], row_budget: usize) -> Vec<K
                 hit.subtitle.as_deref(),
                 hit.score.min(top),
                 top,
-                source.intent(&hit),
+                source.intent(&hit) + used(&hit),
             );
             let key = (hit.provider.clone(), hit.id.clone());
             if let Some(index) = rows.get(&key).copied() {

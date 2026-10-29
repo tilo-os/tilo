@@ -60,7 +60,10 @@ mod window_bars;
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
 pub use personal_ask::PersonalAsk;
-pub use search::{HostAction, HostActionSource, is_host_offer, search_chord_keys};
+pub use search::{
+    HostAction, HostActionSource, SearchHost, SearchHostFeed, SearchRow, is_host_offer,
+    search_chord_keys,
+};
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -174,6 +177,17 @@ struct Shared {
     /// What the host offers to do for the person, and what they chose.
     host_actions: Vec<search::HostAction>,
     host_choices: Vec<String>,
+    /// What the host adds to search and carries out of it
+    /// ([`DesktopHandle::set_search_host`]).
+    search_host: Option<std::rc::Rc<dyn search::SearchHost>>,
+    /// Rows chosen in search that the host carries out, in order.
+    search_choices: Vec<tilo_desktop_search::Target>,
+    /// What a caller of the published search asked of it, taken on the
+    /// next update pass.
+    search_asks: Vec<search::SearchAsk>,
+    /// The open search's query and rows, as last shown.
+    search_query: String,
+    search_rows: Vec<search::SearchRow>,
     /// The ask about the person themselves the bar shows from their avatar.
     personal_ask: Option<personal_ask::PersonalAsk>,
     personal_ask_revision: u64,
@@ -792,6 +806,11 @@ impl DesktopSurface {
             search_open: false,
             host_actions: Vec::new(),
             host_choices: Vec::new(),
+            search_host: None,
+            search_choices: Vec::new(),
+            search_asks: Vec::new(),
+            search_query: String::new(),
+            search_rows: Vec::new(),
             personal_ask: None,
             personal_ask_revision: 0,
             arrivals: Vec::new(),
