@@ -207,7 +207,8 @@ fn every_host_app_is_addressable_and_opens_by_window_identity() {
         .collect();
     apps[150].window_identities.push("fixture-window".into());
     let source = ApplicationsTestSource::with_host_apps(Vec::new(), Vec::new(), apps);
-    let provider = ApplicationsProvider::with_test_source(source);
+    let provider =
+        ApplicationsProvider::with_test_source_and_preferences(source, std::rc::Rc::default());
     let chrome = chrome_rc();
     let doc = AutoCommit::new();
     let state = chrome.borrow();
@@ -243,10 +244,10 @@ fn host_apps_switch_off_on_their_own() {
         Vec::new(),
         vec![app("org.fixture.Calculator", "Calculator")],
     );
-    let provider = std::rc::Rc::new(ApplicationsProvider {
-        source: Some(source),
-        ..ApplicationsProvider::with_preferences(std::rc::Rc::clone(&preferences))
-    });
+    let provider = std::rc::Rc::new(ApplicationsProvider::with_test_source_and_preferences(
+        source,
+        std::rc::Rc::clone(&preferences),
+    ));
     let mut registry = crate::shell::search::SearchRegistry::with_preferences_handle(
         std::rc::Rc::clone(&preferences),
     );
