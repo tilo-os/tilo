@@ -1,0 +1,1341 @@
+//! Target-local capture source broker: who captures the screen, camera,
+//! microphone or system audio right now.
+//!
+//! This module deliberately stops at the privacy boundary: verified app,
+//! workspace and session identities may request short-lived leases, while raw
+//! `PipeWire` node IDs and file descriptors remain process-local and are never
+//! serializable. A future cross-device media plane can consume a local lease;
+//! it must not copy these handles into continuity state.
+//!
+//! Every live lease is what the privacy indicator shows: the portal
+//! publishes each one with an action that stops it ([`crate::captures`]).
+
+use std::collections::{BTreeMap, VecDeque};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+use std::time::{Duration, Instant};
+
+use thiserror::Error;
+
+const MAX_SOURCES: usize = 128;
+const MAX_AUTHORIZATIONS: usize = 256;
+const MAX_LEASES: usize = 256;
+const MAX_PRIVACY_EVENTS: usize = MAX_LEASES * 4;
+pub const CAPTURE_AUTHORIZATION_TTL: Duration = Duration::from_secs(30);
+pub const CAPTURE_LEASE_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// `ttl` after `now`; past the end of time, `now` (expired at once).
+fn later(now: Instant, ttl: Duration) -> Instant {
+    now.checked_add(ttl).unwrap_or(now)
+}
+const OPAQUE_ID_BYTES: usize = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CaptureKind {
+    Camera,
+    Microphone,
+    Screen,
+    SystemAudio,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_field_names, reason = "each is an identity")]
+pub struct CaptureSessionBinding {
+    app_id: String,
+    workspace_id: String,
+    session_id: String,
+    target_id: String,
+}
+
+impl CaptureSessionBinding {
+    /// Bind a local capture session to an app the session verified (the
+    /// portal's authenticated caller, a launch the session supervises).
+    ///
+    /// # Errors
+    /// An identity that is empty, too long or holds control characters.
+    pub fn new(
+        app_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+        session_id: impl Into<String>,
+        target_id: impl Into<String>,
+    ) -> Result<Self, CaptureBrokerError> {
+        let binding = Self {
+            app_id: app_id.into(),
+            workspace_id: workspace_id.into(),
+            session_id: session_id.into(),
+            target_id: target_id.into(),
+        };
+        if !valid_identifier(&binding.app_id, 256)
+            || binding.workspace_id.len() > 256
+            || binding.workspace_id.chars().any(char::is_control)
+            || !valid_identifier(&binding.session_id, 256)
+            || !valid_identifier(&binding.target_id, 256)
+        {
+            return Err(CaptureBrokerError::InvalidIdentity);
+        }
+        Ok(binding)
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    #[must_use]
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    #[must_use]
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
+}
+
+/// A local backend capability. It intentionally has no serialization traits.
+#[derive(Debug)]
+pub enum LocalCaptureHandle {
+    PipeWireNode(u32),
+    FileDescriptor(OwnedFd),
+    /// Shell-selected system default. The concrete device remains behind the
+    /// portal/media backend and may change without invalidating app state.
+    SystemDefault(CaptureKind),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BorrowedCaptureHandle<'a> {
+    PipeWireNode(u32),
+    FileDescriptor(BorrowedFd<'a>),
+    SystemDefault(CaptureKind),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CaptureSourceView {
+    pub id: String,
+    pub label: String,
+    pub kind: CaptureKind,
+}
+
+struct LocalCaptureSource {
+    view: CaptureSourceView,
+    handle: LocalCaptureHandle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CaptureAuthorizationId {
+    broker: [u8; 16],
+    nonce: [u8; 16],
+}
+
+impl CaptureAuthorizationId {
+    /// Encode this target-local capability for the verified local app IPC.
+    /// The value is deliberately opaque and restart scoped; it is not a
+    /// continuation or device-fabric identifier.
+    #[must_use]
+    pub fn to_opaque(self) -> String {
+        let mut bytes = [0_u8; OPAQUE_ID_BYTES];
+        bytes[..16].copy_from_slice(&self.broker);
+        bytes[16..].copy_from_slice(&self.nonce);
+        hex::encode(bytes)
+    }
+
+    /// Decode an opaque target-local authorization capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the value is the exact fixed-width lowercase
+    /// hexadecimal representation emitted by [`Self::to_opaque`].
+    pub fn from_opaque(value: &str) -> Result<Self, CaptureBrokerError> {
+        let (broker, nonce) =
+            decode_opaque(value).ok_or(CaptureBrokerError::InvalidAuthorization)?;
+        Ok(Self { broker, nonce })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CaptureLeaseId {
+    broker: [u8; 16],
+    nonce: [u8; 16],
+}
+
+impl CaptureLeaseId {
+    /// The lease as the opaque, restart-scoped spelling it is published
+    /// under.
+    #[must_use]
+    pub fn to_opaque(self) -> String {
+        let mut bytes = [0_u8; OPAQUE_ID_BYTES];
+        bytes[..16].copy_from_slice(&self.broker);
+        bytes[16..].copy_from_slice(&self.nonce);
+        hex::encode(bytes)
+    }
+}
+
+/// One live lease, as the privacy indicator shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveCapture {
+    pub lease_id: CaptureLeaseId,
+    pub app_id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    /// The source's label.
+    pub source: String,
+    pub kind: CaptureKind,
+}
+
+/// A target-local lease and its independently authorized media kind. Lease
+/// IDs remain shell-owned and are never serialized into continuation state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureLeaseGrant {
+    pub kind: CaptureKind,
+    pub lease_id: CaptureLeaseId,
+}
+
+struct Authorization {
+    binding: CaptureSessionBinding,
+    source_id: String,
+    kind: CaptureKind,
+    expires_at: Instant,
+}
+
+struct Lease {
+    binding: CaptureSessionBinding,
+    source_id: String,
+    kind: CaptureKind,
+    /// `None` for a lease held until released or revoked: a portal
+    /// session's, which lasts as long as the session.
+    expires_at: Option<Instant>,
+    stop: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureRevocation {
+    Released,
+    /// The person stopped it.
+    Stopped,
+    SessionEnded,
+    AppExited,
+    ScreenLocked,
+    DeviceLost,
+    KillSwitch,
+    Expired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapturePrivacyEvent {
+    Started {
+        lease_id: CaptureLeaseId,
+        app_id: String,
+        workspace_id: String,
+        session_id: String,
+        source_id: String,
+        kind: CaptureKind,
+    },
+    Stopped {
+        lease_id: CaptureLeaseId,
+        app_id: String,
+        workspace_id: String,
+        session_id: String,
+        source_id: String,
+        kind: CaptureKind,
+        reason: CaptureRevocation,
+    },
+}
+
+pub struct CaptureBroker {
+    instance: [u8; 16],
+    sources: BTreeMap<String, LocalCaptureSource>,
+    authorizations: BTreeMap<CaptureAuthorizationId, Authorization>,
+    leases: BTreeMap<CaptureLeaseId, Lease>,
+    disabled: BTreeMap<CaptureKind, bool>,
+    events: VecDeque<CapturePrivacyEvent>,
+}
+
+impl Default for CaptureBroker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CaptureBroker {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            instance: nonzero(),
+            sources: BTreeMap::new(),
+            authorizations: BTreeMap::new(),
+            leases: BTreeMap::new(),
+            disabled: BTreeMap::new(),
+            events: VecDeque::new(),
+        }
+    }
+
+    /// Broker seeded with the session's semantic defaults used by realtime
+    /// handoff, each listed under `label`'s words for its kind. These are
+    /// selectors, not device handles: applications continue opening media
+    /// only through their existing sandboxed backend.
+    #[must_use]
+    pub fn with_system_defaults(label: impl Fn(CaptureKind) -> String) -> Self {
+        let mut broker = Self::new();
+        for (id, kind) in [
+            ("default-microphone", CaptureKind::Microphone),
+            ("default-camera", CaptureKind::Camera),
+            ("primary-display", CaptureKind::Screen),
+            ("system-audio", CaptureKind::SystemAudio),
+        ] {
+            let _ = broker.register_source(
+                id,
+                label(kind),
+                kind,
+                LocalCaptureHandle::SystemDefault(kind),
+            );
+        }
+        broker
+    }
+
+    /// Register or replace one target-local capture source.
+    pub fn register_source(
+        &mut self,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: CaptureKind,
+        handle: LocalCaptureHandle,
+    ) -> Result<(), CaptureBrokerError> {
+        let id = id.into();
+        let label = label.into();
+        if !valid_identifier(&id, 256)
+            || label.is_empty()
+            || label.len() > 256
+            || label.chars().any(char::is_control)
+        {
+            return Err(CaptureBrokerError::InvalidSource);
+        }
+        if self.sources.len() >= MAX_SOURCES && !self.sources.contains_key(&id) {
+            return Err(CaptureBrokerError::Capacity);
+        }
+        if self.sources.contains_key(&id) {
+            self.authorizations
+                .retain(|_, authorization| authorization.source_id != id);
+            self.revoke_matching(CaptureRevocation::DeviceLost, |lease| lease.source_id == id);
+        }
+        self.sources.insert(
+            id.clone(),
+            LocalCaptureSource {
+                view: CaptureSourceView { id, label, kind },
+                handle,
+            },
+        );
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn enumerate(&self, kind: CaptureKind) -> Vec<CaptureSourceView> {
+        if self.is_disabled(kind) {
+            return Vec::new();
+        }
+        self.sources
+            .values()
+            .filter(|source| source.view.kind == kind)
+            .map(|source| source.view.clone())
+            .collect()
+    }
+
+    /// Observed local nodes only; symbolic defaults and unpaired descriptors
+    /// are not concrete native microphone inputs.
+    #[must_use]
+    pub fn enumerate_local_nodes(&self, kind: CaptureKind) -> Vec<CaptureSourceView> {
+        if self.is_disabled(kind) {
+            return Vec::new();
+        }
+        self.sources
+            .values()
+            .filter(|source| {
+                source.view.kind == kind
+                    && matches!(source.handle, LocalCaptureHandle::PipeWireNode(_))
+            })
+            .map(|source| source.view.clone())
+            .collect()
+    }
+
+    /// Mint one short-lived, one-shot proof of fresh target-local consent.
+    pub fn authorize(
+        &mut self,
+        binding: &CaptureSessionBinding,
+        source_id: &str,
+        kind: CaptureKind,
+        now: Instant,
+    ) -> Result<CaptureAuthorizationId, CaptureBrokerError> {
+        self.reap_expired(now);
+        self.require_source(source_id, kind)?;
+        if self.authorizations.len() >= MAX_AUTHORIZATIONS {
+            return Err(CaptureBrokerError::Capacity);
+        }
+        let id = CaptureAuthorizationId {
+            broker: self.instance,
+            nonce: self.new_nonce(),
+        };
+        self.authorizations.insert(
+            id,
+            Authorization {
+                binding: binding.clone(),
+                source_id: source_id.to_string(),
+                kind,
+                expires_at: later(now, CAPTURE_AUTHORIZATION_TTL),
+            },
+        );
+        Ok(id)
+    }
+
+    /// Atomically mint one authorization for every selected capture facet.
+    /// Validation and capacity checks complete before any capability exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate/missing sources, a kill switch, or if
+    /// the complete authorization set would exceed the bounded table.
+    pub fn authorize_batch(
+        &mut self,
+        binding: &CaptureSessionBinding,
+        selections: &[(String, CaptureKind)],
+        now: Instant,
+    ) -> Result<Vec<CaptureAuthorizationId>, CaptureBrokerError> {
+        self.reap_expired(now);
+        if selections.is_empty()
+            || selections.len() > 4
+            || self.authorizations.len().saturating_add(selections.len()) > MAX_AUTHORIZATIONS
+        {
+            return Err(CaptureBrokerError::Capacity);
+        }
+        for (index, (source_id, kind)) in selections.iter().enumerate() {
+            self.require_source(source_id, *kind)?;
+            if selections
+                .iter()
+                .take(index)
+                .any(|(_, prior_kind)| prior_kind == kind)
+            {
+                return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+            }
+        }
+        let mut ids = Vec::with_capacity(selections.len());
+        for (source_id, kind) in selections {
+            let id = CaptureAuthorizationId {
+                broker: self.instance,
+                nonce: self.new_nonce(),
+            };
+            self.authorizations.insert(
+                id,
+                Authorization {
+                    binding: binding.clone(),
+                    source_id: source_id.clone(),
+                    kind: *kind,
+                    expires_at: later(now, CAPTURE_AUTHORIZATION_TTL),
+                },
+            );
+            ids.push(id);
+        }
+        Ok(ids)
+    }
+
+    /// Consume fresh authorization and create a target-local capture lease.
+    pub fn acquire(
+        &mut self,
+        authorization_id: CaptureAuthorizationId,
+        binding: &CaptureSessionBinding,
+        source_id: &str,
+        kind: CaptureKind,
+        now: Instant,
+    ) -> Result<CaptureLeaseId, CaptureBrokerError> {
+        self.reap_expired(now);
+        if authorization_id.broker != self.instance {
+            return Err(CaptureBrokerError::InvalidAuthorization);
+        }
+        let authorization = self
+            .authorizations
+            .get(&authorization_id)
+            .ok_or(CaptureBrokerError::InvalidAuthorization)?;
+        if authorization.expires_at < now
+            || &authorization.binding != binding
+            || authorization.source_id != source_id
+            || authorization.kind != kind
+        {
+            return Err(CaptureBrokerError::BindingMismatch);
+        }
+        self.require_source(source_id, kind)?;
+        if self.leases.len() >= MAX_LEASES {
+            return Err(CaptureBrokerError::Capacity);
+        }
+        self.authorizations.remove(&authorization_id);
+        let id = CaptureLeaseId {
+            broker: self.instance,
+            nonce: self.new_nonce(),
+        };
+        self.leases.insert(
+            id,
+            Lease {
+                stop: None,
+                binding: binding.clone(),
+                source_id: source_id.to_string(),
+                kind,
+                expires_at: Some(later(now, CAPTURE_LEASE_TTL)),
+            },
+        );
+        self.queue_event(CapturePrivacyEvent::Started {
+            lease_id: id,
+            app_id: binding.app_id.clone(),
+            workspace_id: binding.workspace_id.clone(),
+            session_id: binding.session_id.clone(),
+            source_id: source_id.to_string(),
+            kind,
+        });
+        Ok(id)
+    }
+
+    /// Atomically consume one authorization for every required capture kind.
+    /// Source identifiers are taken from the broker-owned authorizations, not
+    /// from application input. Validation completes before any proof is
+    /// consumed, so partial failure cannot leave an accidental live lease.
+    pub fn acquire_required(
+        &mut self,
+        authorization_ids: &[CaptureAuthorizationId],
+        binding: &CaptureSessionBinding,
+        required: &[CaptureKind],
+        now: Instant,
+    ) -> Result<Vec<CaptureLeaseGrant>, CaptureBrokerError> {
+        self.reap_expired(now);
+        if required.is_empty()
+            || required.len() > 4
+            || authorization_ids.len() != required.len()
+            || self.leases.len().saturating_add(required.len()) > MAX_LEASES
+        {
+            return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+        }
+        let mut unique_required = required.to_vec();
+        unique_required.sort_unstable();
+        unique_required.dedup();
+        if unique_required.len() != required.len() {
+            return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+        }
+
+        let mut validated = Vec::with_capacity(required.len());
+        for id in authorization_ids {
+            if id.broker != self.instance || validated.iter().any(|(seen, _, _)| seen == id) {
+                return Err(CaptureBrokerError::InvalidAuthorization);
+            }
+            let authorization = self
+                .authorizations
+                .get(id)
+                .ok_or(CaptureBrokerError::InvalidAuthorization)?;
+            if authorization.expires_at < now || &authorization.binding != binding {
+                return Err(CaptureBrokerError::BindingMismatch);
+            }
+            if !unique_required.contains(&authorization.kind)
+                || validated
+                    .iter()
+                    .any(|(_, _, kind)| *kind == authorization.kind)
+            {
+                return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+            }
+            self.require_source(&authorization.source_id, authorization.kind)?;
+            validated.push((*id, authorization.source_id.clone(), authorization.kind));
+        }
+        if validated.len() != unique_required.len() {
+            return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+        }
+
+        let mut grants = Vec::with_capacity(validated.len());
+        for (authorization_id, source_id, kind) in validated {
+            self.authorizations.remove(&authorization_id);
+            let lease_id = CaptureLeaseId {
+                broker: self.instance,
+                nonce: self.new_nonce(),
+            };
+            self.leases.insert(
+                lease_id,
+                Lease {
+                    stop: None,
+                    binding: binding.clone(),
+                    source_id: source_id.clone(),
+                    kind,
+                    expires_at: Some(later(now, CAPTURE_LEASE_TTL)),
+                },
+            );
+            self.queue_event(CapturePrivacyEvent::Started {
+                lease_id,
+                app_id: binding.app_id.clone(),
+                workspace_id: binding.workspace_id.clone(),
+                session_id: binding.session_id.clone(),
+                source_id,
+                kind,
+            });
+            grants.push(CaptureLeaseGrant { kind, lease_id });
+        }
+        Ok(grants)
+    }
+
+    /// Resolve a live lease to its local-only backend handle.
+    pub fn resolve<'a>(
+        &'a self,
+        lease_id: CaptureLeaseId,
+        binding: &CaptureSessionBinding,
+        now: Instant,
+    ) -> Result<BorrowedCaptureHandle<'a>, CaptureBrokerError> {
+        let lease = self
+            .leases
+            .get(&lease_id)
+            .ok_or(CaptureBrokerError::InvalidLease)?;
+        if lease_id.broker != self.instance
+            || &lease.binding != binding
+            || lease.expires_at.is_some_and(|expiry| expiry < now)
+        {
+            return Err(CaptureBrokerError::InvalidLease);
+        }
+        if self.is_disabled(lease.kind) {
+            return Err(CaptureBrokerError::Disabled);
+        }
+        let source = self
+            .sources
+            .get(&lease.source_id)
+            .filter(|source| source.view.kind == lease.kind)
+            .ok_or(CaptureBrokerError::SourceUnavailable)?;
+        Ok(match &source.handle {
+            LocalCaptureHandle::PipeWireNode(node) => BorrowedCaptureHandle::PipeWireNode(*node),
+            LocalCaptureHandle::FileDescriptor(fd) => {
+                BorrowedCaptureHandle::FileDescriptor(fd.as_fd())
+            }
+            LocalCaptureHandle::SystemDefault(kind) => BorrowedCaptureHandle::SystemDefault(*kind),
+        })
+    }
+
+    /// Keep a lease that is still current for another [`CAPTURE_LEASE_TTL`]
+    /// from `now`: a capture the person allowed lasts as long as the session
+    /// it was allowed for, not [`CAPTURE_LEASE_TTL`] past its start.
+    pub fn renew(
+        &mut self,
+        lease_id: CaptureLeaseId,
+        binding: &CaptureSessionBinding,
+        now: Instant,
+    ) -> Result<(), CaptureBrokerError> {
+        self.resolve(lease_id, binding, now)?;
+        let lease = self
+            .leases
+            .get_mut(&lease_id)
+            .ok_or(CaptureBrokerError::InvalidLease)?;
+        lease.expires_at = lease
+            .expires_at
+            .map(|expiry| now.checked_add(CAPTURE_LEASE_TTL).unwrap_or(expiry));
+        Ok(())
+    }
+
+    pub fn release(&mut self, lease_id: CaptureLeaseId) -> bool {
+        self.revoke_one(lease_id, CaptureRevocation::Released)
+    }
+
+    /// Stop lease `lease_id` for the person; `false` when it is not live.
+    pub fn stop(&mut self, lease_id: CaptureLeaseId) -> bool {
+        self.revoke_one(lease_id, CaptureRevocation::Stopped)
+    }
+
+    /// Consume a fresh authorization into a lease held until it is
+    /// released or revoked, never expiring: what a portal session that
+    /// the person allowed holds while it lasts.
+    ///
+    /// # Errors
+    /// As [`Self::acquire`].
+    pub fn acquire_held(
+        &mut self,
+        authorization_id: CaptureAuthorizationId,
+        binding: &CaptureSessionBinding,
+        source_id: &str,
+        kind: CaptureKind,
+        now: Instant,
+    ) -> Result<CaptureLeaseId, CaptureBrokerError> {
+        let id = self.acquire(authorization_id, binding, source_id, kind, now)?;
+        if let Some(lease) = self.leases.get_mut(&id) {
+            lease.expires_at = None;
+        }
+        Ok(id)
+    }
+
+    /// Every live lease, as the privacy indicator lists them.
+    #[must_use]
+    pub fn live(&self) -> Vec<LiveCapture> {
+        self.leases
+            .iter()
+            .map(|(id, lease)| LiveCapture {
+                lease_id: *id,
+                app_id: lease.binding.app_id.clone(),
+                workspace_id: lease.binding.workspace_id.clone(),
+                session_id: lease.binding.session_id.clone(),
+                source: self.sources.get(&lease.source_id).map_or_else(
+                    || lease.source_id.clone(),
+                    |source| source.view.label.clone(),
+                ),
+                kind: lease.kind,
+            })
+            .collect()
+    }
+
+    /// Lease `id`, by its opaque spelling, when it is this broker's.
+    #[must_use]
+    pub fn lease_of(&self, opaque: &str) -> Option<CaptureLeaseId> {
+        let (broker, nonce) = decode_opaque(opaque)?;
+        let id = CaptureLeaseId { broker, nonce };
+        self.leases.contains_key(&id).then_some(id)
+    }
+
+    /// Install a local synchronous device stop hook for this exact live lease.
+    /// The hook must never call back into this broker; it runs while revocation
+    /// owns the lease registry and fences the backend before returning.
+    /// # Errors
+    /// The lease is not live for `binding`.
+    pub fn stop_on_revoke(
+        &mut self,
+        lease_id: CaptureLeaseId,
+        binding: &CaptureSessionBinding,
+        now: Instant,
+        stop: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), CaptureBrokerError> {
+        self.resolve(lease_id, binding, now)?;
+        let lease = self
+            .leases
+            .get_mut(&lease_id)
+            .ok_or(CaptureBrokerError::InvalidLease)?;
+        lease.stop = Some(stop);
+        Ok(())
+    }
+
+    /// Revoke an exact set of unconsumed authorizations minted by one failed
+    /// higher-level transaction. Foreign/replayed identifiers are ignored so
+    /// rollback cannot disturb another broker instance.
+    pub fn revoke_authorizations(&mut self, ids: &[CaptureAuthorizationId]) -> usize {
+        ids.iter()
+            .filter(|id| id.broker == self.instance)
+            .filter(|id| self.authorizations.remove(id).is_some())
+            .count()
+    }
+
+    /// Revoke only the authorizations and leases for one exact verified
+    /// realtime session, leaving other calls by the same app untouched.
+    pub fn session_ended(&mut self, binding: &CaptureSessionBinding) {
+        self.authorizations
+            .retain(|_, authorization| &authorization.binding != binding);
+        self.revoke_matching(CaptureRevocation::SessionEnded, |lease| {
+            &lease.binding == binding
+        });
+    }
+
+    pub fn app_exited(&mut self, app_id: &str, workspace_id: &str) {
+        self.authorizations.retain(|_, authorization| {
+            authorization.binding.app_id != app_id
+                || authorization.binding.workspace_id != workspace_id
+        });
+        self.revoke_matching(CaptureRevocation::AppExited, |lease| {
+            lease.binding.app_id == app_id && lease.binding.workspace_id == workspace_id
+        });
+    }
+
+    pub fn screen_locked(&mut self) {
+        self.authorizations.clear();
+        self.revoke_matching(CaptureRevocation::ScreenLocked, |_| true);
+    }
+
+    pub fn remove_source(&mut self, source_id: &str) -> bool {
+        self.authorizations
+            .retain(|_, authorization| authorization.source_id != source_id);
+        self.revoke_matching(CaptureRevocation::DeviceLost, |lease| {
+            lease.source_id == source_id
+        });
+        self.sources.remove(source_id).is_some()
+    }
+
+    pub fn set_kill_switch(&mut self, kind: CaptureKind, disabled: bool) {
+        self.disabled.insert(kind, disabled);
+        if disabled {
+            self.authorizations
+                .retain(|_, authorization| authorization.kind != kind);
+            self.revoke_matching(CaptureRevocation::KillSwitch, |lease| lease.kind == kind);
+        }
+    }
+
+    pub fn reap_expired(&mut self, now: Instant) {
+        self.authorizations
+            .retain(|_, authorization| authorization.expires_at >= now);
+        self.revoke_matching(CaptureRevocation::Expired, |lease| {
+            lease.expires_at.is_some_and(|expiry| expiry < now)
+        });
+    }
+
+    pub fn take_privacy_events(&mut self) -> Vec<CapturePrivacyEvent> {
+        self.events.drain(..).collect()
+    }
+
+    fn require_source(&self, source_id: &str, kind: CaptureKind) -> Result<(), CaptureBrokerError> {
+        if self.is_disabled(kind) {
+            return Err(CaptureBrokerError::Disabled);
+        }
+        self.sources
+            .get(source_id)
+            .filter(|source| source.view.kind == kind)
+            .map(|_| ())
+            .ok_or(CaptureBrokerError::SourceUnavailable)
+    }
+
+    fn is_disabled(&self, kind: CaptureKind) -> bool {
+        self.disabled.get(&kind).copied().unwrap_or(false)
+    }
+
+    fn revoke_one(&mut self, id: CaptureLeaseId, reason: CaptureRevocation) -> bool {
+        let Some(lease) = self.leases.remove(&id) else {
+            return false;
+        };
+        if let Some(stop) = lease.stop.as_ref() {
+            stop();
+        }
+        self.queue_event(stopped_event(id, lease, reason));
+        true
+    }
+
+    fn revoke_matching(&mut self, reason: CaptureRevocation, predicate: impl Fn(&Lease) -> bool) {
+        let ids = self
+            .leases
+            .iter()
+            .filter_map(|(id, lease)| predicate(lease).then_some(*id))
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.revoke_one(id, reason);
+        }
+    }
+
+    fn new_nonce(&self) -> [u8; 16] {
+        loop {
+            let nonce = nonzero();
+            if !self.authorizations.keys().any(|id| id.nonce == nonce)
+                && !self.leases.keys().any(|id| id.nonce == nonce)
+            {
+                return nonce;
+            }
+        }
+    }
+
+    fn queue_event(&mut self, event: CapturePrivacyEvent) {
+        if self.events.len() >= MAX_PRIVACY_EVENTS {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+}
+
+fn stopped_event(
+    id: CaptureLeaseId,
+    lease: Lease,
+    reason: CaptureRevocation,
+) -> CapturePrivacyEvent {
+    CapturePrivacyEvent::Stopped {
+        lease_id: id,
+        app_id: lease.binding.app_id,
+        workspace_id: lease.binding.workspace_id,
+        session_id: lease.binding.session_id,
+        source_id: lease.source_id,
+        kind: lease.kind,
+        reason,
+    }
+}
+
+/// The broker and nonce of an opaque id: exactly the fixed-width lowercase
+/// hexadecimal `to_opaque` writes.
+fn decode_opaque(value: &str) -> Option<([u8; 16], [u8; 16])> {
+    if value.len() != OPAQUE_ID_BYTES.saturating_mul(2)
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let bytes = hex::decode(value).ok()?;
+    let (broker, nonce) = bytes.split_at(16);
+    Some((broker.try_into().ok()?, nonce.try_into().ok()?))
+}
+
+/// 16 random bytes, never all zero: ids reserve zero for "none".
+fn nonzero() -> [u8; 16] {
+    loop {
+        let value = uuid::Uuid::new_v4().into_bytes();
+        if value != [0; 16] {
+            return value;
+        }
+    }
+}
+
+fn valid_identifier(value: &str, max: usize) -> bool {
+    !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum CaptureBrokerError {
+    #[error("target-local capture broker is unavailable")]
+    Unavailable,
+    #[error("invalid verified capture identity")]
+    InvalidIdentity,
+    #[error("invalid capture source")]
+    InvalidSource,
+    #[error("capture source is unavailable or has the wrong type")]
+    SourceUnavailable,
+    #[error("capture is disabled by the local privacy switch")]
+    Disabled,
+    #[error("fresh local capture authorization is invalid, expired, or already used")]
+    InvalidAuthorization,
+    #[error("capture authorization binding does not match")]
+    BindingMismatch,
+    #[error("capture authorization set does not exactly cover the required media")]
+    IncompleteAuthorizationSet,
+    #[error("capture lease is invalid, expired, or foreign")]
+    InvalidLease,
+    #[error("capture broker capacity is exhausted")]
+    Capacity,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    use super::*;
+
+    fn binding(app: &str, workspace: &str, session: &str) -> CaptureSessionBinding {
+        CaptureSessionBinding::new(app, workspace, session, "target-local").unwrap()
+    }
+
+    fn broker() -> CaptureBroker {
+        let mut broker = CaptureBroker::new();
+        broker
+            .register_source(
+                "camera-front",
+                "Front camera",
+                CaptureKind::Camera,
+                LocalCaptureHandle::PipeWireNode(41),
+            )
+            .unwrap();
+        broker
+            .register_source(
+                "mic-main",
+                "Built-in mic",
+                CaptureKind::Microphone,
+                LocalCaptureHandle::PipeWireNode(42),
+            )
+            .unwrap();
+        broker
+            .register_source(
+                "share-audio",
+                "System audio",
+                CaptureKind::SystemAudio,
+                LocalCaptureHandle::PipeWireNode(43),
+            )
+            .unwrap();
+        broker
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn capture_authorization_is_one_shot_exact_and_broker_scoped() {
+        {
+            let mut broker = broker();
+            let owner = binding("so.tilo.chat", "work", "session-batch");
+            let now = Instant::now();
+            assert!(
+                broker
+                    .authorize_batch(
+                        &owner,
+                        &[
+                            ("mic-main".into(), CaptureKind::Microphone),
+                            ("missing-camera".into(), CaptureKind::Camera),
+                        ],
+                        now,
+                    )
+                    .is_err()
+            );
+            assert!(broker.authorizations.is_empty());
+
+            let ids = broker
+                .authorize_batch(
+                    &owner,
+                    &[
+                        ("mic-main".into(), CaptureKind::Microphone),
+                        ("camera-front".into(), CaptureKind::Camera),
+                    ],
+                    now,
+                )
+                .unwrap();
+            assert_eq!(ids.len(), 2);
+            assert_eq!(broker.authorizations.len(), 2);
+            assert_eq!(broker.revoke_authorizations(&ids), 2);
+            assert!(broker.authorizations.is_empty());
+            assert_eq!(broker.revoke_authorizations(&ids), 0);
+        }
+        {
+            let mut broker = broker();
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call-1");
+            let other = binding("meet", "work", "call-2");
+            let auth = broker
+                .authorize(&owner, "camera-front", CaptureKind::Camera, now)
+                .unwrap();
+            assert_eq!(
+                broker.acquire(auth, &other, "camera-front", CaptureKind::Camera, now),
+                Err(CaptureBrokerError::BindingMismatch)
+            );
+            let lease = broker
+                .acquire(auth, &owner, "camera-front", CaptureKind::Camera, now)
+                .unwrap();
+            assert!(matches!(
+                broker.resolve(lease, &owner, now),
+                Ok(BorrowedCaptureHandle::PipeWireNode(41))
+            ));
+        }
+        {
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call");
+            let mut first = broker();
+            let auth = first
+                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                .unwrap();
+            assert_eq!(
+                first.acquire(
+                    auth,
+                    &owner,
+                    "mic-main",
+                    CaptureKind::Microphone,
+                    now + CAPTURE_AUTHORIZATION_TTL + Duration::from_millis(1)
+                ),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+            let mut second = broker();
+            assert_eq!(
+                second.acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+        }
+        {
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call");
+            let mut broker = broker();
+            let authorization = broker
+                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                .unwrap();
+            let opaque = authorization.to_opaque();
+            assert_eq!(opaque.len(), OPAQUE_ID_BYTES * 2);
+            assert_eq!(
+                CaptureAuthorizationId::from_opaque(&opaque).unwrap(),
+                authorization
+            );
+            assert_eq!(
+                CaptureAuthorizationId::from_opaque(&opaque.to_ascii_uppercase()),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+            assert_eq!(
+                CaptureAuthorizationId::from_opaque("00"),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+        }
+        {
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call-1");
+            let wrong_session = binding("meet", "work", "call-2");
+            let wrong_target =
+                CaptureSessionBinding::new("meet", "work", "call-1", "target-other").unwrap();
+            let mut broker = broker();
+            let microphone = broker
+                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                .unwrap();
+            let camera = broker
+                .authorize(&owner, "camera-front", CaptureKind::Camera, now)
+                .unwrap();
+            let required = [CaptureKind::Microphone, CaptureKind::Camera];
+
+            assert_eq!(
+                broker.acquire_required(&[microphone], &owner, &required, now),
+                Err(CaptureBrokerError::IncompleteAuthorizationSet)
+            );
+            assert_eq!(
+                broker.acquire_required(&[microphone, camera], &wrong_session, &required, now),
+                Err(CaptureBrokerError::BindingMismatch)
+            );
+            assert_eq!(
+                broker.acquire_required(&[microphone, camera], &wrong_target, &required, now),
+                Err(CaptureBrokerError::BindingMismatch)
+            );
+            let grants = broker
+                .acquire_required(&[microphone, camera], &owner, &required, now)
+                .unwrap();
+            assert_eq!(grants.len(), 2);
+            assert!(
+                grants
+                    .iter()
+                    .all(|grant| broker.resolve(grant.lease_id, &owner, now).is_ok())
+            );
+            assert_eq!(
+                broker.acquire_required(&[microphone, camera], &owner, &required, now),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+        }
+    }
+
+    #[test]
+    fn capture_sources_stay_local_kind_scoped_and_lease_bound() {
+        {
+            let broker = broker();
+            assert_eq!(broker.enumerate(CaptureKind::Camera)[0].id, "camera-front");
+            assert_eq!(broker.enumerate(CaptureKind::Microphone)[0].id, "mic-main");
+            assert_eq!(
+                broker.enumerate(CaptureKind::SystemAudio)[0].id,
+                "share-audio"
+            );
+            assert!(broker.enumerate(CaptureKind::Screen).is_empty());
+        }
+        {
+            let mut broker = broker();
+            let owner = binding("meet", "work", "call");
+            broker.set_kill_switch(CaptureKind::Camera, true);
+            assert!(broker.enumerate(CaptureKind::Camera).is_empty());
+            assert_eq!(
+                broker.authorize(&owner, "camera-front", CaptureKind::Camera, Instant::now()),
+                Err(CaptureBrokerError::Disabled)
+            );
+            assert_eq!(broker.enumerate(CaptureKind::Microphone).len(), 1);
+        }
+        {
+            let file = std::fs::File::open("/dev/null").unwrap();
+            let expected = file.as_fd().as_raw_fd();
+            let mut broker = CaptureBroker::new();
+            broker
+                .register_source(
+                    "screen",
+                    "Screen",
+                    CaptureKind::Screen,
+                    LocalCaptureHandle::FileDescriptor(file.into()),
+                )
+                .unwrap();
+            let owner = binding("share", "work", "room");
+            let now = Instant::now();
+            let auth = broker
+                .authorize(&owner, "screen", CaptureKind::Screen, now)
+                .unwrap();
+            let lease = broker
+                .acquire(auth, &owner, "screen", CaptureKind::Screen, now)
+                .unwrap();
+            let BorrowedCaptureHandle::FileDescriptor(fd) =
+                broker.resolve(lease, &owner, now).unwrap()
+            else {
+                panic!("expected fd");
+            };
+            assert_eq!(fd.as_raw_fd(), expected);
+        }
+    }
+
+    #[test]
+    fn a_renewed_lease_outlives_its_first_term_and_a_revoked_one_cannot_be_renewed() {
+        let mut broker = broker();
+        let owner = binding("meet", "work", "call");
+        let start = Instant::now();
+        let auth = broker
+            .authorize(&owner, "camera-front", CaptureKind::Camera, start)
+            .unwrap();
+        let lease = broker
+            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, start)
+            .unwrap();
+        let halfway = start + CAPTURE_LEASE_TTL / 2;
+        broker.renew(lease, &owner, halfway).unwrap();
+        let past_first_term = start + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+        broker.reap_expired(past_first_term);
+        assert!(
+            broker.resolve(lease, &owner, past_first_term).is_ok(),
+            "a renewed lease lasts past its first term"
+        );
+        let other = binding("meet", "work", "other-call");
+        assert!(broker.renew(lease, &other, past_first_term).is_err());
+        let far = past_first_term + CAPTURE_LEASE_TTL + Duration::from_secs(1);
+        broker.reap_expired(far);
+        assert!(
+            broker.renew(lease, &owner, far).is_err(),
+            "an expired lease stays expired"
+        );
+
+        let auth = broker
+            .authorize(&owner, "camera-front", CaptureKind::Camera, far)
+            .unwrap();
+        let lease = broker
+            .acquire(auth, &owner, "camera-front", CaptureKind::Camera, far)
+            .unwrap();
+        broker.set_kill_switch(CaptureKind::Camera, true);
+        assert!(broker.renew(lease, &owner, far).is_err());
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn capture_teardown_revokes_exact_leases_and_is_audited() {
+        {
+            let now = Instant::now();
+            let first = binding("meet", "work", "call-1");
+            let second = binding("meet", "work", "call-2");
+            let mut broker = broker();
+            let first_authorization = broker
+                .authorize(&first, "mic-main", CaptureKind::Microphone, now)
+                .unwrap();
+            let second_authorization = broker
+                .authorize(&second, "camera-front", CaptureKind::Camera, now)
+                .unwrap();
+            let first_lease = broker
+                .acquire(
+                    first_authorization,
+                    &first,
+                    "mic-main",
+                    CaptureKind::Microphone,
+                    now,
+                )
+                .unwrap();
+            let second_lease = broker
+                .acquire(
+                    second_authorization,
+                    &second,
+                    "camera-front",
+                    CaptureKind::Camera,
+                    now,
+                )
+                .unwrap();
+
+            broker.session_ended(&first);
+            assert!(matches!(
+                broker.resolve(first_lease, &first, now),
+                Err(CaptureBrokerError::InvalidLease)
+            ));
+            assert!(broker.resolve(second_lease, &second, now).is_ok());
+            assert!(broker.take_privacy_events().iter().any(|event| matches!(
+                event,
+                CapturePrivacyEvent::Stopped {
+                    lease_id,
+                    reason: CaptureRevocation::SessionEnded,
+                    ..
+                } if *lease_id == first_lease
+            )));
+        }
+        {
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call");
+            for reason in [
+                CaptureRevocation::SessionEnded,
+                CaptureRevocation::AppExited,
+                CaptureRevocation::ScreenLocked,
+                CaptureRevocation::DeviceLost,
+                CaptureRevocation::KillSwitch,
+                CaptureRevocation::Expired,
+            ] {
+                let mut broker = broker();
+                let auth = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                let lease = broker
+                    .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                match reason {
+                    CaptureRevocation::SessionEnded => broker.session_ended(&owner),
+                    CaptureRevocation::AppExited => broker.app_exited("meet", "work"),
+                    CaptureRevocation::ScreenLocked => broker.screen_locked(),
+                    CaptureRevocation::DeviceLost => {
+                        broker.remove_source("mic-main");
+                    }
+                    CaptureRevocation::KillSwitch => {
+                        broker.set_kill_switch(CaptureKind::Microphone, true);
+                    }
+                    CaptureRevocation::Expired => {
+                        broker.reap_expired(now + CAPTURE_LEASE_TTL + Duration::from_millis(1));
+                    }
+                    CaptureRevocation::Released | CaptureRevocation::Stopped => continue,
+                }
+                assert!(matches!(
+                    broker.resolve(lease, &owner, now),
+                    Err(CaptureBrokerError::InvalidLease)
+                ));
+                let events = broker.take_privacy_events();
+                assert!(
+                    matches!(events.as_slice(), [CapturePrivacyEvent::Started { .. }, CapturePrivacyEvent::Stopped { reason: event_reason, .. }] if *event_reason == reason)
+                );
+            }
+        }
+        {
+            let now = Instant::now();
+            let owner = binding("meet", "work", "call");
+            let mut broker = broker();
+            let old = broker
+                .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                .unwrap();
+            broker
+                .register_source(
+                    "mic-main",
+                    "Replacement mic",
+                    CaptureKind::Microphone,
+                    LocalCaptureHandle::PipeWireNode(99),
+                )
+                .unwrap();
+            assert_eq!(
+                broker.acquire(old, &owner, "mic-main", CaptureKind::Microphone, now),
+                Err(CaptureBrokerError::InvalidAuthorization)
+            );
+            for _ in 0..MAX_PRIVACY_EVENTS.saturating_add(8) {
+                let auth = broker
+                    .authorize(&owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                let lease = broker
+                    .acquire(auth, &owner, "mic-main", CaptureKind::Microphone, now)
+                    .unwrap();
+                assert!(broker.release(lease));
+            }
+            assert_eq!(broker.events.len(), MAX_PRIVACY_EVENTS);
+        }
+    }
+
+    #[test]
+    fn a_held_lease_lasts_until_stopped_and_is_listed_meanwhile() {
+        let mut broker = broker();
+        let owner = binding("org.example.Share", "", "/session/1");
+        let now = Instant::now();
+        let auth = broker
+            .authorize(&owner, "share-audio", CaptureKind::SystemAudio, now)
+            .unwrap();
+        let lease = broker
+            .acquire_held(auth, &owner, "share-audio", CaptureKind::SystemAudio, now)
+            .unwrap();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hook = std::sync::Arc::clone(&stopped);
+        broker
+            .stop_on_revoke(
+                lease,
+                &owner,
+                now,
+                std::sync::Arc::new(move || {
+                    hook.store(true, std::sync::atomic::Ordering::SeqCst);
+                }),
+            )
+            .unwrap();
+        let far = now + CAPTURE_LEASE_TTL * 4;
+        broker.reap_expired(far);
+        let live = broker.live();
+        assert_eq!(live.len(), 1, "a held lease does not expire");
+        assert_eq!(live[0].source, "System audio");
+        assert_eq!(broker.lease_of(&lease.to_opaque()), Some(lease));
+        assert_eq!(broker.lease_of("00"), None);
+        assert!(broker.stop(lease));
+        assert!(stopped.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(broker.live().is_empty());
+        assert!(broker.take_privacy_events().iter().any(|event| matches!(
+            event,
+            CapturePrivacyEvent::Stopped {
+                reason: CaptureRevocation::Stopped,
+                ..
+            }
+        )));
+    }
+}

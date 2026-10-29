@@ -41,6 +41,14 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The theme the legacy toolkits' appearance keys are projected from.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 futures-util.workspace = true
+# EIS, the transport of the input portals: a server per session.
+reis = { version = "0.7.1", features = ["calloop"] }
+calloop = "0.14"
+hex.workspace = true
+uuid.workspace = true
+# The producer side of screen share streams, for a session feeding them
+# frames it captured.
+pipewire = { version = "0.10.1", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -49,6 +57,9 @@ tracing.workspace = true
 url.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
+
+[features]
+pipewire = ["dep:pipewire"]
 
 [dev-dependencies]
 tempfile.workspace = true

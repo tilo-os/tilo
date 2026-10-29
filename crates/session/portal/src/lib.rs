@@ -12,7 +12,14 @@
 //! - `org.freedesktop.impl.portal.Access` ([`access`])
 //! - `org.freedesktop.impl.portal.Inhibit` ([`inhibit`])
 //! - `org.freedesktop.impl.portal.Lockdown` ([`lockdown`])
+//! - `org.freedesktop.impl.portal.ScreenCast` ([`screencast`], streams of
+//!   the session's [`CaptureStreams`])
+//! - `org.freedesktop.impl.portal.RemoteDesktop` ([`remote_desktop`],
+//!   driving the session's [`InputInjector`])
+//! - `org.freedesktop.impl.portal.InputCapture` ([`input_capture`])
 //! - `org.freedesktop.impl.portal.GlobalShortcuts` ([`global_shortcuts`])
+//! - `org.freedesktop.impl.portal.Clipboard` ([`clipboard`], the session's
+//!   [`clipboard::Clipboard`] for remote desktops)
 //!
 //! The session-based ones live as `org.freedesktop.impl.portal.Session`
 //! objects ([`session`]).
@@ -58,20 +65,33 @@ mod dispatch;
 pub mod documents;
 pub mod dynamic_launcher;
 pub mod email;
+pub mod capture_broker;
+pub mod captures;
+pub mod clipboard;
+pub mod consent;
+mod eis;
 pub mod file_chooser;
 pub mod global_shortcuts;
 pub mod host;
 pub mod inhibit;
+pub mod input_capture;
 pub mod lifecycle;
 pub mod lockdown;
 pub mod print;
 pub mod reply;
 pub mod requester;
 pub mod screensaver;
+#[cfg(feature = "pipewire")]
+pub mod pipewire;
+pub mod remote_desktop;
+pub mod reply;
+pub mod restore;
+pub mod screencast;
 pub mod screenshot;
 pub mod secret;
 pub mod session;
 pub mod settings;
+pub mod streams;
 pub mod trigger;
 pub mod usb;
 pub mod wallpaper;
@@ -83,7 +103,9 @@ pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use consent::{Consents, WorkspaceGrants};
 pub use inhibit::{Inhibition, Inhibitions};
 pub use requester::Requesters;
+pub use remote_desktop::{InputInjector, NoInput, RemoteInput};
 pub use settings::{PortalSetting, Settings};
+pub use streams::{CaptureSource, CaptureStreams, NoStreams, SourceKind, Stream, StreamRequest};
 
 /// The bus name the backend serves under, as `tilo.portal` names it.
 pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.tilo";
@@ -160,7 +182,15 @@ pub struct Portal {
     inhibitions: Inhibitions,
     requests: lifecycle::Requests,
     sessions: session::Sessions,
+    streams: Arc<dyn CaptureStreams>,
+    input: Arc<dyn InputInjector>,
+    captures: captures::Captures,
+    grants: restore::Grants,
+    casts: screencast::Casts,
+    remotes: remote_desktop::Remotes,
+    input_captures: input_capture::InputCaptures,
     shortcuts: global_shortcuts::Shortcuts,
+    clipboards: clipboard::Clipboards,
 }
 
 impl Portal {
@@ -174,6 +204,10 @@ impl Portal {
             private_state_root().map(|root| root.join("tilo/portal/consents.json")),
         );
         let sessions = session::Sessions::default();
+        let remotes = remote_desktop::Remotes::default();
+        remotes.follow(&sessions);
+        let input_captures = input_capture::InputCaptures::default();
+        input_captures.follow(&sessions);
         Self {
             questions,
             authenticator,
@@ -185,9 +219,58 @@ impl Portal {
             settings: Settings::default(),
             inhibitions: Inhibitions::default(),
             requests: lifecycle::Requests::default(),
+            captures: captures::Captures::new(&sessions),
+            grants: restore::Grants::load(
+                private_state_root().map(|root| root.join("tilo/portal/restore.json")),
+            ),
+            casts: screencast::Casts::default(),
             shortcuts: global_shortcuts::Shortcuts::new(&sessions),
+            streams: Arc::new(NoStreams),
+            input: Arc::new(NoInput),
+            clipboards: clipboard::Clipboards::new(
+                &sessions,
+                remotes.clone(),
+                input_captures.clone(),
+            ),
+            remotes,
+            input_captures,
             sessions,
         }
+    }
+
+    /// The same, sharing screens through `streams`.
+    #[must_use]
+    pub fn with_streams(mut self, streams: Arc<dyn CaptureStreams>) -> Self {
+        self.streams = streams;
+        self
+    }
+
+    /// The same, letting remote desktops drive `input`.
+    #[must_use]
+    pub fn with_input(mut self, input: Arc<dyn InputInjector>) -> Self {
+        self.input = input;
+        self
+    }
+
+    /// The same, sharing the desktop's selection through `clipboard`.
+    #[must_use]
+    pub fn with_clipboard(self, clipboard: Arc<dyn clipboard::Clipboard>) -> Self {
+        self.clipboards.set(clipboard);
+        self
+    }
+
+    /// The remote sessions' clipboards, told when the desktop's selection
+    /// changes.
+    #[must_use]
+    pub const fn clipboards(&self) -> &clipboard::Clipboards {
+        &self.clipboards
+    }
+
+    /// The same, keeping remembered shares in `grants`.
+    #[must_use]
+    pub fn with_grants(mut self, grants: restore::Grants) -> Self {
+        self.grants = grants;
+        self
     }
 
     /// The live portal sessions: where the session hears that what the
@@ -197,10 +280,38 @@ impl Portal {
         &self.sessions
     }
 
+    /// What is captured now, and the broker revoking it on a screen lock
+    /// or a privacy switch.
+    #[must_use]
+    pub const fn captures(&self) -> &captures::Captures {
+        &self.captures
+    }
+
+    /// The input captures the session feeds its input and screens to.
+    #[must_use]
+    pub const fn input_captures(&self) -> &input_capture::InputCaptures {
+        &self.input_captures
+    }
+
     /// The apps' bound shortcuts, which the desktop's own table overrides.
     #[must_use]
     pub const fn shortcuts(&self) -> &global_shortcuts::Shortcuts {
         &self.shortcuts
+    }
+
+    /// The remembered shares.
+    #[must_use]
+    pub const fn grants(&self) -> &restore::Grants {
+        &self.grants
+    }
+
+    fn controls(&self) -> remote_desktop::Controls {
+        remote_desktop::Controls {
+            sessions: self.sessions.clone(),
+            remotes: self.remotes.clone(),
+            captures: self.input_captures.clone(),
+            casts: self.casts.clone(),
+        }
     }
 
     /// The same, capturing through `capture`.
@@ -317,12 +428,31 @@ impl Portal {
             )
             .await?;
         server.at(OBJECT_PATH, usb::Usb::new(self.clone())).await?;
+        self.casts.follow(self);
         self.sessions.serve_on(connection);
+        server
+            .at(OBJECT_PATH, screencast::ScreenCast::new(self.clone()))
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                remote_desktop::RemoteDesktop::new(self.clone()),
+            )
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                input_capture::InputCapture::new(self.clone(), connection),
+            )
+            .await?;
         server
             .at(
                 OBJECT_PATH,
                 global_shortcuts::GlobalShortcuts::new(self.clone()),
             )
+            .await?;
+        server
+            .at(OBJECT_PATH, clipboard::ClipboardPortal::new(self.clone()))
             .await?;
         self.requests.close_with_their_owners(connection);
         settings::emit_changes(connection, self.settings.subscribe());
@@ -492,6 +622,12 @@ impl Service for Portal {
         vec![
             ResourceSpec::new(PORTAL_RESOURCE, "portal", "Portal")
                 .with_children(self.parts().into_iter().flat_map(Published::resources)),
+                .with_children(consents)
+                .with_children(self.inhibitions.resources())
+                .with_children(self.captures.resources())
+                .with_children(self.controls().resources())
+                .with_children(self.grants.resources())
+                .with_children(self.shortcuts.resources()),
         ]
     }
 
@@ -506,6 +642,12 @@ impl Service for Portal {
         self.parts()
             .into_iter()
             .find_map(|part| part.read(resource))
+        self.inhibitions
+            .read(resource)
+            .or_else(|| self.captures.read(resource))
+            .or_else(|| self.controls().read(resource))
+            .or_else(|| self.grants.read(resource))
+            .or_else(|| self.shortcuts.read(resource))
     }
 
     fn invoke(
@@ -522,6 +664,23 @@ impl Service for Portal {
                 Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
                     resource, action,
                 )))
+        if let Some(consent) = resource.strip_prefix(CONSENT_PREFIX) {
+            let ConsentEffect::Forget = decode(&published, resource, action, arguments)?;
+            let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
+            return self
+                .consents
+                .forget(app, capability)
+                .then(|| Started::Done(ActionOutput::default()))
+                .ok_or_else(unknown);
+        }
+        let controls = self.controls();
+        let parts: [&dyn Published; 4] = [&self.captures, &controls, &self.grants, &self.shortcuts];
+        self.inhibitions
+            .invoke(&published, resource, action, arguments)
+            .or_else(|| {
+                parts
+                    .iter()
+                    .find_map(|part| part.invoke(&published, resource, action, arguments))
             })
     }
 
