@@ -2453,6 +2453,12 @@ impl TerminalWidget {
         self.runs.queue = queue;
     }
 
+    /// Open new tabs on the environment `recent` remembers, and remember
+    /// the one opened there.
+    pub(crate) fn recent_in(&mut self, recent: crate::target::RecentTarget) {
+        self.sessions.recent_in(recent);
+    }
+
     /// Remember every run this terminal records in the person's `history`,
     /// as runs of the session record at `session`.
     pub(crate) fn remember_in(
