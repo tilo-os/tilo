@@ -18,7 +18,7 @@ pub use crate::shell::test_control::{
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -845,6 +845,7 @@ impl WakeTally {
 mod listing;
 mod lock_media;
 mod lock_view;
+mod wakes;
 use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
 use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
 
@@ -9147,12 +9148,11 @@ fn bind_and_publish_wayland_socket() -> (
 
 #[cfg(test)]
 fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
-    let Some(start) = source.rfind("let backend_event_wake = if let Some(fd) = backend.event_fd()")
-    else {
+    let Some(start) = source.find("pub(super) fn backend_event_wake(") else {
         return false;
     };
     let tail = &source[start..];
-    let Some(end) = tail.find("let (capture_ping, capture_ping_source)") else {
+    let Some(end) = tail.find("pub(super) fn present_pipe(") else {
         return false;
     };
     let registration = &tail[..end];
@@ -9205,35 +9205,10 @@ pub fn run() {
         }
     };
 
-    let (termination, termination_source) =
-        super::session_termination::SessionTermination::source().unwrap_or_else(|error| {
-            eprintln!("tilo compositor: cannot establish ordered signal teardown: {error}");
-            std::process::exit(1);
-        });
-    event_loop
-        .handle()
-        .insert_source(termination_source, |_, fd, _| {
-            let mut value = [0_u8; 8];
-            // SAFETY: the buffer is writable for its stated length; fd is the
-            // live nonblocking eventfd owned by this event source.
-            unsafe {
-                libc::read(fd.as_raw_fd(), value.as_mut_ptr().cast(), value.len());
-            }
-            Ok(PostAction::Continue)
-        })
-        .unwrap_or_else(|error| {
-            eprintln!("tilo compositor: cannot observe termination signals: {error}");
-            std::process::exit(1);
-        });
+    let termination = wakes::session_termination(&event_loop.handle());
 
-    // The `Display` owns the wayland-server protocol state. Its poll fd is an
-    // epoll instance containing the individual client sockets. Register a
-    // duplicate as an edge-triggered *wake token* below, while retaining
-    // ownership and doing all actual protocol dispatch here. The edge is safe
-    // because `dispatch_clients` drains the inner epoll fully; level-triggered
-    // epoll nesting can consume outer readiness without draining the inner
-    // client event and then strand a request. If registration is unavailable,
-    // retain the bounded 4 ms service fallback rather than breaking clients.
+    // The `Display` owns the wayland-server protocol state; the loop only
+    // wakes on its clients (`wakes::wayland_client_wake`).
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
@@ -9243,63 +9218,9 @@ pub fn run() {
     };
     let display_handle = display.handle();
 
-    let wayland_client_wake = {
-        let duplicate =
-            unsafe { libc::fcntl(display.as_fd().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-        if duplicate < 0 {
-            tracing::warn!(
-                error = %std::io::Error::last_os_error(),
-                "could not duplicate Wayland display wake fd; using bounded polling fallback"
-            );
-            false
-        } else {
-            // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
-            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
-            match event_loop
-                .handle()
-                .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
-                    Ok(PostAction::Continue)
-                }) {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "could not register Wayland display wake fd; using bounded polling fallback"
-                    );
-                    false
-                }
-            }
-        }
-    };
+    let wayland_client_wake = wakes::wayland_client_wake(&event_loop.handle(), &display);
 
-    // The session's one settings document: read once per change on its own
-    // thread and shared, by generation, with every subsystem that follows a
-    // setting (input devices, switch control, rotation lock, automatic
-    // brightness, input methods, continuity policy). A change wakes an idle
-    // loop through this ping; nothing here reads the file between changes.
-    let live_settings = {
-        let wake = match calloop::ping::make_ping() {
-            Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
-                Ok(_) => Some(ping),
-                Err(error) => {
-                    tracing::warn!(%error, "could not register the settings wake source; an idle desktop applies Settings changes on its next wake");
-                    None
-                }
-            },
-            Err(error) => {
-                tracing::warn!(%error, "could not create the settings wake source; an idle desktop applies Settings changes on its next wake");
-                None
-            }
-        };
-        settings_store::live::LiveSettings::start(move || {
-            if let Some(ping) = &wake {
-                ping.ping();
-            }
-        })
-    };
-    if let Some(reason) = live_settings.degraded() {
-        tracing::warn!(%reason, "settings changes may arrive late");
-    }
+    let live_settings = wakes::live_settings(&event_loop.handle());
     // Continuity checks run per fabric message on this loop: from here on
     // they read this snapshot, never the settings document.
     crate::shell::continuity_policy::follow(&live_settings);
@@ -9312,90 +9233,10 @@ pub fn run() {
     // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
-    // DRM owns a nested calloop for libinput/libseat/udev. Register its poll
-    // fd in the compositor loop so hardware input wakes us immediately rather
-    // than waiting for a periodic backend poll (which made the cursor visibly
-    // lag by roughly the old 50 ms interval).
-    let backend_event_wake = if let Some(fd) = backend.event_fd() {
-        match event_loop
-            .handle()
-            // `event_fd` is the poll fd of the DRM backend's nested calloop.
-            // Treat it as a wake *edge*, then let `Backend::poll_events`
-            // drain that inner loop at the start of the next iteration.  A
-            // level-triggered registration can remain readable after the
-            // inner dispatch consumed its source, making the outer calloop
-            // return immediately forever.  The resulting idle storm was
-            // measured at ~12,000 iterations per two seconds while no frame
-            // was dirty and the presenter counters did not move.
-            .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
-                Ok(PostAction::Continue)
-            }) {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::error!(%error, "could not register backend event wake fd");
-                false
-            }
-        }
-    } else {
-        !backend.needs_idle_poll()
-    };
-    // Move presentation onto its own thread where the backend supports it.
-    // Headless declines: its bytes are read back synchronously by `snapshot`.
-    // Spawned as soon as the backend exists: the render thread builds its
-    // renderer while the rest of the compositor starts, not when the first
-    // frame arrives.
-    let mut present_pipe = backend.take_presenter().map(|p| {
-        eprintln!("tilo compositor: presenting on a dedicated render thread");
-        // Wake the loop when a frame retires — otherwise a tick that declined to
-        // paint for lack of pipe capacity would park out the whole interval, halving throughput.
-        let (ping, ping_source) = match calloop::ping::make_ping() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("tilo compositor: create present-retire ping failed: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
-            // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
-        }) {
-            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
-            std::process::exit(1);
-        }
-        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
-    });
-    let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
-        Ok(pair) => pair,
-        Err(error) => {
-            tracing::error!(%error, "could not create foreign capture completion wake source");
-            std::process::exit(1);
-        }
-    };
-    if let Err(error) = event_loop
-        .handle()
-        .insert_source(capture_ping_source, |(), (), _| {})
-    {
-        tracing::error!(%error, "could not register foreign capture completion wake source");
-        std::process::exit(1);
-    }
-    crate::shell::foreign::install_completion_ping(&capture_ping);
-    // Convertibles: the accelerometer turns the built-in panel. The ping
-    // only wakes the loop; the change itself is drained below.
-    let device_rotation = match calloop::ping::make_ping() {
-        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
-            Ok(_) => crate::compositor::device_rotation::spawn(
-                move || ping.ping(),
-                live_settings.clone(),
-            ),
-            Err(error) => {
-                tracing::warn!(%error, "could not register the device rotation wake source");
-                None
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "could not create the device rotation wake source");
-            None
-        }
-    };
+    let backend_event_wake = wakes::backend_event_wake(&event_loop.handle(), &*backend);
+    let mut present_pipe = wakes::present_pipe(&event_loop.handle(), &mut *backend);
+    let _capture_ping = wakes::capture_completion_wake(&event_loop.handle());
+    let device_rotation = wakes::device_rotation(&event_loop.handle(), &live_settings);
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -9577,37 +9418,7 @@ pub fn run() {
         frame_builder.keep_strip_canvases(width);
     }
     frame_builder.set_scroll_copy_presenter(backend.copies_scrolls());
-    // A peer stream's picture finishes on a media thread after its frame's
-    // push returned (the loop never waits for a decode); this wakes the loop
-    // to show it, with no polling while a stream plays.
-    match calloop::ping::make_ping() {
-        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
-            Ok(_) => frame_builder
-                .host_mut()
-                .set_peer_picture_wake(Arc::new(move || ping.ping())),
-            Err(error) => {
-                tracing::warn!(%error, "could not register the peer picture wake source; peer streams poll for decoded pictures");
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "could not create the peer picture wake source; peer streams poll for decoded pictures");
-        }
-    }
-    // An app's History descriptions come from a worker thread; this wakes
-    // the loop to send them.
-    match calloop::ping::make_ping() {
-        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
-            Ok(_) => frame_builder
-                .host_mut()
-                .set_history_describer_wake(Arc::new(move || ping.ping())),
-            Err(error) => {
-                tracing::warn!(%error, "could not register the history description wake source; descriptions are sent on the next wake");
-            }
-        },
-        Err(error) => {
-            tracing::warn!(%error, "could not create the history description wake source; descriptions are sent on the next wake");
-        }
-    }
+    wakes::desktop_view_wakes(&event_loop.handle(), &mut frame_builder);
     crate::shell::heap_trim::log_milestone("desktop-built");
     let clipboard_store = state.selection_store();
     frame_builder
@@ -10018,43 +9829,12 @@ pub fn run() {
     // devices; the chrome must not keep the toolkit's desktop assumption.
     test_control_ctx.publish_input_environment(&mut frame_builder);
     frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
-    // Compositor chrome has no application window for `accesskit_winit` to
-    // attach to. Publish its existing `ui::Widget` semantics directly over
-    // AT-SPI, including the trusted OOBE and desktop tour shown before apps.
-    // The provider's callbacks run on AccessKit's thread, so pair its mailbox
-    // with a calloop ping. An idle compositor must wake for a reader's first
-    // tree request or action instead of waiting for unrelated Wayland input.
-    let (a11y_ping, a11y_ping_source) = match calloop::ping::make_ping() {
-        Ok(pair) => pair,
-        Err(error) => {
-            eprintln!("tilo compositor: create AT-SPI wake source failed: {error}");
-            std::process::exit(1);
-        }
-    };
-    if let Err(error) = event_loop
-        .handle()
-        .insert_source(a11y_ping_source, |(), (), _| {})
-    {
-        eprintln!("tilo compositor: insert AT-SPI wake source failed: {error}");
-        std::process::exit(1);
-    }
+    // Compositor chrome's existing `ui::Widget` semantics are published
+    // directly over AT-SPI, including the trusted OOBE and desktop tour shown
+    // before apps.
+    let a11y_ping = wakes::accessibility_wake(&event_loop.handle());
     let mut native_accessibility = NativeAccessibility::new(initial_size, a11y_ping);
-    // Work handed to the session runtime from this loop (the network start
-    // after first-login setup, media-player replies) reports back through
-    // mailboxes; this ping wakes an idle loop when one is filled.
-    let session_wake: crate::session_runtime::Wake = match calloop::ping::make_ping() {
-        Ok((ping, source)) => {
-            if let Err(error) = event_loop.handle().insert_source(source, |(), (), _| {}) {
-                eprintln!("tilo compositor: insert session wake source failed: {error}");
-                std::process::exit(1);
-            }
-            Arc::new(move || ping.ping())
-        }
-        Err(error) => {
-            eprintln!("tilo compositor: create session wake source failed: {error}");
-            std::process::exit(1);
-        }
-    };
+    let session_wake = wakes::session_wake(&event_loop.handle());
     let mut identity_clock_wait = identity_clock_refusal.as_ref().and_then(|refusal| {
         let identity_dir = identity_store.path().parent()?.to_path_buf();
         tracing::warn!(
@@ -10079,50 +9859,8 @@ pub fn run() {
     }
     let mut retained_files = crate::onboarding::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
-    state.output_management.set_wake(Arc::clone(&session_wake));
-    state.set_share_encode_wake(Arc::clone(&session_wake));
-    crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
-    crate::shell::storage_notice::start(Arc::clone(&session_wake));
-    crate::shell::crash_notice::start(Arc::clone(&session_wake));
-    // NTFS drives open only through the shell's own sheet; see shell::drives.
-    crate::shell::drives::start(Arc::clone(&session_wake));
-    crate::shell::app_list::set_wake(Arc::clone(&session_wake));
-    crate::shell::downloaded_apps::set_wake(Arc::clone(&session_wake));
-    crate::shell::downloaded_apps::follow_moves();
-    crate::app_icons::set_wake(Arc::clone(&session_wake));
-    crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
-    crate::shell::install_component_wake(Arc::clone(&session_wake));
-    // An invocation a control client waits on wakes the loop when it is
-    // admitted or its job changes, not on the next unrelated wake.
     let _invocation_wake =
-        crate::shell::search::invocation_wake::install(Arc::clone(&session_wake));
-    notif_bridge.set_wake(Arc::clone(&session_wake));
-    frame_builder
-        .host_mut()
-        .set_quick_settings_wake(Arc::clone(&session_wake));
-    // The desk's System monitor is woken by each reading the session's
-    // system information service sends it.
-    frame_builder
-        .host_mut()
-        .set_desk_wake(Arc::clone(&session_wake));
-    // The network, once the loop installs it, takes the same wake and
-    // binds the hosted apps that use it.
-    // What the broker asks of the person's records the session holds
-    // wakes the loop, which runs it.
-    crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
-    // So does what a room's other devices write to its layout record.
-    crate::shell::workspace_layouts::wake_with(Arc::clone(&session_wake));
-    // So do the reads and writes apps ask of the workspace activity model.
-    crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
-    frame_builder.with_chrome(|chrome| {
-        // From here on the loop never waits on the disk to open a tab's
-        // record: the record store's thread opens it and wakes the loop.
-        chrome.open_records_without_waiting(Arc::clone(&session_wake));
-        if let Some(apps) = chrome.hosted_inputs.in_process() {
-            apps.borrow_mut()
-                .bind_session_wake(Arc::clone(&session_wake));
-        }
-    });
+        wakes::share_session_wake(&session_wake, &mut state, &mut frame_builder, &notif_bridge);
     let chooser_attended = Arc::new(AtomicBool::new(false));
     let mut published_room = published_room(display_file.as_ref());
     // Held for the session, like the chooser service that gives into it.
@@ -21612,7 +21350,7 @@ mod gesture_wireup_tests {
     fn session_loop_wakes_once_per_readiness_and_exits_cleanly() {
         // Phase `drm_nested_loop_readiness_is_coalesced_to_one_outer_wake`.
         {
-            let source = include_str!("native.rs");
+            let source = include_str!("native/wakes.rs");
             assert!(
                 backend_nested_loop_uses_edge_wake(source),
                 "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
