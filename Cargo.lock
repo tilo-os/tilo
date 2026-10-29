@@ -21237,9 +21237,11 @@ name = "tilo-session"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
+ "app-cli",
  "rustix 1.1.4",
  "serde_json",
  "settings-store",
+ "tempfile",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-audio-service",
@@ -21250,6 +21252,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-files",
  "tilo-installed-apps",
  "tilo-media",
  "tilo-notification-banners",

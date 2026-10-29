@@ -23,6 +23,11 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 settings-store = { path = "../../system/settings-store" }
+# The registries' listing as this device last accepted it, for the apps a
+# person can get.
+app-cli = { path = "../../packaging/app-cli" }
+# Following the directories search's lists are read from.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
@@ -42,6 +47,7 @@ workspace-hack = { version = "0.1" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }

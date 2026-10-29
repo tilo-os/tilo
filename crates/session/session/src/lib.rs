@@ -19,6 +19,7 @@
 #![cfg(target_os = "linux")]
 
 mod chrome;
+mod lists;
 mod panels;
 mod search;
 
@@ -41,6 +42,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
+pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
@@ -179,13 +181,12 @@ impl Shared {
         });
         for choice in choices {
             self.search.perform(&room, choice, &mut |own| {
-                self
-                    .invoke(
-                        own.address.resource.as_str(),
-                        own.address.action.as_str(),
-                        &own.arguments,
-                    )
-                    .map(drop)
+                self.invoke(
+                    own.address.resource.as_str(),
+                    own.address.action.as_str(),
+                    &own.arguments,
+                )
+                .map(drop)
             });
         }
         // What the session's own actions asked of it.
@@ -211,7 +212,11 @@ impl Shared {
     ) -> Result<ResourceOperationStart, DoorError> {
         match self.layers.invoke(resource, action, arguments) {
             Err(DoorError::Unknown(address)) => {
-                match self.services.borrow_mut().invoke(resource, action, arguments) {
+                match self
+                    .services
+                    .borrow_mut()
+                    .invoke(resource, action, arguments)
+                {
                     Some(Ok(Started::Done(output))) => {
                         Ok(ResourceOperationStart::Completed(output))
                     }

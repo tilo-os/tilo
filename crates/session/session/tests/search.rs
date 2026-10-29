@@ -26,7 +26,7 @@ use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
-use tilo_session::{AppActions, Options, SearchOptions, Session};
+use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -68,12 +68,15 @@ fn session(host: Rc<Host>) -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             search: SearchOptions {
-                applications: vec![AppEntry {
-                    id: "so.tilo.sheets".into(),
-                    title: "Sheets".into(),
-                    category: None,
-                    description: None,
-                }],
+                lists: Lists::fixed(AppLists {
+                    applications: vec![AppEntry {
+                        id: "so.tilo.sheets".into(),
+                        title: "Sheets".into(),
+                        category: None,
+                        description: None,
+                    }],
+                    ..AppLists::default()
+                }),
                 ..SearchOptions::default()
             },
             apps: Some(host),
