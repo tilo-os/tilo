@@ -748,6 +748,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         super::publishing::publishing(publishes, content, wake)
     }
 
+    /// `content`, kept up as [`Upkeep`](super::Upkeep) says: the work the
+    /// view takes in on every sync, the frames and wakes it owes the
+    /// window, what a capture waits for, what it asks of the host and the
+    /// presentation it keeps with the window. It lasts as long as `content`
+    /// stands in the view.
+    pub fn upkeep(&self, upkeep: super::Upkeep, content: Element) -> Element {
+        super::upkeep::upkeep(upkeep, content)
+    }
+
     /// Answer the effect vocabulary `E` — work with no document delta that a
     /// button, the palette, an agent or a script invokes — with `handle`,
     /// and publish `E` on the resource while this part of the view lives.

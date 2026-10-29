@@ -361,6 +361,7 @@ mod switch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 mod text;
+mod upkeep;
 mod view;
 pub mod views;
 mod workspace;
@@ -414,6 +415,7 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
+pub use upkeep::Upkeep;
 pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use workspace::WorkspaceRecord;
 
