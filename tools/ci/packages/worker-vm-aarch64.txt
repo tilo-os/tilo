@@ -1,0 +1,2 @@
+# Beside vm-acceptance.txt, what an aarch64 libvirt guest needs: AAVMF.
+edk2-aarch64
