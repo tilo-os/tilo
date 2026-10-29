@@ -173,6 +173,7 @@ pub(crate) fn map_with_options(
 /// The native XKB map for the keyboard in front of the person: the compact
 /// drawing (no navigation cluster or numpad) when `compact`, so a laptop's
 /// preview matches the laptop and every legend stays readable.
+#[cfg(test)]
 pub(crate) fn map_for_form(
     source: &str,
     model: &str,
