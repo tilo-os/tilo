@@ -127,6 +127,7 @@ system and an entry in its history:
 | `stop-run` | people | stops the run; what it already changed stays |
 | `set-execution-budget` | people | model turns, turn and total time ceilings, and the spend limits, while no run is active |
 | `send-message` | anyone who may comment | a message in the thread to the run going on |
+| `tell-agent` | people | a message to the issue's agent: the run going reads it, and with none going it starts the next run, which reads it as its direction |
 | `report-run` | the run's agent | its phase, and progress posted in the thread |
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
 | `ask-confirmation` | the run's agent | the draft of an action that asks first |
@@ -189,6 +190,20 @@ step's handle; the model reads any of them again whole. A run of several
 items posts one progress line per item in the thread ("3 of 8: reviewed
 Jane Doe"). A model whose descriptor declares no tool calling is refused
 before its first turn, by name.
+
+## Chat
+
+An issue opens as a conversation with its agent in a window of its own
+(`open-chat`, also the issue page's "Open as chat"): a window of Tasks
+launched on `tilo-tasks:chat/<issue>` shows only that conversation. It
+reads the same fields: the request is the title and description, the
+conversation is the thread in the shared conversation list (the person's
+messages to a run read as delivered, then read once the run took them in),
+what the run looked up reads as reference chips, a question the run waits
+on stands at the end with the one Answer the host's sheet takes, and the
+run's step and spend read in a quiet line with the budget's reason when it
+paused. Its field is `tell-agent`, so a message after a run ended starts
+the next run with it, and Stop is `stop-run`.
 
 ## Budgets and spend
 

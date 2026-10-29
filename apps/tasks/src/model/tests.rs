@@ -1677,3 +1677,95 @@ fn a_run_that_reaches_its_budget_pauses_saying_which_limit_it_reached() {
         "it waits in the step it was in"
     );
 }
+
+/// A conversation with an agent goes on after its run ended: what the
+/// person tells it then starts the next run, which reads the message as its
+/// direction; while a run goes, the same message steers it.
+#[test]
+fn telling_an_agent_steers_its_run_or_starts_the_next_one_with_the_message() {
+    let mut person = ada();
+    person
+        .apply(Tracker::CREATE.with(create("Review the applications", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&person, "Review the applications");
+    let tell = |text: &str| {
+        Tracker::TELL_AGENT.with(tracker::TellAgent {
+            issue: issue.clone(),
+            text: nb(text),
+        })
+    };
+
+    // Nothing runs yet: telling the agent starts its first run with it.
+    person.apply(tell("Start with the newest")).unwrap();
+    assert_eq!(run_of(&person, &issue).epoch, 1);
+    let state = person.state().unwrap();
+    let first: Vec<&str> = state
+        .issues
+        .get(&issue)
+        .unwrap()
+        .messages_for_run(1)
+        .map(|(_, message)| message.text.as_str())
+        .collect();
+    assert_eq!(first, ["Start with the newest"]);
+
+    // While it goes, the message steers that run.
+    person.apply(tell("Skip the duplicates")).unwrap();
+    assert_eq!(run_of(&person, &issue).epoch, 1);
+    assert_eq!(
+        person
+            .state()
+            .unwrap()
+            .issues
+            .get(&issue)
+            .unwrap()
+            .messages_for_run(1)
+            .count(),
+        2
+    );
+
+    // The run ends; the next message starts run 2, approved by the person,
+    // and only that message is the new run's direction.
+    let mut agent = person.fork().as_agent_for(AGENT, "ada");
+    agent
+        .apply(Tracker::INCORPORATE.with(tracker::Incorporate {
+            issue: issue.clone(),
+            through: 2,
+        }))
+        .unwrap();
+    agent
+        .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+            issue: issue.clone(),
+            outcome: RunOutcome::Done,
+            summary: Some(nb("Reviewed 3 applications")),
+        }))
+        .unwrap();
+    person.sync_with(&mut agent).unwrap();
+    person.apply(tell("Now draft the replies")).unwrap();
+    let run = run_of(&person, &issue);
+    assert_eq!((run.epoch, run.starter.as_str()), (2, "ada"));
+    assert!(run.phase.active());
+    let state = person.state().unwrap();
+    let next: Vec<&str> = state
+        .issues
+        .get(&issue)
+        .unwrap()
+        .messages_for_run(2)
+        .map(|(_, message)| message.text.as_str())
+        .collect();
+    assert_eq!(next, ["Now draft the replies"]);
+
+    // Only a person tells an agent, and only an agent's issue has one.
+    assert!(agent.apply(tell("Approve yourself")).is_err());
+    person
+        .apply(Tracker::CREATE.with(create("Book the room", None, None)))
+        .unwrap();
+    let nobodys = id_of(&person, "Book the room");
+    assert!(
+        person
+            .apply(Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: nobodys,
+                text: nb("Hello"),
+            }))
+            .is_err()
+    );
+}

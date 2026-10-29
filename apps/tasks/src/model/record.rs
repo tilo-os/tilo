@@ -297,6 +297,39 @@ fn over(limits: &[Budget], spent: &Spend, next: &StepSpend) -> Option<String> {
     })
 }
 
+/// Start the next run of `issue`'s assigned agent, acting for `starter`.
+/// Answers the run's epoch.
+fn start_run(issue: &mut Issue, starter: String, now: i64) -> Result<u64, Refusal> {
+    let agent = issue
+        .assigned_agent()
+        .ok_or_else(|| Refusal::new("Assign the issue to an agent first"))?
+        .to_owned();
+    if issue.active_run().is_some() {
+        return Err(Refusal::new("A run of this issue is going already"));
+    }
+    let epoch = issue
+        .run
+        .as_ref()
+        .map_or(0, |run| run.epoch)
+        .saturating_add(1);
+    let model = issue.model.clone();
+    issue.run = Some(Run {
+        epoch,
+        agent: ui::tilo_resource::Atom(agent),
+        starter,
+        model,
+        device: None,
+        phase: RunPhase::Approved,
+        started_ms: now,
+        updated_ms: now,
+        confirmation: None,
+        paused: None,
+        spend: None,
+    });
+    issue.status = Status::InProgress;
+    Ok(epoch)
+}
+
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     let id = cx.id();
     issue.comments.push(id, message);
@@ -715,34 +748,52 @@ impl Tracker {
     pub fn approve_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
         let starter = person(cx)?;
         let now = cx.now_ms();
+        start_run(self.issue_mut(issue)?, starter, now).map(drop)
+    }
+
+    /// Tell the issue's agent something: the run going reads it at its next
+    /// step, and with none going, the next run starts, approved by you, and
+    /// reads it as its direction. It is how a conversation with an agent
+    /// goes on after a run ended.
+    ///
+    /// # Errors
+    /// Refuses an issue with no agent assigned, a message too long, or an
+    /// invoker who is not a person.
+    #[action(item = issues, audience = "people", writes = issues)]
+    pub fn tell_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        text: NonBlank,
+    ) -> Result<(), Refusal> {
+        let text = message_text(text)?;
+        let author = person(cx)?;
+        let at_ms = cx.now_ms();
         let target = self.issue_mut(issue)?;
-        let agent = target
-            .assigned_agent()
-            .ok_or_else(|| Refusal::new("Assign the issue to an agent first"))?
-            .to_owned();
-        if target.active_run().is_some() {
-            return Err(Refusal::new("A run of this issue is going already"));
+        if target.assigned_agent().is_none() {
+            return Err(Refusal::new("Assign the issue to an agent first"));
         }
-        let epoch = target
-            .run
-            .as_ref()
-            .map_or(0, |run| run.epoch)
-            .saturating_add(1);
-        let model = target.model.clone();
-        target.run = Some(Run {
-            epoch,
-            agent: ui::tilo_resource::Atom(agent),
-            starter,
-            model,
-            device: None,
-            phase: RunPhase::Approved,
-            started_ms: now,
-            updated_ms: now,
-            confirmation: None,
-            paused: None,
-            spend: None,
-        });
-        target.status = Status::InProgress;
+        // The message belongs to the run that will read it: the one going,
+        // or the one it starts, so the broker hands it to that run as one
+        // of its directions.
+        let run = match target.active_run() {
+            Some(run) => run.epoch,
+            None => start_run(target, author.clone(), at_ms)?,
+        };
+        push_message(
+            target,
+            cx,
+            Message {
+                author,
+                by_agent: false,
+                at_ms,
+                text,
+                kind: MessageKind::ToRun,
+                run,
+                incorporated: false,
+                ..Message::default()
+            },
+        );
         Ok(())
     }
 

@@ -2946,6 +2946,7 @@ agent-quick-editor-name = Deine Nachricht an den Agenten
 agent-quick-send = Senden
 agent-quick-excerpt = „{ $text }“
 agent-quick-open-run = In Aufgaben öffnen
+agent-quick-open-chat = Als Chat öffnen
 agent-quick-stop = Stoppen
 agent-quick-close = Schließen
 agent-quick-insert = Einfügen

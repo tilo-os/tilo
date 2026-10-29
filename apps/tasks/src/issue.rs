@@ -661,12 +661,31 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         let Some(agent) = &view.agent else {
             return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
         };
+        // The same issue as a conversation, in a window of its own: the
+        // app's published effect, which the shell and an agent open it by.
+        let open_chat = cx
+            .effect_button(
+                "tasks-open-chat",
+                &crate::TasksEffect::OpenChat { issue: id.clone() },
+            )
+            .with_icon(ui::icons::Icon::MessageCircle);
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
-                Text::new("tasks-run").with_role(TextRole::Heading),
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(
+                        Container::new()
+                            .with_flex_grow()
+                            .with_no_padding()
+                            .with_child(Box::new(
+                                Text::new("tasks-run").with_role(TextRole::Heading),
+                            )),
+                    ))
+                    .push(Box::new(open_chat)),
             ));
         let phase = if view.paused {
             tr("tasks-run-paused")
@@ -706,7 +725,7 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 ))
                 .with_id("tasks-run-question"),
             ));
-            column = column.push(answer(cx, &id));
+            column = column.push(Box::new(answer_button(cx, &id)));
         }
         let going = view.phase.is_some_and(RunPhase::active);
         let control = if view.paused {
@@ -740,7 +759,7 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
 /// own sheet, where they allow it once, allow it for this issue, or deny
 /// it: the answer goes through the host, which gives it as the person chose
 /// there. This app never answers for them.
-fn answer(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+pub(crate) fn answer_button(cx: &ViewCx<Tracker>, id: &Id) -> Button {
     let dispatcher = cx.dispatcher();
     let invoke = Tracker::ANSWER_CONFIRMATION.with(tracker::AnswerConfirmation {
         issue: id.clone(),
@@ -748,10 +767,8 @@ fn answer(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         edits: None,
         reason: None,
     });
-    Box::new(
-        Button::new("tasks-run-answer", "tasks-run-answer")
-            .on_view(move || dispatcher.through_host(&invoke)),
-    )
+    Button::new("tasks-run-answer", "tasks-run-answer")
+        .on_view(move || dispatcher.through_host(&invoke))
 }
 
 /// The thread: every message, oldest first, and the composer. While a run

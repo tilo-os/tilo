@@ -473,6 +473,65 @@ mod tests {
         assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
     }
 
+    /// A conversation goes on after a run ended: what the person tells the
+    /// agent then starts the next run, and the broker hands that run the
+    /// message as its one direction, never the earlier run's.
+    #[test]
+    fn a_message_after_a_run_ended_is_the_next_runs_direction() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: None,
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with the newest")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: tasks::model::RunOutcome::Done,
+                summary: None,
+            }))
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        assert!(
+            runs_of(&person.state().unwrap())
+                .iter()
+                .all(|run| !run.active)
+        );
+
+        person.apply(tell("Now draft the replies")).unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        assert_eq!((run.epoch, run.active), (2, true));
+        let directions: Vec<&str> = run
+            .directions
+            .iter()
+            .map(|direction| direction.text.as_str())
+            .collect();
+        assert_eq!(directions, ["Now draft the replies"]);
+    }
+
     /// A part of a task works on the model the task was set to, so every step
     /// of one job records the same provider and model.
     #[test]

@@ -84,13 +84,22 @@ enum Purpose {
     Queue {
         request: Option<ComposerRequest>,
         title: String,
-        /// Open the issue's page once it is asked.
-        show: bool,
+        /// What opens once it is asked.
+        opens: Opens,
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
     /// Open an asked issue's page, as any reference to it opens.
     Show,
+}
+
+/// What opens once work is asked: nothing, its issue's page, or its issue
+/// as a chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opens {
+    Nothing,
+    Page,
+    Chat,
 }
 
 #[derive(Clone)]
@@ -408,6 +417,12 @@ impl AgentActions {
             self.begin(show_operation(&issue));
             changed = true;
         }
+        if let Some(issue) = composer.take_open_chat()
+            && let Some(operation) = chat_operation(&issue)
+        {
+            self.begin(operation);
+            changed = true;
+        }
         if let Some(choice) = composer.take_answer_use() {
             let about = composer.about().cloned();
             self.use_answer(&owner, choice, about.as_ref());
@@ -445,8 +460,8 @@ impl AgentActions {
             return false;
         }
         let mut operation = queue_operation(owner, None, (title, body), about, None, quick);
-        if let Purpose::Queue { show: shown, .. } = &mut operation.purpose {
-            *shown = show;
+        if let Purpose::Queue { opens, .. } = &mut operation.purpose {
+            *opens = if show { Opens::Page } else { Opens::Nothing };
         }
         self.begin(operation);
         true
@@ -557,11 +572,17 @@ impl AgentActions {
             Purpose::Queue {
                 request,
                 title,
-                show,
+                opens,
             } => {
                 let asked = asked_issue(operation);
-                if *show && let Some(issue) = &asked {
-                    self.begin(show_operation(issue));
+                match (opens, &asked) {
+                    (Opens::Page, Some(issue)) => self.begin(show_operation(issue)),
+                    (Opens::Chat, Some(issue)) => {
+                        if let Some(chat) = chat_operation(issue) {
+                            self.begin(chat);
+                        }
+                    }
+                    _ => {}
                 }
                 if let Some(issue) = &asked {
                     self.followed = Some(Followed {
@@ -734,14 +755,23 @@ fn request_queue(request: &ComposerRequest, title: Option<String>) -> Operation 
         Some(about) => instruction(&about.instruction(&request.text), "", &request.conversation),
         None => instruction(&request.text, &request.context, &request.conversation),
     };
-    queue_operation(
+    let mut operation = queue_operation(
         &request.owner,
         Some(request.clone()),
         (&title, &instruction),
         request.about.as_ref(),
         request.model.as_ref(),
         false,
-    )
+    );
+    // Moved into a chat: the issue is asked as one (its default budget is
+    // sized for a conversation) and opens as a chat once asked.
+    if request.chat {
+        operation.arguments.insert("chat".into(), true.into());
+        if let Purpose::Queue { opens, .. } = &mut operation.purpose {
+            *opens = Opens::Chat;
+        }
+    }
+    operation
 }
 
 /// The task the composer starts: the one place it does, so where tasks live
@@ -802,7 +832,7 @@ fn queue_operation(
         purpose: Purpose::Queue {
             request,
             title,
-            show: false,
+            opens: Opens::Nothing,
         },
         app: TRACKER_APP,
     }
@@ -820,6 +850,24 @@ fn show_operation(issue: &str) -> Operation {
         purpose: Purpose::Show,
         app: TRACKER_APP,
     }
+}
+
+/// Open `issue` (its address) as a chat: Tasks' published `open-chat`,
+/// which a press in Tasks, the palette and an agent invoke alike. The host
+/// launches Tasks when no window shows the tracker; Tasks opens the chat in
+/// a window of its own.
+fn chat_operation(issue: &str) -> Option<Operation> {
+    let id = issue.strip_prefix(tilo_action_broker::services::TRACKER_ISSUE_PREFIX)?;
+    let effect = tasks::TasksEffect::OpenChat {
+        issue: tilo_resource::Id::from_raw(id),
+    };
+    Some(Operation {
+        resource: TRACKER.into(),
+        action: tilo_resource::Effect::id(&effect).into(),
+        arguments: Map::from_iter([("issue".into(), id.into())]),
+        purpose: Purpose::Show,
+        app: TRACKER_APP,
+    })
 }
 
 /// The issue an `ask-agent` operation makes, by its address.
@@ -1125,6 +1173,7 @@ mod tests {
             about: None,
             model: None,
             as_task: None,
+            chat: false,
         }
     }
 
@@ -1919,6 +1968,62 @@ mod tests {
                 "handing a query on asks for work, not a quick answer"
             );
         }
+    }
+
+    /// "Open as chat" asks what the person typed as a task for a chat and
+    /// opens its issue through Tasks' published `open-chat`, once asked;
+    /// with a run followed, it opens that run's issue the same way and asks
+    /// nothing.
+    #[test]
+    fn open_as_chat_asks_the_typed_request_as_a_chat_and_opens_its_issue_as_one() {
+        let room = Room::new(None);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        perform(
+            &mut composer,
+            "agent-quick-editor",
+            &ui::a11y::Action::SetValue("Review the applications in my inbox".into()),
+        );
+        perform(
+            &mut composer,
+            "agent-quick-open-chat",
+            &ui::a11y::Action::Activate,
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        let asked = room.arguments("ask-agent");
+        assert_eq!(asked["title"], "Review the applications in my inbox");
+        assert_eq!(asked.get("chat").and_then(Value::as_bool), Some(true));
+        let id = asked["id"].as_str().unwrap().to_owned();
+        let open_chat = tilo_resource::Effect::id(&tasks::TasksEffect::OpenChat {
+            issue: tilo_resource::Id::from_raw(&id),
+        });
+        assert_eq!(
+            room.invoked(),
+            [
+                format!("{TRACKER}#ask-agent"),
+                format!("{TRACKER}#{open_chat}")
+            ],
+            "asked as work, never as a quick answer, then opened as a chat"
+        );
+        assert_eq!(room.arguments(open_chat)["issue"], id.as_str());
+        assert!(!composer.is_open(), "the conversation goes on in the chat");
+
+        // The run it follows opens as a chat as it is.
+        let issue = format!("{}{id}", tilo_action_broker::services::TRACKER_ISSUE_PREFIX);
+        let room = Room::new(None);
+        let (mut actions, mut composer, _) = composer_in(&room);
+        let tracker = Tracker::default();
+        tracker.holds(&actions, run_of(&issue, IssueRunPhase::Executing));
+        settle(&mut actions, &mut composer, &tracker);
+        assert!(composer.followed().is_some());
+        perform(
+            &mut composer,
+            "agent-quick-open-chat",
+            &ui::a11y::Action::Activate,
+        );
+        settle(&mut actions, &mut composer, &tracker);
+        assert_eq!(room.invoked(), [format!("{TRACKER}#{open_chat}")]);
+        assert_eq!(room.arguments(open_chat)["issue"], id.as_str());
     }
 
     #[test]
