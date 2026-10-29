@@ -175,23 +175,25 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let speech = software(app).speech;
     let access = cx.settings::<AccessibilitySettings>();
     cx.record(&access, move |cx| {
-        let mut groups = Vec::new();
-        groups.push(cx.switch(
-            &cx.value(|access: &AccessibilitySettings| access.magnifier_zoom != magnifier::OFF),
-            |cx, magnifying| vision_card(cx, *magnifying).into_element(),
-        ));
-        groups.push(cx.switch(
-            &cx.value(|access: &AccessibilitySettings| access.large_cursor),
-            |cx, large| pointer_card(cx, *large).into_element(),
-        ));
-        groups.push(cx.switch(
-            &cx.value(|access: &AccessibilitySettings| (access.bounce_keys, access.switch_control)),
-            |cx, (bounce, switch)| typing_card(cx, *bounce, *switch).into_element(),
-        ));
-        groups.push(reader_card(cx, speech).into_element());
-        groups.push(hearing_card(cx).into_element());
-        groups.push(shared_card(cx).into_element());
-        page_of(groups)
+        page_of(vec![
+            cx.switch(
+                &cx.value(|access: &AccessibilitySettings| access.magnifier_zoom != magnifier::OFF),
+                |cx, magnifying| vision_card(cx, *magnifying).into_element(),
+            ),
+            cx.switch(
+                &cx.value(|access: &AccessibilitySettings| access.large_cursor),
+                |cx, large| pointer_card(cx, *large).into_element(),
+            ),
+            cx.switch(
+                &cx.value(|access: &AccessibilitySettings| {
+                    (access.bounce_keys, access.switch_control)
+                }),
+                |cx, (bounce, switch)| typing_card(cx, *bounce, *switch).into_element(),
+            ),
+            reader_card(cx, speech).into_element(),
+            hearing_card(cx).into_element(),
+            shared_card(cx).into_element(),
+        ])
     })
 }
 
@@ -559,9 +561,12 @@ mod tests {
             "de"
         );
         assert!(preferences.get().sticky_keys);
-        let before = preferences.get();
-        assert!(edit_field(&mut app, ACCESSIBILITY, "dictation_language", "Deutsch").is_err());
-        assert_eq!(app.settings::<AccessibilitySettings>().get(), before);
+        // A code dictation does not know reads as automatic detection, as a
+        // stored one does; the other assists stay.
+        edit_field(&mut app, ACCESSIBILITY, "dictation_language", "Deutsch").unwrap();
+        let after = app.settings::<AccessibilitySettings>().get();
+        assert_eq!(after.dictation_language, DictationLanguage::default());
+        assert!(after.sticky_keys);
         for language in DictationLanguage::ALL {
             assert_ne!(t(&language.label_key()), language.label_key());
         }

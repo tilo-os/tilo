@@ -80,8 +80,9 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         cx.switch(&chosen, move |cx, chosen| {
             let (actions, languages, chosen) =
                 (actions.clone(), Rc::clone(&languages), chosen.clone());
-            match language::area(&languages) {
-                Some(area) => cx.switch(&area.shown, move |cx, _| {
+            let shown = language::area(&languages).map(|area| area.shown.clone());
+            match shown {
+                Some(shown) => cx.switch(&shown, move |cx, _| {
                     language_card(cx, &actions, chosen.as_deref(), language::area(&languages))
                         .into_element()
                 }),
@@ -94,7 +95,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         cx.switch(&cx.value(|locale: &Locale| *locale), |cx, locale| {
             page_of(vec![
                 formats_card(cx).into_element(),
-                preview_card(locale).into_element(),
+                preview_card(*locale).into_element(),
             ])
         })
     })?;
@@ -108,7 +109,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
 /// The Language card: the language `chosen`, among the installed ones and
 /// those `languages` offers, and an install under way or the reason one
 /// stopped.
-fn language_card<R: ui::tilo_resource::Resource<State = R>>(
+fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model>(
     cx: &ViewCx<R>,
     actions: &Actions<Settings>,
     chosen: Option<&str>,
@@ -172,7 +173,7 @@ fn formats_card(cx: &ViewCx<Locale>) -> SettingsSection {
 
 /// What `loc` makes of an amount, a date, a time, a temperature and the
 /// week.
-fn preview_card(loc: &Locale) -> SettingsSection {
+fn preview_card(loc: Locale) -> SettingsSection {
     let amount = loc.number_style.amount(loc.currency.symbol());
     let temp = t(match loc.measurement {
         Measurement::Metric => "settings-region-preview-c",

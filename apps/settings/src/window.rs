@@ -583,7 +583,7 @@ impl ui::widget::Collaborative for SettingsWindow {
         self.app
             .areas()
             .iter()
-            .flat_map(|area| area.take_collab_requests())
+            .flat_map(crate::area::PaneArea::take_collab_requests)
             .collect()
     }
 
@@ -603,7 +603,7 @@ impl SettingsWindow {
     /// What the window bar's search queries now: the pane it opened on while
     /// it stays open, else the shown pane, when that pane offers a query.
     fn pane_query(&self) -> Option<&dyn crate::area::PaneQuery> {
-        let category = self.queried.unwrap_or(self.app.selected());
+        let category = self.queried.unwrap_or_else(|| self.app.selected());
         self.app
             .areas()
             .iter()
@@ -613,11 +613,11 @@ impl SettingsWindow {
 
 impl ui::widget::Queryable for SettingsWindow {
     fn query_opened(&mut self) {
-        self.queried.get_or_insert(self.app.selected());
+        self.queried.get_or_insert_with(|| self.app.selected());
     }
 
     fn set_query_text(&mut self, text: &str) {
-        self.queried.get_or_insert(self.app.selected());
+        self.queried.get_or_insert_with(|| self.app.selected());
         if let Some(query) = self.pane_query() {
             query.set_query_text(text);
         }

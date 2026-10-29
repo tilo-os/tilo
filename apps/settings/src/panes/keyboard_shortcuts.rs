@@ -230,7 +230,6 @@ pub(crate) fn view(cx: &ViewCx<Settings>, _app: &Rc<SettingsApp>) -> Option<Elem
     let input = cx.settings::<InputPrefs>();
     let paste = cx.record(&input, move |cx| {
         let apps = cx.value(|input: &InputPrefs| input.paste_shortcuts.clone());
-        let actions = actions.clone();
         cx.switch(&apps, move |cx, _| paste_card(cx, &actions).into_element())
     })?;
     Some(page_of(vec![catalogue, paste]))

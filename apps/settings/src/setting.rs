@@ -168,7 +168,7 @@ pub fn choose<R, V>(
     field: ui::tilo_resource::Path<R, V>,
 ) -> Item
 where
-    R: ui::tilo_resource::Resource<State = R>,
+    R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model,
     V: settings_store::Labelled
         + ui::tilo_resource::Model
         + ui::tilo_resource::Settable

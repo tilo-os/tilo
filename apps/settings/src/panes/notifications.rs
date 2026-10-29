@@ -492,7 +492,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let prefs = cx.settings::<NotificationPrefs>();
     cx.record(&prefs, move |cx| {
         let policy = cx.value(NotificationPrefs::clone);
-        let (apps, app_rules) = (apps.clone(), app_rules.clone());
+        let apps = apps.clone();
         cx.switch(&policy, move |cx, prefs| page(cx, prefs, &apps, &app_rules))
     })
 }
@@ -653,7 +653,7 @@ fn app_card(
                     move |_| on,
                     |on| {
                         let toggle = ui::widget::Toggle::from_state(on)
-                            .with_id(format!("notifications.app.{app}.{}", choice.field()));
+                            .with_id(&format!("notifications.app.{app}.{}", choice.field()));
                         let binding = cx.actions().edit_binding_with(
                             NotificationPrefs::paths().per_app,
                             move |_, on: bool| Ok(choice.edit(&app, on)),

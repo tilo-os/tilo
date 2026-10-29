@@ -94,7 +94,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
                 "{}: it is listed by name",
                 entry.id
             ),
-            super::Shown::Switch(..) => assert!(
+            super::Shown::Switch(..) | super::Shown::BoundSwitch(..) => assert!(
                 control(app.harness().root_widget(), setting, content_left())
                     .is_some_and(|(_, checked)| checked.is_some())
                     || widget(
