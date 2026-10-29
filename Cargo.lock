@@ -17749,9 +17749,13 @@ name = "tilo-audio-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
  "serde_json",
  "settings-store",
+ "tilo-actions",
  "tilo-media",
+ "tilo-resource",
+ "tilo-service",
  "tilo-test-env",
  "tracing",
  "tracing-subscriber",
@@ -18247,6 +18251,20 @@ dependencies = [
  "wayland-protocols-wlr",
  "workspace-hack",
  "xcursor",
+]
+
+[[package]]
+name = "tilo-connectivity-service"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-service",
+ "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -21188,6 +21206,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
@@ -21195,12 +21225,16 @@ dependencies = [
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-audio-service",
  "tilo-compositor",
+ "tilo-connectivity-service",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-media",
  "tilo-notification-banners",
  "tilo-quick-settings",
+ "tilo-service",
  "tilo-surface-host",
  "tilo-ui",
  "tracing",

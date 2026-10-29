@@ -6,11 +6,18 @@
 //! leaving, which the compositor sounds under its own quiet rules (it alone
 //! knows whether the screen is being presented). The helper stops when its
 //! standard input closes, so it never outlives the compositor that started it.
+//!
+//! Started with `--serve`, it is the session's audio service instead: it
+//! serves the [`sound`] resource over JSON lines ([`tilo_service::lines`])
+//! on the same pipes, reading the graph again whenever a device arrives or
+//! leaves.
 
 #[cfg(feature = "service")]
 pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
+#[cfg(feature = "service")]
+pub mod sound;
 
 /// An audio device arrived or left: the one thing the helper tells the
 /// compositor.
