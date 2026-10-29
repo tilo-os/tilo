@@ -481,6 +481,9 @@ pub struct MusicApp {
     /// across a doc reload so the live playhead isn't reset spuriously).
     bound_track: Option<String>,
     playhead_ms: f64,
+    /// The track and position of the last reconnect of a stream cut short
+    /// ([`stream_cut::stream_cut_action`]).
+    stream_recovery: Option<(String, u64)>,
     last_tick: Instant,
 
     /// Shuffle playback order: a permutation of `pb.queue` indices consulted by
@@ -920,6 +923,7 @@ impl MusicApp {
             playback_loaded: false,
             bound_track: None,
             playhead_ms: 0.0,
+            stream_recovery: None,
             last_tick: ui::time::now(),
             shuffle_order: Vec::new(),
             shuffle_rng: seed_rng(),
@@ -1952,6 +1956,9 @@ impl MusicApp {
             // Service the pipeline bus so a failed fetch/decode is detected (and
             // the message backlog drained) before we trust the transport state.
             let errored = self.audio.pump();
+            if errored && self.pb.playing && self.resume_cut_stream(stream_cut::StreamCut::Failed) {
+                return;
+            }
             if errored {
                 // The pipeline died (a dead proxy, an undecodable/forbidden
                 // stream). Stop pretending to play and surface the real reason,
@@ -1977,11 +1984,14 @@ impl MusicApp {
             self.settle_resource_stream_after_rendered_frames(self.audio.frames_rendered());
             self.observe_local_duration();
             if self.audio.reached_eos() {
-                // The staged stream ended. For a fully-streamed track this is a
-                // normal end-of-song; for a SABR-truncated free URL it fires
-                // ~1 minute in. Tear the ended pipeline down and move to the next
-                // track (resolving + streaming it) so playback keeps going rather
-                // than freezing at the truncation point.
+                // A stream that ends well short of the song was cut off by
+                // its source: pick it up where it stopped. Otherwise the song
+                // is over and the next one starts.
+                if self.resume_cut_stream(stream_cut::StreamCut::Ended) {
+                    return;
+                }
+                // The song is over; a repeat of it may resume its own cuts.
+                self.stream_recovery = None;
                 self.audio.stop();
                 self.auto_advance();
                 return;
@@ -1998,12 +2008,11 @@ impl MusicApp {
     // ---- transport --------------------------------------------------------
 
     /// Auto-advance to the next track *and* start streaming it. Used by the
-    /// transport tick when the current stream ends — either at its real duration
-    /// or early, because a free (no-PoToken) `YouTube` URL is SABR-gated to its
-    /// first ~1-minute segment. Advancing without also resolving the next track
-    /// would silently change the "now playing" track but leave it soundless, so
-    /// this pairs the two. Carries no document handle (tick has none); the new
-    /// position persists on the next real event.
+    /// transport tick when the current stream ends. Advancing without also
+    /// resolving the next track would silently change the "now playing" track
+    /// but leave it soundless, so this pairs the two. Carries no document
+    /// handle (tick has none); the new position persists on the next real
+    /// event.
     fn auto_advance(&mut self) {
         self.advance(true);
         if self.pb.playing
@@ -2020,6 +2029,7 @@ impl MusicApp {
             self.pb.playing = true;
             self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
+            self.stream_recovery = None;
             self.bound_track = self.pb.current.clone();
         }
     }
@@ -5614,6 +5624,7 @@ mod published;
 mod recommendations;
 mod render;
 mod shell;
+mod stream_cut;
 #[cfg(test)]
 use shell::place_id as shell_place;
 mod spotify;
@@ -5623,6 +5634,9 @@ mod window_bar;
 #[cfg(test)]
 #[path = "app/home_arrival_tests.rs"]
 mod home_arrival_tests;
+#[cfg(test)]
+#[path = "app/stream_cut_tests.rs"]
+mod stream_cut_tests;
 #[cfg(test)]
 #[path = "app/stream_start_tests.rs"]
 mod stream_start_tests;
