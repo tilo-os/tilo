@@ -1957,13 +1957,13 @@ impl Widget for ContextMenu {
                     *ctx.handled = true;
                 }
                 _ => {
-                    if self.edit_query(event, ctx.modifiers) {
+                    if self.edit_query(event, *ctx.modifiers) {
                         *ctx.handled = true;
                     }
                 }
             },
             WindowEvent::Ime(_) if self.query.is_some() => {
-                self.edit_query(event, ctx.modifiers);
+                self.edit_query(event, *ctx.modifiers);
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {

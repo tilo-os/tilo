@@ -21,6 +21,8 @@ root Board
 
 default view board for Board
 
+default view post_view for Post
+
 row view post_row for Post
 
 row view task_row for Task
@@ -28,6 +30,11 @@ row view task_row for Task
 /// Adds a task.
 action add_task(b: Board, title: Text) -> Task {
     b.tasks.insert(Task(title: title))
+}
+
+/// Renames a task.
+action rename(t: Task, title: Text) {
+    t.title = title
 }
 
 /// Posts a message, when it says something.
@@ -85,6 +92,11 @@ action people_count(p: Post) -> Int {
 /// The board: its posts.
 view board(b: Board) {
     std.list(b, b.posts, empty: "No posts yet")
+}
+
+/// A post: what it says, each reference as the reader's inline view of it.
+view post_view(p: Post) {
+    rich_text(p.body)
 }
 
 /// A post in a list: its first line.

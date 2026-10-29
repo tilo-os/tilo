@@ -9,7 +9,7 @@ use room::media::{self, RoomMediaV1};
 impl StatePeer {
     fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.require_governance_writer(key, now)?;
-        let member = self.permissions(self.core.authority.device_public_key, now)?;
+        let member = self.permissions(key.verifying_key().to_bytes(), now)?;
         if member.role != Role::Owner
             || room::governance_of(self.core.room_doc.as_deref())
                 .owner
@@ -45,7 +45,9 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
+        let issuer = self
+            .owner_device(&key.verifying_key().to_bytes(), now)?
+            .clone();
         if cert.user_public_key != self.core.authority.user_public_key
             || cert != delegation.delegate
         {
@@ -72,7 +74,7 @@ impl StatePeer {
         }
         crate::join::verify_workspace_delegation(
             &delegation,
-            &self.core.authority,
+            &issuer,
             &self.core.revocations,
             now_ns(now),
         )?;
@@ -92,12 +94,12 @@ impl StatePeer {
             .ok_or("missing peers")?
             .1;
         let rows = room::governance_of(Some(&doc)).identities;
-        let authority_id = hex::encode(self.core.authority.device_public_key);
+        let authority_id = hex::encode(issuer.device_public_key);
         let mut authority: GovernedIdentity =
-            serde_json::from_slice(rows.get(&authority_id).ok_or("missing authority")?)
+            serde_json::from_slice(rows.get(&authority_id).ok_or("missing issuer")?)
                 .map_err(err)?;
-        if authority.device_cert != self.core.authority {
-            return Err("governed authority mismatch".into());
+        if authority.device_cert != issuer {
+            return Err("governed issuer mismatch".into());
         }
         let id = hex::encode(cert.device_public_key);
         doc.set_actor(automerge::ActorId::from(

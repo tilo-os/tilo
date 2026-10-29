@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
+use imager_backend::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
 
 const BLOCK: u64 = 4096;
 
@@ -302,13 +302,14 @@ mod tests {
     //! Helper sequencing against the fake: full stage, crash-resume at every
     //! mutation, refusals before mutation, arm and remove.
     use super::super::bundle::{BundleFacts, ComponentFacts};
+    use super::super::handoff::Handoff;
     use super::super::helper::{
         self, Action, ComponentPaths, Refusal, ReleaseAuthority, Request, codes,
     };
     use super::super::plan::{self, Basis, Plan, Requirements};
     use super::super::record::{RecordStatus, RecordStore, ReleaseRef, Step, StepState};
-    use super::super::{efi, fat, handoff::Handoff};
     use super::*;
+    use imager_backend::{efi, staging::fat};
     use sha2::{Digest, Sha256};
 
     const MIB: u64 = 1 << 20;
@@ -378,7 +379,7 @@ mod tests {
         let deployments: Vec<_> = refs.iter().map(|item| serde_json::json!({"reference":item["reference"],"commit":"a".repeat(64),"deploy_sha256":(vec![0u8;32])})).collect();
         let inventory = serde_json::json!({"schema":1,"inventory":{"refs":refs,"remotes":[]},"selected":[],"installations":[{
             "installation":"User","source_plan":serde_json::to_vec(&migration).unwrap(),"repositories":[],"deployments":deployments,"config_sha256":(vec![0u8;32])}]});
-        crate::setup::flatpak_transfer::HandoffInventory::parse(
+        imager_backend::setup::flatpak_transfer::HandoffInventory::parse(
             &serde_json::to_vec(&inventory).unwrap(),
         )
         .unwrap();
@@ -646,7 +647,7 @@ mod tests {
             &fat::file_ranges(
                 &mut read,
                 image.len() as u64,
-                super::super::prepared_setup::PACKAGE_PATH,
+                imager_backend::staging::prepared_setup::PACKAGE_PATH,
             )
             .unwrap(),
         );
@@ -745,21 +746,21 @@ mod tests {
         world.request.prepared_setup.as_mut().unwrap().browser =
             Some(super::super::browser::BrowserArtifact {
                 source_path: path.to_str().unwrap().into(),
-                expectation: crate::setup::browser_transfer::Expectation {
-                    schema: 1,
+                expectation: imager_backend::setup::browser_transfer::Expectation {
                     operation,
                     filename,
-                    purpose: crate::setup::portable_transfer::Purpose::BrowserProfiles,
                     setup_binding: "staging-browser".into(),
                     sealed_bytes: bytes.len() as u64,
                     plaintext_bytes: 1024,
                     entries: 1,
                     ciphertext_sha256: sha2::Sha256::digest(&bytes).into(),
-                    plan_sha256: [1; 32],
-                    limits: crate::setup::portable_transfer::Limits {
+                    limits: imager_backend::setup::portable_transfer::Limits {
                         plaintext_bytes: 4096,
                         entries: 8,
                         metadata_bytes: 1024,
+                    },
+                    kind: imager_backend::setup::browser_transfer::Browser {
+                        plan_sha256: [1; 32],
                     },
                 },
             });
@@ -794,7 +795,7 @@ mod tests {
         let ranges = fat::file_ranges(
             &mut read,
             image.len() as u64,
-            super::super::browser::PACKAGE_PATH,
+            imager_backend::staging::browser::PACKAGE_PATH,
         )
         .unwrap();
         let payload = ranges

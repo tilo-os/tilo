@@ -32,6 +32,7 @@ pub fn kind(name: &str) -> String {
 pub fn prim_component(prim: &str) -> Option<&'static str> {
     Some(match prim {
         "text" => "Text",
+        "rich_text" => "RichText",
         "button" => "Button",
         "input" => "TextInput",
         "section" => "Section",

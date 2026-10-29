@@ -72,6 +72,7 @@ use crate::timeline_interaction::{
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 
+mod bar_events;
 mod contact_attendees;
 mod editor;
 mod month_view;
@@ -303,6 +304,8 @@ pub struct CalendarApp {
     /// The shell's sidebar and its slots in the window's bar; `None` while
     /// the calendar stands alone (a test's bare surface).
     bar: Option<ui::widget::WindowBarLink>,
+    /// The window bar's entries, each carrying what it asks for.
+    bar_entries: ui::framework::BarCommands<crate::window_bar::BarAction>,
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
@@ -525,6 +528,7 @@ impl CalendarApp {
             places: ui::widget::NavFeed::new(),
             month: ui::widget::DateFeed::new(),
             bar: None,
+            bar_entries: ui::framework::BarCommands::new(),
             search_opener: ui::search::SearchOpener::new(),
             staged_new_event: false,
             staged_popover: None,
@@ -4638,50 +4642,6 @@ impl CalendarApp {
         }
 
         self.hits = hits;
-    }
-
-    /// Declare the window bar's slots ([`crate::window_bar`]).
-    fn declare_window_toolbar(&self) {
-        // The location names the task list only on the Tasks screen.
-        ui::window_toolbar::declare(Some(crate::window_bar::window_toolbar(
-            self.view,
-            self.anchor,
-            &self.tasks_source().title(),
-            self.sidebar_open(),
-        )));
-    }
-
-    /// Run what the person did in the window's bar as the calendar's own
-    /// actions, as a press on the calendar's own controls runs them: the
-    /// view is this window's, chosen at once.
-    fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        use crate::window_bar::BarAction;
-        for event in ui::window_toolbar::take_events() {
-            // The sidebar's toggle is the shell's.
-            if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
-                self.dirty = true;
-                continue;
-            }
-            let Some(action) = crate::window_bar::bar_action(&event) else {
-                continue;
-            };
-            let action = match action {
-                BarAction::ToggleSidebar => continue,
-                BarAction::Previous => Action::Prev,
-                BarAction::Next => Action::Next,
-                BarAction::Today => Action::Today,
-                BarAction::New if self.view == View::Tasks => Action::NewTask,
-                BarAction::New => Action::NewEvent,
-                BarAction::QuickAdd => Action::QuickAdd,
-                BarAction::Shortcuts => Action::Shortcuts,
-                BarAction::Export => Action::Export,
-                BarAction::Import => Action::Import,
-                BarAction::View(view) => Action::View(view),
-            };
-            self.apply_action(action, doc);
-            self.dirty = true;
-        }
-        self.declare_window_toolbar();
     }
 }
 

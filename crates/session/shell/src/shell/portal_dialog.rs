@@ -34,10 +34,16 @@ use winit::keyboard::PhysicalKey;
 use crate::portal::desktop_services::{
     AppChooserService, ApplicationChoice, ApplicationChoiceRequest, PortalResult,
 };
-use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
+use crate::shell::app_action_consent::{
+    AppActionAnswer, AppActionConsent, AppActionConsentRequest,
+};
 use crate::shell::i18n::{t, t_args};
 
 pub mod accessibility;
+mod draft_sheet;
+mod moderation_detail;
+pub use draft_sheet::DraftRowLayout;
+use moderation_detail::moderation_detail;
 mod secret_prompts;
 #[cfg(test)]
 mod sim_tests;
@@ -452,7 +458,7 @@ enum PendingDialog {
     },
     ActionGrant {
         request: AppActionConsentRequest,
-        reply: oneshot::Sender<AppActionConsent>,
+        reply: oneshot::Sender<AppActionAnswer>,
     },
     WindowTransfer {
         request: WindowTransferRequest,
@@ -712,7 +718,7 @@ impl PortalDialogQueue {
     pub fn enqueue_action_grant(
         &self,
         request: AppActionConsentRequest,
-    ) -> Result<oneshot::Receiver<AppActionConsent>, String> {
+    ) -> Result<oneshot::Receiver<AppActionAnswer>, String> {
         self.enqueue_reply(request.handle.clone(), |reply| PendingDialog::ActionGrant {
             request,
             reply,
@@ -794,7 +800,7 @@ impl PortalDialogQueue {
         })
     }
 
-    fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
+    fn finish_action_grant(&self, handle: &str, answer: AppActionAnswer) -> bool {
         self.finish_pending(handle, |pending| match pending {
             PendingDialog::ActionGrant { reply, .. } => {
                 let _ = reply.send(answer);
@@ -1091,7 +1097,7 @@ impl PortalDialogQueue {
             }
             Some(PendingDialog::ShortcutBindings { .. }) => true,
             Some(PendingDialog::ActionGrant { reply, .. }) => {
-                let _ = reply.send(AppActionConsent::Deny);
+                let _ = reply.send(AppActionAnswer::DENY);
                 true
             }
             Some(PendingDialog::WindowTransfer { reply, .. }) => {
@@ -1639,6 +1645,13 @@ pub struct DialogLayout {
     /// suggested one is the primary button and `confirm`; `cancel` is the
     /// sheet's close button.
     pub answers: Vec<Rect>,
+    /// The draft's rows on this page of a confirmation: each row's index in
+    /// the draft, its label line (empty for a check row, which carries its
+    /// own) and its control.
+    pub draft_rows: Vec<DraftRowLayout>,
+    /// The width the detail wraps at, where it wraps (a confirmation's
+    /// draft sheet); unwrapped otherwise.
+    pub detail_width: Option<f64>,
 }
 
 pub struct PortalDialogController {
@@ -1668,6 +1681,13 @@ pub struct PortalDialogController {
     sim_unlocker: Arc<dyn SimUnlocker>,
     /// The modem's answer to the PUK the sheet up sent, once it has one.
     puk_attempt: Option<std::sync::mpsc::Receiver<Result<(), PukRefusal>>>,
+    /// A confirmation's draft, row by row, as the person changes it.
+    draft: Option<draft_sheet::DraftSheet>,
+    /// How much height the draft's rows had at the last layout: what its
+    /// pages are cut to.
+    draft_room: std::cell::Cell<f64>,
+    /// How tall the detail stands wrapped, as the painter measured it.
+    detail_height: std::cell::Cell<Option<f64>>,
 }
 
 fn small_count_as_f64(value: usize) -> f64 {
@@ -1696,6 +1716,9 @@ impl PortalDialogController {
             keyboard_cover: None,
             sim_unlocker: Arc::new(crate::network_secrets::ModemManagerUnlock),
             puk_attempt: None,
+            draft: None,
+            draft_room: std::cell::Cell::new(f64::INFINITY),
+            detail_height: std::cell::Cell::new(None),
         }
     }
 
@@ -1724,6 +1747,7 @@ impl PortalDialogController {
         if withdrawn {
             self.active = None;
             self.forget_secret();
+            self.draft = None;
         }
         if self.active.is_none() {
             self.active = self.queue.next_handle();
@@ -1736,6 +1760,12 @@ impl PortalDialogController {
             self.launcher_icon = 0;
             self.launcher_field = 0;
             self.forget_secret();
+            self.draft = self
+                .active
+                .as_deref()
+                .and_then(|handle| self.queue.action_grant_draft(handle))
+                .map(|draft| draft_sheet::DraftSheet::new(&draft));
+            self.detail_height.set(None);
             match self.view() {
                 Some(DialogView::DriveConsent { preselect, .. }) => {
                     self.selected = preselect;
@@ -1789,6 +1819,9 @@ impl PortalDialogController {
         let Some(view) = self.view() else {
             return false;
         };
+        if self.draft.is_some() {
+            return self.draft_focus_next(&view, reverse);
+        }
         if matches!(view, DialogView::NetworkSecrets { .. }) {
             // Between the fields and the "Remember" row, as Tab does.
             return self
@@ -1850,6 +1883,9 @@ impl PortalDialogController {
             .unwrap_or_else(|| self.view().map_or_else(String::new, |view| view.detail()))
     }
     pub fn reviewing_more(&self) -> bool {
+        if self.draft.is_some() {
+            return self.review_page + 1 < self.draft_page_count();
+        }
         self.review_pages()
             .is_some_and(|pages| self.review_page + 1 < pages.len())
     }
@@ -1858,6 +1894,7 @@ impl PortalDialogController {
             return false;
         }
         self.review_page -= 1;
+        self.focus_draft_page();
         true
     }
     pub fn confirm(&mut self) -> bool {
@@ -1870,6 +1907,7 @@ impl PortalDialogController {
         }
         if self.reviewing_more() {
             self.review_page += 1;
+            self.focus_draft_page();
             return true;
         }
         let done = match &view {
@@ -1915,9 +1953,9 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
-            DialogView::ActionGrant { answers, .. } => answers
-                .get(self.selected)
-                .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
+            DialogView::ActionGrant { answers, .. } => {
+                self.answer_action_grant(view.handle(), answers)
+            }
             DialogView::WindowTransfer { .. } => self
                 .queue
                 .finish_window_transfer(view.handle(), Some(self.selected)),
@@ -1960,7 +1998,7 @@ impl PortalDialogController {
                 .finish_usb_devices(view.handle(), ReviewDecision::Cancelled),
             DialogView::ActionGrant { .. } => self
                 .queue
-                .finish_action_grant(view.handle(), AppActionConsent::Deny),
+                .finish_action_grant(view.handle(), AppActionAnswer::DENY),
             DialogView::WindowTransfer { .. } => {
                 self.queue.finish_window_transfer(view.handle(), None)
             }
@@ -1994,7 +2032,12 @@ impl PortalDialogController {
                 remember: None,
                 review_back: None,
                 answers: Vec::new(),
+                draft_rows: Vec::new(),
+                detail_width: None,
             });
+        }
+        if let Some(draft) = &self.draft {
+            return self.draft_layout(&view, draft, bounds);
         }
         // Verified field reviews contain exact file/endpoint/certificate text,
         // rather than a one-line caption. Never overlap it with the entry.
@@ -2143,11 +2186,20 @@ impl PortalDialogController {
             review_back: (moderation_review && self.review_page > 0)
                 .then(|| Rect::new(sheet.x0 + 24.0, cancel.y0, sheet.x0 + 108.0, cancel.y1)),
             answers,
+            draft_rows: Vec::new(),
+            detail_width: None,
         })
     }
     pub fn click(&mut self, point: vello::kurbo::Point, layout: &DialogLayout) -> bool {
         if layout.review_back.is_some_and(|rect| rect.contains(point)) {
             return self.review_back();
+        }
+        if let Some(row) = layout
+            .draft_rows
+            .iter()
+            .find(|row| row.control.contains(point) || row.label.contains(point))
+        {
+            return self.press_draft_row(row.index);
         }
         if layout.remember.is_some_and(|rect| rect.contains(point)) {
             self.remember = !self.remember;
@@ -2296,6 +2348,9 @@ impl PortalDialogController {
 
     /// The single text field of a shortcut step, when one is up.
     fn text_field_mut(&mut self) -> Option<&mut TextInput> {
+        if self.draft.is_some() {
+            return self.draft.as_mut()?.focused_text_mut();
+        }
         match self.view()? {
             DialogView::ShortcutStep { field: Some(_), .. } => Some(&mut self.step_field),
             _ => None,
@@ -2309,6 +2364,9 @@ impl PortalDialogController {
             return Vec::new();
         };
         let mut placed = Vec::new();
+        if self.draft.is_some() {
+            return self.place_draft_fields(layout);
+        }
         match view {
             DialogView::ShortcutStep { field: Some(_), .. } => {
                 if let Some(rect) = layout.launcher_name {
@@ -2349,6 +2407,13 @@ impl PortalDialogController {
     /// Whether the sheet up takes typed text — a secret, or a shortcut
     /// step's answer — so every key belongs to it.
     pub fn is_text_entry(&self) -> bool {
+        if self
+            .draft
+            .as_ref()
+            .is_some_and(draft_sheet::DraftSheet::editable)
+        {
+            return true;
+        }
         matches!(
             self.view(),
             Some(
@@ -2506,6 +2571,10 @@ impl PortalDialogController {
             } => {
                 state["error"] = self.entry_error.clone().into();
                 state["value"] = self.step_field.value().into();
+            }
+            DialogView::ActionGrant { .. } if self.draft.is_some() => {
+                state["error"] = self.entry_error.clone().into();
+                state["draft"] = self.draft_state();
             }
             DialogView::DriveConsent { remember_label, .. } => {
                 state["cancel_label"] = view.cancel_label().into();
@@ -2676,21 +2745,14 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
         return moderation_detail(preview);
     }
     if request.confirming {
-        let mut detail = match &request.scope {
+        let detail = match &request.scope {
             Some(scope) => t_args(
                 "portal-confirm-scope-detail",
                 &[("risk", risk.into()), ("scope", scope.clone().into())],
             ),
             None => t_args("portal-confirm-detail", &[("risk", risk.into())]),
         };
-        if let Some(draft) = &request.draft {
-            for field in &draft.fields {
-                detail.push('\n');
-                detail.push_str(&field.label);
-                detail.push_str(": ");
-                detail.push_str(&field.value.line());
-            }
-        }
+        // The draft is the sheet's own rows ([`draft_sheet`]), not text.
         return detail;
     }
     let key = if request.needs_confirmation {
@@ -2699,60 +2761,6 @@ fn action_grant_detail(request: &AppActionConsentRequest) -> String {
         "portal-grant-detail-unattended"
     };
     t_args(key, &[("risk", risk.into())])
-}
-
-/// Keep every disclosure field and make control characters visible. The
-/// controller paginates this complete text into a bounded trusted sheet;
-/// neither long values nor short displays may hide content behind Allow.
-fn moderation_detail(
-    preview: &tilo_action_broker::app_actions::ModerationConsentPreview,
-) -> String {
-    use tilo_action_broker::app_actions::ModerationConsentPurpose;
-    let purpose = match preview.purpose {
-        ModerationConsentPurpose::Report => "portal-moderation-report",
-        ModerationConsentPurpose::Appeal => "portal-moderation-appeal",
-    };
-    let mut detail = t(purpose);
-    for (key, value) in [
-        (
-            "portal-moderation-destination",
-            Some(preview.destination.as_str()),
-        ),
-        ("portal-moderation-owner", Some(preview.owner_root.as_str())),
-        (
-            "portal-moderation-identity",
-            Some(preview.signing_root.as_str()),
-        ),
-        ("portal-moderation-target", Some(preview.target.as_str())),
-        ("portal-moderation-category", preview.category.as_deref()),
-        ("portal-moderation-content", Some(preview.content.as_str())),
-        (
-            "portal-moderation-evidence",
-            preview.evidence_digest.as_deref(),
-        ),
-    ] {
-        if let Some(value) = value {
-            detail.push('\n');
-            detail.push_str(&t(key));
-            detail.push('\n');
-            // Escape controls and directional overrides: payload text cannot
-            // impersonate a trusted field label by rearranging the sheet.
-            let visible: String = value.chars().flat_map(|c| {
-                if c.is_control() || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
-                    c.escape_default().collect::<Vec<_>>()
-                } else {
-                    vec![c]
-                }
-            }).collect();
-            for (index, c) in visible.chars().enumerate() {
-                if index > 0 && index % 56 == 0 {
-                    detail.push('\n');
-                }
-                detail.push(c);
-            }
-        }
-    }
-    detail
 }
 
 fn friendly_app_name(app_id: &str) -> String {

@@ -17,6 +17,7 @@ use vello::peniko::Color;
 use winit::event::Modifiers;
 
 use tilo_doc::model::Region;
+use tilo_doc::paging::PageFlow;
 use tilo_doc::snapshot::{BlockView, NoteView};
 use ui::gesture::DragSelect;
 use ui::richtext::RichTextLayout;
@@ -2435,17 +2436,14 @@ struct PaginationResult {
 /// Loop-carried pagination state threaded through
 /// [`WordProcessorWidget::paginate_blocks`]'s per-block-kind handlers.
 struct PageCursor {
-    /// Current page index.
-    cur_page: usize,
+    /// Where the next block goes and how it breaks across page sheets.
+    flow: PageFlow,
+    /// The `laid` entries of each block placed through `flow`, in its order,
+    /// so a heading carried to the next page with its text can follow it.
+    flow_laid: Vec<std::ops::Range<usize>>,
     /// Highest page named by an out-of-flow object. It keeps the paper stack
     /// present even when normal text flow has not reached that page yet.
     max_object_page: usize,
-    /// Whether anything has landed on the current page yet (the first item
-    /// on a page never breaks, so an over-tall block simply overflows its
-    /// own page — acceptable for v1).
-    placed_on_page: bool,
-    /// The running content y.
-    y: f64,
     /// The currently-active floated image (anchor=paragraph/page,
     /// wrap=left/right), if any: subsequent paragraphs on its page are
     /// narrowed to flow beside it (coarse wrap — see [`FloatReserve`]).
@@ -2510,7 +2508,6 @@ struct ParagraphPlacement {
     size: f32,
     bullet: Option<String>,
     ink: Color,
-    space_after: f32,
 }
 
 /// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects

@@ -38,13 +38,12 @@ pub(crate) fn restore(
         Some(enrollment) => validate_enrollment(room, record, enrollment)?,
         None => return Err("a native room record holds no enrollment".into()),
     }
-    let (governor, revocations) = record.current_governor(now);
     let peer = StatePeer::restore(
         &record.peer,
         &room.to_string(),
-        governor,
+        record.governor.clone(),
         vec![record.device.clone()],
-        revocations,
+        tilo_user_identity::RevocationList::new(),
         now,
     )?;
     if !peer.admission_v5_selected() {
@@ -433,7 +432,6 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            successions: Vec::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }

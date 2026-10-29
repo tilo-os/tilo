@@ -1,7 +1,7 @@
 //! Inventory storage derived only from the acknowledged preparation custody.
 use super::draft::{DraftStatus, DraftStore, ReadyDraft};
 #[cfg(all(test, feature = "native-capture-qualification"))]
-use crate::setup::migration::PinnedDirectory;
+use imager_backend::migration::PinnedDirectory;
 use imager_backend::{
     migration::changed,
     migration_review::{InventoryScratch, InventoryScratchCustody},
@@ -57,7 +57,7 @@ mod tests {
         let subject_path = std::path::PathBuf::from(subject);
         let subject = PinnedDirectory::open_absolute(&subject_path).unwrap();
         subject.validate_destination().unwrap();
-        crate::setup::destination_security::check_private_file(&subject.file).unwrap();
+        imager_backend::destination_security::check_private_file(&subject.file).unwrap();
         let root = tempfile::tempdir_in(&subject_path).unwrap();
         let home = root.path().join("home");
         fs::create_dir(&home).unwrap();
@@ -101,7 +101,7 @@ mod tests {
         let scratch = review(prepared.clone()).unwrap();
         let cancel = AtomicBool::new(false);
         let source =
-            crate::setup::portable_home_media::HomeSource::review_live_with_working_storage(
+            imager_backend::setup::portable_home_media::HomeSource::review_live_with_working_storage(
                 &home,
                 scratch.clone(),
                 &cancel,

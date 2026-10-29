@@ -76,7 +76,6 @@ use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, QueuedMessage, Shared};
 use crate::util::format_absolute;
-use crate::window_bar::BarItem;
 
 /// How often the app auto-refreshes the current folder from the server while in
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
@@ -311,7 +310,7 @@ pub struct MailApp {
     nav_node: Option<NodeId>,
     /// The window bar's actions as last declared, and the command each
     /// queues.
-    bar: Vec<BarItem>,
+    bar: ui::framework::BarCommands<Command>,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
@@ -686,7 +685,7 @@ impl MailApp {
             content,
             nav,
             nav_node: None,
-            bar: Vec::new(),
+            bar: ui::framework::BarCommands::new(),
             first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
                 .with_message("Email accounts are added in Settings, under External Accounts.")
@@ -1198,22 +1197,21 @@ impl MailApp {
 
     /// Declare the window bar's slots: the shell's own, the folder and
     /// what can be done there ([`crate::window_bar`]).
-    fn declare_window_toolbar(&mut self) {
+    fn declare_window_toolbar(&self) {
         let first_run = self.is_first_run();
-        let (items, toolbar) = {
+        let toolbar = {
             let state = self.shared.borrow();
             let composing = self.compose.open.then(|| self.compose.heading());
-            let items = crate::window_bar::bar_items(&state, first_run, composing.is_some());
-            let toolbar = crate::window_bar::toolbar(
+            let items =
+                crate::window_bar::bar_items(&self.bar, &state, first_run, composing.is_some());
+            crate::window_bar::toolbar(
                 self.nav.window_toolbar(),
                 &state,
-                &items,
+                items,
                 first_run,
                 composing,
-            );
-            (items, toolbar)
+            )
         };
-        self.bar = items;
         ui::window_toolbar::declare(Some(toolbar));
     }
 
@@ -1226,10 +1224,8 @@ impl MailApp {
                 self.dirty = true;
                 continue;
             }
-            if let ui::window_toolbar::ToolbarEvent::Action { id } = &event
-                && let Some(item) = self.bar.iter().find(|item| item.action.id == *id)
-            {
-                self.shared.borrow_mut().push_command(item.command.clone());
+            if let Some(command) = self.bar.pressed(&event) {
+                self.shared.borrow_mut().push_command(command);
                 queued = true;
             }
         }

@@ -191,7 +191,7 @@ fn actual_mounted_permission_controller_preserves_original_grant_and_refuses_sta
     let bind = Binding::new(&external, &mounted);
     let grant =
         validate_grant(&home, &home).unwrap_or_else(|_| panic!("matching actual Home grant"));
-    let selected_pin = crate::setup::migration::PinnedDirectory::open_absolute(&home).unwrap();
+    let selected_pin = imager_backend::migration::PinnedDirectory::open_absolute(&home).unwrap();
     let locations =
         MountedHomeLocations::discover(&selected_pin, &home, &AtomicBool::new(false)).unwrap();
     assert_eq!(locations.display_names(), vec!["mounted"]);

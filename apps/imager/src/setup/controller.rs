@@ -4,8 +4,8 @@
 
 use std::path::PathBuf;
 
-use super::folders::FolderScan;
 use super::model::FolderMode;
+use imager_backend::folders::FolderScan;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FolderDestination {

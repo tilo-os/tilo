@@ -10,8 +10,10 @@ use std::collections::HashSet;
 
 use tilo_render_protocol::patch as wire;
 
+use crate::runtime::rich::{Reference, RichValue};
 use crate::runtime::view::is_virtual;
 use crate::runtime::{Binding, NameHost, ResourceRef, UiNode, Value};
+use tilo_render_protocol::patch::rich::{self as rich_wire, InlineView};
 
 /// The kind of a node holding a component's named slot.
 pub const SLOT: &str = "slot";
@@ -41,6 +43,8 @@ pub struct Convert<'a> {
     pub toggles: &'a dyn Fn(&str, &str) -> Toggled,
     /// The resource and the action the event `event` of the node `key` runs, when it runs one.
     pub invokes: &'a dyn Fn(&str, &str) -> Toggled,
+    /// How a reference in rich text reads for the person reading.
+    pub embeds: &'a dyn Fn(&Reference) -> InlineView,
 }
 
 impl Convert<'_> {
@@ -114,8 +118,7 @@ impl Convert<'_> {
             Value::Float(number) => wire::Value::Float(*number),
             Value::Bool(flag) => wire::Value::Bool(*flag),
             Value::Text(text) => wire::Value::Text(text.clone()),
-            // Until the window draws rich text, it reads its text.
-            Value::Rich(rich) => wire::Value::Text(rich.plain_text()),
+            Value::Rich(rich) => wire::Value::Rich(self.rich(rich)),
             Value::List(items) | Value::Tuple(items) => {
                 wire::Value::List(items.iter().map(|item| self.value(item)).collect())
             }
@@ -136,6 +139,67 @@ impl Convert<'_> {
             | Value::Rec(_)
             | Value::Event => wire::Value::Unit,
         }
+    }
+}
+
+impl Convert<'_> {
+    /// The window's rich text of `rich`: its paragraphs (a list's items after the list), and
+    /// how each reference in it reads for the person reading.
+    #[must_use]
+    pub fn rich(&self, rich: &RichValue) -> rich_wire::RichText {
+        fn push(block: &tilo_doc::snapshot::BlockView, out: &mut Vec<rich_wire::Block>) {
+            let attr = |value: &tilo_doc::AttrVal| match value {
+                tilo_doc::AttrVal::Int(number) => rich_wire::Attr::Int(*number),
+                tilo_doc::AttrVal::Bool(flag) => rich_wire::Attr::Bool(*flag),
+                tilo_doc::AttrVal::Str(text) => rich_wire::Attr::Text(text.clone()),
+                tilo_doc::AttrVal::Float(number) => rich_wire::Attr::Float(*number),
+            };
+            out.push(rich_wire::Block {
+                kind: block.kind.clone(),
+                text: block.text.clone(),
+                marks: block
+                    .marks
+                    .iter()
+                    .map(|mark| rich_wire::Mark {
+                        start: mark.start,
+                        end: mark.end,
+                        name: mark.name.clone(),
+                        value: match &mark.value {
+                            tilo_doc::document::MarkValue::Bool(flag) => {
+                                rich_wire::Attr::Bool(*flag)
+                            }
+                            tilo_doc::document::MarkValue::Int(number) => {
+                                rich_wire::Attr::Int(*number)
+                            }
+                            tilo_doc::document::MarkValue::Str(text) => {
+                                rich_wire::Attr::Text(text.clone())
+                            }
+                        },
+                    })
+                    .collect(),
+                attrs: block
+                    .attrs
+                    .iter()
+                    .map(|(key, value)| (key.clone(), attr(value)))
+                    .collect(),
+            });
+            for child in &block.children {
+                push(child, out);
+            }
+        }
+        let mut blocks = Vec::with_capacity(rich.blocks.len());
+        for block in &rich.blocks {
+            push(block, &mut blocks);
+        }
+        let embeds = rich
+            .references()
+            .iter()
+            .map(|reference| rich_wire::Embed {
+                reference: reference.mark_value(),
+                view: (self.embeds)(reference),
+            })
+            .collect();
+        rich_wire::RichText { blocks, embeds }
     }
 }
 
@@ -166,7 +230,11 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Principal(who) => {
             Value::Principal(crate::runtime::Principal::new(who.id.clone()))
         }
-        wire::Value::Unit | wire::Value::List(_) | wire::Value::Opt(_) | wire::Value::Error(_) => {
+        wire::Value::Unit
+        | wire::Value::List(_)
+        | wire::Value::Opt(_)
+        | wire::Value::Rich(_)
+        | wire::Value::Error(_) => {
             return None;
         }
     })

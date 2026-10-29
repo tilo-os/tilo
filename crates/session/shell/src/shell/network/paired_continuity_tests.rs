@@ -96,7 +96,6 @@ impl Session {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(self.cert.clone()),
                     revocations: vec![],
-                    successions: Vec::new(),
                 },
             })
             .await

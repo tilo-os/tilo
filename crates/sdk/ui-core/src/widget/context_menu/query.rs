@@ -263,7 +263,7 @@ impl ContextMenu {
     pub(super) fn edit_query(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         let command = self.platform.command_modifier_down(modifiers.state());
         let shift = modifiers.state().shift_key();

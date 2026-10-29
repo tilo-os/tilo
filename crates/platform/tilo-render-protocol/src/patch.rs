@@ -30,6 +30,9 @@
 //! A connection is one window of one app: a patch can only name nodes of the trees that
 //! window's app sent.
 
+/// Rich text as a window shows it ([`Value::Rich`]).
+pub use tilo_ui_graph::rich;
+
 use serde::{Deserialize, Serialize};
 
 use crate::WireError;
@@ -150,6 +153,8 @@ pub enum Value {
     Enum(String),
     Ref(ResourceRef),
     Principal(Principal),
+    /// Rich text, with how each reference in it reads for the person reading it.
+    Rich(rich::RichText),
     /// What a failed or refused part of a view shows.
     Error(String),
 }
@@ -493,6 +498,11 @@ pub enum ToApp {
     /// A component presenting `resource` was activated: show it.
     Open {
         resource: ResourceRef,
+    },
+    /// A reference in rich text was activated: open what it refers to, `reference` being the
+    /// `mention` mark's value (`tilo_reference::embed`).
+    OpenReference {
+        reference: String,
     },
     /// Back from the detail lane.
     Back,

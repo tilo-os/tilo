@@ -85,6 +85,8 @@ pub struct TubeApp {
     /// capture's sample, or a bare widget's. Kept in memory only.
     local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
     bus: ActionBus,
+    /// The window bar's entries, each carrying the action it asks for.
+    bar: ui::framework::BarCommands<Action>,
     /// Whether browsing can go back, read by the shell's Back chip.
     can_go_back: Rc<std::cell::Cell<bool>>,
     worker: Option<Worker>,
@@ -235,6 +237,7 @@ impl TubeApp {
             preferences: None,
             local_history: None,
             bus,
+            bar: ui::framework::BarCommands::new(),
             worker: None,
             wake: ui::WakeHandle::detached(),
             #[cfg(feature = "grayjay-sync")]

@@ -66,7 +66,7 @@ fn journey_copy_later_restart_keeps_identity_gate_and_completion_destinations() 
         b"source survives"
     );
     assert!(!destination.join("later").exists());
-    let ownership_released = super::super::migration_store::test_support::ownership_release(
+    let ownership_released = imager_backend::migration_store::test_support::ownership_release(
         app.store.as_deref().unwrap(),
     );
     drop(app);

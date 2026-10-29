@@ -190,21 +190,19 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let payload = Payload::Home(crate::setup::portable_home_media::Expectation {
-            schema: 1,
             operation,
-            purpose: crate::setup::portable_transfer::Purpose::Home,
             filename,
             setup_binding: "synthetic-bounded-source".into(),
             sealed_bytes: bytes.len() as u64,
             plaintext_bytes: 16,
             entries: 1,
-            runtime_sockets: 0,
             ciphertext_sha256: Sha256::digest(bytes).into(),
             limits: crate::setup::portable_transfer::Limits {
                 plaintext_bytes: 1024,
                 entries: 4,
                 metadata_bytes: 1024,
             },
+            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
         });
         let file = File::open(path).unwrap();
         let member = Member {

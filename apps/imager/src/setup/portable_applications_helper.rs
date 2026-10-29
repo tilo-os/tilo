@@ -1,16 +1,18 @@
 //! Rootless application continuation; secret input is bounded raw stdin.
-use super::{
-    destination_security,
-    flatpak_transfer::portable::{
-        ApplicationImport, Expectation, NativeOfflineRunner, OfflineRunner,
-    },
-    migration::PinnedDirectory,
-    migration_durability as durable,
-    portable_home_import::{HomeImportGrants, PortableHomeReview},
-    prepared_setup::PreparedSetupReview,
-};
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions, OpenOptionsExt};
+use imager_backend::{
+    destination_security,
+    migration::PinnedDirectory,
+    migration_durability as durable,
+    setup::{
+        flatpak_transfer::portable::{
+            ApplicationImport, Expectation, NativeOfflineRunner, OfflineRunner,
+        },
+        portable_home_import::{HomeImportGrants, PortableHomeReview},
+        prepared_setup::PreparedSetupReview,
+    },
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -154,7 +156,7 @@ fn verify_home(
         return Ok(None);
     }
     let delivered = home.join(".local/state/tilo/prepared-home");
-    let expected: super::portable_home_media::Expectation =
+    let expected: imager_backend::setup::portable_home_media::Expectation =
         serde_json::from_slice(&read(&delivered.join("expectation.json"))?)?;
     expected.validate()?;
     let workspace = home
@@ -184,7 +186,7 @@ pub fn run(
     input: &mut impl Read,
     output: &mut impl Write,
 ) -> io::Result<()> {
-    super::home_admission::installed()?;
+    imager_backend::home_admission::installed()?;
     run_with_runner(args, input, output, &NativeOfflineRunner)
 }
 fn run_with_runner(
@@ -194,7 +196,7 @@ fn run_with_runner(
     runner: &impl OfflineRunner,
 ) -> io::Result<()> {
     run_with_admission(args, input, output, runner, || {
-        super::applications_admission::installed().map(|_| ())
+        imager_backend::applications_admission::installed().map(|_| ())
     })
 }
 fn run_with_admission(
@@ -236,7 +238,7 @@ fn run_with_admission(
     if setup.manifest().portable_flatpak.as_ref() != Some(&expected) {
         return Err(failure());
     }
-    if expected.consumer_protocol == 2 {
+    if expected.kind.consumer_protocol == 2 {
         admission()?;
     }
     let mut home_review = verify_home(&setup, &home, &password, &cancel)?;

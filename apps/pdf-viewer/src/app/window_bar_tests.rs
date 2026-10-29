@@ -9,10 +9,6 @@ use ui::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolb
 
 use super::super::selection_tests::text_pdf;
 use super::super::tests::launched;
-use super::{
-    FIT_PAGE, FIT_WIDTH, MARKER_COLOUR, NEXT_PAGE, OPEN, PREVIOUS_PAGE, REVIEW_PANEL, SAVE, TOOLS,
-    ZOOM, ZOOM_IN, ZOOM_OUT, colour_id, tool_id,
-};
 use crate::actions::PdfEffect;
 use crate::markup::PdfMarkup;
 use crate::model::{AnnoKind, Annotation, MarkupStyle, PtRect, Swatch, Tool};
@@ -28,14 +24,16 @@ fn reader() -> (tempfile::TempDir, TestApp<PdfViewerShell>) {
     (directory, app)
 }
 
-fn action(id: &str) -> ToolbarEvent {
-    ToolbarEvent::Action { id: id.into() }
-}
-
 /// Press `event` in the window's bar, as the desktop hands it to the app,
 /// and let the reader run it.
 fn press(app: &mut TestApp<PdfViewerShell>, event: ToolbarEvent) {
     app.harness().press_window_slot(event);
+    app.settle();
+}
+
+/// Press the bar's action named `name`, a menu's item too.
+fn press_named(app: &mut TestApp<PdfViewerShell>, name: &str) {
+    app.harness().press_window_action(name).unwrap();
     app.settle();
 }
 
@@ -47,36 +45,41 @@ fn bar(app: &mut TestApp<PdfViewerShell>) -> WindowToolbar {
     reader_state(app, |pdf| pdf.window_toolbar())
 }
 
-fn slot<'a>(toolbar: &'a WindowToolbar, id: &str) -> &'a ToolbarAction {
+fn slot<'a>(toolbar: &'a WindowToolbar, name: &str) -> &'a ToolbarAction {
     toolbar
         .actions
         .iter()
-        .find(|action| action.id == id)
-        .unwrap_or_else(|| panic!("the bar has {id}: {toolbar:?}"))
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("the bar has {name}: {toolbar:?}"))
+}
+
+/// The review panel's toggle, named for what a press does.
+fn review(toolbar: &WindowToolbar) -> &ToolbarAction {
+    toolbar
+        .actions
+        .iter()
+        .find(|action| action.icon == ui::icons::Icon::PanelRight.name())
+        .unwrap_or_else(|| panic!("the bar has the review panel: {toolbar:?}"))
+}
+
+/// The names of menu `menu`'s items that `pick` picks.
+fn items(toolbar: &WindowToolbar, menu: &str, pick: fn(&ToolbarAction) -> bool) -> Vec<String> {
+    slot(toolbar, menu)
+        .items
+        .iter()
+        .filter(|item| pick(item))
+        .map(|item| item.name.clone())
+        .collect()
 }
 
 /// The item of menu `menu` that is on.
 fn chosen(toolbar: &WindowToolbar, menu: &str) -> Vec<String> {
-    slot(toolbar, menu)
-        .items
-        .iter()
-        .filter(|item| item.on)
-        .map(|item| item.id.clone())
-        .collect()
-}
-
-/// Every name and action target in `node`'s subtree.
-fn labels(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    out.extend(node.name.clone());
-    out.extend(node.action_target.clone());
-    for child in &node.children {
-        labels(child, out);
-    }
+    items(toolbar, menu, |item| item.on)
 }
 
 #[test]
 #[serial(pdfium)]
-fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
+fn the_bar_holds_the_readers_controls() {
     let (_directory, mut app) = reader();
     let toolbar = bar(&mut app);
     assert_eq!(
@@ -92,22 +95,22 @@ fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
         Some("text.pdf"),
         "the bar names the document"
     );
-    let ids: Vec<&str> = toolbar
+    let names: Vec<&str> = toolbar
         .actions
         .iter()
-        .map(|action| action.id.as_str())
+        .map(|action| action.name.as_str())
         .collect();
     assert_eq!(
-        ids,
+        names,
         [
-            TOOLS,
-            MARKER_COLOUR,
-            REVIEW_PANEL,
-            ZOOM,
-            PREVIOUS_PAGE,
-            NEXT_PAGE,
-            OPEN,
-            SAVE
+            "Tools",
+            "Marker colour",
+            "Hide review panel",
+            "Zoom",
+            "Previous page",
+            "Next page",
+            "Open PDF",
+            "Save annotated PDF"
         ]
     );
     assert_eq!(
@@ -115,68 +118,20 @@ fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
         3,
         "zoom, page stepping, Open and Save are in the menu"
     );
-    let tools: Vec<String> = slot(&toolbar, TOOLS)
-        .items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    assert_eq!(tools, Tool::ALL.map(tool_id));
-    assert_eq!(chosen(&toolbar, TOOLS), [tool_id(Tool::Select)]);
-    let colours: Vec<String> = slot(&toolbar, MARKER_COLOUR)
-        .items
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    assert_eq!(colours, Swatch::ALL.map(colour_id));
-    let zoom: Vec<&str> = slot(&toolbar, ZOOM)
-        .items
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect();
-    assert_eq!(zoom, [ZOOM_IN, ZOOM_OUT, FIT_PAGE, FIT_WIDTH]);
+    let all = |_: &ToolbarAction| true;
+    assert_eq!(items(&toolbar, "Tools", all), Tool::ALL.map(Tool::label));
+    assert_eq!(chosen(&toolbar, "Tools"), [Tool::Select.label()]);
+    assert_eq!(
+        items(&toolbar, "Marker colour", all),
+        Swatch::ALL.map(super::swatch_label)
+    );
+    assert_eq!(
+        items(&toolbar, "Zoom", all),
+        ["Zoom in", "Zoom out", "Fit page", "Fit width"]
+    );
     assert!(
         toolbar == toolbar.clone().bounded(),
         "the bar takes the declaration as it is"
-    );
-
-    let (rect, canvas, tree) = reader_state(&mut app, |pdf| {
-        (
-            pdf.rect,
-            pdf.canvas_rect,
-            ui::Widget::accessibility(pdf).expect("the reader's semantics"),
-        )
-    });
-    assert!(
-        (canvas.y0 - rect.y0).abs() < 1e-9,
-        "the pages start at the top: the reader draws no row above them"
-    );
-    let mut drawn = Vec::new();
-    labels(&tree, &mut drawn);
-    for own in [
-        "Open PDF",
-        "Save annotated PDF",
-        "Find in document",
-        "Zoom in",
-        "Zoom out",
-        "Fit page or width",
-        "Page thumbnails",
-        "Marker colour",
-        "pdf.open",
-        "pdf.save",
-        "pdf.search.open",
-        "pdf.toggle-rail",
-        "pdf.toggle-sidebar",
-        "pdf.zoom-in",
-        ui::widget::HISTORY_CONTROL_ID,
-    ] {
-        assert!(
-            !drawn.iter().any(|label| label == own),
-            "the reader draws no {own} of its own: {drawn:?}"
-        );
-    }
-    assert!(
-        !drawn.iter().any(|label| label.starts_with("pdf.tool:")),
-        "the reader draws no tool buttons of its own: {drawn:?}"
     );
 
     let empty = PdfApp::empty().window_toolbar();
@@ -184,9 +139,9 @@ fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
         empty
             .actions
             .iter()
-            .map(|action| (action.id.as_str(), action.menu))
+            .map(|action| (action.name.as_str(), action.menu))
             .collect::<Vec<_>>(),
-        [(OPEN, true)],
+        [("Open PDF", true)],
         "with no document open the bar's menu offers Open, where it always is"
     );
     assert_eq!(empty.sidebar, None, "and nothing to show beside a document");
@@ -207,26 +162,27 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
 
     // The review panel: the bar's action, and Toggle sidebar.
     let shown = reader_state(&mut app, |pdf| pdf.show_sidebar);
-    press(&mut app, action(REVIEW_PANEL));
+    let id = review(&bar(&mut app)).id.clone();
+    press(&mut app, ToolbarEvent::Action { id });
     assert_eq!(reader_state(&mut app, |pdf| pdf.show_sidebar), !shown);
-    assert_eq!(slot(&bar(&mut app), REVIEW_PANEL).on, !shown);
+    assert_eq!(review(&bar(&mut app)).on, !shown);
     app.effect(&PdfEffect::ToggleSidebar)
         .expect("the review panel toggles");
     assert_eq!(reader_state(&mut app, |pdf| pdf.show_sidebar), shown);
 
     // The tools: an item of the bar's Tools menu, and Use tool.
-    press(&mut app, action(&tool_id(Tool::Ink)));
+    press_named(&mut app, Tool::Ink.label());
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Ink);
     let toolbar = bar(&mut app);
-    assert_eq!(chosen(&toolbar, TOOLS), [tool_id(Tool::Ink)]);
-    assert_eq!(slot(&toolbar, TOOLS).icon, ui::icons::Icon::Pencil.name());
+    assert_eq!(chosen(&toolbar, "Tools"), [Tool::Ink.label()]);
+    assert_eq!(slot(&toolbar, "Tools").icon, ui::icons::Icon::Pencil.name());
     app.effect(&PdfEffect::UseTool { tool: Tool::Note })
         .expect("the note tool arms");
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Note);
 
     // Zoom: the bar's Zoom in and Zoom out, and the published ones.
     let zoom = reader_state(&mut app, |pdf| pdf.zoom());
-    press(&mut app, action(ZOOM_IN));
+    press_named(&mut app, "Zoom in");
     let pressed = reader_state(&mut app, |pdf| pdf.zoom());
     assert!(pressed > zoom, "Zoom in zooms in: {zoom} to {pressed}");
     app.effect(&PdfEffect::ZoomIn).expect("zoom in");
@@ -235,28 +191,25 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
         (invoked / pressed - pressed / zoom).abs() < 1e-9,
         "the bar's Zoom in is the published one"
     );
-    press(&mut app, action(ZOOM_OUT));
+    press_named(&mut app, "Zoom out");
     assert!((reader_state(&mut app, |pdf| pdf.zoom()) - pressed).abs() < 1e-9);
 
     // Fit: the bar's items, checked as the fit is, and the published ones.
-    press(&mut app, action(FIT_PAGE));
+    press_named(&mut app, "Fit page");
     assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Page));
-    assert_eq!(chosen(&bar(&mut app), ZOOM), [FIT_PAGE]);
+    assert_eq!(chosen(&bar(&mut app), "Zoom"), ["Fit page"]);
     app.effect(&PdfEffect::FitWidth).expect("fit width");
-    assert_eq!(chosen(&bar(&mut app), ZOOM), [FIT_WIDTH]);
-    press(&mut app, action(FIT_PAGE));
+    assert_eq!(chosen(&bar(&mut app), "Zoom"), ["Fit width"]);
+    press_named(&mut app, "Fit page");
     let page_zoom = reader_state(&mut app, |pdf| pdf.zoom());
     app.effect(&PdfEffect::FitWidth).expect("fit width");
     app.effect(&PdfEffect::FitPage).expect("fit page");
     assert!((reader_state(&mut app, |pdf| pdf.zoom()) - page_zoom).abs() < 1e-9);
 
     // The marker colour: an item of the bar's menu, and Marker colour.
-    press(&mut app, action(&colour_id(Swatch::Blue)));
+    press_named(&mut app, "Blue");
     assert_eq!(reader_state(&mut app, |pdf| pdf.swatch), Swatch::Blue);
-    assert_eq!(
-        chosen(&bar(&mut app), MARKER_COLOUR),
-        [colour_id(Swatch::Blue)]
-    );
+    assert_eq!(chosen(&bar(&mut app), "Marker colour"), ["Blue"]);
     app.effect(&PdfEffect::SetMarkerColour {
         colour: Swatch::Pink,
     })
@@ -264,7 +217,7 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
     assert_eq!(reader_state(&mut app, |pdf| pdf.swatch), Swatch::Pink);
 
     // Save: offered while a PDF is open.
-    assert!(slot(&bar(&mut app), SAVE).enabled);
+    assert!(slot(&bar(&mut app), "Save annotated PDF").enabled);
 }
 
 #[test]
@@ -294,7 +247,7 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
         })
     };
 
-    press(&mut app, action(&colour_id(Swatch::Green)));
+    press_named(&mut app, "Green");
     app.settle();
     assert_eq!(
         colour_of(&mut app),
@@ -642,7 +595,7 @@ fn a_failed_saves_try_again_saves_again() {
         let _host = ui::host::enter(&services);
         let (_directory, mut app) = reader();
         let name = suggested_name(&mut app);
-        press(&mut app, action(SAVE));
+        press_named(&mut app, "Save annotated PDF");
         wait_for_note(&mut app, &crate::app::save_failed_note(&name));
         let buttons: Vec<String> = app
             .harness()

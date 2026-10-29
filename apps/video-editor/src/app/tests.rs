@@ -5861,20 +5861,14 @@ fn render_status_is_painted_cached_and_announced() {
             let (mut app, _doc) = app_sized(1280.0, 800.0);
             app.export_status = status.clone();
             let export = app
-                .window_toolbar()
-                .actions
-                .into_iter()
-                .find(|action| action.id == window_bar::EXPORT)
+                .bar_entry("Export")
                 .expect("Export is a window bar action");
-            assert_eq!(export.name, "Export", "{status:?}");
             let rendering = matches!(status, ExportStatus::Rendering { .. });
             assert_eq!(
                 export.on, rendering,
                 "{status:?}: Export reads as on while it renders",
             );
-            app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-                id: window_bar::EXPORT.into(),
-            });
+            app.press_bar("Export");
             assert!(
                 app.presentation.export_open,
                 "{status:?}: Export must lead back to the render it reports",
@@ -6130,17 +6124,12 @@ fn transport_degrades_gracefully_when_narrow() {
         app.inspector_flap.snap(false);
         let r = app.regions();
         let toggle = app
-            .window_toolbar()
-            .actions
-            .into_iter()
-            .find(|action| action.id == window_bar::INSPECTOR)
+            .bar_entry("panel-right")
             .expect("a collapsed inspector offers a toggle in the window bar");
         assert!(!toggle.on);
         assert!(!app.inspector_is_visible(&r));
         // Press the toggle: it opens.
-        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-            id: window_bar::INSPECTOR.into(),
-        });
+        app.press_bar("panel-right");
         app.inspector_flap.snap(true);
         let r = app.regions();
         assert!(app.inspector_is_visible(&r));
@@ -6156,10 +6145,8 @@ fn transport_degrades_gracefully_when_narrow() {
         let (mut wide, _d) = app_sized(1280.0, 800.0);
         wide.navigation.flap_settled = true;
         assert!(
-            wide.window_toolbar()
-                .actions
-                .iter()
-                .any(|action| action.id == window_bar::INSPECTOR && action.on),
+            wide.bar_entry("panel-right")
+                .is_some_and(|action| action.on),
             "a docked inspector's toggle reads as on"
         );
     }
@@ -6173,23 +6160,21 @@ fn transport_degrades_gracefully_when_narrow() {
         app.advance_flap();
         let toolbar = app.window_toolbar();
         assert_eq!(toolbar.sidebar, Some(false));
-        let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+        let icons: Vec<&str> = toolbar.actions.iter().map(|a| a.icon.as_str()).collect();
         assert_eq!(
-            ids,
+            icons,
             [
-                window_bar::SPLIT,
-                window_bar::SIDE_BY_SIDE,
-                window_bar::EXPORT,
-                window_bar::INSPECTOR,
-                window_bar::IMPORT
+                "scissors",
+                "columns-2",
+                "upload",
+                "panel-right",
+                "folder-open"
             ]
         );
         app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
         app.bin_flap.snap(true);
         assert!(app.bin_overlay_is_open());
-        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-            id: window_bar::INSPECTOR.into(),
-        });
+        app.press_bar("panel-right");
         assert!(!app.bin_overlay_is_open(), "the press closes the overlay");
         assert!(app.inspector_flap.is_open(app.inspector_split()));
     }

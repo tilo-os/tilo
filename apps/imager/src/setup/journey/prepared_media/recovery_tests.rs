@@ -20,10 +20,10 @@ fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&destination).unwrap();
         std::fs::write(source.join("save"), b"unique local save").unwrap();
-        let inventory = crate::setup::windows_inventory::Inventory::discover(&[
-            crate::setup::windows_inventory::SelectedRoot {
+        let inventory = imager_backend::windows_inventory::Inventory::discover(&[
+            imager_backend::windows_inventory::SelectedRoot {
                 path: source.clone(),
-                role: crate::setup::windows_inventory::RootRole::KnownFolder,
+                role: imager_backend::windows_inventory::RootRole::KnownFolder,
             },
         ])
         .unwrap();

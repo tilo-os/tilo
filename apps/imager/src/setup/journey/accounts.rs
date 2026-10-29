@@ -17,13 +17,13 @@ use ui::widget::{
     TextInputKind,
 };
 
-use super::super::account_transfer::{
-    AccountActions, AccountJobState, Candidate, ConnectionError, ConnectionProvider, DavConnection,
-    Inventory, Provider, SourceRoots, TiloCandidate,
-};
 use super::super::strings::{t, t_args};
 use crate::page;
 use imager_backend::account_sources::Service;
+use imager_backend::account_transfer::{
+    AccountActions, AccountJobState, Candidate, ConnectionError, ConnectionProvider, DavConnection,
+    Inventory, Provider, SourceRoots, TiloCandidate,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AccountRequest {
@@ -268,13 +268,13 @@ impl SourceAccountScope {
 
     fn includes(&self, candidate: &Candidate) -> bool {
         match self {
-            Self::Gnome => candidate.origin == super::super::account_transfer::Origin::Gnome,
+            Self::Gnome => candidate.origin == imager_backend::account_transfer::Origin::Gnome,
             Self::Nextcloud => {
-                candidate.origin == super::super::account_transfer::Origin::Nextcloud
+                candidate.origin == imager_backend::account_transfer::Origin::Nextcloud
             }
-            Self::Rclone => candidate.origin == super::super::account_transfer::Origin::Rclone,
+            Self::Rclone => candidate.origin == imager_backend::account_transfer::Origin::Rclone,
             Self::Application(label) => {
-                candidate.origin == super::super::account_transfer::Origin::Application
+                candidate.origin == imager_backend::account_transfer::Origin::Application
                     && super::your_data::slug(&candidate.label) == *label
             }
             Self::Tilo => false,
@@ -301,7 +301,7 @@ pub(super) struct SourceAccountSelection {
 /// source that names no service and is not a file remote keeps an empty list
 /// rather than an invented one.
 pub(super) fn source_account_services(candidate: &Candidate) -> Vec<Service> {
-    use super::super::account_transfer::Provider;
+    use imager_backend::account_transfer::Provider;
     if !candidate.services.is_empty() {
         return candidate.services.clone();
     }
@@ -586,7 +586,7 @@ impl Accounts {
         let checkpoint = !self.selection.touched && !prepared.is_empty();
         let mut selected = BTreeMap::new();
         for candidate in inventory.candidates.iter().filter(|candidate| {
-            candidate.origin == super::super::account_transfer::Origin::Gnome
+            candidate.origin == imager_backend::account_transfer::Origin::Gnome
                 && (!checkpoint || prepared.contains(candidate.id.as_str()))
         }) {
             let services = self.selection.services(candidate);
@@ -1399,7 +1399,7 @@ impl Accounts {
                         {
                             "installer-accounts-tilo-changed"
                         } else if matches!(&work.selected, Selection::Saved(candidate)
-                            if candidate.origin == super::super::account_transfer::Origin::Nextcloud)
+                            if candidate.origin == imager_backend::account_transfer::Origin::Nextcloud)
                             && reason == ConnectionError::CredentialUnavailable
                         {
                             "installer-accounts-nextcloud-source-reconnect"
@@ -1411,7 +1411,7 @@ impl Accounts {
                                     | ConnectionError::SignInUnavailable
                             )
                         {
-                            if matches!(&work.selected, Selection::Saved(candidate) if candidate.origin == super::super::account_transfer::Origin::Gnome)
+                            if matches!(&work.selected, Selection::Saved(candidate) if candidate.origin == imager_backend::account_transfer::Origin::Gnome)
                             {
                                 "installer-accounts-goa-source-reconnect"
                             } else {
@@ -1654,7 +1654,7 @@ impl Accounts {
     // Keep this advice separate from authentication and migration destination choices.
     fn source_review_keys(&self) -> Vec<&'static str> {
         {
-            use super::super::account_transfer::Origin;
+            use imager_backend::account_transfer::Origin;
             let native = |candidate: &Candidate| candidate.origin == Origin::Nextcloud;
             let selected_native = |selection: &Selection| match selection {
                 Selection::Saved(candidate)
@@ -2159,8 +2159,8 @@ fn saved_cloud_provider(selected: &Selection) -> Option<ConnectionProvider> {
     };
     if !matches!(
         candidate.origin,
-        super::super::account_transfer::Origin::Rclone
-            | super::super::account_transfer::Origin::Gnome
+        imager_backend::account_transfer::Origin::Rclone
+            | imager_backend::account_transfer::Origin::Gnome
     ) {
         return None;
     }
@@ -2212,7 +2212,7 @@ pub(super) fn candidate_label(candidate: &Candidate) -> String {
 }
 
 pub(super) fn tilo_candidate_label(
-    candidate: &super::super::account_transfer::TiloCandidate,
+    candidate: &imager_backend::account_transfer::TiloCandidate,
 ) -> String {
     let service = match candidate.type_id.as_str() {
         "google-drive" => "installer-accounts-google-drive",
@@ -2252,6 +2252,8 @@ fn connection_message(reason: ConnectionError) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod dav_readiness;
 #[cfg(all(test, target_os = "linux"))]
 mod source_review_tests;
 #[cfg(test)]

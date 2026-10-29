@@ -1,20 +1,15 @@
 //! Passwords as a framework app. The vault is this device's encrypted
-//! credential store, not a document: its items are published as live rows,
+//! credential store, not a document: the view publishes its items as live rows,
 //! and everything Passwords does with them is a [`PasswordsEffect`]. The
 //! resource's model holds nothing, so no secret can sync; the place shown
 //! and the open item are this window's own view state.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{EffectStatus, Effected, Fixture, Publishes, ResourceApp, RunMode, ViewCx};
 use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::PasswordsEffect;
-use crate::window::PasswordsSurface;
+use crate::window::PasswordsWindow;
 
 #[cfg(test)]
 #[path = "credential_owner_tests.rs"]
@@ -31,7 +26,7 @@ impl Passwords {}
 /// A capture shows the fixture vault in place of the person's.
 pub struct DemoVault;
 
-/// Framework app: the passwords surface over [`Passwords`].
+/// Framework app: the passwords window over [`Passwords`].
 pub struct PasswordsShell;
 
 impl ResourceApp for PasswordsShell {
@@ -50,10 +45,10 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        let surface = if cx.mode() == RunMode::Past {
-            PasswordsSurface::new(crate::PasswordsModel::closed())
+        let window = if cx.mode() == RunMode::Past {
+            PasswordsWindow::new(crate::PasswordsModel::closed())
         } else if cx.fixture::<DemoVault>().is_some() {
-            PasswordsSurface::demo()
+            PasswordsWindow::demo()
         } else if let Some(owner) = cx.take_lent::<accounts::CredentialOwner>() {
             let model = if cx.me() == Some(owner.principal()) && cx.device() == Some(owner.device())
             {
@@ -61,12 +56,25 @@ impl ResourceApp for PasswordsShell {
             } else {
                 crate::PasswordsModel::closed()
             };
-            PasswordsSurface::new(model)
+            PasswordsWindow::new(model)
         } else {
-            PasswordsSurface::new(crate::PasswordsModel::open())
+            PasswordsWindow::new(crate::PasswordsModel::open())
         };
-        cx.on_open(surface.opener());
-        cx.surface(surface)
+        cx.on_open(window.opener());
+        cx.on_stage(window.stager());
+        window.wake_through(cx.waker());
+        answer_effects(cx, &window.vault());
+        let vault = window.vault();
+        let (rows, row, entries, unlocked) = (vault.clone(), vault.clone(), vault.clone(), vault);
+        cx.publishing(
+            Publishes::new()
+                .live_rows(move || rows.borrow().item_rows())
+                .live_row(move |id| row.borrow().item_row(id))
+                // Non-secret metadata only, for the framework's one index.
+                .search_entries(move || crate::search::entries(&entries.borrow().items))
+                .secrets_unlocked(move || unlocked.borrow().secrets_unlocked()),
+            Box::new(window),
+        )
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -80,27 +88,19 @@ impl ResourceApp for PasswordsShell {
     }
 }
 
-impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
-    fn present(&mut self, _state: &Rc<Passwords>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<Passwords>) {
-        self.wake_through(cx.waker());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: PasswordsEffect,
-        _cx: &mut EffectCx<Passwords, Self>,
-    ) -> EffectAnswer {
-        self.perform_effect(effect).map(|()| Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.is_editing() {
+/// Answer what the palette, an agent, a script or a search hit asks of the
+/// vault; the window brings itself in step on its next sync. Saving,
+/// cancelling and generating need an item open in the editor.
+fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared) {
+    let (answer, status) = (vault.clone(), vault.clone());
+    cx.effects(move |effect: PasswordsEffect, _| {
+        answer
+            .borrow_mut()
+            .perform(effect)
+            .map(|()| Effected::done())
+    })
+    .status(move || {
+        if status.borrow().is_editing() {
             return Vec::new();
         }
         let reason = "Open an item in the editor first";
@@ -109,23 +109,7 @@ impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
             EffectStatus::unavailable(PasswordsEffect::CANCEL, "not_editing", reason),
             EffectStatus::unavailable(PasswordsEffect::GENERATE, "not_editing", reason),
         ]
-    }
-
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        PasswordsSurface::search_entries(self)
-    }
-
-    fn secrets_unlocked(&self) -> Option<bool> {
-        PasswordsSurface::secrets_unlocked(self)
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.item_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.item_row(id)
-    }
+    });
 }
 
 #[cfg(test)]
@@ -346,7 +330,7 @@ mod tests {
         );
         app.settle();
         assert_eq!(
-            app.surface_mut::<PasswordsSurface>()
+            app.surface_mut::<PasswordsWindow>()
                 .core()
                 .selected
                 .as_ref(),
@@ -390,7 +374,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            app.surface_mut::<PasswordsSurface>().core().visible().len(),
+            app.surface_mut::<PasswordsWindow>().core().visible().len(),
             1,
             "Favorites lists it"
         );

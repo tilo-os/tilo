@@ -345,6 +345,58 @@ fn strong_and_em_marks_set_their_runs_in_bold_and_italic() {
     assert!(stream.contains("(the team.) Tj"), "{stream}");
 }
 
+/// Lay `blocks` out onto pages without serializing them.
+fn lay_out(blocks: &[BlockView]) -> Layout {
+    let mut layout = Layout::new();
+    for block in blocks {
+        render_block(&mut layout, &tilo_content::NoContent, block);
+    }
+    layout
+}
+
+/// The page of the first text run containing `needle`.
+fn page_of(layout: &Layout, needle: &str) -> Option<usize> {
+    std::iter::once(&layout.first_page)
+        .chain(&layout.later_pages)
+        .position(|page| {
+            page.ops
+                .iter()
+                .any(|op| matches!(op, Op::Text { text, .. } if text.contains(needle)))
+        })
+}
+
+/// The export breaks pages by the editor's rules: a heading that would end a
+/// page moves on with its text, and a manual page break starts a page.
+#[test]
+fn pdf_pages_break_like_the_editor() {
+    // 31 one-line paragraphs fill the page to 620 of 648 points; the heading
+    // still fits below them, its paragraph does not.
+    let mut blocks: Vec<BlockView> = (0..31)
+        .map(|i| block("paragraph", &format!("Filler {i}")))
+        .collect();
+    blocks.push(block_attr(
+        "heading",
+        "Moving heading",
+        &[("level", AttrVal::Int(6))],
+    ));
+    blocks.push(block("paragraph", &"body words ".repeat(40)));
+    let layout = lay_out(&blocks);
+    assert_eq!(page_of(&layout, "Filler 30"), Some(0));
+    assert_eq!(page_of(&layout, "Moving heading"), Some(1));
+    assert_eq!(page_of(&layout, "body words"), Some(1));
+
+    let layout = lay_out(&[
+        block("paragraph", "One"),
+        block_attr(
+            "paragraph",
+            "Two",
+            &[("page_break_before", AttrVal::Bool(true))],
+        ),
+    ]);
+    assert_eq!(page_of(&layout, "One"), Some(0));
+    assert_eq!(page_of(&layout, "Two"), Some(1));
+}
+
 fn block(kind: &str, text: &str) -> BlockView {
     BlockView {
         id: format!("b-{kind}-{}", text.len()),

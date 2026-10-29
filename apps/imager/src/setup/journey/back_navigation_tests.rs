@@ -238,7 +238,7 @@ fn source_permission_back_retires_the_grant_without_leaving_details() {
     app.with_widget::<InstallerPreview, _>(|view| {
         view.live = true;
         view.belongings =
-            belongings::Belongings::from_roots(super::super::account_transfer::SourceRoots {
+            belongings::Belongings::from_roots(imager_backend::account_transfer::SourceRoots {
                 home: source.path().to_path_buf(),
                 config: source.path().join(".config"),
             });

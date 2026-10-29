@@ -54,11 +54,11 @@ struct Manifest {
     secure_boot: String,
     installer_protocol: u32,
     #[serde(default)]
-    account_custody: Option<super::account_admission::ConsumerCapability>,
+    account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
     #[serde(default)]
-    home_archive: Option<super::home_admission::ConsumerCapability>,
+    home_archive: Option<imager_backend::home_admission::ConsumerCapability>,
     #[serde(default)]
-    applications: Option<super::applications_admission::ConsumerCapability>,
+    applications: Option<imager_backend::applications_admission::ConsumerCapability>,
     #[serde(default)]
     original_source: Option<super::original_admission::ConsumerCapability>,
     source_image_bytes: u64,
@@ -156,7 +156,9 @@ impl InternalBundle {
     }
 
     /// Consumer proof is authenticated only when this bundle comes from the signed release selection.
-    pub fn account_custody(&self) -> Option<&super::account_admission::ConsumerCapability> {
+    pub fn account_custody(
+        &self,
+    ) -> Option<&imager_backend::account_admission::ConsumerCapability> {
         self.manifest.account_custody.as_ref()
     }
 
@@ -167,7 +169,8 @@ impl InternalBundle {
         if required.is_some_and(|protocol| {
             self.manifest.account_custody.as_ref().is_none_or(|proof| {
                 !proof.supports_service_session_protocol(protocol)
-                    && !super::account_admission::source_candidate(protocol, proof).unwrap_or(false)
+                    && !imager_backend::account_admission::source_candidate(protocol, proof)
+                        .unwrap_or(false)
             })
         }) {
             return Err("The selected system cannot use the saved connections".into());
@@ -181,16 +184,19 @@ impl InternalBundle {
     /// # Errors
     /// Refuses selected app data without its separate authenticated consumer proof.
     pub fn require_applications_protocol(&self, required: Option<u32>) -> Result<(), String> {
-        super::applications_admission::require(self.manifest.applications.as_ref(), required)
-            .map_err(|e| e.to_string())
+        imager_backend::applications_admission::require(
+            self.manifest.applications.as_ref(),
+            required,
+        )
+        .map_err(|e| e.to_string())
     }
     pub fn require_home_protocol(&self, required: Option<u32>) -> Result<(), String> {
-        super::home_admission::require(self.manifest.home_archive.as_ref(), required)
+        imager_backend::home_admission::require(self.manifest.home_archive.as_ref(), required)
             .map_err(|error| error.to_string())
     }
 
     /// This proof is authenticated by the enclosing selected signed image manifest.
-    pub fn home_archive(&self) -> Option<&super::home_admission::ConsumerCapability> {
+    pub fn home_archive(&self) -> Option<&imager_backend::home_admission::ConsumerCapability> {
         self.manifest.home_archive.as_ref()
     }
 

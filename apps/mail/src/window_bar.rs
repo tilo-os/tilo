@@ -7,40 +7,15 @@
 //! Each slot only queues a [`Command`], which the app applies with the
 //! document in hand. Search is the bar's own.
 
+use ui::framework::BarCommands;
 use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
 use crate::model::Folder;
 use crate::state::{BulkAction, Command, CtxAction, MailState};
 
-/// One action of the window's bar and the command it queues.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BarItem {
-    pub action: ToolbarAction,
-    pub command: Command,
-}
-
-impl BarItem {
-    fn new(id: &str, icon: &str, name: impl Into<String>, command: Command) -> Self {
-        Self {
-            action: ToolbarAction::new(id, icon, name),
-            command,
-        }
-    }
-
-    fn on(mut self, on: bool) -> Self {
-        self.action = self.action.on(on);
-        self
-    }
-
-    fn in_menu(mut self) -> Self {
-        self.action = self.action.in_menu();
-        self
-    }
-}
-
 /// What can be done to the selected messages: Done, triage, then read
 /// state and Select all in the menu.
-fn bulk_items(state: &MailState) -> Vec<BarItem> {
+fn bulk_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAction> {
     let ids = state.selected_bulk_ids();
     let all_trash = !ids.is_empty()
         && ids.iter().all(|id| {
@@ -55,46 +30,33 @@ fn bulk_items(state: &MailState) -> Vec<BarItem> {
         BulkAction::Delete
     };
     vec![
-        BarItem::new("done", "check", "Done", Command::ToggleBulk),
-        BarItem::new(
-            "bulk-archive",
+        bar.entry("check", "Done", Command::ToggleBulk),
+        bar.entry(
             "archive",
             BulkAction::Archive.label(),
             Command::Bulk(BulkAction::Archive),
         ),
-        BarItem::new(
-            "bulk-delete",
-            "trash",
-            delete.label(),
-            Command::Bulk(delete),
-        ),
-        BarItem::new(
-            "bulk-read",
+        bar.entry("trash", delete.label(), Command::Bulk(delete)),
+        bar.entry(
             "mail-open",
             BulkAction::MarkRead.label(),
             Command::Bulk(BulkAction::MarkRead),
         )
         .in_menu(),
-        BarItem::new(
-            "bulk-unread",
+        bar.entry(
             "mail",
             BulkAction::MarkUnread.label(),
             Command::Bulk(BulkAction::MarkUnread),
         )
         .in_menu(),
-        BarItem::new(
-            "select-all",
-            "list-checks",
-            "Select all",
-            Command::SelectAllVisible,
-        )
-        .in_menu(),
+        bar.entry("list-checks", "Select all", Command::SelectAllVisible)
+            .in_menu(),
     ]
 }
 
 /// The open message's actions: Reply and Archive in the row, the rest in
 /// the menu.
-fn message_items(state: &MailState) -> Vec<BarItem> {
+fn message_items(bar: &BarCommands<Command>, state: &MailState) -> Vec<ToolbarAction> {
     let Some(message) = state.selected.and_then(|id| state.mailbox.get(id)) else {
         return Vec::new();
     };
@@ -104,37 +66,20 @@ fn message_items(state: &MailState) -> Vec<BarItem> {
         "Delete"
     };
     let mut items = vec![
-        BarItem::new(
-            "reply",
-            "reply",
-            "Reply",
-            Command::Message(CtxAction::Reply),
-        ),
-        BarItem::new(
-            "archive",
-            "archive",
-            "Archive",
-            Command::Message(CtxAction::Archive),
-        ),
-        BarItem::new(
-            "reply-all",
+        bar.entry("reply", "Reply", Command::Message(CtxAction::Reply)),
+        bar.entry("archive", "Archive", Command::Message(CtxAction::Archive)),
+        bar.entry(
             "reply-all",
             "Reply all",
             Command::Message(CtxAction::ReplyAll),
         )
         .in_menu(),
-        BarItem::new(
-            "forward",
-            "forward",
-            "Forward",
-            Command::Message(CtxAction::Forward),
-        )
-        .in_menu(),
+        bar.entry("forward", "Forward", Command::Message(CtxAction::Forward))
+            .in_menu(),
     ];
     if message.folder != Folder::Inbox && message.folder != Folder::Drafts {
         items.push(
-            BarItem::new(
-                "move-to-inbox",
+            bar.entry(
                 "inbox",
                 "Move to Inbox",
                 Command::Message(CtxAction::MoveToInbox),
@@ -143,27 +88,16 @@ fn message_items(state: &MailState) -> Vec<BarItem> {
         );
     }
     items.push(
-        BarItem::new(
-            "delete",
-            "trash",
-            delete,
-            Command::Message(CtxAction::Delete),
-        )
-        .in_menu(),
+        bar.entry("trash", delete, Command::Message(CtxAction::Delete))
+            .in_menu(),
     );
     items.push(
-        BarItem::new(
-            "star",
-            "star",
-            "Star",
-            Command::Message(CtxAction::ToggleStar),
-        )
-        .on(message.starred)
-        .in_menu(),
+        bar.entry("star", "Star", Command::Message(CtxAction::ToggleStar))
+            .on(message.starred)
+            .in_menu(),
     );
     items.push(
-        BarItem::new(
-            "read",
+        bar.entry(
             if message.read { "mail" } else { "mail-open" },
             CtxAction::ToggleRead.label(message.read, message.starred),
             Command::Message(CtxAction::ToggleRead),
@@ -179,25 +113,19 @@ fn message_items(state: &MailState) -> Vec<BarItem> {
 /// Discard draft and Close take the place of New message and the open
 /// message's actions. Before any account, nothing but those: the empty
 /// window says what to do.
-pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> Vec<BarItem> {
-    let add_account = BarItem::new(
-        "add-account",
-        "user-plus",
-        "Add account",
-        Command::AccountSettings,
-    );
+pub(crate) fn bar_items(
+    bar: &BarCommands<Command>,
+    state: &MailState,
+    first_run: bool,
+    composing: bool,
+) -> Vec<ToolbarAction> {
+    let add_account = bar.entry("user-plus", "Add account", Command::AccountSettings);
     // The outbox: what waits to leave has one thing to be done with it here,
     // and New message beside it, since the person is plainly about to write.
     if state.outbox_open && !composing {
-        let mut items = vec![BarItem::new(
-            "new-message",
-            "pencil",
-            "New message",
-            Command::Compose,
-        )];
+        let mut items = vec![bar.entry("pencil", "New message", Command::Compose)];
         if let Some(queued) = state.open_queued() {
-            items.push(BarItem::new(
-                "cancel-send",
+            items.push(bar.entry(
                 "rotate-ccw",
                 "Cancel sending",
                 Command::CancelSend(queued.id.clone()),
@@ -210,16 +138,10 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> 
     // place to start.
     // The message being written: Discard draft, and Close, which keeps
     // anything written in Drafts. Neither wears the window's own ✕.
-    let writing: Vec<BarItem> = if composing {
+    let writing: Vec<ToolbarAction> = if composing {
         vec![
-            BarItem::new(
-                "discard-draft",
-                "trash-2",
-                "Discard draft",
-                Command::DiscardCompose,
-            ),
-            BarItem::new(
-                "close-message",
+            bar.entry("trash-2", "Discard draft", Command::DiscardCompose),
+            bar.entry(
                 "minimize-2",
                 "Close and keep in Drafts",
                 Command::CloseCompose,
@@ -232,34 +154,23 @@ pub(crate) fn bar_items(state: &MailState, first_run: bool, composing: bool) -> 
         return writing;
     }
     if state.bulk_selecting {
-        return writing.into_iter().chain(bulk_items(state)).collect();
+        return writing.into_iter().chain(bulk_items(bar, state)).collect();
     }
     // The message being written stands where the open message did: its
     // actions take the place of New message and the open message's.
-    let mut items: Vec<BarItem> = if composing {
+    let mut items: Vec<ToolbarAction> = if composing {
         writing
     } else {
-        let mut items = vec![BarItem::new(
-            "new-message",
-            "pencil",
-            "New message",
-            Command::Compose,
-        )];
-        items.extend(message_items(state));
+        let mut items = vec![bar.entry("pencil", "New message", Command::Compose)];
+        items.extend(message_items(bar, state));
         items
     };
     items.push(
-        BarItem::new(
-            "select-messages",
-            "square",
-            "Select messages",
-            Command::ToggleBulk,
-        )
-        .in_menu(),
+        bar.entry("square", "Select messages", Command::ToggleBulk)
+            .in_menu(),
     );
     items.push(
-        BarItem::new(
-            "contact-recipients",
+        bar.entry(
             "users",
             crate::i18n::t("mail-contact-write"),
             Command::ContactRecipients,
@@ -312,7 +223,7 @@ pub(crate) fn location(state: &MailState, composing: Option<&str>) -> String {
 pub(crate) fn toolbar(
     mut base: WindowToolbar,
     state: &MailState,
-    items: &[BarItem],
+    items: Vec<ToolbarAction>,
     first_run: bool,
     composing: Option<&str>,
 ) -> WindowToolbar {
@@ -326,10 +237,7 @@ pub(crate) fn toolbar(
         label,
         ..ToolbarLocation::default()
     });
-    ui::widget::NavShell::push_window_actions(
-        &mut base,
-        items.iter().map(|item| item.action.clone()),
-    );
+    ui::widget::NavShell::push_window_actions(&mut base, items);
     base
 }
 
@@ -341,18 +249,26 @@ mod tests {
         MailState::new_sample(crate::avatars::Avatars::new())
     }
 
-    fn names(items: &[BarItem], menu: bool) -> Vec<&str> {
+    fn names(items: &[ToolbarAction], menu: bool) -> Vec<&str> {
         items
             .iter()
-            .filter(|item| item.action.menu == menu)
-            .map(|item| item.action.name.as_str())
+            .filter(|item| item.menu == menu)
+            .map(|item| item.name.as_str())
             .collect()
+    }
+
+    /// The command a press on `item` queues.
+    fn command(bar: &BarCommands<Command>, item: &ToolbarAction) -> Option<Command> {
+        bar.pressed(&ui::window_toolbar::ToolbarEvent::Action {
+            id: item.id.clone(),
+        })
     }
 
     #[test]
     fn the_bar_offers_new_message_and_the_open_messages_actions_and_the_selections() {
+        let bar = BarCommands::new();
         let mut state = state();
-        let items = bar_items(&state, false, false);
+        let items = bar_items(&bar, &state, false, false);
         assert_eq!(names(&items, false), ["New message", "Reply", "Archive"]);
         let menu = names(&items, true);
         for name in [
@@ -368,29 +284,30 @@ mod tests {
         }
         let star = items
             .iter()
-            .find(|item| item.action.name == "Star")
+            .find(|item| item.name == "Star")
             .expect("star toggle");
         let starred = state
             .selected
             .and_then(|id| state.mailbox.get(id))
             .is_some_and(|message| message.starred);
-        assert_eq!(star.action.on, starred);
+        assert_eq!(star.on, starred);
 
         state.set_bulk_selecting(true);
-        let items = bar_items(&state, false, false);
+        let items = bar_items(&bar, &state, false, false);
         assert_eq!(names(&items, false), ["Done", "Archive", "Move to Trash"]);
         assert!(names(&items, true).contains(&"Select all"));
         assert_eq!(location(&state, None), "Select messages");
         assert_eq!(location(&state, Some("New message")), "New message");
 
         assert!(
-            bar_items(&state, true, false).is_empty(),
+            bar_items(&bar, &state, true, false).is_empty(),
             "before any account the empty window's Add account is the one"
         );
     }
 
     #[test]
     fn the_outbox_offers_taking_the_open_message_back_unsent() {
+        let bar = BarCommands::new();
         let mut state = state();
         state.outbox = vec![crate::state::QueuedMessage {
             id: "queued".into(),
@@ -402,28 +319,32 @@ mod tests {
         }];
         state.open_outbox(state.accounts.active);
         state.outbox_selected = Some("queued".into());
-        let items = bar_items(&state, false, false);
+        let items = bar_items(&bar, &state, false, false);
         assert_eq!(names(&items, false), ["New message", "Cancel sending"]);
         assert_eq!(location(&state, None), "Outbox");
         let cancel = items
             .iter()
-            .find(|item| item.action.name == "Cancel sending")
+            .find(|item| item.name == "Cancel sending")
             .expect("the verb is in the bar");
-        assert_eq!(cancel.command, Command::CancelSend("queued".into()));
+        assert_eq!(
+            command(&bar, cancel),
+            Some(Command::CancelSend("queued".into()))
+        );
         assert!(
-            !cancel.action.destructive,
+            !cancel.destructive,
             "Undo puts the message back in the outbox, so it is no deletion"
         );
         assert!(
-            items.iter().all(|item| item.action.icon != "x"),
+            items.iter().all(|item| item.icon != "x"),
             "nothing the outbox offers wears the window's own close"
         );
     }
 
     #[test]
     fn while_a_message_is_written_the_bar_closes_it() {
+        let bar = BarCommands::new();
         let state = state();
-        let items = bar_items(&state, false, true);
+        let items = bar_items(&bar, &state, false, true);
         assert_eq!(
             names(&items, false),
             ["Discard draft", "Close and keep in Drafts"]
@@ -431,17 +352,17 @@ mod tests {
         assert_eq!(
             items
                 .iter()
-                .filter(|item| !item.action.menu)
-                .map(|item| &item.command)
+                .filter(|item| !item.menu)
+                .map(|item| command(&bar, item))
                 .collect::<Vec<_>>(),
-            [&Command::DiscardCompose, &Command::CloseCompose]
+            [Some(Command::DiscardCompose), Some(Command::CloseCompose)]
         );
         assert!(
-            items.iter().all(|item| item.action.icon != "x"),
+            items.iter().all(|item| item.icon != "x"),
             "nothing the message offers wears the window's own close"
         );
         assert_eq!(
-            items.first().map(|item| item.action.icon.as_str()),
+            items.first().map(|item| item.icon.as_str()),
             Some("trash-2")
         );
         assert!(

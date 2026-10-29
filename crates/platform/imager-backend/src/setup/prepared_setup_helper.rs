@@ -275,7 +275,7 @@ pub fn run_with_home_admission(
         .manifest()
         .portable_flatpak
         .as_ref()
-        .is_some_and(|apps| apps.consumer_protocol == 2)
+        .is_some_and(|apps| apps.kind.consumer_protocol == 2)
     {
         super::applications_admission::installed()?;
     }

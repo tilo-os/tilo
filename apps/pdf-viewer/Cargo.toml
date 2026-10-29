@@ -15,6 +15,9 @@ name = "pdf-viewer"
 path = "src/main.rs"
 
 [features]
+# The screenshot scenarios and the sample document they open: development
+# runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 # Reach the PDF engine through its engine library in the runtime bundle
 # (libtilo_pdf_engine.so, crates/runtime/engines/pdf) instead of linking it.
@@ -60,6 +63,7 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 # UI thread and return through `ui::portal`.
 
 [dev-dependencies]
+pdf-viewer = { path = ".", features = ["samples"] }
 # Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
 # Two distinct files for the multi-document test.

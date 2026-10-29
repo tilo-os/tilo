@@ -37,62 +37,22 @@ pub struct StagedApplications {
     manifest_sha256: [u8; 32],
     consumer_protocol: u32,
 }
+/// A sealed applications unit: the signed system apps and their closure.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Expectation {
-    pub schema: u32,
-    #[serde(
-        default = "legacy_protocol",
-        skip_serializing_if = "is_legacy_protocol"
-    )]
+pub struct Applications {
     pub consumer_protocol: u32,
-    pub operation: String,
-    pub purpose: Purpose,
-    pub filename: String,
-    pub setup_binding: String,
-    pub sealed_bytes: u64,
-    pub plaintext_bytes: u64,
-    pub entries: usize,
-    pub ciphertext_sha256: [u8; 32],
     pub manifest_sha256: [u8; 32],
-    pub limits: Limits,
 }
-fn legacy_protocol() -> u32 {
-    1
-}
-fn is_legacy_protocol<T: PartialEq<u32>>(value: &T) -> bool {
-    *value == 1
-}
-impl Expectation {
-    /// # Errors
-    /// Refuses malformed public locators and overflowing storage bounds.
-    pub fn validate(&self) -> io::Result<()> {
-        if self.schema != 1
-            || !matches!(self.consumer_protocol, 1 | 2)
-            || self.purpose != Purpose::FlatpakApplications
-            || !crate::is_operation_id(&self.operation)
-            || self.filename != format!("applications-{}.sealed", self.operation)
-            || self.setup_binding.is_empty()
-            || self.setup_binding.len() > 256
-            || self.setup_binding.chars().any(char::is_control)
-            || self.sealed_bytes == 0
-            || self.plaintext_bytes == 0
-            || self.plaintext_bytes > self.limits.plaintext_bytes
-            || self.entries == 0
-            || self.entries > self.limits.entries
-            || self.limits.entries > 1_000_000
-            || self.limits.metadata_bytes == 0
-            || self.limits.metadata_bytes > 512 * 1024 * 1024
-            || self
-                .limits
-                .sealed_bound()
-                .is_none_or(|bound| self.sealed_bytes > bound)
-        {
-            return Err(changed("Invalid portable application expectation"));
-        }
-        Ok(())
+impl crate::setup::portable_transfer::UnitKind for Applications {
+    const PURPOSE: Purpose = Purpose::FlatpakApplications;
+    const PREFIX: &'static str = "applications";
+    const INVALID: &'static str = "Invalid portable application expectation";
+    fn within_bounds(expectation: &Expectation) -> bool {
+        matches!(expectation.kind.consumer_protocol, 1 | 2)
     }
 }
+pub type Expectation = crate::setup::portable_transfer::Expectation<Applications>;
 impl PortableFlatpakSource {
     /// Stage only actual selected apps and create-usb's exported runtime/extension
     /// closure. The caller owns this explicitly granted temporary directory and
@@ -383,18 +343,18 @@ impl StagedApplications {
             cancel,
         )?;
         let expectation = Expectation {
-            schema: 1,
-            consumer_protocol: self.consumer_protocol,
             operation: operation.into(),
-            purpose: info.purpose,
             filename: format!("applications-{operation}.sealed"),
             setup_binding: binding.into(),
             sealed_bytes: info.sealed_bytes,
             plaintext_bytes: info.plaintext_bytes,
             entries: info.entries,
             ciphertext_sha256: imported.ciphertext_digest(),
-            manifest_sha256: self.manifest_sha256,
             limits,
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: self.consumer_protocol,
+                manifest_sha256: self.manifest_sha256,
+            },
         };
         expectation.validate()?;
         self.validate()?;

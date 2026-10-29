@@ -285,7 +285,6 @@ impl LegacyWindows {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(identity.clone()),
                     revocations: Vec::new(),
-                    successions: Vec::new(),
                 });
             }
             messages.push(NeighbourMsg::MediaCapabilities {
@@ -706,7 +705,6 @@ impl LegacyWindows {
                             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                             cert: Box::new(identity.clone()),
                             revocations: Vec::new(),
-                            successions: Vec::new(),
                         },
                     );
                 }
@@ -899,7 +897,6 @@ impl LegacyWindows {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(identity.clone()),
                 revocations: Vec::new(),
-                successions: Vec::new(),
             });
         }
         for event in events {

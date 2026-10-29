@@ -1,8 +1,6 @@
 use super::super::{InstallerPreview, InstallerPreviewEffect as E, Page};
-use crate::setup::{
-    journey::belongings::Belongings,
-    windows_inventory::{RootRole, SelectedRoot},
-};
+use crate::setup::journey::belongings::Belongings;
+use imager_backend::windows_inventory::{RootRole, SelectedRoot};
 use std::{path::Path, sync::atomic::AtomicBool, time::Instant};
 
 fn wait(preview: &mut InstallerPreview) {

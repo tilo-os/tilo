@@ -387,8 +387,8 @@ pub struct SheetsApp {
     tabs_rect: Rect,
     /// What the window bar's commands last ran ([`window_bar`]).
     command_slot: CommandSlot,
-    /// The window bar's slot ids, and the command each runs.
-    bar_commands: Vec<(String, MenuItem)>,
+    /// The window bar's entries, each carrying the command it runs.
+    bar_commands: ui::framework::BarCommands<MenuItem>,
     /// The file the workbook was opened from, which names it; `None` for
     /// one never saved.
     file: Option<PathBuf>,

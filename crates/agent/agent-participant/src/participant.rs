@@ -204,7 +204,7 @@ struct Asking {
 }
 
 type WitnessAnswer =
-    Result<tilo_actions::remote::Confirmation, tilo_actions::remote::ActionHostError>;
+    Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
 
 /// One agent in one room.
 pub struct AgentParticipant {
@@ -872,9 +872,18 @@ impl AgentParticipant {
         };
         let generation = self.generation;
         let outcome = match answer {
-            // The person's own device answered for this invocation.
-            Ok(tilo_actions::remote::Confirmation::Witnessed(_)) => self
-                .invoke_step(&asking.route, &asking.address, &asking.arguments, true)
+            // The person's own device answered for this invocation: it runs
+            // as they allowed it, with the arguments as they changed them.
+            Ok(tilo_actions::remote::ConfirmedInvocation {
+                confirmation: tilo_actions::remote::Confirmation::Witnessed(_),
+                arguments,
+            }) => self
+                .invoke_step(
+                    &asking.route,
+                    &asking.address,
+                    arguments.as_ref().unwrap_or(&asking.arguments),
+                    true,
+                )
                 .map_err(actions::Refusal::into_text),
             Ok(_) | Err(_) => Err(format!(
                 "{}: the person did not confirm",

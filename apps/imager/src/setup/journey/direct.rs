@@ -1,7 +1,8 @@
 //! Retained guided inputs, handed to the canonical gated Full-OS surface.
 use super::{Destination, Imager, InstallerPreview, InstallerPreviewEffect, Page};
-use crate::setup::{migration_intent::MigrationIntent, staging};
+use crate::setup::staging;
 use imager_backend::prepared_setup::PublicInstallProfile;
+use imager_backend::setup::migration_intent::MigrationIntent;
 use std::sync::Arc;
 use ui::framework::SurfaceCx;
 use ui::widget::{ButtonRole, Row};
@@ -637,9 +638,9 @@ mod tests {
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&destination).unwrap();
         let belongings = super::super::belongings::Belongings::from_windows_roots(&[
-            crate::setup::windows_inventory::SelectedRoot {
+            imager_backend::windows_inventory::SelectedRoot {
                 path: source,
-                role: crate::setup::windows_inventory::RootRole::KnownFolder,
+                role: imager_backend::windows_inventory::RootRole::KnownFolder,
             },
         ])
         .unwrap();

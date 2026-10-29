@@ -8,32 +8,14 @@
 
 use chrono::NaiveDate;
 use ui::format::Period;
-use ui::window_toolbar::{
-    ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
-};
+use ui::framework::BarCommands;
+use ui::window_toolbar::{ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use crate::{date, model::View};
 
-const PREVIOUS: &str = "previous";
-const NEXT: &str = "next";
-const TODAY: &str = "today";
-/// New event (New task on Tasks).
-pub(crate) const NEW: &str = "new";
-const QUICK_ADD: &str = "quick-add";
-const SHORTCUTS: &str = "shortcuts";
-const EXPORT: &str = "export";
-const IMPORT: &str = "import";
-/// A view's slot id: `view:` and its label.
-const VIEW_PREFIX: &str = "view:";
-
-/// The slot id of `view` in the bar's switcher.
-pub(crate) fn view_slot(view: View) -> String {
-    format!("{VIEW_PREFIX}{}", view.label())
-}
-
 /// What the person asked of the calendar in the window's bar.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum BarAction {
-    ToggleSidebar,
     Previous,
     Next,
     Today,
@@ -78,6 +60,7 @@ fn location(view: View, anchor: NaiveDate, tasks_list: &str) -> ToolbarLocation 
 /// The window bar's slots for `view` around `anchor` (on Tasks the list
 /// `tasks_list`), the sidebar shown or not.
 pub(crate) fn window_toolbar(
+    bar: &BarCommands<BarAction>,
     view: View,
     anchor: NaiveDate,
     tasks_list: &str,
@@ -91,11 +74,11 @@ pub(crate) fn window_toolbar(
             choices: View::ALL
                 .iter()
                 .map(|choice| ToolbarView {
-                    id: view_slot(*choice),
+                    id: bar.entry("", "", BarAction::View(*choice)).id,
                     label: choice.display_label(),
                 })
                 .collect(),
-            chosen: view_slot(view),
+            chosen: bar.entry("", "", BarAction::View(view)).id,
         }),
         ..WindowToolbar::default()
     };
@@ -107,9 +90,11 @@ pub(crate) fn window_toolbar(
     };
     if let Some((previous, next)) = period {
         toolbar.leading = vec![
-            ToolbarAction::new(PREVIOUS, "chevron-left", previous).navigating(),
-            ToolbarAction::new(NEXT, "chevron-right", next).navigating(),
-            ToolbarAction::new(TODAY, "calendar", "Today").labelled(),
+            bar.entry("chevron-left", previous, BarAction::Previous)
+                .navigating(),
+            bar.entry("chevron-right", next, BarAction::Next)
+                .navigating(),
+            bar.entry("calendar", "Today", BarAction::Today).labelled(),
         ];
     }
     let new = if view == View::Tasks {
@@ -118,47 +103,33 @@ pub(crate) fn window_toolbar(
         "New event".to_owned()
     };
     toolbar.actions = vec![
-        ToolbarAction::new(NEW, "plus", new),
+        bar.entry("plus", new, BarAction::New),
         // The one-line add sits beside the full form it saves a person from.
-        ToolbarAction::new(QUICK_ADD, "zap", crate::resource::t("calendar-quick-title")).in_menu(),
-        ToolbarAction::new(
-            SHORTCUTS,
-            "keyboard",
-            crate::resource::t("calendar-help-title"),
+        bar.entry(
+            "zap",
+            crate::resource::t("calendar-quick-title"),
+            BarAction::QuickAdd,
         )
         .in_menu(),
-        ToolbarAction::new(EXPORT, "upload", "Export calendar").in_menu(),
-        ToolbarAction::new(IMPORT, "download", "Import calendar").in_menu(),
+        bar.entry(
+            "keyboard",
+            crate::resource::t("calendar-help-title"),
+            BarAction::Shortcuts,
+        )
+        .in_menu(),
+        bar.entry("upload", "Export calendar", BarAction::Export)
+            .in_menu(),
+        bar.entry("download", "Import calendar", BarAction::Import)
+            .in_menu(),
     ];
     toolbar
-}
-
-/// What `event` asks of the calendar, if it is one of its slots.
-pub(crate) fn bar_action(event: &ToolbarEvent) -> Option<BarAction> {
-    Some(match event {
-        ToolbarEvent::ToggleSidebar => BarAction::ToggleSidebar,
-        ToolbarEvent::Action { id } => match id.as_str() {
-            PREVIOUS => BarAction::Previous,
-            NEXT => BarAction::Next,
-            TODAY => BarAction::Today,
-            NEW => BarAction::New,
-            QUICK_ADD => BarAction::QuickAdd,
-            SHORTCUTS => BarAction::Shortcuts,
-            EXPORT => BarAction::Export,
-            IMPORT => BarAction::Import,
-            other => {
-                let label = other.strip_prefix(VIEW_PREFIX)?;
-                BarAction::View(*View::ALL.iter().find(|view| view.label() == label)?)
-            }
-        },
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Datelike;
+    use ui::window_toolbar::ToolbarEvent;
 
     fn anchor() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, 21).unwrap_or_default()
@@ -166,13 +137,15 @@ mod tests {
 
     #[test]
     fn the_calendars_controls_are_the_window_bars_slots() {
-        let toolbar = window_toolbar(View::Week, anchor(), "Inbox", true);
+        let bar = BarCommands::new();
+        let toolbar = window_toolbar(&bar, View::Week, anchor(), "Inbox", true);
         assert_eq!(toolbar.sidebar, Some(true));
-        let leading: Vec<&str> = toolbar.leading.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(leading, [PREVIOUS, NEXT, TODAY]);
+        let leading: Vec<&str> = toolbar.leading.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(leading, ["Previous week", "Next week", "Today"]);
         let views = toolbar.views.as_ref().expect("the views switch in the bar");
         assert_eq!(views.choices.len(), View::ALL.len());
-        assert_eq!(views.chosen, format!("{VIEW_PREFIX}{}", View::Week.label()));
+        let pressed = |id: &str| bar.pressed(&ToolbarEvent::Action { id: id.into() });
+        assert_eq!(pressed(&views.chosen), Some(BarAction::View(View::Week)));
         assert_eq!(
             toolbar.actions.first().map(|a| a.name.as_str()),
             Some("New event")
@@ -189,7 +162,7 @@ mod tests {
             "the period is the window's location"
         );
 
-        let tasks = window_toolbar(View::Tasks, anchor(), "Garden", false);
+        let tasks = window_toolbar(&bar, View::Tasks, anchor(), "Garden", false);
         assert!(
             tasks.leading.is_empty(),
             "Tasks has no period to step through"
@@ -200,16 +173,12 @@ mod tests {
             "on Tasks the location names the list shown"
         );
 
-        for choice in &views.choices {
-            assert!(
-                matches!(
-                    bar_action(&ToolbarEvent::Action {
-                        id: choice.id.clone()
-                    }),
-                    Some(BarAction::View(_))
-                ),
+        for (choice, view) in views.choices.iter().zip(View::ALL) {
+            assert_eq!(
+                pressed(&choice.id),
+                Some(BarAction::View(view)),
                 "{} chooses its view",
-                choice.id
+                choice.label
             );
         }
     }

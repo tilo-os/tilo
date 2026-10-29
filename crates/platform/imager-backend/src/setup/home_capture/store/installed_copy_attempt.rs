@@ -465,21 +465,15 @@ impl Record {
 }
 fn load(store: &Store) -> io::Result<Option<Record>> {
     store.check_original_output_operation(&store.operation)?;
-    let directory = storage(&store.records)?;
-    let mut file = match directory.open_read(
-        OsStr::new(&record_name(&store.operation)),
-        Privacy::OwnerOnly,
-    ) {
-        Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
+    let Some(bytes) = crate::record::read_optional(
+        &storage(&store.records)?,
+        &record_name(&store.operation),
+        MAX_RECORD,
+        || failure("Installed copy journal exceeds bounds"),
+    )?
+    else {
+        return Ok(None);
     };
-    if file.metadata()?.len() > MAX_RECORD {
-        return Err(failure("Installed copy journal exceeds bounds"));
-    }
-    let bytes = crate::record::read_bounded(&mut file, MAX_RECORD, || {
-        failure("Installed copy journal exceeds bounds")
-    })?;
     let record: Record =
         serde_json::from_slice(&bytes).map_err(|_| failure("Installed copy journal invalid"))?;
     record.validate()?;
@@ -492,18 +486,14 @@ fn load(store: &Store) -> io::Result<Option<Record>> {
 fn save(store: &Store, record: &Record, mode: PublishMode) -> io::Result<()> {
     record.validate()?;
     store.check_original_output_operation(&record.binding.operation)?;
-    let bytes = serde_json::to_vec(record)?;
-    if bytes.len() as u64 > MAX_RECORD {
-        return Err(failure("Installed copy journal exceeds bounds"));
-    }
-    storage(&store.records)?
-        .publish(
-            OsStr::new(&record_name(&record.binding.operation)),
-            &bytes,
-            mode,
-            Privacy::OwnerOnly,
-        )
-        .map_err(|e| e.into_io_error())?;
+    crate::record::publish(
+        &storage(&store.records)?,
+        &record_name(&record.binding.operation),
+        record,
+        MAX_RECORD,
+        mode,
+        || failure("Installed copy journal exceeds bounds"),
+    )?;
     store.check_original_output_operation(&record.binding.operation)
 }
 fn secret_facts(file: &File) -> io::Result<Secret> {

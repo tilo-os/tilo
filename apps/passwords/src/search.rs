@@ -137,7 +137,10 @@ mod tests {
     #[test]
     fn only_a_window_on_the_vault_reports_its_lock() {
         // The fixture captures show opens no vault: it says nothing.
-        assert_eq!(crate::PasswordsSurface::demo().secrets_unlocked(), None);
+        assert_eq!(
+            crate::PasswordsWindow::demo().core().secrets_unlocked(),
+            None
+        );
         let closed = crate::vault::Core::with_model(crate::PasswordsModel::closed());
         assert_eq!(
             closed.secrets_unlocked(),

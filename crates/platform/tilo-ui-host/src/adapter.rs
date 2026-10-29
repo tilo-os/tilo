@@ -107,6 +107,13 @@ impl Adapter {
                     let value = fired.value.as_ref().and_then(|value| self.value_of(value));
                     return Some(UiEvent::Fire(fired.key, fired.event, value));
                 }
+                // A reference in rich text the view gave nothing of its own to do: open it.
+                if fired.event == ui::widget::OPEN_REFERENCE {
+                    return match fired.value {
+                        Some(Prop::Text(reference)) => Some(UiEvent::OpenReference(reference)),
+                        _ => None,
+                    };
+                }
                 component.presents.clone().map(UiEvent::Open)
             })
             .collect()
@@ -124,7 +131,7 @@ impl Adapter {
                 id: identity.clone(),
                 name: name.clone(),
             }),
-            Prop::None | Prop::List(_) => return None,
+            Prop::None | Prop::List(_) | Prop::Rich(_) => return None,
         })
     }
 
@@ -283,6 +290,7 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
                 .map(|item| convert(item, inner, reconciler))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        (Type::RichText, Value::Rich(rich)) => Prop::Rich(rich.clone()),
         _ => return None,
     })
 }
@@ -304,7 +312,8 @@ impl Source for NodeSource<'_> {
 
     fn event(&mut self, name: &str) -> Event {
         let given = self.node.events.contains_key(name);
-        let opens = name == "activate" && presented(self.node, self.description).is_some();
+        let opens = (name == "activate" && presented(self.node, self.description).is_some())
+            || name == ui::widget::OPEN_REFERENCE;
         if given || opens {
             let intent = Intent::new(&self.reconciler.adapter().fired, &self.node.key, name);
             let runs = self
@@ -668,6 +677,37 @@ mod tests {
         assert!(
             source.event("press").is_none(),
             "no event the view did not give"
+        );
+    }
+
+    #[test]
+    fn rich_text_builds_and_an_activated_reference_opens_what_it_refers_to() {
+        let mut reconciler = reconciler();
+        let rich = tilo_render_protocol::patch::rich::RichText {
+            blocks: vec![tilo_render_protocol::patch::rich::Block {
+                kind: "paragraph".to_owned(),
+                text: "see Fix it".to_owned(),
+                ..Default::default()
+            }],
+            embeds: Vec::new(),
+        };
+        let body = node("RichText", "body", &[("value", Value::Rich(rich))]);
+        let widget = reconciler.build(&body);
+        assert_eq!(
+            widget.name(),
+            "BlockEditor",
+            "rich text is the block editor's"
+        );
+        let description = description_of(&body).expect("described");
+        let event =
+            NodeSource::new(&body, description, &mut reconciler).event(ui::widget::OPEN_REFERENCE);
+        event.fire(Some(ui::component::Value::Text(
+            "{\"app\":\"a.b\"}".to_owned(),
+        )));
+        assert_eq!(
+            reconciler.adapter().take_events(),
+            vec![UiEvent::OpenReference("{\"app\":\"a.b\"}".to_owned())],
+            "the view gave the event nothing of its own: the reference is opened"
         );
     }
 

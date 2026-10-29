@@ -511,7 +511,7 @@ impl ImagerApp {
                     && format!("{} {}", release.name, release.version) == source.name
                     && release.account_custody.as_ref().is_some_and(|proof| {
                         proof.supports_service_session_protocol(protocol)
-                            || crate::setup::account_admission::source_candidate(protocol, proof)
+                            || imager_backend::account_admission::source_candidate(protocol, proof)
                                 .unwrap_or(false)
                     })
             });
@@ -536,7 +536,7 @@ impl ImagerApp {
                 release.matches_source(source)
                     && source.expected_sha256.as_deref() == Some(release.image_sha256.as_str())
                     && source.size == release.size
-                    && crate::setup::applications_admission::require(
+                    && imager_backend::applications_admission::require(
                         release.applications.as_ref(),
                         required,
                     )
@@ -563,7 +563,7 @@ impl ImagerApp {
                 release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
                     && release.size == source.size
                     && format!("{} {}", release.name, release.version) == source.name
-                    && crate::setup::home_admission::require(
+                    && imager_backend::home_admission::require(
                         release.home_archive.as_ref(),
                         Some(protocol),
                     )
@@ -4099,7 +4099,7 @@ mod tests {
             app.require_media_account_protocol(&source, Some(1))
                 .is_err()
         );
-        let proof = crate::setup::account_admission::ConsumerCapability {
+        let proof = imager_backend::account_admission::ConsumerCapability {
             schema: 1,
             protected_grant_protocol: 1,
             credential_helper_sha256: "1".repeat(64),
@@ -4176,7 +4176,7 @@ mod tests {
         let (mut app, _) = seeded_app();
         app.releases[0].size = std::fs::metadata(&image).unwrap().len();
         app.releases[0].local_path = image.display().to_string();
-        app.releases[0].home_archive = Some(crate::setup::home_admission::ConsumerCapability {
+        app.releases[0].home_archive = Some(imager_backend::home_admission::ConsumerCapability {
             schema: 1,
             archive_protocol: 2,
             seed_protocol: 1,
@@ -4251,7 +4251,7 @@ mod tests {
         app.require_media_home_protocol(&source, None).unwrap();
         assert!(app.require_media_home_protocol(&source, Some(2)).is_err());
         // Proof is selected catalog evidence, never an exporter declaration.
-        app.releases[0].home_archive = Some(crate::setup::home_admission::ConsumerCapability {
+        app.releases[0].home_archive = Some(imager_backend::home_admission::ConsumerCapability {
             schema: 1,
             archive_protocol: 2,
             seed_protocol: 1,
@@ -4280,9 +4280,9 @@ mod tests {
         root: &std::path::Path,
     ) -> (
         std::sync::Arc<crate::setup::journey::prepared_media::PreparedMedia>,
-        crate::setup::prepared_setup::PublicInstallProfile,
+        imager_backend::setup::prepared_setup::PublicInstallProfile,
     ) {
-        use crate::setup::{prepared_identity::PreparedIdentity, prepared_setup};
+        use imager_backend::{prepared_identity::PreparedIdentity, setup::prepared_setup};
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let identity = PreparedIdentity::create(
@@ -4325,7 +4325,7 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "installation"))]
     #[test]
     fn prepared_guided_drive_continues_with_authenticated_profile_without_customize() {
-        use crate::setup::prepared_setup;
+        use imager_backend::setup::prepared_setup;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();

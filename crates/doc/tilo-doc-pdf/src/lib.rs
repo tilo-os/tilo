@@ -30,6 +30,7 @@ mod pdf;
 
 use std::fmt;
 use tilo_doc::export::{BlockKind, ExportBlock, TablePlan};
+use tilo_doc::paging::{Block as PageBlock, Fragmentation, PageFlow, Placed};
 use tilo_doc::snapshot::AttrVal;
 use tilo_doc::{BlockView, DocSnapshot};
 
@@ -236,8 +237,20 @@ enum Op {
     },
 }
 
-/// One page under construction: a cursor descending from the top margin
-/// and the list of ops drawn so far.
+impl Op {
+    /// Move the op up by `dy` points.
+    fn raise(&mut self, dy: f32) {
+        match self {
+            Op::Text { y, .. } | Op::Rect { y, .. } | Op::Image { y, .. } => *y += dy,
+            Op::Line { y1, y2, .. } => {
+                *y1 += dy;
+                *y2 += dy;
+            }
+        }
+    }
+}
+
+/// One page under construction: the list of ops drawn on it so far.
 struct Page {
     ops: Vec<Op>,
     /// Image `XObjects` referenced on this page: `(resource_name, obj_id)`.
@@ -254,20 +267,22 @@ impl Page {
 }
 
 /// The pagination/rendering cursor. Owns the writer (so images can be
-/// added as `XObjects` on demand) and the running list of pages.
+/// added as `XObjects` on demand) and the running list of pages; page breaks
+/// follow the same rules as the word processor's on-screen sheets.
 ///
 /// `first_page` is split out from `later_pages` (rather than one `Vec`
-/// with a never-empty invariant) so "there is always a current page" is a
-/// fact of the type, not a runtime check [`Layout::cur`] would otherwise
-/// have to assert.
+/// with a never-empty invariant) so "there is always a page" is a fact of
+/// the type, not a runtime check [`Layout::page`] would otherwise have to
+/// assert.
 struct Layout {
     writer: PdfWriter,
     first_page: Page,
     later_pages: Vec<Page>,
-    /// Y cursor on the current page (PDF coords: larger = higher). Text
-    /// draws at the baseline, so the cursor tracks the *top* of the next
-    /// line and subtracts ascent when placing.
-    y: f32,
+    /// Where the next block goes, as a distance below the top margin.
+    flow: PageFlow,
+    /// Each placed block's page and first op there, in placement order, so a
+    /// heading carried to the next page with its text can follow it.
+    block_ops: Vec<(usize, usize)>,
     next_img: usize,
 }
 
@@ -277,50 +292,133 @@ impl Layout {
             writer: PdfWriter::new(),
             first_page: Page::new(),
             later_pages: Vec::new(),
-            y: CONTENT_TOP,
+            flow: PageFlow::new(f64::from(CONTENT_TOP - CONTENT_BOTTOM)),
+            block_ops: Vec::new(),
             next_img: 0,
         }
     }
 
-    fn cur(&mut self) -> &mut Page {
-        self.later_pages.last_mut().unwrap_or(&mut self.first_page)
-    }
-
-    fn new_page(&mut self) {
-        self.later_pages.push(Page::new());
-        self.y = CONTENT_TOP;
-    }
-
-    /// Ensure `need` points of vertical space remain; otherwise start a page.
-    fn ensure(&mut self, need: f32) {
-        if self.y - need < CONTENT_BOTTOM {
-            self.new_page();
+    /// Page `index`, starting any pages before it.
+    fn page(&mut self, index: usize) -> &mut Page {
+        if index > self.later_pages.len() {
+            self.later_pages.resize_with(index, Page::new);
+        }
+        match index.checked_sub(1) {
+            None => &mut self.first_page,
+            Some(later) => self
+                .later_pages
+                .get_mut(later)
+                .unwrap_or(&mut self.first_page),
         }
     }
 
-    /// Draw a single already-wrapped line of runs at the current cursor,
-    /// each run after the one before it, then advance by `leading`.
-    fn line(&mut self, runs: &[Run], x: f32, size: f32, leading: f32) {
-        self.ensure(leading);
-        // Baseline sits ~`size` below the cursor's top (approx ascent).
-        let baseline = self.y - size * 0.8;
-        let mut x = x;
-        for (text, style) in runs {
-            self.cur().ops.push(Op::Text {
-                x,
-                y: baseline,
-                size,
-                style: *style,
-                text: text.clone(),
-            });
-            x += style.width(text, size);
+    /// Place a block that splits between `lines` (each line's top and
+    /// height below the block's top), or that cannot split when `lines` is
+    /// empty.
+    fn place(&mut self, block: &PageBlock, lines: &[(f64, f64)]) -> Placed {
+        let placed = if lines.is_empty() {
+            self.flow.place(block)
+        } else {
+            self.flow.place_lines(block, || lines.to_vec())
+        };
+        if let Some(carry) = placed.carry
+            && let Some(&(page, first_op)) = self.block_ops.get(carry.block)
+        {
+            // The carried run is everything on its page from its first op.
+            let from = self.page(page);
+            let ops = from.ops.split_off(first_op.min(from.ops.len()));
+            let (images, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut from.images)
+                .into_iter()
+                .partition(|(name, _)| {
+                    ops.iter()
+                        .any(|op| matches!(op, Op::Image { name: n, .. } if n == name))
+                });
+            from.images = kept;
+            let dy = CONTENT_TOP - pdf_y(carry.from_top);
+            let to = self.page(carry.from_page.saturating_add(1));
+            for mut op in ops {
+                op.raise(dy);
+                to.ops.push(op);
+            }
+            to.images.extend(images);
         }
-        self.y -= leading;
+        let first_op = self.page(placed.page).ops.len();
+        self.block_ops.push((placed.page, first_op));
+        placed
+    }
+
+    /// Place a block of already-wrapped lines of runs, each `leading` below
+    /// the one before it, and return where it went.
+    fn lines(&mut self, block: &PageBlock, lines: &[Vec<Run>], text: TextSet) -> Placed {
+        let TextSet { x, size, leading } = text;
+        let boxes = line_boxes(lines.len(), f64::from(leading));
+        let placed = self.place(block, &boxes);
+        for (index, runs) in lines.iter().enumerate() {
+            let (page, top) = placed.locate(&boxes, index);
+            // Baseline sits ~`size` below the line's top (approx ascent).
+            let baseline = pdf_y(top) - size * 0.8;
+            let mut x = x;
+            for (text, style) in runs {
+                self.page(page).ops.push(Op::Text {
+                    x,
+                    y: baseline,
+                    size,
+                    style: *style,
+                    text: text.clone(),
+                });
+                x += style.width(text, size);
+            }
+        }
+        placed
     }
 
     fn gap(&mut self, amount: f32) {
-        self.y -= amount;
+        self.flow.skip(f64::from(amount));
     }
+}
+
+/// Where a block's lines are set: their left edge, point size and leading.
+#[derive(Clone, Copy)]
+struct TextSet {
+    x: f32,
+    size: f32,
+    leading: f32,
+}
+
+/// The PDF y (larger = higher) of a point `offset` below the top margin.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "an offset within one page's content box, far inside f32's range"
+)]
+fn pdf_y(offset: f64) -> f32 {
+    CONTENT_TOP - offset as f32
+}
+
+/// `count` lines `height` tall, stacked from a block's top.
+fn line_boxes(count: usize, height: f64) -> Vec<(f64, f64)> {
+    (0..count)
+        .scan(0.0, |top, _| {
+            let line = (*top, height);
+            *top += height;
+            Some(line)
+        })
+        .collect()
+}
+
+/// A block of `lines` lines `leading` apart, breaking before itself when the
+/// document asks for a manual page break there.
+fn text_block(block: &BlockView, lines: usize, leading: f32) -> PageBlock {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a line count feeding a height; no real block approaches f64's precision limit"
+    )]
+    let height = lines as f64 * f64::from(leading);
+    PageBlock::new(height).breaking_before(breaks_before(block))
+}
+
+/// The document's manual page break before `block`.
+fn breaks_before(block: &BlockView) -> bool {
+    block.flag("page_break_before")
 }
 
 /// Render a materialized tilo-doc snapshot to PDF bytes. Always succeeds for
@@ -374,23 +472,40 @@ fn render_heading(layout: &mut Layout, block: &BlockView) {
     let level = ExportBlock::new(block).heading_level();
     let size = heading_size(level);
     let leading = size * 1.25;
-    layout.gap(PARA_GAP);
-    layout.ensure(leading);
-    for line in wrap(&styled(block, Style::BOLD), TEXT_W, size) {
-        layout.line(&line, MARGIN, size, leading);
-    }
+    let lines = wrap(&styled(block, Style::BOLD), TEXT_W, size);
+    // A heading moves on with the text it introduces rather than end a page.
+    let page_block = text_block(block, lines.len(), leading)
+        .with_lead(f64::from(PARA_GAP))
+        .keeping_with_next(true);
+    layout.lines(
+        &page_block,
+        &lines,
+        TextSet {
+            x: MARGIN,
+            size,
+            leading,
+        },
+    );
     layout.gap(PARA_GAP);
 }
 
 fn render_paragraph(layout: &mut Layout, block: &BlockView) {
     if block.text.is_empty() {
-        // Blank paragraph → vertical space (matches an empty line in the doc).
-        layout.gap(BODY_LEADING);
+        // Blank paragraph → one empty line (as in the doc).
+        layout.place(&text_block(block, 1, BODY_LEADING), &[]);
         return;
     }
-    for line in wrap(&styled(block, Style::default()), TEXT_W, BODY_SIZE) {
-        layout.line(&line, MARGIN, BODY_SIZE, BODY_LEADING);
-    }
+    let lines = wrap(&styled(block, Style::default()), TEXT_W, BODY_SIZE);
+    let page_block = text_block(block, lines.len(), BODY_LEADING);
+    layout.lines(
+        &page_block,
+        &lines,
+        TextSet {
+            x: MARGIN,
+            size: BODY_SIZE,
+            leading: BODY_LEADING,
+        },
+    );
     layout.gap(PARA_GAP);
 }
 
@@ -421,43 +536,43 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     let avail = (MARGIN + TEXT_W) - text_indent;
     let lines = wrap(&styled(block, Style::default()), avail.max(40.0), BODY_SIZE);
 
-    // Marker on the first line, hung to the left of the wrapped text.
-    layout.ensure(BODY_LEADING);
-    let first_y_top = layout.y;
-    layout.line(
-        lines.first().map_or(&[], Vec::as_slice),
-        text_indent,
-        BODY_SIZE,
-        BODY_LEADING,
+    // Even an empty item takes a line for its marker.
+    let page_block = text_block(block, lines.len().max(1), BODY_LEADING);
+    let placed = layout.lines(
+        &page_block,
+        &lines,
+        TextSet {
+            x: text_indent,
+            size: BODY_SIZE,
+            leading: BODY_LEADING,
+        },
     );
-    // Place the marker at the same baseline as the first text line.
-    let baseline = first_y_top - BODY_SIZE * 0.8;
-    layout.cur().ops.push(Op::Text {
+    // Marker on the first line, hung to the left of the wrapped text, at the
+    // same baseline.
+    let (page, top) = placed.locate(&line_boxes(1, f64::from(BODY_LEADING)), 0);
+    layout.page(page).ops.push(Op::Text {
         x: indent,
-        y: baseline,
+        y: pdf_y(top) - BODY_SIZE * 0.8,
         size: BODY_SIZE,
         style: Style::default(),
         text: marker,
     });
-    for line in lines.iter().skip(1) {
-        layout.line(line, text_indent, BODY_SIZE, BODY_LEADING);
-    }
 }
 
 fn render_image(layout: &mut Layout, content: &dyn ContentSource, block: &BlockView) {
     let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") {
         s.clone()
     } else {
-        placeholder(layout, "image (no blob)");
+        placeholder(layout, block, "image (no blob)");
         return;
     };
     let Some(bytes) = content.content(&hash) else {
-        placeholder(layout, "image (missing blob)");
+        placeholder(layout, block, "image (missing blob)");
         return;
     };
     match decode_image(&bytes) {
-        Ok(img) => place_image(layout, &img),
-        Err(_) => placeholder(layout, "image (undecodable)"),
+        Ok(img) => place_image(layout, block, &img),
+        Err(_) => placeholder(layout, block, "image (undecodable)"),
     }
 }
 
@@ -485,12 +600,30 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
     let col_w = TEXT_W / ncols as f32;
     let row_h = BODY_LEADING + 2.0 * TABLE_PAD;
 
-    layout.gap(PARA_GAP);
-    for row in plan.rows() {
-        // Keep a whole row together where possible.
-        layout.ensure(row_h);
-        let top = layout.y;
+    // The table breaks between rows, never inside one; a manual page break
+    // on the table or its first cell breaks before it.
+    let boxes = line_boxes(plan.rows().len(), f64::from(row_h));
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a row count feeding a height; no real table approaches f64's precision limit"
+    )]
+    let page_block = PageBlock::new(plan.rows().len() as f64 * f64::from(row_h))
+        .with_lead(f64::from(PARA_GAP))
+        .breaking_before(
+            breaks_before(block)
+                || plan
+                    .rows()
+                    .first()
+                    .and_then(|row| row.first())
+                    .is_some_and(|cell| breaks_before(cell)),
+        )
+        .fragmented(Fragmentation::ANYWHERE);
+    let placed = layout.place(&page_block, &boxes);
+    for (ri, row) in plan.rows().iter().enumerate() {
+        let (page, offset) = placed.locate(&boxes, ri);
+        let top = pdf_y(offset);
         let bottom = top - row_h;
+        let page = layout.page(page);
         // Cell grid + text.
         for (ci, cell) in row.iter().enumerate() {
             // A column index feeding a display-only x-offset; precision
@@ -501,7 +634,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
                 reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
             )]
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect {
+            page.ops.push(Op::Rect {
                 x,
                 y: bottom,
                 w: col_w,
@@ -509,7 +642,7 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
             });
             let text = clip_to_width(&cell.text, col_w - 2.0 * TABLE_PAD, BODY_SIZE);
             let baseline = top - TABLE_PAD - BODY_SIZE * 0.8;
-            layout.cur().ops.push(Op::Text {
+            page.ops.push(Op::Text {
                 x: x + TABLE_PAD,
                 y: baseline,
                 size: BODY_SIZE,
@@ -527,14 +660,13 @@ fn render_table(layout: &mut Layout, block: &BlockView) {
                 reason = "ci is a column index feeding a display offset; no real table approaches f32's precision limit"
             )]
             let x = MARGIN + ci as f32 * col_w;
-            layout.cur().ops.push(Op::Rect {
+            page.ops.push(Op::Rect {
                 x,
                 y: bottom,
                 w: col_w,
                 h: row_h,
             });
         }
-        layout.y -= row_h;
     }
     layout.gap(PARA_GAP);
 }
@@ -557,7 +689,7 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage, DocPdfError> {
     })
 }
 
-fn place_image(layout: &mut Layout, img: &DecodedImage) {
+fn place_image(layout: &mut Layout, block: &BlockView, img: &DecodedImage) {
     // Scale to text width, preserving aspect; cap height to one page's content.
     // A display-only aspect ratio; no real decoded image dimension
     // approaches f32's precision limit.
@@ -572,9 +704,8 @@ fn place_image(layout: &mut Layout, img: &DecodedImage) {
     if h > max_h {
         h = max_h;
     }
-    layout.gap(PARA_GAP);
-    layout.ensure(h);
-    let top = layout.y;
+    let placed = layout.place(&figure_block(block, h), &[]);
+    let top = pdf_y(placed.top);
     let bottom = top - h;
 
     let name = format!("Im{}", layout.next_img);
@@ -587,39 +718,46 @@ fn place_image(layout: &mut Layout, img: &DecodedImage) {
         img.width, img.height
     );
     let obj = layout.writer.add_stream(&dict, &compressed);
-    layout.cur().images.push((name.clone(), obj));
-    layout.cur().ops.push(Op::Image {
+    let page = layout.page(placed.page);
+    page.images.push((name.clone(), obj));
+    page.ops.push(Op::Image {
         name,
         x: MARGIN,
         y: bottom,
         w,
         h,
     });
-    layout.y -= h;
     layout.gap(PARA_GAP);
 }
 
+/// An image or its placeholder, `h` tall: it cannot split.
+fn figure_block(block: &BlockView, h: f32) -> PageBlock {
+    PageBlock::new(f64::from(h))
+        .with_lead(f64::from(PARA_GAP))
+        .breaking_before(breaks_before(block))
+}
+
 /// Draw a labelled placeholder box where an image couldn't be embedded.
-fn placeholder(layout: &mut Layout, label: &str) {
+fn placeholder(layout: &mut Layout, block: &BlockView, label: &str) {
     let h = 120.0;
-    layout.gap(PARA_GAP);
-    layout.ensure(h);
-    let top = layout.y;
+    let placed = layout.place(&figure_block(block, h), &[]);
+    let top = pdf_y(placed.top);
     let bottom = top - h;
-    layout.cur().ops.push(Op::Rect {
+    let page = layout.page(placed.page);
+    page.ops.push(Op::Rect {
         x: MARGIN,
         y: bottom,
         w: TEXT_W,
         h,
     });
     // Diagonal cross to read clearly as a placeholder.
-    layout.cur().ops.push(Op::Line {
+    page.ops.push(Op::Line {
         x1: MARGIN,
         y1: bottom,
         x2: MARGIN + TEXT_W,
         y2: top,
     });
-    layout.cur().ops.push(Op::Line {
+    page.ops.push(Op::Line {
         x1: MARGIN,
         y1: top,
         x2: MARGIN + TEXT_W,
@@ -627,14 +765,13 @@ fn placeholder(layout: &mut Layout, label: &str) {
     });
     let baseline = top - h / 2.0;
     let label = clip_to_width(label, TEXT_W - 8.0, BODY_SIZE);
-    layout.cur().ops.push(Op::Text {
+    page.ops.push(Op::Text {
         x: MARGIN + 6.0,
         y: baseline,
         size: BODY_SIZE,
         style: Style::default(),
         text: label,
     });
-    layout.y -= h;
     layout.gap(PARA_GAP);
 }
 

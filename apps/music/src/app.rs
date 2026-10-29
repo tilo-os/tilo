@@ -392,6 +392,8 @@ pub struct MusicApp {
     /// Open an audio file, pressed in the window's bar: its invocation, for
     /// the window's controls to run ([`Self::sync_window_toolbar`]).
     bar_controls: std::collections::VecDeque<tilo_actions::ControlInvocation>,
+    /// The window bar's entries, each carrying what it asks for.
+    bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
     /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
     audio: AudioEngine,
@@ -886,6 +888,7 @@ impl MusicApp {
             open_file_layout_visible: None,
             back_requested,
             bar_controls: std::collections::VecDeque::new(),
+            bar_entries: ui::framework::BarCommands::new(),
             search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),
             worker: None,

@@ -59,18 +59,15 @@ fn name(operation: &str) -> String {
 }
 fn load(store: &Store) -> io::Result<Option<Attempt>> {
     store.check_original_output_operation(&store.operation)?;
-    let directory = storage(&store.records)?;
-    let mut file =
-        match directory.open_read(OsStr::new(&name(&store.operation)), Privacy::OwnerOnly) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-    if file.metadata()?.len() > 4096 {
-        return Err(failure("Original output attempt exceeds bounds"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref().take(4097).read_to_end(&mut bytes)?;
+    let Some(bytes) = crate::record::read_optional(
+        &storage(&store.records)?,
+        &name(&store.operation),
+        4096,
+        || failure("Original output attempt exceeds bounds"),
+    )?
+    else {
+        return Ok(None);
+    };
     let record: Attempt =
         serde_json::from_slice(&bytes).map_err(|_| failure("Original output attempt invalid"))?;
     if !matches!(record.schema, 1 | 2)
@@ -205,19 +202,14 @@ fn save(store: &Store, record: &Attempt, mode: PublishMode) -> io::Result<()> {
     if record.schema == 2 {
         validate_applications_attempt(record)?;
     }
-    let bytes = serde_json::to_vec(record)?;
-    if bytes.len() > 4096 {
-        return Err(failure("Original output attempt exceeds bounds"));
-    }
-    storage(&store.records)?
-        .publish(
-            OsStr::new(&name(&store.operation)),
-            &bytes,
-            mode,
-            Privacy::OwnerOnly,
-        )
-        .map_err(|e| e.into_io_error())?;
-    Ok(())
+    crate::record::publish(
+        &storage(&store.records)?,
+        &name(&store.operation),
+        record,
+        4096,
+        mode,
+        || failure("Original output attempt exceeds bounds"),
+    )
 }
 /// Actual descriptor-relative enumeration, fresh directory cursor; no pathname
 /// or reused read offset. A single non-dot entry makes retry refuse.
@@ -1619,7 +1611,7 @@ pub fn lookup_committed_original_applications_selection(
 #[cfg(test)]
 mod pair_bounds_tests {
     use super::*;
-    use crate::setup::portable_transfer::{Limits, Purpose};
+    use crate::setup::portable_transfer::Limits;
     #[test]
     fn original_output_pair_refuses_receipt_collision_foreign_binding_and_aggregate_shortfall() {
         let operation = uuid::Uuid::new_v4().to_string();
@@ -1630,31 +1622,29 @@ mod pair_bounds_tests {
             metadata_bytes: 1024,
         };
         let home = crate::setup::portable_home_media::Expectation {
-            schema: 1,
             operation: operation.clone(),
-            purpose: Purpose::Home,
             filename: format!("home-{operation}.sealed"),
             setup_binding: "paired-fixture".into(),
             sealed_bytes: 32,
             plaintext_bytes: 8,
             entries: 1,
-            runtime_sockets: 0,
             ciphertext_sha256: [1; 32],
             limits,
+            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
         };
         let mut applications = crate::setup::flatpak_transfer::portable::Expectation {
-            schema: 1,
-            consumer_protocol: 1,
             operation: applications_operation.clone(),
-            purpose: Purpose::FlatpakApplications,
             filename: format!("applications-{applications_operation}.sealed"),
             setup_binding: "paired-fixture".into(),
             sealed_bytes: 48,
             plaintext_bytes: 8,
             entries: 1,
             ciphertext_sha256: [2; 32],
-            manifest_sha256: [3; 32],
             limits,
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: 1,
+                manifest_sha256: [3; 32],
+            },
         };
         OriginalOutputExpectations {
             home: &home,

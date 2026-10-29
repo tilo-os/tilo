@@ -39,6 +39,7 @@ mod launcher;
 mod motion_gallery;
 mod motion_review;
 mod one_place;
+mod portal_sheets;
 mod window_bar_reactions;
 mod window_search;
 
@@ -499,6 +500,15 @@ pub enum Action {
     /// worker builds ([`shell::shell::drives::consent_request`]) on the same
     /// portal dialog queue the compositor pumps.
     SeedDriveConsent(&'static str),
+    /// Raise the sheet confirming what an agent would run, its draft's
+    /// fields editable, by preset (`asking`: as the agent asked it;
+    /// `edited`: the person changed the subject and ticked a field;
+    /// `refused`: a number field holds no number and Allow was pressed).
+    ///
+    /// The trigger is an agent's ask reaching the broker, which a `--shots`
+    /// render has none of. This queues the request the broker builds on
+    /// the same portal dialog queue the compositor pumps.
+    SeedDraftConfirmation(&'static str),
     /// One window, alone in the active strip, whose tabs show the given
     /// apps with the titles their clients set and the slots their apps
     /// declared for the window's bar ([`ui::window_toolbar`]); `active` is
@@ -1940,7 +1950,10 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
 fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) {
     match action {
         #[cfg(target_os = "linux")]
-        Action::SeedDriveConsent(preset) => seed_drive_consent(driver, preset),
+        Action::SeedDriveConsent(preset) => portal_sheets::seed_drive_consent(driver, preset),
+        Action::SeedDraftConfirmation(preset) => {
+            portal_sheets::seed_draft_confirmation(driver, preset);
+        }
         Action::SeedStatus(preset) => {
             let status = status_preset(preset);
             driver.with_chrome(|st: &mut ChromeState| {
@@ -1980,47 +1993,6 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
         }
         _ => {}
     }
-}
-
-/// `Action::SeedDriveConsent`: the sheet the drive worker raises.
-#[cfg(target_os = "linux")]
-fn seed_drive_consent(driver: &mut ShellDriver, preset: &str) {
-    use ntfs_mount::protocol::{Drive, Mode, Placement};
-    let windows = preset == "windows";
-    let drive = Drive {
-        id: if windows { "nvme0n1p3:1" } else { "sdb1:7" }.into(),
-        label: if windows { "Windows" } else { "" }.into(),
-        size_bytes: if windows {
-            475_000_000_000
-        } else {
-            64_000_000_000
-        },
-        placement: if windows {
-            Placement::Internal
-        } else {
-            Placement::External
-        },
-        hot_added: !windows,
-        remembered: None,
-        needs_consent: true,
-        preselect: if windows {
-            Mode::Open
-        } else {
-            Mode::OpenSafely
-        },
-        can_remember: if windows {
-            ntfs_mount::protocol::RememberOffer::AnyMode
-        } else {
-            ntfs_mount::protocol::RememberOffer::OpenSafely
-        },
-        mounted: None,
-    };
-    let queue = shell::shell::portal_dialog::PortalDialogQueue::default();
-    driver.host_mut().set_portal_dialog_queue(queue.clone());
-    let request = shell::shell::drives::consent_request(&drive, format!("shots-{preset}"));
-    // Nobody answers a screenshot; the dropped receiver reads as "Not now".
-    let _ = queue.enqueue_drive_consent(request);
-    driver.host_mut().pump_portal_dialogs();
 }
 
 /// `Action::SeedWifiPrompt` and `Action::SelectGroup` — split out of
@@ -5473,6 +5445,21 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedDriveConsent("stick"),
                 Action::Wait(4),
                 Action::Snapshot("02-stick"),
+            ],
+        },
+        Scenario {
+            name: "draft_confirmation_sheet",
+            description: "The sheet confirming what an agent would run: its draft's fields editable on trusted chrome, as asked, as the person changed it, and refusing a field that is not a number.",
+            actions: vec![
+                Action::SeedDraftConfirmation("asking"),
+                Action::Wait(6),
+                Action::Snapshot("01-asking"),
+                Action::SeedDraftConfirmation("edited"),
+                Action::Wait(4),
+                Action::Snapshot("02-edited"),
+                Action::SeedDraftConfirmation("refused"),
+                Action::Wait(4),
+                Action::Snapshot("03-refused"),
             ],
         },
         Scenario {

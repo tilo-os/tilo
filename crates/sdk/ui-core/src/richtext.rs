@@ -1122,14 +1122,13 @@ impl RichTextLayout {
     /// paragraph that already spans one or more earlier fragments.
     pub fn fragment_line_count_from(&self, first_line: usize, available_lines: usize) -> usize {
         let total = self.buffer.layout_runs().count();
-        let remaining = total.saturating_sub(first_line);
-        if remaining <= available_lines {
-            return remaining;
-        }
-        let orphans = usize::from(self.fragmentation.orphans);
-        let widows = usize::from(self.fragmentation.widows);
-        let take = available_lines.min(remaining.saturating_sub(widows));
-        if take < orphans { 0 } else { take }
+        self.fragmentation
+            .lines_on_page(total, first_line, available_lines)
+    }
+
+    /// The lines this layout keeps on either side of a page break.
+    pub fn fragmentation(&self) -> crate::text_render::Fragmentation {
+        self.fragmentation
     }
 
     /// Widest laid-out visual line.

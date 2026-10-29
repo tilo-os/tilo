@@ -213,7 +213,7 @@ impl PortableHomeReview {
             || info.sealed_bytes != expectation.sealed_bytes
             || info.plaintext_bytes != expectation.plaintext_bytes
             || info.entries != expectation.entries
-            || info.runtime_sockets != expectation.runtime_sockets
+            || info.runtime_sockets != expectation.kind.runtime_sockets
         {
             return Err(changed(
                 "Portable home ciphertext or authenticated declaration changed",

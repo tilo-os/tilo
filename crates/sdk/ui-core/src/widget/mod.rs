@@ -3232,6 +3232,8 @@ pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
 pub mod paint_damage;
+pub mod rich_doc;
+pub use block_editor::references::{OPEN_REFERENCE, RichTextProps};
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,

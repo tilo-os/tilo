@@ -183,7 +183,8 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     let mut profile = crate::model::InstallProfile::default();
     profile.user.full_name = "Ada".into();
     profile.device_label = "Existing laptop".into();
-    let profile = crate::setup::prepared_setup::PublicInstallProfile::from_draft(&profile).unwrap();
+    let profile =
+        imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(&profile).unwrap();
     let prepared = prepared_media::PreparedMedia::prepare_profiled_for_test(
         &resumed,
         zeroize::Zeroizing::new(password.into()),
@@ -193,7 +194,7 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
     .unwrap();
     assert!(matches!(
         prepared.desktop_manifest().unwrap().identity_kind,
-        crate::setup::prepared_setup::IdentityKind::CurrentDevice { .. }
+        imager_backend::setup::prepared_setup::IdentityKind::CurrentDevice { .. }
     ));
     let package = prepared.package();
     let mut output = Vec::new();
@@ -207,8 +208,9 @@ fn current_owner_desktop_actions_restart_and_authenticated_import_preserve_origi
         "--config-root".into(),
         config.clone().into_os_string(),
     ];
-    crate::setup::prepared_setup_helper::run(args, &mut password.as_bytes(), &mut output).unwrap();
-    let receipt: crate::setup::prepared_setup_helper::Receipt =
+    imager_backend::setup::prepared_setup_helper::run(args, &mut password.as_bytes(), &mut output)
+        .unwrap();
+    let receipt: imager_backend::setup::prepared_setup_helper::Receipt =
         serde_json::from_slice(&output).unwrap();
     let admitted = receipt
         .current_identity

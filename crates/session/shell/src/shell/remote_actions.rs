@@ -342,7 +342,7 @@ impl ActionHost for BrokerActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         let request = request.clone();
         self.with_native(caller, move |host, caller, session| {
             if let Some(session) = session {

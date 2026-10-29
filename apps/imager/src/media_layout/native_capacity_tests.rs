@@ -351,9 +351,10 @@ fn prove_extent(extent: u64) {
         "fixed format floor {floor} exceeds native available {actual} for {extent}"
     );
     let admitted =
-        crate::setup::portable_home_media::payload_capacity_for_free_bytes(floor).unwrap();
+        imager_backend::setup::portable_home_media::payload_capacity_for_free_bytes(floor).unwrap();
     let actual_limit =
-        crate::setup::portable_home_media::payload_capacity_for_free_bytes(actual).unwrap();
+        imager_backend::setup::portable_home_media::payload_capacity_for_free_bytes(actual)
+            .unwrap();
     assert!(admitted <= actual_limit);
     assert!(admitted < extent - 1);
     if extent == 64 * 1024 * 1024 {
@@ -362,7 +363,7 @@ fn prove_extent(extent: u64) {
             .write(true)
             .open(fixture.mount.join("sealed-allocation"))
             .unwrap();
-        let limit = crate::setup::portable_transfer::Limits {
+        let limit = imager_backend::setup::portable_transfer::Limits {
             plaintext_bytes: admitted,
             entries: 1,
             metadata_bytes: 1,

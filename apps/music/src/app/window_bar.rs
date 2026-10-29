@@ -5,13 +5,19 @@
 //! window's location, and the one action of the page: on Home open an
 //! audio file, on Playlists New playlist. Search is the bar's own.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
 use super::{Action, MusicApp, View};
 
-pub(super) const BACK: &str = "back";
-pub(super) const OPEN_FILE: &str = "open-file";
-pub(super) const NEW_PLAYLIST: &str = "new-playlist";
+/// What an entry of the window's bar asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum BarCommand {
+    Back,
+    /// Open an audio file, through the window's controls.
+    OpenFile,
+    /// The window's own action.
+    Run(Action),
+}
 
 impl MusicApp {
     /// The window bar's slots for what the window shows now.
@@ -26,22 +32,22 @@ impl MusicApp {
             label: self.view_title(),
             ..ToolbarLocation::default()
         });
+        let entries = &self.bar_entries;
         if self.nav.can_go_back() {
-            toolbar
-                .leading
-                .push(ToolbarAction::new(BACK, "arrow-left", "Back").navigating());
+            let back = entries.entry("arrow-left", "Back", BarCommand::Back);
+            toolbar.leading.push(back.navigating());
         }
         if self.view == View::Home {
-            toolbar.actions.push(ToolbarAction::new(
-                OPEN_FILE,
-                "folder-open",
-                crate::i18n::t("music-open-audio-file"),
-            ));
-        }
-        if self.view == View::Playlists && !self.spotify_catalogue {
+            let name = crate::i18n::t("music-open-audio-file");
             toolbar
                 .actions
-                .push(ToolbarAction::new(NEW_PLAYLIST, "plus", "New playlist"));
+                .push(entries.entry("folder-open", name, BarCommand::OpenFile));
+        }
+        if self.view == View::Playlists && !self.spotify_catalogue {
+            let new = BarCommand::Run(Action::BeginNewPlaylist);
+            toolbar
+                .actions
+                .push(entries.entry("plus", "New playlist", new));
         }
         toolbar
     }
@@ -60,17 +66,15 @@ impl MusicApp {
                 self.dirty = true;
                 continue;
             }
-            match event {
-                ToolbarEvent::Action { id } if id == BACK => self.back_requested.set(true),
-                ToolbarEvent::Action { id } if id == OPEN_FILE => {
+            match self.bar_entries.pressed(&event) {
+                Some(BarCommand::Back) => self.back_requested.set(true),
+                Some(BarCommand::OpenFile) => {
                     if let Some(invocation) = Self::open_file_invocation() {
                         self.bar_controls.push_back(invocation);
                     }
                 }
-                ToolbarEvent::Action { id } if id == NEW_PLAYLIST => {
-                    self.dispatch(Action::BeginNewPlaylist, state);
-                }
-                _ => continue,
+                Some(BarCommand::Run(action)) => self.dispatch(action, state),
+                None => continue,
             }
             self.dirty = true;
         }
@@ -80,7 +84,6 @@ impl MusicApp {
 #[cfg(test)]
 mod tests {
     use super::super::{Action, MusicApp, NamePrompt, View};
-    use super::NEW_PLAYLIST;
 
     #[test]
     fn new_playlist_is_the_window_bars_action_on_playlists() {
@@ -93,15 +96,13 @@ mod tests {
         );
         app.declare_window_toolbar();
         let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-        assert!(
-            toolbar
-                .actions
-                .iter()
-                .any(|action| action.id == NEW_PLAYLIST),
-            "Playlists offers New playlist in the window bar: {toolbar:?}"
-        );
+        let new = toolbar
+            .actions
+            .iter()
+            .find(|action| action.name == "New playlist")
+            .expect("Playlists offers New playlist in the window bar");
         ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
-            id: NEW_PLAYLIST.into(),
+            id: new.id.clone(),
         });
         app.take_window_toolbar_events(&mut ui::widget::Edits::lend(&mut doc));
         assert!(

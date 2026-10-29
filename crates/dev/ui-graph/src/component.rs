@@ -317,6 +317,8 @@ pub enum Type {
     Time,
     /// One of the platform's icons, by its kebab-case name.
     Icon,
+    /// Rich text, with how its references read for the person reading it.
+    RichText,
     /// One of a closed set of cases: the design system's roles and tokens.
     Choice {
         name: String,
@@ -339,6 +341,7 @@ impl Type {
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
+            Self::RichText => "RichText".into(),
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
             Self::List(inner) => format!("List<{}>", inner.show()),
@@ -365,6 +368,8 @@ pub enum Value {
     Icon(String),
     /// A case of a choice, by name.
     Choice(String),
+    /// Rich text, with how its references read for the person reading it.
+    Rich(crate::rich::RichText),
     /// An `Option` that holds nothing.
     None,
     List(Vec<Value>),
@@ -384,6 +389,7 @@ impl Value {
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
             Self::Choice(_) => "a case",
+            Self::Rich(_) => "RichText",
             Self::None => "nothing",
             Self::List(_) => "List",
         }

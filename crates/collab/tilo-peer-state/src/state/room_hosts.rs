@@ -182,16 +182,17 @@ mod tests {
         Ok(())
     }
 
-    /// A member's change to the room's hosts is refused: only the governor
-    /// names them.
+    /// Any device of the owner names the room's hosts, not only the one the
+    /// room was made on.
     #[test]
     #[expect(
         clippy::panic_in_result_fn,
         reason = "the regression returns setup errors and asserts actual production outcomes"
     )]
-    fn a_member_cannot_name_a_host() -> TestResult {
+    fn another_device_of_the_owner_names_a_host() -> TestResult {
         use automerge::transaction::Transactable as _;
         let (mut peer, _, _, member, now) = crate::admission_tests::seeded();
+        assert_eq!(member.user_public_key, peer.authority().user_public_key);
         let mut doc = peer.admitted_room().ok_or("room missing")?.clone();
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(member.device_public_key.to_vec()));
@@ -212,13 +213,12 @@ mod tests {
             .map(|change| change.raw_bytes().to_vec())
             .collect();
         let room = peer.room().to_owned();
-        let refused = peer.receive_from(
+        peer.receive_from(
             crate::TransportOrigin::RetainedRelayDelta(member.device_public_key),
             crate::NeighbourMsg::SyncResp { changes, room },
             now,
-        );
-        assert!(refused.is_err(), "{refused:?}");
-        assert!(peer.governance().room_hosts().is_empty());
+        )?;
+        assert_eq!(peer.governance().room_hosts().len(), 1);
         Ok(())
     }
 }

@@ -1,0 +1,30 @@
+[package]
+name = "ush-shell"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+# Every test file is a module of the one `it` binary.
+autotests = false
+description = "ush's shell: POSIX sh and the bash features people use, interpreted in Rust with no fork or exec, running Tilo's own commands in-process."
+
+[lib]
+name = "ush_shell"
+path = "src/lib.rs"
+
+[dependencies]
+# The grammar: POSIX sh and bash, words, arithmetic and `[[ ]]`. MIT, kept
+# up, and built for wasm32 upstream, so the interpreter stays portable.
+brush-parser = "0.4"
+base64.workspace = true
+regex.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

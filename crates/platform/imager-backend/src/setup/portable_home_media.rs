@@ -785,7 +785,7 @@ impl HomeSource {
             || info.sealed_bytes != expected.sealed_bytes
             || info.plaintext_bytes != expected.plaintext_bytes
             || info.entries != expected.entries
-            || info.runtime_sockets != expected.runtime_sockets
+            || info.runtime_sockets != expected.kind.runtime_sockets
             || ciphertext_digest(&mut file, cancel)? != expected.ciphertext_sha256
         {
             return Err(changed(
@@ -906,17 +906,17 @@ impl HomeSource {
         temporary.validate()?;
         check_cancel(cancel)?;
         let expectation = Expectation {
-            schema: 1,
             operation: operation.into(),
-            purpose: Purpose::Home,
             filename,
             setup_binding: setup_binding.into(),
             sealed_bytes: info.sealed_bytes,
             plaintext_bytes: info.plaintext_bytes,
             entries: info.entries,
-            runtime_sockets: info.runtime_sockets,
             ciphertext_sha256: digest,
             limits,
+            kind: crate::setup::portable_home_media::Home {
+                runtime_sockets: info.runtime_sockets,
+            },
         };
         expectation.validate()?;
         temporary.publish(&expectation.filename)?;
@@ -1099,61 +1099,31 @@ impl MediaGrant {
         })
     }
 }
+/// A sealed Home unit carries the reviewed tree, sockets recreated empty.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Expectation {
-    pub schema: u32,
-    pub operation: String,
-    pub purpose: Purpose,
-    pub filename: String,
-    pub setup_binding: String,
-    pub sealed_bytes: u64,
-    pub plaintext_bytes: u64,
-    pub entries: usize,
+pub struct Home {
     pub runtime_sockets: u64,
-    pub ciphertext_sha256: [u8; 32],
-    pub limits: Limits,
 }
-impl Expectation {
-    /// # Errors
-    /// Refuses invalid operations, purposes, bindings and storage bounds.
-    pub fn validate(&self) -> io::Result<()> {
-        if self.schema != 1
-            || self.purpose != Purpose::Home
-            || self.setup_binding.is_empty()
-            || self.setup_binding.len() > 256
-            || self.filename != filename(&self.operation)?
-            || self.entries == 0
-            || self.entries > self.limits.entries
-            || self.runtime_sockets > self.limits.entries as u64
-            || self.plaintext_bytes == 0
-            || self.plaintext_bytes > self.limits.plaintext_bytes
-            || self.sealed_bytes == 0
-            || self
-                .limits
-                .sealed_bound()
-                .is_none_or(|bound| self.sealed_bytes > bound)
-            || self.limits.entries > 1_000_000
-            || self.limits.metadata_bytes == 0
-            || self.limits.metadata_bytes > 512 * 1024 * 1024
-        {
-            return Err(changed(
-                "Portable home expectation has invalid bounds or operation binding",
-            ));
-        }
-        Ok(())
+impl portable_transfer::UnitKind for Home {
+    const PURPOSE: Purpose = Purpose::Home;
+    const PREFIX: &'static str = "home";
+    const INVALID: &'static str =
+        "Portable home expectation has invalid bounds or operation binding";
+    fn operation_valid(operation: &str) -> bool {
+        !operation.is_empty()
+            && operation.len() <= 96
+            && operation
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    }
+    fn within_bounds(expectation: &Expectation) -> bool {
+        expectation.kind.runtime_sockets <= expectation.limits.entries as u64
     }
 }
+pub type Expectation = portable_transfer::Expectation<Home>;
 fn filename(operation: &str) -> io::Result<String> {
-    if operation.is_empty()
-        || operation.len() > 96
-        || !operation
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(changed("Portable home operation is invalid"));
-    }
-    Ok(format!("home-{operation}.sealed"))
+    Expectation::filename(operation)
 }
 fn capacity(file: &File) -> io::Result<u64> {
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
