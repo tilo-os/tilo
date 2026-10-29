@@ -3515,6 +3515,7 @@ pub use tree_view::{
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
+mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,

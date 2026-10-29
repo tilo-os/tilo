@@ -35,13 +35,14 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
+    DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::EventCtx;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::data_table::{
     RowType, centered_text_top, row_estimate, text_band, type_line_height,
 };
+use crate::widget::rows::RowStep;
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
 /// The shape of a tree row's placeholder: one line where its label goes.
@@ -864,7 +865,7 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     on_activate: Option<Box<dyn FnMut(NodeId)>>,
     click_activation: TreeClickActivation,
     /// Last single-click row and time, for double-click activation.
-    last_click: Option<(NodeId, Instant)>,
+    clicks: super::rows::Clicks<NodeId>,
     selection_follows_focus: bool,
     row_decoration: Option<TreeRowDecorator<M>>,
     /// The host's current item (an open file, the table on screen).
@@ -886,15 +887,7 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     reorder_validator: Option<TreeReorderValidator<M>>,
     reorder_commit: Option<TreeReorderCommit<M>>,
     drag_scroll: DragScroller,
-    momentum: ScrollMomentum,
-    /// The motion toward a row [`Self::reveal`] was asked to show.
-    scroll_to: crate::motion::ScrollTo,
-    /// Device pixels per logical pixel where the tree last handled input.
-    device_scale: f64,
-    /// The tree's opacity in the latest draw and in the frame on screen:
-    /// below 1 while rows fade in after a long reveal.
-    fade_drawn: f32,
-    fade_shown: f32,
+    scroll: super::rows::RowScroll,
     last_tick: Option<Instant>,
     transition_snapshot: Vec<KeyedRowSnapshot<TreeRowKey, TreeTransitionPayload>>,
     transitions: KeyedTransitionSet<TreeRowKey, TreeTransitionPayload>,
@@ -1141,7 +1134,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             on_load_request: None,
             on_activate: None,
             click_activation: TreeClickActivation::default(),
-            last_click: None,
+            clicks: super::rows::Clicks::default(),
             selection_follows_focus: false,
             row_decoration: None,
             current: None,
@@ -1155,11 +1148,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             reorder_validator: None,
             reorder_commit: None,
             drag_scroll: DragScroller::new(),
-            momentum: ScrollMomentum::new(),
-            scroll_to: crate::motion::ScrollTo::new(),
-            device_scale: 1.0,
-            fade_drawn: 1.0,
-            fade_shown: 1.0,
+            scroll: super::rows::RowScroll::default(),
             last_tick: None,
             transition_snapshot: Vec::new(),
             transitions: KeyedTransitionSet::new(),
@@ -1414,53 +1403,28 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             return;
         };
         let now = crate::motion::frame_now();
-        let drawn = self.viewport.offset();
-        if let Some(target) = self.scroll_to.target() {
-            self.viewport.set_offset(target.y);
-        }
-        self.viewport
-            .scroll_to_index(index, ScrollAlignment::Nearest);
-        let target = self.viewport.offset();
-        self.viewport.set_offset(drawn);
-        self.momentum.stop();
-        // A reveal the person just asked for moves there; one nobody asked
-        // for (a restored view, a sync) lands ([`crate::motion::ScrollTo`]).
-        let jump = self.scroll_to.go(
-            vello::kurbo::Vec2::new(0.0, drawn),
-            vello::kurbo::Vec2::new(0.0, target),
-            vello::kurbo::Vec2::new(self.rect.width(), self.viewport.viewport()),
-            self.transition_motion,
-            now,
-        );
-        if jump == crate::motion::ScrollJump::Glide {
-            self.follow_scroll_to(now);
-        } else {
-            self.viewport.set_offset(target);
-            self.mark_delegate_window_dirty();
-            self.refresh_anchor();
+        let width = self.rect.width();
+        let motion = self.transition_motion;
+        match self
+            .scroll
+            .reveal(&mut self.viewport, index, width, motion, now)
+        {
+            Some(target) => {
+                self.viewport.set_offset(target);
+                self.mark_delegate_window_dirty();
+                self.refresh_anchor();
+            }
+            None => self.follow_scroll_to(now),
         }
     }
 
     /// Follow a reveal in progress to where it is drawn at `now`.
     fn follow_scroll_to(&mut self, now: crate::time::Instant) {
-        if let Some(at) = self
-            .scroll_to
-            .offset_in_device_pixels(now, self.device_scale)
+        if let Some(at) = self.scroll.follow(now)
+            && at.to_bits() != self.viewport.offset().to_bits()
         {
-            if at.y.to_bits() != self.viewport.offset().to_bits() {
-                self.set_scroll_offset(at.y);
-            }
-            let _ = self.scroll_to.arrived(now);
+            self.set_scroll_offset(at);
         }
-    }
-
-    /// A reveal still moves, its rows still fade in, or the frame on screen
-    /// shows them faded.
-    fn reveal_in_progress(&self) -> bool {
-        self.scroll_to.target().is_some()
-            || self.scroll_to.is_moving(crate::motion::frame_now())
-            || self.fade_drawn < 1.0
-            || self.fade_shown < 1.0
     }
 
     /// Author the row height at the default text scale (the estimate
@@ -2417,33 +2381,18 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             self.select(id);
             return;
         }
-        if extend {
-            let Some(anchor) = self.selection.anchor().copied() else {
-                self.select(id);
-                return;
-            };
-            let (Some(anchor_index), Some(target_index)) =
-                (self.visible_index_of(anchor), self.visible_index_of(id))
-            else {
-                self.select(id);
-                return;
-            };
-            let lo = anchor_index.min(target_index);
-            let hi = anchor_index.max(target_index);
-            let keys = (lo..=hi).filter_map(|index| {
-                self.index
-                    .row_at(&self.model, index)
-                    .and_then(|(key, _)| match key {
-                        TreeRowKey::Node(id) => Some(id),
-                        TreeRowKey::Slot(_) => None,
-                    })
-            });
-            self.selection.select_range(id, keys, toggle);
-        } else if toggle {
-            self.selection.toggle(id);
-        } else {
-            self.selection.select_only(id);
-        }
+        let (model, index) = (&self.model, &self.index);
+        super::rows::choose(
+            &mut self.selection,
+            id,
+            (toggle, extend),
+            true,
+            |id| index.index_of(model, *id),
+            |at| match index.row_at(model, at) {
+                Some((TreeRowKey::Node(id), _)) => Some(id),
+                _ => None,
+            },
+        );
         self.report_selected(id);
     }
 
@@ -2484,11 +2433,11 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 } else if self.rename_on_double_click
                     && !toggle
                     && !extend
-                    && self.is_double_click(id)
+                    && self.clicks.is_double(&id)
                     && self.begin_rename(id)
                 {
                     // The second click renames the row the first one chose.
-                    self.last_click = None;
+                    self.clicks.reset();
                 } else {
                     self.apply_selection_gesture(id, toggle, extend);
                     if !toggle && !extend {
@@ -2515,28 +2464,12 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Count a plain click on a node toward activation under the chosen
     /// [`TreeClickActivation`].
     fn register_click(&mut self, id: NodeId) {
-        let double = self.is_double_click(id);
-        self.last_click = if double {
-            None
-        } else {
-            Some((id, crate::time::now()))
-        };
+        let double = self.clicks.register(id);
         match self.click_activation {
             TreeClickActivation::SingleClick => self.fire_activate(id),
             TreeClickActivation::DoubleClick if double => self.fire_activate(id),
             TreeClickActivation::DoubleClick => {}
         }
-    }
-
-    /// Whether a click on `id` now completes a double click.
-    fn is_double_click(&self, id: NodeId) -> bool {
-        matches!(
-            self.last_click,
-            Some((previous, at))
-                if previous == id
-                    && crate::time::now().saturating_duration_since(at)
-                        < crate::gesture::multi_click_interval()
-        )
     }
 
     fn fire_activate(&mut self, id: NodeId) {
@@ -2576,11 +2509,12 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             return false;
         }
         self.last_tick = Some(crate::time::now());
-        match self.momentum.wheel(delta, phase, self.reduce_motion) {
+        match self.scroll.momentum.wheel(delta, phase, self.reduce_motion) {
             WheelStep::Scroll(dy) => {
                 let before = self.viewport.offset();
                 self.set_scroll_offset(before + dy);
-                self.momentum
+                self.scroll
+                    .momentum
                     .wheel_applied(dy, self.viewport.offset() - before)
             }
             WheelStep::Fling => true,
@@ -2652,31 +2586,16 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         match logical_key {
             Key::Named(NamedKey::ArrowRight) => self.key_right(),
             Key::Named(NamedKey::ArrowLeft) => self.key_left(),
-            Key::Named(NamedKey::ArrowDown) => {
-                let index = self
+            Key::Named(arrow @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
+                let current = self
                     .focused
-                    .and_then(|key| self.index.index_of_key(&self.model, key))
-                    .map_or(0, |index| {
-                        index
-                            .saturating_add(1)
-                            .min(self.index.len().saturating_sub(1))
-                    });
-                let index = self.skip_nav_captions(index, true);
-                let moved = self.focus_at(index);
-                if moved
-                    && extend
-                    && let Some(id) = self.focused()
-                {
-                    self.apply_selection_gesture(id, toggle, true);
-                }
-                moved
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let index = self
-                    .focused
-                    .and_then(|key| self.index.index_of_key(&self.model, key))
-                    .map_or(0, |index| index.saturating_sub(1));
-                let index = self.skip_nav_captions(index, false);
+                    .and_then(|key| self.index.index_of_key(&self.model, key));
+                let Some(RowStep::To(index)) =
+                    super::rows::row_step(logical_key, current, self.index.len())
+                else {
+                    return false;
+                };
+                let index = self.skip_nav_captions(index, *arrow == NamedKey::ArrowDown);
                 let moved = self.focus_at(index);
                 if moved
                     && extend
@@ -2688,21 +2607,17 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             }
             Key::Named(NamedKey::PageDown) => self.page_focus(true, toggle, extend),
             Key::Named(NamedKey::PageUp) => self.page_focus(false, toggle, extend),
-            Key::Named(NamedKey::Home) => self.focus_at(0),
-            Key::Named(NamedKey::End) => self
-                .index
-                .len()
-                .checked_sub(1)
-                .is_some_and(|index| self.focus_at(index)),
+            Key::Named(NamedKey::Home | NamedKey::End) => {
+                match super::rows::row_step(logical_key, None, self.index.len()) {
+                    Some(RowStep::To(index)) => self.focus_at(index),
+                    _ => false,
+                }
+            }
             Key::Named(NamedKey::Enter) => self.activate_focus(true),
             Key::Character(text) if text == " " && !self.typing.is_typing(crate::time::now()) => {
                 self.activate_focus(false)
             }
-            Key::Character(text)
-                if self.multi_select
-                    && toggle
-                    && (text.as_str() == "a" || text.as_str() == "A") =>
-            {
+            _ if self.multi_select && super::rows::is_select_all(logical_key, toggle) => {
                 self.select_all();
                 true
             }
@@ -2996,12 +2911,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         // A glide moves only the viewport, which the frame it asks for lays
         // out: no change of the model, so it does not report one (as
         // `Scrollable::update`).
-        if self.momentum.is_active() {
-            let delta = self.momentum.advance(now);
+        if self.scroll.momentum.is_active() {
+            let delta = self.scroll.momentum.advance(now);
             let before = self.scroll_offset();
             self.set_scroll_offset(before + delta);
             if self.scroll_offset().to_bits() == before.to_bits() {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
             }
         }
         // A reveal in progress, like a glide, moves only the viewport.
@@ -3045,14 +2960,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         self.arrival_motion = Some(theme.motion());
         self.transition_motion = theme.motion();
         self.reduce_motion = theme.reduce_motion;
-        self.momentum.set_view(
+        self.scroll.momentum.set_view(
             self.viewport.viewport(),
             self.viewport.max_offset() > 0.0,
             theme.motion(),
         );
         if self.reduce_motion {
             self.transitions.clear();
-            self.momentum.stop();
+            self.scroll.momentum.stop();
         }
         self.apply_type_metrics(theme);
         self.reconcile_mounted_rows();
@@ -3251,7 +3166,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         // Past an end, fingers pull the rows through the rubber band: they
         // land that much further, drawn as they are.
         let give = if tracks_rows {
-            self.momentum.give(crate::motion::frame_now())
+            self.scroll.momentum.give(crate::motion::frame_now())
         } else {
             0.0
         };
@@ -3828,12 +3743,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         }
         let own = std::mem::replace(scene, incoming);
         // After a long reveal the rows fade in where they landed.
-        self.fade_drawn = self.scroll_to.opacity(crate::motion::frame_now());
-        if self.fade_drawn < 1.0 {
+        self.scroll.fade_drawn = self.scroll.to.opacity(crate::motion::frame_now());
+        if self.scroll.fade_drawn < 1.0 {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
-                self.fade_drawn,
+                self.scroll.fade_drawn,
                 transform,
                 &self.rect,
             );
@@ -3932,10 +3847,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self.drawn_signature != Some(self.paint_signature())
             || self.faces.needs_redraw(crate::motion::frame_now())
-            || self.momentum.is_active()
-            || self.momentum.give_needs_frame(crate::motion::frame_now())
-            || self.fade_drawn < 1.0
-            || self.fade_shown < 1.0
+            || self.scroll.momentum.is_active()
+            || self
+                .scroll
+                .momentum
+                .give_needs_frame(crate::motion::frame_now())
+            || self.scroll.fading()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
             || self.menu.is_open() && self.menu.needs_redraw()
@@ -3950,7 +3867,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.fade_drawn < 1.0 || self.fade_shown < 1.0 {
+        if self.scroll.fading() {
             regions.push(self.rect);
             return;
         }
@@ -3968,7 +3885,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
 
     fn mark_drawn(&mut self) {
         self.paint_dirty = false;
-        self.fade_shown = self.fade_drawn;
+        self.scroll.fade_shown = self.scroll.fade_drawn;
         self.drawn_signature = Some(self.paint_signature());
         self.shown.present();
         if let Some(field) = self.rename.as_mut() {
@@ -3988,9 +3905,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         self.bar_fade
             .get()
             .fading_at(crate::motion::frame_now(), self.bar_held.get())
-            || self.momentum.is_active()
-            || self.momentum.give_needs_frame(crate::motion::frame_now())
-            || self.reveal_in_progress()
+            || self.scroll.momentum.is_active()
+            || self
+                .scroll
+                .momentum
+                .give_needs_frame(crate::motion::frame_now())
+            || self.scroll.in_progress()
             || self.model.needs_poll()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
@@ -4238,8 +4158,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
     )]
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let scale_factor = ctx.scale_factor;
-        self.momentum.set_device_scale(scale_factor);
-        self.device_scale = scale_factor;
+        self.scroll.momentum.set_device_scale(scale_factor);
+        self.scroll.device_scale = scale_factor;
         // The hand takes over a reveal in progress from where it is drawn.
         if matches!(
             event,
@@ -4251,7 +4171,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                     ..
                 }
         ) {
-            self.scroll_to.take_over(crate::motion::frame_now());
+            self.scroll.to.take_over(crate::motion::frame_now());
         }
         let modifiers = ctx.modifiers;
         let state = &mut ctx.state;
@@ -4363,7 +4283,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 if let Some(cursor) = self.last_cursor {
                     let now = crate::time::now();
                     if let Some(update) = self.drag_scroll.update(cursor.y, now) {
-                        self.momentum.stop();
+                        self.scroll.momentum.stop();
                         self.set_scroll_offset(update.target_offset);
                         self.last_tick = Some(now);
                         *handled = true;
@@ -4375,7 +4295,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                     && self.press_affordance(cursor)
@@ -4452,9 +4372,9 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
-                            self.momentum.stop();
+                            self.scroll.momentum.stop();
                         } else {
-                            self.momentum.fling(drag.velocity);
+                            self.scroll.momentum.fling(drag.velocity);
                             self.last_tick = Some(crate::time::now());
                         }
                     } else {
@@ -4488,7 +4408,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                     },
                 ..
             } if self.is_focused => {
-                self.momentum.stop();
+                self.scroll.momentum.stop();
                 let mods = modifiers.state();
                 let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
                     || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
@@ -4557,7 +4477,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         self.reorder.is_tracking().hash(&mut state);
         self.reorder.is_active().hash(&mut state);
         self.drag_scroll.is_tracking().hash(&mut state);
-        self.momentum.is_active().hash(&mut state);
+        self.scroll.momentum.is_active().hash(&mut state);
         self.transitions
             .is_active(crate::time::now())
             .hash(&mut state);
@@ -6252,7 +6172,7 @@ mod tests {
 
             assert!(view.on_wheel(&MouseScrollDelta::LineDelta(0.0, -1.0), TouchPhase::Moved));
             assert_eq!(view.scroll_y(), 60.0_f32);
-            assert!(!view.momentum.is_active());
+            assert!(!view.scroll.momentum.is_active());
 
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
@@ -6261,7 +6181,7 @@ mod tests {
             view.drag_scroll.begin(50.0, offset, started);
             assert!(view.drag_scroll.update(10.0, moved).is_some());
             dispatch(&mut view, &mouse_release());
-            assert!(!view.momentum.is_active());
+            assert!(!view.scroll.momentum.is_active());
             assert!(!view.needs_animation_frame());
         }
     }
