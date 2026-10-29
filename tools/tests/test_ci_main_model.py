@@ -85,8 +85,10 @@ class MainIsNotGated(unittest.TestCase):
         self.assertIn("superseded: ${{ steps.window.outputs.superseded }}", supersede)
         self.assertIn("base: ${{ steps.window.outputs.base }}", supersede)
         self.assertIn("tools/ci/push_window.py", supersede)
-        # The decision is cheap and never asks for a large runner.
-        self.assertIn("runs-on: runner-quality", supersede)
+        # The decision never asks for a large runner: it can wait 45 minutes
+        # for an executing window, and large slots are the scarce resource.
+        self.assertIn("runs-on: runner\n", supersede)
+        self.assertNotIn("runner-large", supersede)
         # Every expensive job sits behind that decision, and the aggregate job
         # does not turn a superseded run red.
         for job in ("builder", "select"):

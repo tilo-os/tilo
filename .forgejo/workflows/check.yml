@@ -73,7 +73,11 @@ jobs:
   # `base` is where this run's plan starts. A dispatch is nobody's duplicate and
   # keeps its full-workspace plan.
   supersede:
-    runs-on: runner-quality
+    # The native class, not the quality one: this job can wait 45 minutes for an
+    # executing window, and the quality label serves a single runner that the
+    # sweeps and the lint gate need while it waits. The job itself is a checkout
+    # and an API conversation.
+    runs-on: runner
     # The bounded wait for an executing window, plus the API calls around it.
     timeout-minutes: 50
     container:

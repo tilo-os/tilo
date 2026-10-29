@@ -17,9 +17,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # One sweep at a time; a schedule tick that arrives during a sweep waits.
+  # A tick that arrives while a sweep is still waiting for a runner replaces it:
+  # sweeps are minutes apart and identical, so the pile must not hold slots.
   group: main-window
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   sweep:
