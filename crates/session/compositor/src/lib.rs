@@ -63,7 +63,7 @@ pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
-pub use config::{KeyboardLayout, Settings};
+pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use host::{CursorIcon, HostLayer, SurfaceHost};

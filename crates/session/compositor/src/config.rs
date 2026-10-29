@@ -54,6 +54,39 @@ pub struct DisplayConfig {
     pub variable_refresh: HashSet<String>,
     /// An ICC profile per connector, applied to everything it shows.
     pub color_profiles: HashMap<String, PathBuf>,
+    /// Connectors driven in HDR, with what their displays report.
+    pub hdr: HashMap<String, Hdr>,
+}
+
+/// An output driven in HDR (a PQ BT.2020 signal): where SDR white sits and
+/// what the display reports in its EDID, sent to it as the mastering
+/// display. Zero luminances are "unknown".
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hdr {
+    /// The luminance SDR white (sRGB 1.0) is shown at; 203 is the BT.2408
+    /// reference.
+    pub sdr_white_nits: f32,
+    /// Red, green, blue chromaticities, in millionths (`x`, `y`).
+    pub primaries: [(u32, u32); 3],
+    pub white_point: (u32, u32),
+    pub max_nits: u16,
+    pub max_frame_average_nits: u16,
+    /// The minimum luminance in 0.0001 cd/m².
+    pub min_luminance_micro_nits: u32,
+}
+
+impl Default for Hdr {
+    /// BT.2020 primaries, D65 white, luminances unknown.
+    fn default() -> Self {
+        Self {
+            sdr_white_nits: 203.0,
+            primaries: [(708_000, 292_000), (170_000, 797_000), (131_000, 46_000)],
+            white_point: (312_700, 329_000),
+            max_nits: 0,
+            max_frame_average_nits: 0,
+            min_luminance_micro_nits: 0,
+        }
+    }
 }
 
 impl DisplayConfig {

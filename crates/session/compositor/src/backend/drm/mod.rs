@@ -11,6 +11,7 @@
 //! live in [`devices`] and [`seat_diag`], where they are tested.
 
 pub mod access_keys;
+mod color;
 pub mod devices;
 pub mod input_config;
 mod input_source;
@@ -38,6 +39,7 @@ use smithay::backend::drm::{
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
 use smithay::backend::renderer::ImportDma as _;
+use smithay::backend::renderer::element::{RenderElement, RenderElementStates};
 use smithay::backend::renderer::gles::{Capability, GlesRenderer};
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
@@ -100,9 +102,21 @@ struct Lit {
     /// When the last frame was queued.
     queued_at: Instant,
     vrr: Vrr,
+    color: LitColor,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
+}
+
+/// An output's colour pass and HDR signal.
+#[derive(Default)]
+struct LitColor {
+    pass: Option<color::ColorPass>,
+    /// The connector signals HDR.
+    hdr_on: bool,
+    /// What was asked last and could not be done, so it is not retried
+    /// every frame.
+    refused: Option<color::Wanted>,
 }
 
 /// Variable refresh on one output.
@@ -364,6 +378,9 @@ impl Backend for DrmBackend {
                 lit.interval = refresh_interval(output_mode.refresh);
             }
             apply_placement(state, &lit.output, change);
+            // The colour pass is sized for the old mode, scale and rotation.
+            lit.color.pass = None;
+            lit.color.refused = None;
             lit.next_frame = Instant::now();
             if !change.enabled
                 && let Some(mode) = lit.output.current_mode()
@@ -461,10 +478,9 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let Some(primary) = *primary else {
         return;
     };
-    let variable_refresh = &config.variable_refresh;
     let now = Instant::now();
     for gpu in gpus.values_mut() {
-        render_gpu(gpu, renderers, primary, variable_refresh, state, now);
+        render_gpu(gpu, renderers, primary, config, state, now);
     }
 }
 
@@ -473,11 +489,18 @@ fn render_gpu(
     gpu: &mut Gpu,
     renderers: &mut Renderers,
     primary: DrmNode,
-    variable_refresh: &HashSet<String>,
+    config: &DisplayConfig,
     state: &mut State,
     now: Instant,
 ) {
-    for lit in gpu.outputs.values_mut() {
+    let Gpu {
+        manager,
+        outputs,
+        render,
+        ..
+    } = gpu;
+    let device = manager.device();
+    for lit in outputs.values_mut() {
         if lit.queued
             && lit.wake.as_ref().is_some_and(|wake| !wake.judged)
             && now.saturating_duration_since(lit.queued_at) > LINK_WAIT
@@ -485,7 +508,7 @@ fn render_gpu(
             // No vertical blank after the modeset: the link did not come up.
             judge_wake(
                 lit,
-                gpu.manager.device(),
+                device,
                 &**state.idle.dimmer.backlight(),
                 Some(WakeStage::Link),
             );
@@ -496,58 +519,100 @@ fn render_gpu(
         let name = lit.output.name();
         lit.follow_vrr(vrr_wanted(
             lit.vrr != Vrr::Unable,
-            variable_refresh.contains(&name),
+            config.variable_refresh.contains(&name),
             state.fullscreen_on(&lit.output),
         ));
-        let mut renderer = match renderer_for(renderers, primary, gpu.render, lit.surface.format())
-        {
+        let mut renderer = match renderer_for(renderers, primary, *render, lit.surface.format()) {
             Ok(renderer) => renderer,
             Err(error) => {
                 tracing::warn!(%error, output = name, "no renderer");
                 continue;
             }
         };
+        let wanted = color::Wanted {
+            profile: config.color_profiles.get(&name).cloned(),
+            hdr: config.hdr.get(&name).cloned(),
+        };
+        lit.follow_color(wanted, &mut renderer, device);
         // The pointer in front, where DrmCompositor can give it the cursor
         // plane.
         let mut elements: Vec<OutputRenderElement<Renderer<'_>>> =
             state.cursor_elements(&mut renderer, &lit.output);
         elements.extend(output_elements(&mut renderer, state, &lit.output));
-        match lit
-            .surface
-            .render_frame(&mut renderer, &elements, BACKGROUND, FrameFlags::DEFAULT)
-        {
-            Ok(frame) => {
-                // Clients draw their next frame now; an output with nothing
-                // new is asked again one refresh later.
-                let presentation = state.frame_drawn(&lit.output, Some(&frame.states));
-                if frame.is_empty {
-                    presentation.shown(Shown::Host);
-                } else {
-                    match lit.surface.queue_frame(Some(presentation)) {
-                        Ok(()) => {
-                            lit.queued = true;
-                            lit.queued_at = now;
-                        }
-                        Err(error) => {
-                            tracing::warn!(?error, output = lit.output.name(), "frame not queued");
-                            if lit.wake.is_some() {
-                                judge_wake(
-                                    lit,
-                                    gpu.manager.device(),
-                                    &**state.idle.dimmer.backlight(),
-                                    Some(WakeStage::Commit),
-                                );
-                            }
+        match lit.color.pass.take() {
+            Some(mut pass) => {
+                match pass.render(&mut renderer, &elements) {
+                    Ok(states) => {
+                        submit(
+                            lit,
+                            &mut renderer,
+                            &[&pass],
+                            Some(&states),
+                            state,
+                            device,
+                            now,
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, output = name, "colour pass skipped");
+                        submit(lit, &mut renderer, &elements, None, state, device, now);
+                    }
+                }
+                lit.color.pass = Some(pass);
+            }
+            None => submit(lit, &mut renderer, &elements, None, state, device, now),
+        }
+        lit.next_frame = now.checked_add(lit.interval).unwrap_or(now);
+    }
+}
+
+/// Compose `elements` onto `lit` and queue the frame. `states`: where the
+/// clients' surfaces were drawn, when that was an offscreen pass rather
+/// than this composition.
+fn submit<'r, E: RenderElement<Renderer<'r>>>(
+    lit: &mut Lit,
+    renderer: &mut Renderer<'r>,
+    elements: &[E],
+    states: Option<&RenderElementStates>,
+    state: &State,
+    device: &DrmDevice,
+    now: Instant,
+) {
+    match lit
+        .surface
+        .render_frame(renderer, elements, BACKGROUND, FrameFlags::DEFAULT)
+    {
+        Ok(frame) => {
+            // Clients draw their next frame now; an output with nothing
+            // new is asked again one refresh later.
+            let states = states.unwrap_or(&frame.states);
+            let presentation = state.frame_drawn(&lit.output, Some(states));
+            if frame.is_empty {
+                presentation.shown(Shown::Host);
+            } else {
+                match lit.surface.queue_frame(Some(presentation)) {
+                    Ok(()) => {
+                        lit.queued = true;
+                        lit.queued_at = now;
+                    }
+                    Err(error) => {
+                        tracing::warn!(?error, output = lit.output.name(), "frame not queued");
+                        if lit.wake.is_some() {
+                            judge_wake(
+                                lit,
+                                device,
+                                &**state.idle.dimmer.backlight(),
+                                Some(WakeStage::Commit),
+                            );
                         }
                     }
                 }
             }
-            Err(error) => {
-                tracing::warn!(?error, output = lit.output.name(), "frame not rendered");
-                state.frame_drawn(&lit.output, None).shown(Shown::Host);
-            }
         }
-        lit.next_frame = now.checked_add(lit.interval).unwrap_or(now);
+        Err(error) => {
+            tracing::warn!(?error, output = lit.output.name(), "frame not rendered");
+            state.frame_drawn(&lit.output, None).shown(Shown::Host);
+        }
     }
 }
 
@@ -602,6 +667,47 @@ fn vrr_wanted(capable: bool, allowed: bool, fullscreen_here: bool) -> bool {
 }
 
 impl Lit {
+    /// Bring the output's colour pass and HDR signal to `wanted`.
+    fn follow_color(
+        &mut self,
+        mut wanted: color::Wanted,
+        renderer: &mut Renderer<'_>,
+        device: &DrmDevice,
+    ) {
+        let current = self.color.pass.as_ref().map(color::ColorPass::wanted);
+        if current.map_or_else(|| wanted.plain(), |current| *current == wanted) {
+            return;
+        }
+        if self.color.refused.as_ref() == Some(&wanted) {
+            return;
+        }
+        let name = self.output.name();
+        if wanted.hdr.is_some() || self.color.hdr_on {
+            match color::signal_hdr(device, self.connector, wanted.hdr.as_ref()) {
+                Ok(()) => self.color.hdr_on = wanted.hdr.is_some(),
+                Err(error) => {
+                    tracing::warn!(%error, output = name, "HDR signal not switched");
+                    self.color.refused = Some(wanted.clone());
+                    wanted.hdr = None;
+                }
+            }
+        }
+        self.color.pass = if wanted.plain() {
+            None
+        } else {
+            match color::ColorPass::new(renderer, &self.output, wanted.clone()) {
+                Ok(pass) => Some(pass),
+                Err(error) => {
+                    tracing::warn!(%error, output = name, "colour pass not set up");
+                    self.color.refused = Some(wanted);
+                    None
+                }
+            }
+        };
+        // A whole frame, through the new pass.
+        self.surface.reset_buffers();
+    }
+
     /// Engage or release variable refresh for the next frame. A driver that
     /// refuses it is not asked again for this output.
     fn follow_vrr(&mut self, wanted: bool) {
@@ -1226,6 +1332,7 @@ fn light(
         wake: None,
         queued_at: Instant::now(),
         vrr,
+        color: LitColor::default(),
         next_frame: Instant::now(),
         interval,
     })
