@@ -331,6 +331,9 @@ impl CapnpChannelHandle {
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), capnp::Error>>>>;
 
 /// A service's answer on its way.
+/// What the host answers once its work is done.
+pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, capnp::Error>>>>;
+
 /// A task call's answer, which a task step may wait on.
 pub(super) type TaskAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Reply, capnp::Error>>>>;
 type Answering = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
@@ -406,6 +409,13 @@ impl ChannelSession {
                 Service::ApprovedCheck => runtime_collab::approved_checks::Request::decode(body)
                     .and_then(|request| approved_checks::context(&channel, request))
                     .map(|context| -> Answering { Box::pin(approved_checks::execute(context)) }),
+                Service::RemoteAction => {
+                    let reply = channel.remote_action_dispatch(body);
+                    Ok(
+                        Box::pin(async move { reply.await.map_err(|error| error.to_string()) })
+                            as Answering,
+                    )
+                }
                 Service::PersonChat => channel
                     .person_chat_dispatch(body, on_behalf_of)
                     .map(|reply| -> Answering { Box::pin(std::future::ready(Ok(reply))) }),
@@ -1153,6 +1163,172 @@ impl CapnpChannelHandle {
         })
     }
 
+    /// Answer the app's remote-action `frame` with the frame its caller,
+    /// door, grants and the person decide.
+    pub(super) fn remote_action_dispatch(&self, frame: &[u8]) -> Answer<Vec<u8>> {
+        use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+        let encode = |message: RemoteActionMessage| {
+            RemoteActionFrame::new(message)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        };
+        let answer = match self.remote_action_answer(frame) {
+            Ok(answer) => answer,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
+        Box::pin(async move { encode(answer.await?) })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one admission: caller, door, grants and the person's questions, in order"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the action host moves into whichever answer serves the request"
+    )]
+    fn remote_action_answer(
+        &self,
+        frame: &[u8],
+    ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, capnp::Error> {
+        use tilo_actions::remote::RemoteActionFrame;
+        let original_time = self
+            .state
+            .registered_policy_time()
+            .map_err(capnp::Error::failed)?;
+        let current = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let request = RemoteActionFrame::decode(frame)
+            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        let route = self.route();
+        let person = current.caller(&route.cluster_id);
+        // An app's request continuing an invocation someone asked of it (an
+        // edit its effect submits, another app's action its effect calls) is
+        // decided as that invocation's caller, under its custody; its open
+        // of an application, else as the person whose press it follows.
+        // Anything else, including what continues an invocation the app made
+        // of itself, is the app's own door's to decide.
+        let (decided, continued_origin) = if current.agent_id.is_none() {
+            match self.state.app_request_caller(
+                self.peer_id,
+                &route.app_id,
+                &person,
+                &request.message,
+            ) {
+                Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+                Some(Err(refused)) => (Some(Err(refused)), None),
+                None => (None, None),
+            }
+        } else {
+            (
+                self.state.continued_caller(self.peer_id, &request.message),
+                None,
+            )
+        };
+        let caller = match decided {
+            Some(Ok(caller)) => caller,
+            Some(Err(refused)) => return Ok(ready(*refused)),
+            None if current.agent_id.is_some() => person.clone(),
+            None => match self
+                .state
+                .app_door(&person, &route.app_id, &request.message)
+            {
+                Ok(caller) => caller,
+                Err(refusal) => return Ok(ready(*refusal)),
+            },
+        };
+        if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
+            &request.message
+            && query.view_resource.is_some()
+        {
+            return Ok(self.resource_view_query(*correlation, query.clone()));
+        }
+
+        if tilo_actions::remote::refuse(
+            &request.message,
+            tilo_actions::remote::ActionHostError::UnknownAction,
+        )
+        .is_none()
+        {
+            return Err(capnp::Error::failed(
+                "only remote-action requests are answered".into(),
+            ));
+        }
+        // An application reaching for another app's action it holds no
+        // grant for: the person using it is asked first, or it is refused.
+        let consent = match (caller.principal(), &request.message) {
+            (
+                tilo_actions::remote::CallerPrincipal::App(app_id),
+                tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            ) => match self.state.app_action_consent(&person, app_id, invoke) {
+                app_consent::ConsentStep::Serve => None,
+                app_consent::ConsentStep::Refuse => {
+                    return refusal(&request.message);
+                }
+                app_consent::ConsentStep::Ask(consent) => Some(consent),
+            },
+            _ => None,
+        };
+        // A person's answer to what an issue's run asks them is theirs to
+        // give on the host's sheet, never the app's.
+        let question = match &request.message {
+            tilo_actions::remote::RemoteActionMessage::Invoke(invoke) => {
+                match self.state.run_question(&route.app_id, &caller, invoke) {
+                    run_question::AnswerStep::Serve => None,
+                    run_question::AnswerStep::Refuse => {
+                        return refusal(&request.message);
+                    }
+                    run_question::AnswerStep::Ask(question) => Some(question),
+                }
+            }
+            _ => None,
+        };
+        let admitting_person = current.principal_id.clone();
+        let host = action_host::ConnectionActionHost {
+            state: Arc::clone(&self.state),
+            own_peer: self.peer_id,
+            origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
+                route,
+                time: original_time,
+                admitted: Box::new(current),
+            }),
+        };
+        if let Some(question) = question {
+            return Ok(super::run_question::serve_answered(
+                Arc::clone(&self.state),
+                question,
+                (host, caller),
+                request.message,
+            ));
+        }
+        if let Some(consent) = consent {
+            return Ok(super::app_consent::serve_after_consent(
+                Arc::clone(&self.state),
+                consent,
+                host,
+                caller,
+                request.message,
+            ));
+        }
+        // An invocation the caller may not confirm itself is put to the
+        // person who admitted the connection, on their own device.
+        let answer = super::witness::serve_answering(
+            Arc::clone(&self.state),
+            host,
+            caller,
+            admitting_person,
+            request.message,
+        );
+        // Awaited on this local set, which is also where an application's
+        // directory answers; the connection's other calls keep flowing.
+        Ok(Box::pin(async move {
+            answer
+                .await
+                .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))
+        }))
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -1820,3 +1996,17 @@ where
 #[cfg(test)]
 #[path = "wire_tests.rs"]
 mod wire_tests;
+
+/// An answer already given.
+fn ready<T: 'static>(answer: T) -> Answer<T> {
+    Box::pin(std::future::ready(Ok(answer)))
+}
+
+/// The app's remote-action `message` refused as not permitted.
+fn refusal(
+    message: &tilo_actions::remote::RemoteActionMessage,
+) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, capnp::Error> {
+    tilo_actions::remote::refuse(message, tilo_actions::remote::ActionHostError::NotPermitted)
+        .map(ready)
+        .ok_or_else(|| capnp::Error::failed("only remote-action requests are answered".into()))
+}

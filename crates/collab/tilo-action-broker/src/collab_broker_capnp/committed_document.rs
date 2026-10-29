@@ -1280,13 +1280,10 @@ impl CapnpChannelHandle {
 
 impl CapnpChannelHandle {
     pub(super) fn resource_view_query(
-        self: Rc<Self>,
+        &self,
         correlation: u64,
         query: tilo_actions::remote::CatalogueQuery,
-        mut results: super::channel_handle::RemoteActionResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        use capnp::capability::Promise;
-        use tilo_actions::remote::RemoteActionFrame;
+    ) -> super::wire::Answer<tilo_actions::remote::RemoteActionMessage> {
         let context = query
             .provider
             .as_deref()
@@ -1298,7 +1295,7 @@ impl CapnpChannelHandle {
                     .map(|context| context.for_source(app, record))
             });
         let service = self.state.services.resource_views.clone();
-        Promise::from_future(async move {
+        Box::pin(async move {
             let result = match (context, service) {
                 (Ok(context), Some(service)) => service.query(context, query).await,
                 (Err(reason), _) => {
@@ -1308,15 +1305,12 @@ impl CapnpChannelHandle {
                     reason: "the native host cannot discover shared resource views".into(),
                 }),
             };
-            let answer = tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result,
-            };
-            let bytes = RemoteActionFrame::new(answer)
-                .encode()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            results.get().set_frame(&bytes);
-            Ok(())
+            Ok(
+                tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result,
+                },
+            )
         })
     }
 }

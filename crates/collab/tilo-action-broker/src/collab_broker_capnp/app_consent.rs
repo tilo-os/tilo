@@ -12,8 +12,6 @@
 
 use std::sync::Arc;
 
-use capnp::capability::Promise;
-use runtime_collab::raw::channel_handle;
 use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionMessage};
 
@@ -240,10 +238,9 @@ pub(super) fn serve_after_consent(
     host: ConnectionActionHost,
     caller: Caller,
     message: RemoteActionMessage,
-    mut results: channel_handle::RemoteActionResults,
-) -> Promise<(), capnp::Error> {
-    use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
-    Promise::from_future(async move {
+) -> super::wire::Answer<RemoteActionMessage> {
+    use tilo_actions::remote::{ActionHostError, refuse};
+    Box::pin(async move {
         let mut consent = consent;
         // A grant question shows no draft: only the choice counts. Resolved
         // by the sheet: the person's answer, or its sender dropped with the
@@ -279,12 +276,6 @@ pub(super) fn serve_after_consent(
             let person = consent.request.person.clone();
             super::witness::serve_answering(Arc::clone(&state), host, caller, person, message).await
         };
-        let reply = reply
-            .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;
-        let bytes = RemoteActionFrame::new(reply)
-            .encode()
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
-        results.get().set_frame(&bytes);
-        Ok(())
+        reply.ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))
     })
 }

@@ -193,6 +193,9 @@ pub enum Service {
     LocalFile,
     /// A `committed_document::Request` -> its `Reply`, in their encoding.
     CommittedDocument,
+    /// A `tilo_actions::remote::RemoteActionFrame` the app sends another
+    /// app's action -> the frame that answers it.
+    RemoteAction,
 }
 
 /// What an endpoint publishes into a channel.

@@ -22,8 +22,6 @@
 
 use std::sync::Arc;
 
-use capnp::capability::Promise;
-use runtime_collab::raw::channel_handle;
 use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
 use tilo_action_policy::{Answer, Grant, Subject};
 use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeRequest};
@@ -418,10 +416,9 @@ pub(super) fn serve_answered(
     pending: Box<PendingAnswer>,
     (host, caller): (ConnectionActionHost, Caller),
     message: tilo_actions::remote::RemoteActionMessage,
-    results: channel_handle::RemoteActionResults,
-) -> Promise<(), capnp::Error> {
+) -> super::wire::Answer<tilo_actions::remote::RemoteActionMessage> {
     use tilo_actions::remote::RemoteActionMessage;
-    Promise::from_future(async move {
+    Box::pin(async move {
         let PendingAnswer {
             request,
             grant,
@@ -452,30 +449,19 @@ pub(super) fn serve_answered(
                         &RemoteActionMessage::Invoke(invoke),
                         tilo_actions::remote::ActionHostError::InvalidRequest { reason },
                     );
-                    return send_reply(results, refused);
+                    return refused.ok_or_else(dropped);
                 }
                 RemoteActionMessage::Invoke(invoke)
             }
             other => other,
         };
         let person = request.person;
-        let reply = super::witness::serve_answering(state, host, caller, person, message)
+        super::witness::serve_answering(state, host, caller, person, message)
             .await
-            .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;
-        send_reply(results, Some(reply))
+            .ok_or_else(dropped)
     })
 }
 
-/// Answer the app's call with `reply`.
-fn send_reply(
-    mut results: channel_handle::RemoteActionResults,
-    reply: Option<tilo_actions::remote::RemoteActionMessage>,
-) -> Result<(), capnp::Error> {
-    let reply =
-        reply.ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;
-    let bytes = tilo_actions::remote::RemoteActionFrame::new(reply)
-        .encode()
-        .map_err(|error| capnp::Error::failed(error.to_string()))?;
-    results.get().set_frame(&bytes);
-    Ok(())
+fn dropped() -> capnp::Error {
+    capnp::Error::failed("the action host dropped the request".into())
 }
