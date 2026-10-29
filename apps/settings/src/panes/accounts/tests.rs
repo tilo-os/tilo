@@ -762,7 +762,7 @@ fn the_area_builds_its_model_from_the_read_it_started() {
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");
     assert!(!area.is_open(), "a running read publishes nothing yet");
-    until_finished(|| area.read_finished());
+    until_finished(|| area.read.is_finished());
     let model = area.model().borrow();
     assert!(area.is_open());
     assert!(vault.get(&id).is_some(), "the credential was saved");

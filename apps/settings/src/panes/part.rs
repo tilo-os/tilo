@@ -149,8 +149,8 @@ macro_rules! live {
             |app| $module::area(app).is_some_and($module::$area::is_open),
             Some(crate::effects::BackgroundRead {
                 start: |app| $module::area(app).is_some_and($module::$area::start_read),
-                finished: |app| $module::area(app).is_none_or($module::$area::read_finished),
-                wait: |app| $module::area(app).and_then($module::$area::wait_read),
+                finished: |app| $module::area(app).is_none_or(|area| area.read.is_finished()),
+                wait: |app| $module::area(app).and_then(|area| area.read.wait()),
                 answers: $answers,
             }))
     };

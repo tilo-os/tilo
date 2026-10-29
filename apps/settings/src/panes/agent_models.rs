@@ -924,7 +924,7 @@ pub struct AgentModelsArea {
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AgentModelsModel>>>,
     /// The manager's snapshot, asked off the UI thread after the first frame.
     /// Provider administration is separately polled as a portable future.
-    read: crate::device_read::DeviceRead<AgentModelsRead>,
+    pub(crate) read: crate::device_read::DeviceRead<AgentModelsRead>,
     /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
     /// Held by each page showing the model ([`Self::showing`]).
@@ -1053,16 +1053,6 @@ impl AgentModelsArea {
         let hosted = hosted_profiles(&Providers::new(&self.storage).config());
         self.read
             .start(move || AgentModelsRead::of(control.as_ref(), hosted))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,

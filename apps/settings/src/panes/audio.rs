@@ -541,7 +541,7 @@ pub struct AudioArea {
     /// The device's audio, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]); `None` stands for the sample graph a
     /// screenshot shows.
-    read: crate::device_read::DeviceRead<Option<AudioRead>>,
+    pub(crate) read: crate::device_read::DeviceRead<Option<AudioRead>>,
     /// Moves whenever what the page shows of the device does: a new
     /// reading, a change it took, a notice, a test starting or ending.
     shown: LocalState<u64>,
@@ -625,16 +625,6 @@ impl AudioArea {
         self.read.start(move || {
             device.then(|| AudioRead::of_device(output.as_deref(), input.as_deref()))
         })
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -933,7 +923,7 @@ fn moves_graph(update: &serde_json::Value, graph: &mut std::collections::HashSet
 /// node graph, what the audio runtime can do and the installed sound
 /// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
 /// warm-up makes the read off the UI thread.
-struct AudioRead {
+pub(crate) struct AudioRead {
     initial: VolumeState,
     volume_error: Option<String>,
     input_volume: f32,

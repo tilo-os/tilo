@@ -590,7 +590,7 @@ pub struct AccountsArea {
     account_root: Option<AccountRoot>,
     /// The credential vault, its custody and the sync statuses, opened off
     /// the UI thread after the window's first frame ([`Self::start_read`]).
-    read: crate::device_read::DeviceRead<AccountsRead>,
+    pub(crate) read: crate::device_read::DeviceRead<AccountsRead>,
     /// The linked accounts' revision the pane last showed.
     linked_seen: std::cell::Cell<u64>,
     /// Moves whenever what the page shows of the model does.
@@ -665,16 +665,6 @@ impl AccountsArea {
             .as_ref()
             .and_then(|root| root.explicit().map(std::path::Path::to_path_buf));
         self.read.start(move || AccountsRead::under(explicit))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {

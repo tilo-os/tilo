@@ -459,7 +459,7 @@ pub struct UsersArea {
     /// The device's accounts, read off the UI thread after the window's
     /// first frame ([`Self::start_read`]); `None` stands for the samples a
     /// screenshot shows.
-    read: crate::device_read::DeviceRead<Option<UsersRead>>,
+    pub(crate) read: crate::device_read::DeviceRead<Option<UsersRead>>,
 }
 
 impl UsersArea {
@@ -517,16 +517,6 @@ impl UsersArea {
         }
         let device = self.devices;
         self.read.start(move || device.then(UsersRead::of_device))
-    }
-
-    /// Whether the read [`Self::start_read`] started has ended.
-    pub(crate) fn read_finished(&self) -> bool {
-        self.read.is_finished()
-    }
-
-    /// What waits off the UI thread for the started read to end.
-    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
-        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -680,7 +670,7 @@ pub struct UsersModel {
 /// What the users area reads of the device: its login accounts (one
 /// `AccountsService` call per person for automatic login). Plain data, so
 /// it is read off the UI thread; the identities are the host's to answer.
-struct UsersRead {
+pub(crate) struct UsersRead {
     users: Result<Vec<DeviceUser>, String>,
 }
 
