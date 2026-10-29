@@ -9,9 +9,9 @@ use super::*;
 fn the_window_bars_sidebar_button_flips_the_sidebar() {
     let dir = tempfile::tempdir().unwrap();
     for viewport in ui::framework::testing::SIDEBAR_BUTTON_WINDOWS {
-        let mut files = FileExplorerWidget::with_persistence(None, None);
-        files.navigate(dir.path().to_path_buf());
-        files.wait_for_archive();
+        let files = FileExplorerWidget::with_persistence(None, None);
+        files.state().navigate(dir.path().to_path_buf());
+        files.state().wait_for_archive();
         let mut harness = ui::headless::FrameHarness::for_app(
             ui::State::new(),
             files,

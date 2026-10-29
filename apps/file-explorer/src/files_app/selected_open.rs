@@ -1,5 +1,5 @@
 //! Admission routing on the existing host lane, distinct from clipboard commands.
-use super::{FileExplorerWidget, Ran};
+use super::{FilesState, Ran};
 use crate::i18n::t;
 use host_fs::RetainedObject;
 use std::{path::Path, sync::Arc};
@@ -175,7 +175,7 @@ pub(super) fn components(path: &Path) -> Result<Vec<Vec<u8>>, String> {
     tilo_files::native::retained_home::components(path)
         .ok_or_else(|| t("files-open-with-selection-changed"))
 }
-impl FileExplorerWidget {
+impl FilesState {
     pub(super) fn begin_selected_open(
         &mut self,
         entry: &str,
