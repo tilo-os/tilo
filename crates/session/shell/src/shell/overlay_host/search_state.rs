@@ -233,7 +233,7 @@ impl SearchState {
 
     /// The launcher's list holds `rows`. Whether that changed.
     pub(crate) fn set_row_capacity(&mut self, rows: usize) -> bool {
-        std::mem::replace(&mut self.row_capacity, Some(rows)) != Some(rows)
+        self.row_capacity.replace(rows) != Some(rows)
     }
 
     fn rebuild(&mut self) {

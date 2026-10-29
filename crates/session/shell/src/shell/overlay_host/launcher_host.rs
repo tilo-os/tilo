@@ -124,11 +124,11 @@ impl ShellOverlayHost {
         let Some(launcher) = self.launcher.as_ref() else {
             return Rect::ZERO;
         };
-        let place = launcher.app.get_rect();
+        let origin = launcher.app.get_rect().origin();
         launcher
             .link
             .fit()
-            .map_or(Rect::ZERO, |fit| fit.card + place.origin().to_vec2())
+            .map_or(Rect::ZERO, |fit| on_screen(fit.card, origin))
     }
 
     /// The place laid out for the launcher: its card, and the room below it
@@ -142,13 +142,13 @@ impl ShellOverlayHost {
     /// The row of the launcher's card at `point`, by id.
     pub(super) fn search_row_at(&self, point: Point) -> Option<String> {
         let launcher = self.launcher.as_ref().filter(|_| self.palette_visible)?;
-        let origin = launcher.app.get_rect().origin().to_vec2();
+        let origin = launcher.app.get_rect().origin();
         launcher
             .link
             .fit()?
             .shown
             .into_iter()
-            .find(|(_, rect)| (*rect + origin).contains(point))
+            .find(|(_, rect)| on_screen(*rect, origin).contains(point))
             .map(|(id, _)| id)
     }
 
@@ -517,4 +517,15 @@ impl ShellOverlayHost {
             self.ask_as_launcher(Ask::Choose { row, modifier });
         }
     }
+}
+
+/// `rect`, laid out in the launcher's own space, where it shows on screen
+/// with the launcher placed at `origin`.
+fn on_screen(rect: Rect, origin: Point) -> Rect {
+    Rect::new(
+        rect.x0 + origin.x,
+        rect.y0 + origin.y,
+        rect.x1 + origin.x,
+        rect.y1 + origin.y,
+    )
 }

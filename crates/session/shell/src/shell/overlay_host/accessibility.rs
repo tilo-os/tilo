@@ -25,7 +25,8 @@ impl ShellOverlayHost {
             }
             match overlay {
                 // Stacked and published above, or an app that publishes its
-                // own tree as a child of the host.
+                // own tree as a child of the host; the launcher publishes its
+                // own card, as its own child.
                 LayerId::ShortcutHelp
                 | LayerId::Directory
                 | LayerId::DisplayConfirmation
@@ -33,9 +34,8 @@ impl ShellOverlayHost {
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
                 | LayerId::PowerMenu
-                | LayerId::Dictation => {}
-                // The launcher publishes its own card, as its own child.
-                LayerId::CommandPalette => {}
+                | LayerId::Dictation
+                | LayerId::CommandPalette => {}
                 LayerId::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-member-sheet"))
@@ -333,7 +333,6 @@ impl ShellOverlayHost {
             return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
-            LayerId::CommandPalette => None,
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
@@ -396,7 +395,9 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu | LayerId::Dictation => None,
+            | LayerId::PowerMenu | LayerId::Dictation
+            // The launcher answers for its own card.
+            | LayerId::CommandPalette => None,
         }
     }
 
@@ -415,7 +416,6 @@ impl ShellOverlayHost {
             return focused;
         }
         match overlay {
-            LayerId::CommandPalette => false,
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
@@ -436,7 +436,9 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
-            | LayerId::PowerMenu | LayerId::Dictation => false,
+            | LayerId::PowerMenu | LayerId::Dictation
+            // The launcher answers for its own card.
+            | LayerId::CommandPalette => false,
         }
     }
 }
