@@ -9,8 +9,8 @@
 
 use crate::setup::strings::{t, t_args};
 use imager_backend::support_report::{
-    Applicability, ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact,
-    EvidenceScope, Remedy, SupportReason, SupportState,
+    ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact, EvidenceScope, Remedy,
+    SupportReason, SupportState,
 };
 use ui::icons::Icon;
 
@@ -369,7 +369,6 @@ pub(crate) fn remedy_text(kind: ComponentKind, remedy: Remedy) -> String {
         Remedy::PowerAdapter => "installer-hardware-remedy-power-adapter",
     })
 }
-
 
 pub(crate) fn component_icon(kind: ComponentKind) -> Icon {
     match kind {

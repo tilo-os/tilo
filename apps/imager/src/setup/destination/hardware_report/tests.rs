@@ -4,7 +4,10 @@
 //! and a next step.
 
 use super::*;
-use imager_backend::support_report::{DestinationIdentity, REPORT_SCHEMA, SupportSummary};
+use imager_backend::support_report::{
+    DestinationIdentity, DeviceBinding, Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA,
+    Remedy, SupportReason, SupportSummary,
+};
 
 fn binding(device: &str, driver: Option<&str>) -> DeviceBinding {
     DeviceBinding {

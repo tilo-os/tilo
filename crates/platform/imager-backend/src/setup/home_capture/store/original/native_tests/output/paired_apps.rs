@@ -164,10 +164,12 @@ pub(super) fn complete_and_restore(
         .reseal_completed_applications(&token, Zeroizing::new(PASSWORD.to_vec()), &cancel)
         .unwrap();
     let manifest = completed.manifest();
-    assert!(manifest.completed_applications_only);
-    assert!(manifest.offline_applications.is_none() && manifest.offline_home.is_none());
-    assert!(manifest.portable_home.is_none() && manifest.completed_home.is_none());
-    assert_eq!(manifest.portable_flatpak.as_ref(), Some(&expected));
+    assert!(manifest.units.completed_applications_only());
+    assert!(
+        manifest.units.offline_applications().is_none() & manifest.units.offline_home().is_none()
+    );
+    assert!(manifest.units.portable_home().is_none() & manifest.units.completed_home().is_none());
+    assert_eq!(manifest.units.portable_flatpak(), Some(&expected));
     assert_eq!(
         manifest.identity_public_key,
         setup.manifest().identity_public_key
@@ -251,13 +253,15 @@ pub(super) fn complete_and_restore(
                 capsule
                     .authenticated_setup()
                     .manifest()
-                    .completed_applications_only
+                    .units
+                    .completed_applications_only()
             );
             assert!(
                 capsule
                     .authenticated_setup()
                     .manifest()
-                    .completed_home
+                    .units
+                    .completed_home()
                     .is_none()
             );
             fs::copy(capsule.package_path(), destination.join("setup.sealed"))?;
@@ -350,11 +354,14 @@ pub(super) fn restore_child() {
     )
     .unwrap();
     setup.require_completed_export().unwrap();
-    assert!(setup.manifest().completed_applications_only);
-    assert!(setup.manifest().portable_home.is_none() && setup.manifest().completed_home.is_none());
+    assert!(setup.manifest().units.completed_applications_only());
+    assert!(
+        setup.manifest().units.portable_home().is_none()
+            & setup.manifest().units.completed_home().is_none()
+    );
     let expected: crate::setup::flatpak_transfer::portable::Expectation =
         serde_json::from_slice(&fs::read(root.join("expected.json")).unwrap()).unwrap();
-    assert_eq!(setup.manifest().portable_flatpak.as_ref(), Some(&expected));
+    assert_eq!(setup.manifest().units.portable_flatpak(), Some(&expected));
     let home = root.join("home");
     fs::create_dir(&home).unwrap();
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();

@@ -18,10 +18,8 @@
 //! `Supported`, and only with evidence checked against that release.
 
 use imager_backend::support_report::{
-    Applicability, ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact,
-    EvidenceScope, Remedy, ReportSource, SupportReason, SupportReport, SupportState,
+    Applicability, ComponentKind, ComponentSupport, ReportSource, SupportReport, SupportState,
 };
-use ui::icons::Icon;
 use ui::tokens::typography::TextRole;
 use ui::widget::list_row::ListRow;
 use ui::widget::{Text, Widget};

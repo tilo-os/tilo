@@ -193,14 +193,14 @@ pub(crate) fn deliver(
     let prepared = prepared.refreshed_for_transfer(cancel)?;
     let manifest = prepared.desktop_manifest()?;
     #[cfg(target_os = "linux")]
-    if manifest.original_copy.is_some() {
+    if manifest.units.original_copy().is_some() {
         return Err(changed(
             "Original source copy requires the installed source reader",
         ));
     }
-    if manifest.portable_home.is_some()
-        || manifest.portable_flatpak.is_some()
-        || manifest.retained_home.is_some()
+    if manifest.units.portable_home().is_some()
+        || manifest.units.portable_flatpak().is_some()
+        || manifest.units.retained_home().is_some()
     {
         return Err(changed(
             "Desktop preparation must leave existing files and applications in place",

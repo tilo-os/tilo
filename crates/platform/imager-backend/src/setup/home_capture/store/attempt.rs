@@ -141,7 +141,11 @@ mod tests {
         assert!(!Route::Medium.admits(Phase::Sealing));
         assert!(!Route::Medium.admits(Phase::Cancelled));
         let mut phase = Phase::Prepared;
-        assert!(phase.advance(Route::InstalledCopy, Phase::Launching).is_err());
+        assert!(
+            phase
+                .advance(Route::InstalledCopy, Phase::Launching)
+                .is_err()
+        );
         for next in [
             Phase::ScratchReady,
             Phase::Launching,
@@ -153,6 +157,10 @@ mod tests {
         ] {
             phase.advance(Route::InstalledCopy, next).unwrap();
         }
-        assert!(phase.advance(Route::InstalledCopy, Phase::Cancelled).is_err());
+        assert!(
+            phase
+                .advance(Route::InstalledCopy, Phase::Cancelled)
+                .is_err()
+        );
     }
 }

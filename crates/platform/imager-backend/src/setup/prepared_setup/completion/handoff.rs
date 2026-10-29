@@ -312,7 +312,13 @@ pub(super) fn adopt(review: &CompletedBootReview<'_>, cancel: &AtomicBool) -> io
         }
         Ok(())
     })?;
-    if let Some(browser) = &review.capsule.authenticated_setup().manifest().browser {
+    if let Some(browser) = &review
+        .capsule
+        .authenticated_setup()
+        .manifest()
+        .units
+        .browser()
+    {
         review.pending.with_payload(|inbox| {
             let payload = Payload::Browser(browser.payload.clone());
             let file = open_payload(inbox, &payload)?;

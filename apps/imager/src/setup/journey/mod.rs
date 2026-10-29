@@ -10107,8 +10107,8 @@ mod tests {
             assert!(!preview.media_preparation.busy());
         })
         .unwrap();
-        assert!(authenticated.manifest().offline_home.is_none());
-        assert!(authenticated.manifest().original_copy.is_none());
+        assert!(authenticated.manifest().units.offline_home().is_none());
+        assert!(authenticated.manifest().units.original_copy().is_none());
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "destination".into(),
         })

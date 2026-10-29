@@ -11,9 +11,7 @@ use crate::setup::hardware_text::{
 };
 use crate::setup::strings::{t, t_args};
 use imager_backend::support_report::{
-    Applicability, ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact,
-    EvidenceScope, Remedy, ReportSource, SupportReason, SupportReport as HardwareReport,
-    SupportState,
+    Applicability, ComponentSupport, ReportSource, SupportReport as HardwareReport, SupportState,
 };
 
 /// Which computer the report describes. The same component presentation is

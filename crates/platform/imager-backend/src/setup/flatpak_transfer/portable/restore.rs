@@ -37,8 +37,8 @@ impl ApplicationImport {
     ) -> io::Result<Self> {
         let expected = setup
             .manifest()
-            .portable_flatpak
-            .as_ref()
+            .units
+            .portable_flatpak()
             .ok_or_else(|| changed("Prepared setup does not declare portable applications"))?;
         expected.validate()?;
         if expected.setup_binding != setup.manifest().setup_binding

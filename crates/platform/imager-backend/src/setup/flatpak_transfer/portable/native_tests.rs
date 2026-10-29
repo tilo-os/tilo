@@ -425,7 +425,14 @@ impl Fixture {
             .unwrap();
         let mut setup_manifest =
             Manifest::new("native-binding".into(), identity.public_key(), vec![]).unwrap();
-        setup_manifest.portable_flatpak = Some(expected);
+        setup_manifest
+            .units
+            .insert(crate::setup::prepared_setup::Unit::MediumApplications(
+                crate::setup::prepared_setup::ApplicationsCarriage::Sealed {
+                    expectation: expected,
+                    alone: false,
+                },
+            ));
         setup_manifest.write(&setup_root).unwrap();
         let setup_package = self.root.join(format!("setup-{label}.sealed"));
         ExportReview::review(

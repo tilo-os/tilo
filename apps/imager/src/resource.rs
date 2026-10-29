@@ -31,18 +31,13 @@ use crate::model::{InstallProfile, RecentSource, Source};
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
 /// The other languages come from the language packs.
-pub(crate) static CATALOG: EmbeddedCatalog = {
-    let catalog = EmbeddedCatalog::new("en-US", LOCALES)
-        .with_language_pack(ui::i18n::LanguagePack {
-            id: env!("CARGO_PKG_NAME"),
-            locales: &["en-US", "de-DE"],
-            source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
-        })
-        .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-};
+pub(crate) static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES)
+    .with_language_pack(ui::i18n::LanguagePack {
+        id: env!("CARGO_PKG_NAME"),
+        locales: &["en-US", "de-DE"],
+        source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/locales"),
+    })
+    .with_system_locale();
 
 /// The reviewed image, the images reviewed before it and the install
 /// profile: everything the imager keeps in its document.
