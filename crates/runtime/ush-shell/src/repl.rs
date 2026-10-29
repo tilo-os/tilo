@@ -52,6 +52,13 @@ impl Shell {
             .clone()
             .zip(self.output(1))
             .map(|(key, out)| std::sync::Arc::new(crate::jobs::Marks::new(key, out)));
+        // Only a shell that edits its lines reads Terminal's marks on its
+        // input; one reading lines as they come takes them as typed.
+        let edits = self.host.edit_mode(true);
+        if edits {
+            self.host.edit_mode(false);
+        }
+        let reads = if edits { ";in=1" } else { "" };
         // Each command line is a run of its own; this names the session's.
         let session_id = format!("ush-{}-{}", self.host.pid(), self.host.now_ms());
         let mut lines: u64 = 0;
@@ -59,7 +66,7 @@ impl Shell {
             self.report_jobs();
             if let Some(key) = &session.runs_key {
                 // `in=1`: this shell reads Terminal's marks on its input.
-                self.out(&format!("\x1b]133;A;k={key};in=1\x07"));
+                self.out(&format!("\x1b]133;A;k={key}{reads}\x07"));
             }
             let Some(Command { text, agent }) = self.read_command() else {
                 return self.exit_trap(self.last_status);
@@ -149,14 +156,12 @@ impl Shell {
                     if let Some(err) = self.output(2) {
                         let _ = err.write_str(&shown);
                     }
-                    match self.read_cooked()? {
-                        Ok(line) => line,
-                        Err(()) => {
-                            text.clear();
-                            prompt = self.vars.scalar("PS1").unwrap_or_default();
-                            continue;
-                        }
-                    }
+                    let Ok(line) = self.read_cooked()? else {
+                        text.clear();
+                        prompt = self.vars.scalar("PS1").unwrap_or_default();
+                        continue;
+                    };
+                    line
                 }
             };
             text.push_str(&line);
@@ -170,11 +175,10 @@ impl Shell {
 
     /// One line as the terminal's line discipline hands it over: `None` at
     /// the end of the input, `Err` when Ctrl-C dropped what was typed.
-    fn read_cooked(&mut self) -> Option<Result<String, ()>> {
+    fn read_cooked(&self) -> Option<Result<String, ()>> {
         let input = self.input(0)?;
         match input.read_line_until(b'\n') {
             Ok(Some(line)) => Some(Ok(String::from_utf8_lossy(&line).into_owned())),
-            Ok(None) => None,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
                 // Ctrl-C at the prompt drops what was typed.
                 self.host.clear_interrupt();
@@ -183,7 +187,7 @@ impl Shell {
                 }
                 Some(Err(()))
             }
-            Err(_) => None,
+            Ok(None) | Err(_) => None,
         }
     }
 

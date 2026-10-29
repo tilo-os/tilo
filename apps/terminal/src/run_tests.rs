@@ -765,7 +765,7 @@ fn an_agents_run_gets_the_agent_rendering() {
         .acting_for("person:ada");
     app.call_by(
         agent,
-        Terminal::KIND.as_str(),
+        Terminal::KIND,
         "run",
         serde_json::json!({ "command": "ls -R p" }),
     )

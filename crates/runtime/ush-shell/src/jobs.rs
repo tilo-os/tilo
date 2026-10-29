@@ -17,6 +17,7 @@
 //! line had changed in the shell (a `cd`, a variable) before it stopped
 //! stays with the job, as it would in a subshell.
 
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -240,13 +241,12 @@ impl Job {
         if self.foreground() && host.take_suspend() {
             self.stop();
         }
-        let mut phase = lock(&self.phase);
-        while *phase == Phase::Stopped && !self.killed() {
-            phase = self
-                .changed
-                .wait(phase)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
+        let phase = lock(&self.phase);
+        drop(
+            self.changed
+                .wait_while(phase, |p| *p == Phase::Stopped && !self.killed())
+                .unwrap_or_else(PoisonError::into_inner),
+        );
     }
 }
 
@@ -479,7 +479,7 @@ impl Host for JobHost {
             }
             let step = left.min(50);
             self.inner.sleep(step);
-            left -= step;
+            left = left.saturating_sub(step);
         }
     }
     fn user_name(&self, uid: u32) -> Option<String> {
@@ -530,7 +530,11 @@ impl Write for JobWriter {
         }
         match &self.marks {
             Some((open, close)) => {
-                let mut bytes = Vec::with_capacity(buf.len() + open.len() + close.len());
+                let mut bytes = Vec::with_capacity(
+                    buf.len()
+                        .saturating_add(open.len())
+                        .saturating_add(close.len()),
+                );
                 bytes.extend_from_slice(open.as_bytes());
                 bytes.extend_from_slice(buf);
                 bytes.extend_from_slice(close.as_bytes());
@@ -805,7 +809,7 @@ impl crate::shell::Shell {
     }
 
     /// Say which jobs ended since the last prompt, and forget them.
-    pub(crate) fn report_jobs(&mut self) {
+    pub(crate) fn report_jobs(&self) {
         let done: Vec<(u32, Arc<Job>, char)> = {
             let table = self.jobs();
             table
@@ -854,6 +858,10 @@ fn describe(number: u32, mark: char, job: &Job, with_pid: bool) -> String {
 }
 
 /// `jobs [-l|-p] [SPEC…]`.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 pub(crate) fn jobs_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate::shell::Exec {
     let mut with_pid = false;
     let mut pids_only = false;
@@ -889,7 +897,7 @@ pub(crate) fn jobs_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
     let mut out = String::new();
     for (number, job) in &listed {
         if pids_only {
-            out.push_str(&format!("{}\n", job.pid));
+            let _ = writeln!(out, "{}", job.pid);
         } else {
             out.push_str(&describe(*number, table.mark(*number), job, with_pid));
         }
@@ -917,6 +925,10 @@ fn job_of(sh: &crate::shell::Shell, name: &str, args: &[String]) -> Result<(u32,
 }
 
 /// `fg [SPEC]`: bring a job to the foreground and wait for it.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 pub(crate) fn fg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate::shell::Exec {
     let (number, job) = match job_of(sh, "fg", args) {
         Ok(found) => found,
@@ -929,23 +941,23 @@ pub(crate) fn fg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate
         return Ok(status);
     }
     job.resume(true);
-    match job.wait_settled() {
-        Phase::Done(status) => {
-            sh.jobs().remove(number);
-            Ok(status)
-        }
-        _ => {
-            job.set_foreground(false);
-            sh.error_plain(&format!(
-                "\n[{number}]+  Stopped                 {}\n",
-                job.command
-            ));
-            Ok(148)
-        }
+    if let Phase::Done(status) = job.wait_settled() {
+        sh.jobs().remove(number);
+        return Ok(status);
     }
+    job.set_foreground(false);
+    sh.error_plain(&format!(
+        "\n[{number}]+  Stopped                 {}\n",
+        job.command
+    ));
+    Ok(148)
 }
 
 /// `bg [SPEC…]`: let stopped jobs go on in the background.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 pub(crate) fn bg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate::shell::Exec {
     let specs: Vec<String> = if args.is_empty() {
         vec!["%+".into()]
@@ -972,6 +984,10 @@ pub(crate) fn bg_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate
 
 /// `wait [SPEC…]`: wait for jobs to end; every running one without operands.
 /// Ctrl+C stops the waiting, not the jobs.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 pub(crate) fn wait_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate::shell::Exec {
     let named: Vec<(Option<u32>, Option<Arc<Job>>)> = if args.is_empty() {
         sh.jobs()
@@ -983,9 +999,9 @@ pub(crate) fn wait_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
     } else {
         args.iter()
             .filter(|a| a.as_str() != "--")
-            .map(|spec| match sh.jobs().find(spec) {
-                Ok((n, job)) => (Some(n), Some(job)),
-                Err(_) => (None, None),
+            .map(|spec| {
+                let found = sh.jobs().find(spec);
+                found.map_or((None, None), |(n, job)| (Some(n), Some(job)))
             })
             .collect()
     };
@@ -1035,6 +1051,10 @@ fn signal_named(name: &str) -> Option<Signal> {
 /// `kill [-s SIG | -SIG] TARGET…`: a target naming one of the shell's jobs
 /// (`%n`, or the number `$!` gave) is the shell's to signal; anything else
 /// is the host's `kill`.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 pub(crate) fn kill_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> crate::shell::Exec {
     let mut signal = "TERM".to_owned();
     let mut rest = args;
@@ -1049,7 +1069,7 @@ pub(crate) fn kill_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
             rest = args.get(2..).unwrap_or(&[]);
         }
         Some(flag) if flag.starts_with('-') && flag.len() > 1 && flag != "--" => {
-            signal = flag.trim_start_matches('-').to_owned();
+            flag.trim_start_matches('-').clone_into(&mut signal);
             rest = args.get(1..).unwrap_or(&[]);
         }
         _ => {}
@@ -1079,9 +1099,9 @@ pub(crate) fn kill_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
         }
     }
     if !others.is_empty() {
-        let mut argv = vec!["kill".to_owned(), format!("-{signal}")];
-        argv.extend(others);
-        let other = sh.run_other(&argv);
+        let mut line = vec!["kill".to_owned(), format!("-{signal}")];
+        line.extend(others);
+        let other = sh.run_other(&line);
         if other != 0 {
             status = other;
         }
@@ -1090,7 +1110,7 @@ pub(crate) fn kill_builtin(sh: &mut crate::shell::Shell, args: &[String]) -> cra
 }
 
 fn prefixed(name: &str, args: &[String]) -> Vec<String> {
-    let mut argv = vec![name.to_owned()];
-    argv.extend(args.iter().cloned());
-    argv
+    let mut line = vec![name.to_owned()];
+    line.extend(args.iter().cloned());
+    line
 }

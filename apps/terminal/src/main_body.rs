@@ -2746,9 +2746,13 @@ impl TerminalWidget {
                 session: String::new(),
                 run: id.clone(),
             };
+            let job = run.job.is_some();
             let recorded =
                 dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
             match &recorded {
+                // A background job's run stays the session's: the line that
+                // started it is the person's history.
+                Ok(()) if job => {}
                 Ok(()) => self.remember(ran),
                 Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
             }

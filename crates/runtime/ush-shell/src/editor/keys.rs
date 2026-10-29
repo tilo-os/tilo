@@ -89,7 +89,7 @@ fn decode(bytes: &[u8]) -> Step {
         0x7f | 0x08 => Step::Key(Key::Backspace),
         0x1f => Step::Key(Key::Ctrl('_')),
         0x00 => Step::Key(Key::Ctrl(' ')),
-        0x01..=0x1a => Step::Key(Key::Ctrl(char::from(first - 1 + b'a'))),
+        0x01..=0x1a => Step::Key(Key::Ctrl(char::from(first.saturating_add(b'a' - 1)))),
         0x1c..=0x1e => Step::Key(Key::Unknown),
         _ => utf8(bytes),
     }
@@ -125,8 +125,7 @@ fn escape(rest: &[u8]) -> Step {
         },
         b']' => osc(tail),
         0x7f | 0x08 => Step::Key(Key::AltBackspace),
-        b'\r' | b'\n' => Step::Key(Key::Unknown),
-        0x1b => Step::Key(Key::Unknown),
+        b'\r' | b'\n' | 0x1b => Step::Key(Key::Unknown),
         _ => match utf8(rest) {
             Step::Key(Key::Char(c)) => Step::Key(Key::Alt(c.to_ascii_lowercase())),
             Step::Key(_) => Step::Key(Key::Unknown),

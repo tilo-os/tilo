@@ -23,7 +23,7 @@ impl At {
     /// Move past `c`, wrapping at `columns`.
     fn advance(&mut self, c: char, columns: usize) {
         if c == '\n' {
-            self.row += 1;
+            self.row = self.row.saturating_add(1);
             self.col = 0;
             return;
         }
@@ -31,13 +31,13 @@ impl At {
         if width == 0 {
             return;
         }
-        if self.col + width > columns {
-            self.row += 1;
+        if self.col.saturating_add(width) > columns {
+            self.row = self.row.saturating_add(1);
             self.col = 0;
         }
-        self.col += width;
+        self.col = self.col.saturating_add(width);
         if self.col >= columns {
-            self.row += 1;
+            self.row = self.row.saturating_add(1);
             self.col = 0;
         }
     }
@@ -160,19 +160,24 @@ pub fn table(names: &[String], columns: usize) -> String {
         .map(|n| n.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>())
         .max()
         .unwrap_or(0)
-        + 2;
-    let per_row = (columns / width.max(1)).max(1);
+        .saturating_add(2);
+    let per_row = columns.checked_div(width).unwrap_or(1).max(1);
     let rows = names.len().div_ceil(per_row);
     let mut out = String::new();
     for row in 0..rows {
         for col in 0..per_row {
-            let Some(name) = names.get(col * rows + row) else {
+            let Some(name) = names.get(col.saturating_mul(rows).saturating_add(row)) else {
                 continue;
             };
             out.push_str(name);
             let shown: usize = name.chars().map(|c| c.width().unwrap_or(0)).sum();
-            if col + 1 < per_row && names.get((col + 1) * rows + row).is_some() {
-                out.push_str(&" ".repeat(width - shown));
+            let next = col.saturating_add(1);
+            if next < per_row
+                && names
+                    .get(next.saturating_mul(rows).saturating_add(row))
+                    .is_some()
+            {
+                out.push_str(&" ".repeat(width.saturating_sub(shown)));
             }
         }
         out.push_str("\r\n");

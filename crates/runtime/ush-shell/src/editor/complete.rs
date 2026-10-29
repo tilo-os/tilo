@@ -46,7 +46,7 @@ fn words(before: &str) -> (Vec<(usize, String)>, Option<char>, bool) {
     // separator.
     let mut command_next = true;
     let mut last_command_place = true;
-    let mut chars = before.chars().enumerate().peekable();
+    let mut chars = before.chars().enumerate();
     while let Some((i, c)) = chars.next() {
         if let Some(q) = quote {
             if c == q {
@@ -147,21 +147,22 @@ impl Shell {
             words.first().map(|(_, w)| w.clone())
         };
         let place = if let Some(at) = word.rfind('$').filter(|_| quote != Some('\'')) {
-            let braced = word.get(at + 1..).is_some_and(|r| r.starts_with('{'));
+            let rest = word.get(at..).unwrap_or_default();
+            let braced = rest.starts_with("${");
             let prefix = word.get(..at).unwrap_or_default().to_owned();
-            return self.complete_variable(start, &prefix, &word[at..], braced);
+            return self.complete_variable(start, &prefix, rest, braced);
         } else if command_place && !word.contains('/') {
             Place::Command
         } else if word.starts_with('-') && command.is_some() {
             Place::Option {
-                command: command.clone().unwrap_or_default(),
+                command: command.unwrap_or_default(),
             }
         } else {
             Place::Path {
                 dirs_only: matches!(command.as_deref(), Some("cd" | "pushd" | "rmdir")),
             }
         };
-        let (candidates, insert_of): (Vec<String>, fn(&str, Option<char>) -> String) = match place {
+        let (candidates, insert_of): (Vec<String>, Insert) = match place {
             Place::Command => (self.command_names(&word), |c, q| escape(c, q)),
             Place::Option { command } => (
                 crate::commands::options::of(&command)
@@ -204,7 +205,7 @@ impl Shell {
             .map(|c| {
                 let trimmed = c.strip_suffix('/').unwrap_or(c);
                 match trimmed.rfind('/') {
-                    Some(at) => c.get(at + 1..).unwrap_or(c).to_owned(),
+                    Some(at) => c.get(at.saturating_add(1)..).unwrap_or(c).to_owned(),
                     None => c.clone(),
                 }
             })
@@ -265,7 +266,10 @@ impl Shell {
     /// it (`src/ma` → `src/main.rs`, `src/macros/`).
     fn paths(&self, word: &str, dirs_only: bool) -> Vec<String> {
         let (dir, name) = match word.rfind('/') {
-            Some(at) => (word.get(..=at).unwrap_or_default(), &word[at + 1..]),
+            Some(at) => (
+                word.get(..=at).unwrap_or_default(),
+                word.get(at.saturating_add(1)..).unwrap_or_default(),
+            ),
             None => ("", word),
         };
         let expanded = match dir.strip_prefix('~') {
@@ -302,6 +306,9 @@ impl Shell {
         out
     }
 }
+
+/// How a candidate is typed into the line, inside the quote the word opened.
+type Insert = fn(&str, Option<char>) -> String;
 
 /// The longest start every one of `names` shares.
 fn shared_prefix(names: &[String]) -> String {

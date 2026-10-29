@@ -3,6 +3,7 @@
 //! session's terminal), Tab completion, jobs, and the agent rendering of a
 //! run an agent asked for.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -59,38 +60,31 @@ impl Ran {
 
     /// What was printed, marks taken out.
     fn printed(&self) -> String {
-        let mut out = String::new();
-        let mut rest = self.out.as_str();
-        while let Some(at) = rest.find("\x1b]133;") {
-            out.push_str(&rest[..at]);
-            let end = rest[at..].find('\x07').map_or(rest.len(), |e| at + e + 1);
-            rest = &rest[end..];
+        let mut pieces = self.out.split("\x1b]133;");
+        let mut out = pieces.next().unwrap_or_default().to_owned();
+        for piece in pieces {
+            out.push_str(piece.split_once('\x07').map_or("", |(_, rest)| rest));
         }
-        out.push_str(rest);
         out
     }
 }
 
 /// The marks of kind `kind` in `out`, each as its fields.
 fn marked(out: &str, kind: &str) -> Vec<Vec<(String, String)>> {
-    let start = format!("\x1b]133;{kind};");
-    let mut found = Vec::new();
-    let mut rest = out;
-    while let Some(at) = rest.find(&start) {
-        let body = &rest[at + start.len()..];
-        let end = body.find('\x07').unwrap();
-        found.push(
-            body[..end]
-                .split(';')
+    let start = format!("{kind};");
+    out.split("\x1b]133;")
+        .skip(1)
+        .filter_map(|piece| piece.split_once('\x07'))
+        .filter_map(|(body, _)| body.strip_prefix(&start))
+        .map(|body| {
+            body.split(';')
                 .map(|f| match f.split_once('=') {
                     Some((k, v)) => (k.to_owned(), v.to_owned()),
                     None => (String::new(), f.to_owned()),
                 })
-                .collect(),
-        );
-        rest = &body[end..];
-    }
-    found
+                .collect()
+        })
+        .collect()
 }
 
 /// An interactive session on `host` reading `keys` until they run out.
@@ -238,20 +232,25 @@ fn history_lists_the_persons_lines_numbered_oldest_first() {
 
 /// The input side of a session whose terminal answers the editor's history
 /// questions the way Terminal does.
-struct Keys(Receiver<Vec<u8>>, Vec<u8>);
+struct Keys(Receiver<Vec<u8>>, VecDeque<u8>);
 
 impl Read for Keys {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.1.is_empty() {
             match self.0.recv() {
-                Ok(bytes) => self.1 = bytes,
+                Ok(bytes) => self.1.extend(bytes),
                 Err(_) => return Ok(0),
             }
         }
-        let n = buf.len().min(self.1.len());
-        buf[..n].copy_from_slice(&self.1[..n]);
-        self.1.drain(..n);
-        Ok(n)
+        let mut count = 0_usize;
+        for slot in buf.iter_mut() {
+            let Some(byte) = self.1.pop_front() else {
+                break;
+            };
+            *slot = byte;
+            count = count.saturating_add(1);
+        }
+        Ok(count)
     }
 }
 
@@ -269,12 +268,12 @@ impl Write for Answering {
         let mut seen = self.seen.lock().unwrap();
         seen.extend_from_slice(buf);
         let text = String::from_utf8_lossy(&seen).into_owned();
+        drop(seen);
         let start = format!("\x1b]133;H;k={KEY};");
-        if let Some(at) = text.find(&start)
-            && let Some(end) = text[at..].find('\x07')
+        if let Some((_, after)) = text.split_once(&start)
+            && let Some((body, rest)) = after.split_once('\x07')
         {
-            let body = &text[at + start.len()..at + end];
-            seen.drain(..(at + end + 1));
+            *self.seen.lock().unwrap() = rest.as_bytes().to_vec();
             let field = |name: &str| {
                 body.split(';')
                     .find_map(|f| f.strip_prefix(&format!("{name}=")).map(str::to_owned))
@@ -285,7 +284,7 @@ impl Write for Answering {
             self.asked.lock().unwrap().push(format!("{skip}:{q}"));
             let matching: Vec<&String> = self.history.iter().filter(|l| l.contains(&q)).collect();
             let page: Vec<String> = matching.iter().skip(skip).take(2).map(|l| b64(l)).collect();
-            let end = skip + page.len() >= matching.len();
+            let end = skip.saturating_add(page.len()) >= matching.len();
             let answer = format!(
                 "\x1b]133;H;k={KEY};s={skip};q={};e={}{}\x07",
                 field("q"),
@@ -308,7 +307,7 @@ fn without_a_history_of_its_own_the_host_lets_terminal_answer() {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let (stdout, out) = Output::buffer();
     let io = Stdio {
-        stdin: Input::new(Keys(keys_rx, Vec::new())),
+        stdin: Input::new(Keys(keys_rx, VecDeque::new())),
         stdout,
         stderr: Output::new(Answering {
             seen: Arc::default(),
@@ -317,7 +316,7 @@ fn without_a_history_of_its_own_the_host_lets_terminal_answer() {
             asked: Arc::clone(&asked),
         }),
     };
-    let shell_host = host.clone();
+    let shell_host = host;
     let session = std::thread::spawn(move || {
         let mut shell = Shell::new(
             Arc::new(shell_host),

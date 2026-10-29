@@ -278,10 +278,13 @@ fn set_option(sh: &mut Shell, name: &str, on: bool) -> Result<(), String> {
         "noclobber" | "C" => o.noclobber = on,
         "allexport" | "a" => o.allexport = on,
         "pipefail" => o.pipefail = on,
+        // The line editor has emacs keys only.
+        "vi" if on => return Err("set -o vi".into()),
         // Accepted and meaningless here: job control is always on for an
         // interactive shell, there is no history file, and the editor has
         // emacs keys only.
-        "notify"
+        "vi"
+        | "notify"
         | "b"
         | "monitor"
         | "m"
@@ -293,9 +296,6 @@ fn set_option(sh: &mut Shell, name: &str, on: bool) -> Result<(), String> {
         | "braceexpand"
         | "interactive-comments"
         | "posix" => {}
-        // The line editor has emacs keys only.
-        "vi" if on => return Err("set -o vi".into()),
-        "vi" => {}
         "verbose" | "v" | "noexec" | "n" | "physical" | "P" | "privileged" | "p" | "T" | "E"
         | "k" | "keyword" | "functrace" | "errtrace" | "onecmd" | "t" | "ignoreeof" => {
             return Err(format!("set -o {name}"));
@@ -1427,6 +1427,10 @@ fn mapfile(sh: &mut Shell, args: &[String]) -> Exec {
 /// `history [N]`: the person's command history, oldest first and numbered,
 /// or its newest `N` lines. It is their own record (`terminal.history`),
 /// shared by every session and device; the shell changes nothing in it.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
 fn history(sh: &mut Shell, args: &[String]) -> Exec {
     let mut newest = None;
     for arg in args {
@@ -1439,13 +1443,13 @@ fn history(sh: &mut Shell, args: &[String]) -> Exec {
                 ));
                 return Ok(2);
             }
-            n => match n.parse::<usize>() {
-                Ok(n) => newest = Some(n),
-                Err(_) => {
+            n => {
+                let Ok(n) = n.parse::<usize>() else {
                     sh.error(format!("history: {n}: numeric argument required"));
                     return Ok(2);
-                }
-            },
+                };
+                newest = Some(n);
+            }
         }
     }
     let lines = sh.whole_history();

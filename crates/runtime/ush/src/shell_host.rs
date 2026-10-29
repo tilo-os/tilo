@@ -333,14 +333,13 @@ impl Host for DeviceHost {
     }
 
     fn edit_mode(&self, on: bool) -> bool {
+        let cooked = || {
+            self.cooked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
         if on {
             take_terminal();
-        }
-        let mut cooked = self
-            .cooked
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if on {
             // SAFETY: tcgetattr and tcsetattr only read and write the
             // termios struct we own, on our own standard input.
             unsafe {
@@ -358,13 +357,13 @@ impl Host for DeviceHost {
                 if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const raw) != 0 {
                     return false;
                 }
-                if cooked.is_none() {
-                    *cooked = Some(now);
-                }
+                // Switched on twice, it goes back to what it was first.
+                cooked().get_or_insert(now);
             }
             return true;
         }
-        if let Some(settings) = cooked.take() {
+        let settings = cooked().take();
+        if let Some(settings) = settings {
             // SAFETY: as above, with settings tcgetattr filled in.
             unsafe {
                 libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const settings);

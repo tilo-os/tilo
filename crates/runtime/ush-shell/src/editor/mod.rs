@@ -328,7 +328,7 @@ impl Shell {
 
     /// Read one line at `prompt` with the editor, or `None` when the host
     /// has no terminal to edit on (lines are then read as they come).
-    pub(crate) fn edit_line(&mut self, prompt: &str, first: bool) -> Option<Read> {
+    pub(crate) fn edit_line(&self, prompt: &str, first: bool) -> Option<Read> {
         let input = self.input(0)?;
         let screen = self.output(2)?;
         if !self.host.edit_mode(true) {
@@ -485,10 +485,6 @@ impl Shell {
             if edit.search.is_some() {
                 match self.search_key(state, edit, &key) {
                     SearchKey::Handled => {
-                        self.redraw(screen, edit);
-                        continue;
-                    }
-                    SearchKey::Cancelled => {
                         self.redraw(screen, edit);
                         continue;
                     }
@@ -662,7 +658,7 @@ impl Shell {
                 edit.line = edit.saved.take().unwrap_or_default();
                 return;
             }
-            (Some(at), false) => at - 1,
+            (Some(at), false) => at.saturating_sub(1),
         };
         if let Some(entry) = entries.get(next) {
             if edit.position.is_none() {
@@ -810,8 +806,11 @@ impl Shell {
                 edit.search = None;
                 edit.line = original;
                 edit.waiting = None;
-                SearchKey::Cancelled
+                SearchKey::Handled
             }
+            // Enter while the search waits for an answer: the line it finds
+            // then is the one that runs.
+            Key::Enter if edit.waiting == Some(Waiting::Search) => SearchKey::Leave,
             _ => {
                 // Any other key ends the search on the line it found and
                 // does what it does there.
@@ -926,9 +925,9 @@ impl Shell {
                         held.clear();
                         break Some((entries, done));
                     }
-                    state.typeahead.extend(held.drain(..));
+                    state.typeahead.extend(std::mem::take(&mut held));
                 }
-                Some(_) => state.typeahead.extend(held.drain(..)),
+                Some(_) => state.typeahead.extend(std::mem::take(&mut held)),
                 None => {}
             }
         };
@@ -938,9 +937,10 @@ impl Shell {
     }
 }
 
+/// What a key did to the search: took part in it, or ended it and is to
+/// do what it does on the line.
 enum SearchKey {
     Handled,
-    Cancelled,
     Leave,
 }
 
@@ -992,9 +992,11 @@ mod tests {
 
     #[test]
     fn this_shells_lines_come_first_and_once() {
-        let mut history = History::default();
-        history.local = vec!["git status".into(), "ls".into()];
-        history.remote = vec!["ls".into(), "cargo build".into()];
+        let history = History {
+            local: vec!["git status".into(), "ls".into()],
+            remote: vec!["ls".into(), "cargo build".into()],
+            ..History::default()
+        };
         assert_eq!(history.entries(), ["git status", "ls", "cargo build"]);
     }
 }

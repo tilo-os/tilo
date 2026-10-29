@@ -90,11 +90,21 @@ impl Line {
     /// Where the word before the cursor starts.
     fn word_start(&self, word: Word) -> usize {
         let mut at = self.cursor;
-        while at > 0 && self.chars.get(at - 1).is_some_and(|c| !word.inside(*c)) {
-            at -= 1;
+        while at > 0
+            && self
+                .chars
+                .get(at.saturating_sub(1))
+                .is_some_and(|c| !word.inside(*c))
+        {
+            at = at.saturating_sub(1);
         }
-        while at > 0 && self.chars.get(at - 1).is_some_and(|c| word.inside(*c)) {
-            at -= 1;
+        while at > 0
+            && self
+                .chars
+                .get(at.saturating_sub(1))
+                .is_some_and(|c| word.inside(*c))
+        {
+            at = at.saturating_sub(1);
         }
         at
     }
@@ -104,10 +114,10 @@ impl Line {
         let mut at = self.cursor;
         let len = self.chars.len();
         while at < len && self.chars.get(at).is_some_and(|c| !word.inside(*c)) {
-            at += 1;
+            at = at.saturating_add(1);
         }
         while at < len && self.chars.get(at).is_some_and(|c| word.inside(*c)) {
-            at += 1;
+            at = at.saturating_add(1);
         }
         at
     }
@@ -125,7 +135,7 @@ impl Line {
         let (from, to) = (from.min(to), to.max(from).min(self.chars.len()));
         let taken: String = self.chars.drain(from..to).collect();
         if self.cursor > to {
-            self.cursor -= to - from;
+            self.cursor = self.cursor.saturating_sub(to.saturating_sub(from));
         } else if self.cursor > from {
             self.cursor = from;
         }
@@ -137,7 +147,7 @@ impl Line {
         if self.cursor == 0 {
             return false;
         }
-        self.cut(self.cursor - 1, self.cursor);
+        self.cut(self.cursor.saturating_sub(1), self.cursor);
         true
     }
 
@@ -146,7 +156,7 @@ impl Line {
         if self.cursor >= self.chars.len() {
             return false;
         }
-        self.cut(self.cursor, self.cursor + 1);
+        self.cut(self.cursor, self.cursor.saturating_add(1));
         true
     }
 
@@ -180,12 +190,12 @@ impl Line {
             return;
         }
         let at = if self.cursor >= len {
-            len - 1
+            len.saturating_sub(1)
         } else {
             self.cursor
         };
-        self.chars.swap(at - 1, at);
-        self.cursor = (at + 1).min(len);
+        self.chars.swap(at.saturating_sub(1), at);
+        self.cursor = at.saturating_add(1).min(len);
     }
 
     /// `Alt+U`, `Alt+L`, `Alt+C`: change the case of the next word.
@@ -200,7 +210,7 @@ impl Line {
             .collect();
         let changed: Vec<char> = change(&word).chars().collect();
         self.chars.splice(start..end, changed.iter().copied());
-        self.cursor = start + changed.len();
+        self.cursor = start.saturating_add(changed.len());
     }
 }
 
@@ -258,7 +268,11 @@ impl KillRing {
     /// The kill before the one just yanked, for `Alt+Y`.
     pub fn rotate(&mut self) -> Option<&str> {
         let at = self.yanked?;
-        let next = if at == 0 { self.ring.len() - 1 } else { at - 1 };
+        let next = if at == 0 {
+            self.ring.len().saturating_sub(1)
+        } else {
+            at.saturating_sub(1)
+        };
         self.yanked = Some(next);
         self.ring.get(next).map(String::as_str)
     }
