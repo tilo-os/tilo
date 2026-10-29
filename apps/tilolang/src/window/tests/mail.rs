@@ -298,6 +298,34 @@ fn reading_and_archiving_reach_the_server_and_come_back() {
 }
 
 #[test]
+fn opening_a_conversation_reads_it_here_and_on_the_server() {
+    let servers = servers();
+    let mut room = room_with(account(&servers));
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    assert!(room.flag(&plan, "unread"));
+    let row = room
+        .items()
+        .into_iter()
+        .find(|(_, item)| {
+            item.item
+                .as_ref()
+                .is_some_and(|shown| shown.0 == plan.id_string())
+        })
+        .map(|(key, _)| key)
+        .expect("the inbox lists the conversation");
+    room.activate(&row);
+    assert!(!room.flag(&plan, "unread"), "it reads as read once opened");
+    room.until("the server to hold it read", |_| {
+        servers
+            .imap
+            .messages("INBOX")
+            .iter()
+            .all(|m| m.flags.iter().any(|f| f == "\\Seen"))
+    });
+}
+
+#[test]
 fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     let servers = servers();
     let mut room = room_with(account(&servers));

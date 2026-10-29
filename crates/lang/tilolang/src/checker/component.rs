@@ -794,6 +794,26 @@ fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
         return false;
     };
     let names = [name];
+    // `open(x).then(read(x))`: each step passes the value as it is, or does not use it, and
+    // one of them passes it; the host puts it in every step's place.
+    if let ExprKind::Field { base, name: then } = &callee.kind
+        && then.name == "then"
+        && let [next] = args.as_slice()
+    {
+        let step = |e: &ast::Expr| -> Option<bool> {
+            if passed_as_is(e, name) {
+                Some(true)
+            } else if super::native::mentions(e, &names).is_none() {
+                Some(false)
+            } else {
+                None
+            }
+        };
+        return match (step(base), step(&next.value)) {
+            (Some(a), Some(b)) => a || b,
+            _ => false,
+        };
+    }
     if super::native::mentions(callee, &names).is_some() {
         return false;
     }
