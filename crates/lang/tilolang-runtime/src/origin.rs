@@ -115,7 +115,7 @@ impl Runtime {
                         "the store did not return the new item".into(),
                     ));
                 };
-                let target = owner.item(&field, &id, info.id.clone());
+                let target = owner.item(&id, info.id.clone());
                 self.set_fields(txn, &info, &target, fields)?;
                 Ok(Some(target))
             }
@@ -125,7 +125,7 @@ impl Runtime {
                 Ok(None)
             }
             OriginWrite::Remove { owner, field, item } => {
-                let Some(last) = item.path.last() else {
+                let Some(last) = item.item else {
                     return Err(RuntimeError::BadArgs(
                         "a removed item is a collection item".into(),
                     ));
@@ -133,10 +133,7 @@ impl Runtime {
                 self.core.store.borrow_mut().apply(
                     txn,
                     &owner,
-                    &Mutation::CollRemove {
-                        field,
-                        item: last.item.clone(),
-                    },
+                    &Mutation::CollRemove { field, item: last },
                 )?;
                 Ok(None)
             }
