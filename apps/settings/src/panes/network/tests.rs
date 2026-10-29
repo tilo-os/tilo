@@ -1252,6 +1252,9 @@ fn a_held_list_keeps_its_rows_until_the_pointer_leaves() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
     let mut model = model(&fake);
+    // The networks were just looked for: no periodic scan reads them again
+    // between the looks.
+    model.scanned_at = Some(ui::time::now());
     let before = network_rows(&mut model);
     model.held_short.set(true);
     let mut stronger = networks();

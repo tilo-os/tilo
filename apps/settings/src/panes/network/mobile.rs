@@ -41,6 +41,7 @@ use zeroize::Zeroizing;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::prefs::DeviceVpnPrefs;
 use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
@@ -1634,8 +1635,8 @@ fn situation(modem: &ModemInfo, data_on: bool) -> String {
 /// through [`std::ops::Deref`].
 pub(crate) struct Page<'a> {
     model: &'a MobileModel,
-    cx: &'a ViewCx<Settings>,
-    actions: Actions<Settings>,
+    cx: &'a ViewCx<DeviceVpnPrefs>,
+    actions: &'a Actions<Settings>,
 }
 
 impl std::ops::Deref for Page<'_> {
@@ -1647,12 +1648,14 @@ impl std::ops::Deref for Page<'_> {
 }
 
 impl<'a> Page<'a> {
-    pub(crate) fn new(model: &'a MobileModel, cx: &'a ViewCx<Settings>) -> Self {
-        Self {
-            model,
-            cx,
-            actions: cx.actions(),
-        }
+    /// The card or page over `model`, built in the view `cx` of Network's
+    /// page, its controls bound through the app's `actions`.
+    pub(crate) fn new(
+        model: &'a MobileModel,
+        cx: &'a ViewCx<DeviceVpnPrefs>,
+        actions: &'a Actions<Settings>,
+    ) -> Self {
+        Self { model, cx, actions }
     }
 
     fn button(&self, id: &str, label: &str, effect: MobileEffect) -> Button {
@@ -1750,7 +1753,7 @@ impl<'a> Page<'a> {
                 .described(t("net-mobile-roaming-caption"))
                 .toggle_effect(
                     &LocalState::new(profile.is_some_and(|profile| profile.roaming)),
-                    &self.actions,
+                    self.actions,
                     effect(MobileEffect::SET_DATA_ROAMING),
                 ),
         );
@@ -1763,7 +1766,7 @@ impl<'a> Page<'a> {
                 .choice_effect(
                     METERED.iter().map(|(_, words)| t(words)),
                     &LocalState::new(metered_shown(metered)),
-                    &self.actions,
+                    self.actions,
                     effect(MobileEffect::SET_MOBILE_METERED),
                 ),
         );
@@ -1776,7 +1779,7 @@ impl<'a> Page<'a> {
                     .choice_effect(
                         modem.supported_modes.iter().copied().map(modes_shown),
                         &LocalState::new(current),
-                        &self.actions,
+                        self.actions,
                         effect(MobileEffect::SET_PREFERRED_NETWORK),
                     ),
             );
@@ -1869,7 +1872,7 @@ impl<'a> Page<'a> {
                 .choice_effect(
                     RESET_DAYS.map(|day| day.to_string()),
                     &LocalState::new(self.usage.reset_day().to_string()),
-                    &self.actions,
+                    self.actions,
                     effect(MobileEffect::SET_DATA_RESET_DAY)
                         .map(|day: String| day.parse::<u32>().unwrap_or(1)),
                 ),
@@ -1944,7 +1947,7 @@ impl<'a> Page<'a> {
                     .described(t("net-mobile-pin-lock-caption"))
                     .toggle_effect(
                         &LocalState::new(shown),
-                        &self.actions,
+                        self.actions,
                         effect(MobileEffect::SET_SIM_PIN_LOCK)
                             .map(|on: bool| (None::<String>, on, None::<String>)),
                     ),

@@ -19,7 +19,7 @@ use os_actions::network_settings::{
     MAX_VPN_CONFIG_BYTES, VpnPlugin, VpnProfilePatch, VpnProfileSettings, WireGuardTunnel,
 };
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, LiveRow, ViewCx};
+use ui::framework::{Actions, EffectAnswer, EffectCx, LiveRow};
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ButtonRole, ListRow, NumberInput, TextInput, Toggle};
@@ -344,8 +344,8 @@ pub(crate) struct VpnEntry {
 /// each entry's switch to its own effect.
 pub(crate) trait VpnEntries {
     fn entries(&self) -> Vec<VpnEntry>;
-    /// `toggle`, bound in the view `cx` to switching `entry`.
-    fn bind(&self, cx: &ViewCx<Settings>, entry: &VpnEntry, toggle: Toggle) -> Toggle;
+    /// `toggle`, bound through the app's `actions` to switching `entry`.
+    fn bind(&self, actions: &Actions<Settings>, entry: &VpnEntry, toggle: Toggle) -> Toggle;
 }
 
 /// The form of a new `WireGuard` tunnel.
@@ -1531,7 +1531,7 @@ impl Page<'_> {
         if let Some(source) = &self.vpn.entries {
             lines.extend(source.entries().into_iter().map(|entry| {
                 let toggle = source.bind(
-                    self.cx,
+                    &self.actions,
                     &entry,
                     Toggle::from_state(&LocalState::new(entry.active))
                         .with_id(&format!("settings.network.vpn.entry.{}", entry.id))

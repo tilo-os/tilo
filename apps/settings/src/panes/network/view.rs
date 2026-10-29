@@ -24,6 +24,7 @@ use super::{
 };
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
+use crate::prefs::DeviceVpnPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -31,8 +32,10 @@ use crate::widgets::{
     note, row, rows, setting_row, setting_row_described, value_row,
 };
 
-/// The Network page as view code over the model the area keeps: the page
-/// on top of the window's trail, built again whenever what it shows changes
+/// The Network page as view code over the model the area keeps and this
+/// device's VPN choices (`DeviceVpnPrefs`: the kill switches and the routes
+/// through the person's devices): the page on top of the window's trail,
+/// built again whenever the section changes or what the model shows does
 /// ([`super::NetworkArea::poll`]). The device, and the modems, are followed
 /// while the page is shown.
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
@@ -43,20 +46,51 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
         model.borrow_mut().host_mobile(mobile.model());
     }
     let following = model.borrow_mut().follow();
-    Some(cx.switch(&held.shown, move |cx, _| {
-        // The part keeps the device followed while it is shown.
-        let _followed = &following;
-        Page::new(&model.borrow(), cx).build()
-    }))
+    // What landed meanwhile is taken in before the page is built: the page
+    // shows it.
+    model.borrow_mut().poll();
+    let (shown, actions, dispatcher) = (held.shown.clone(), cx.actions(), cx.dispatcher());
+    cx.record(&cx.settings::<DeviceVpnPrefs>(), move |cx| {
+        let (model, following, shown, actions, dispatcher) = (
+            Rc::clone(&model),
+            Rc::clone(&following),
+            shown.clone(),
+            actions.clone(),
+            dispatcher.clone(),
+        );
+        cx.switch(
+            &cx.value(|prefs: &DeviceVpnPrefs| prefs.clone()),
+            move |cx, _| {
+                let (model, following, actions, dispatcher) = (
+                    Rc::clone(&model),
+                    Rc::clone(&following),
+                    actions.clone(),
+                    dispatcher.clone(),
+                );
+                cx.switch(&shown, move |cx, _| {
+                    // The part keeps the device followed while it is shown.
+                    let _followed = &following;
+                    Page {
+                        model: &model.borrow(),
+                        cx,
+                        actions: actions.clone(),
+                        dispatcher: dispatcher.clone(),
+                    }
+                    .build()
+                })
+            },
+        )
+    })
 }
 
-/// One page of Network as the view builds it: the model as it is now, and
-/// the view its controls bind through. It reads the model's state through
-/// [`std::ops::Deref`].
+/// One page of Network as the view builds it: the model as it is now, the
+/// view of the VPN choices it is built in, and the app's actions and
+/// dispatcher its controls bind through. It reads the model's state
+/// through [`std::ops::Deref`].
 pub(super) struct Page<'a> {
     model: &'a NetworkModel,
-    pub(super) cx: &'a ViewCx<Settings>,
-    actions: Actions<Settings>,
+    pub(super) cx: &'a ViewCx<DeviceVpnPrefs>,
+    pub(super) actions: Actions<Settings>,
     dispatcher: Dispatcher<Settings>,
 }
 
@@ -68,16 +102,7 @@ impl std::ops::Deref for Page<'_> {
     }
 }
 
-impl<'a> Page<'a> {
-    pub(super) fn new(model: &'a NetworkModel, cx: &'a ViewCx<Settings>) -> Self {
-        Self {
-            model,
-            cx,
-            actions: cx.actions(),
-            dispatcher: cx.dispatcher(),
-        }
-    }
-
+impl Page<'_> {
     /// `control`, invoking `effect` with each committed value.
     pub(super) fn bind<I: 'static, C: ActionControl<I>>(
         &self,
@@ -154,9 +179,7 @@ impl Page<'_> {
             Some(PAGE_KNOWN) => self.known_page(),
             Some(PAGE_HOTSPOT) => vec![self.hotspot_card()],
             Some(PAGE_ADVANCED) => self.advanced_page(),
-            Some(PAGE_MOBILE) => self
-                .mobile_sections(mobile::Page::page_sections)
-                .unwrap_or_else(|| self.first_page()),
+            Some(PAGE_MOBILE) => self.mobile_page().unwrap_or_else(|| self.first_page()),
             Some(key) => match key.strip_prefix(PAGE_WIFI) {
                 Some(ssid) => self.network_page(ssid),
                 None => self.vpn_pages(key).unwrap_or_else(|| self.first_page()),
@@ -236,14 +259,18 @@ impl Page<'_> {
         }
     }
 
-    /// What `build` makes of the modem's model, when the device has a
-    /// modem.
-    fn mobile_sections(
-        &self,
-        build: impl FnOnce(&mobile::Page<'_>) -> Vec<SettingsSection>,
-    ) -> Option<Vec<SettingsSection>> {
+    /// The modem's card on the first page, when the device has a modem.
+    fn mobile_card(&self) -> Option<Vec<SettingsSection>> {
         let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
-        Some(build(&mobile::Page::new(&mobile, self.cx))).filter(|sections| !sections.is_empty())
+        Some(mobile::Page::new(&mobile, self.cx, &self.actions).card())
+            .filter(|sections| !sections.is_empty())
+    }
+
+    /// The modem's page, when the device has a modem.
+    fn mobile_page(&self) -> Option<Vec<SettingsSection>> {
+        let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
+        Some(mobile::Page::new(&mobile, self.cx, &self.actions).page_sections())
+            .filter(|sections| !sections.is_empty())
     }
 
     /// The first page: Wi-Fi and mobile data, the controls, and the wired
@@ -252,7 +279,7 @@ impl Page<'_> {
         // The controls follow the radios at once, so they stay in view on a
         // normal window; the wired connection comes after them.
         let mut cards = vec![self.wifi_card()];
-        cards.extend(self.mobile_sections(mobile::Page::card).unwrap_or_default());
+        cards.extend(self.mobile_card().unwrap_or_default());
         cards.push(self.controls_card());
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());

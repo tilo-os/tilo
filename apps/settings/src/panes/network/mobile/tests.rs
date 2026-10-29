@@ -36,16 +36,19 @@ fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Wi
     crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
     let held = app
         .with_widget::<crate::window::SettingsWindow, _>(|settings| {
-            super::super::area(settings)
-                .unwrap()
-                .model()
-                .borrow_mut()
-                .open_page(super::super::PAGE_MOBILE, t("net-mobile"));
             Rc::clone(area(settings).unwrap().model())
         })
         .unwrap();
     std::mem::swap(&mut *held.borrow_mut(), model);
     crate::effects::show_pane(&mut app, crate::categories::Category::Network);
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        super::super::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut()
+            .open_page(super::super::PAGE_MOBILE, t("net-mobile"));
+    })
+    .unwrap();
     app.settle();
     let found = read(app.harness().root_widget());
     std::mem::swap(&mut *held.borrow_mut(), model);
@@ -197,7 +200,7 @@ fn only_a_locked_sim_offers_unlocking_and_only_a_blocked_one_the_puk() {
 
 #[test]
 fn a_registered_modem_shows_operator_technology_signal_and_data() {
-    let (_, model) = scripted(Some(MobileSample::Registered));
+    let (_, mut model) = scripted(Some(MobileSample::Registered));
     assert!(model.present());
     assert!(model.data_on());
     let said = said(&mut model);
@@ -431,7 +434,7 @@ fn the_last_wrong_pin_asks_for_the_puk_and_a_new_pin() {
 /// PUK, as the capture shows it.
 #[test]
 fn the_puk_sample_starts_blocked() {
-    let (_, model) = scripted(Some(MobileSample::Puk));
+    let (_, mut model) = scripted(Some(MobileSample::Puk));
     assert_eq!(model.modem().unwrap().lock, SimLock::Puk);
     assert!(says(&mut model, "SIM blocked"));
     assert!(says(&mut model, "Unblock SIM…"));

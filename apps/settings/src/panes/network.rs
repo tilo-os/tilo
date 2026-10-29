@@ -3798,7 +3798,8 @@ impl NetworkModel {
         if started.is_ok() {
             self.snapshot = Some(receiver);
             self.scan_in_flight = true;
-            self.changed = true;
+            // "Scanning…" shows only where no network is listed yet.
+            self.changed |= self.networks.is_empty();
         }
     }
 
@@ -3820,8 +3821,10 @@ impl NetworkModel {
             match receiver.try_recv() {
                 Ok(snapshot) => {
                     self.snapshot = None;
-                    // "Scanning…" gives way to the list, whatever it holds.
-                    self.changed |= std::mem::take(&mut self.scan_in_flight);
+                    // "Scanning…" gives way to the list, whatever it holds;
+                    // a list shown stays unless the scan changed it.
+                    self.changed |=
+                        std::mem::take(&mut self.scan_in_flight) && self.networks.is_empty();
                     let _ = self.adopt_snapshot(snapshot);
                 }
                 Err(crate::channel::TryRecvError::Disconnected) => {
