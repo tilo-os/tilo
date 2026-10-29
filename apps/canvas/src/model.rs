@@ -27,11 +27,13 @@ pub const MAX_MARKS: usize = 100_000;
 pub const MAX_POINTS: usize = 4096;
 
 /// The support the artwork is made on.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 pub struct Ground {
     /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
+    #[model(atom)]
     pub texture: String,
     /// The ground's colour, `#rrggbb`.
+    #[model(atom)]
     pub colour: String,
 }
 
@@ -147,8 +149,11 @@ impl Selection {
 /// A point of a stroke: `[x, y]` or `[x, y, pressure]` with pressure `0..=1`.
 pub type StrokePoint = Vec<f64>;
 
-/// The geometry of a mark.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// The geometry of a mark: its variant's name and each of its fields stored
+/// on their own, so moving a mark and sizing it at once keep both. Names,
+/// path data and point lists are stored whole: two people setting one at
+/// once get one of theirs, not a mix.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Shape {
     /// An axis-aligned rectangle; `radius` rounds its corners.
@@ -163,11 +168,20 @@ pub enum Shape {
     /// An ellipse around its centre.
     Ellipse { cx: f64, cy: f64, rx: f64, ry: f64 },
     /// A closed polygon through `points` (`[[x, y], …]`).
-    Polygon { points: Vec<[f64; 2]> },
+    Polygon {
+        #[model(atom)]
+        points: Vec<[f64; 2]>,
+    },
     /// An open polyline through `points`, drawn with the stroke colour.
-    Line { points: Vec<[f64; 2]> },
+    Line {
+        #[model(atom)]
+        points: Vec<[f64; 2]>,
+    },
     /// SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`).
-    Path { d: String },
+    Path {
+        #[model(atom)]
+        d: String,
+    },
     /// Text, first baseline at `y`; `\n` breaks lines.
     Text {
         x: f64,
@@ -176,6 +190,7 @@ pub enum Shape {
         size: f64,
         /// `sans`, `serif`, `mono` or a family `media` lists under fonts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[model(atom)]
         font: Option<String>,
         /// 100 to 900; 400 regular, 700 bold, any value between.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +201,7 @@ pub enum Shape {
         // `x + width`; the surface budget leaves room only for "in `width`".
         /// `start`, `center` or `end` at `x`, or in `width`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[model(atom)]
         align: Option<String>,
         /// Times size (1.2).
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,12 +216,14 @@ pub enum Shape {
         /// SVG path data the baseline follows instead of starting at x, y;
         /// align sets the words at its start, middle or end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[model(atom)]
         path: Option<String>,
     },
     /// A brush stroke as `paint` lays one: a smooth curve through `points`
     /// (`[x, y]` or `[x, y, pressure]`), `size` wide; forks, dabs and hatch
     /// as there.
     Stroke {
+        #[model(atom)]
         points: Vec<StrokePoint>,
         size: f64,
         // Its forms are described once, on `paint`'s strokes: an agent reads
@@ -237,6 +255,7 @@ pub enum Shape {
     /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
     Image {
         /// File path, content address or `data:` URI.
+        #[model(atom)]
         src: String,
         x: f64,
         y: f64,
@@ -269,8 +288,10 @@ pub struct Gradient {
     pub focal: Option<[f64; 2]>,
 }
 
-/// How a mark is coloured and, on a painted layer, how it is painted.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// How a mark is coloured and, on a painted layer, how it is painted: each
+/// field stored on its own, so a fill and an opacity changed at once both
+/// survive. Colours and names are stored whole.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 pub struct Style {
     /// Enlarge image pixels with nearest-neighbor sampling.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -278,6 +299,7 @@ pub struct Style {
     /// Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub fill: Option<String>,
     /// A gradient fill, drawn instead of `fill` on plain layers. On an oil
     /// layer the brush is remixed along it as the shape is laid in.
@@ -285,6 +307,7 @@ pub struct Style {
     pub gradient: Option<Gradient>,
     /// Outline or stroke colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub stroke: Option<String>,
     /// Outline width in units; zero draws no outline.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -296,6 +319,7 @@ pub struct Style {
     /// `airbrush`, `charcoal`, `calligraphy`), or `eraser` on any layer;
     /// a round ink brush when absent. See [`crate::brushes`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub brush: Option<String>,
     /// On a painted layer: the size of the brush that lays a filled shape
     /// in, in units.
@@ -315,15 +339,19 @@ pub struct Style {
     pub params: BTreeMap<String, f64>,
     /// Outline dash pattern, `[on, off, …]` in units.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[model(atom)]
     pub dash: Vec<f64>,
     /// Outline ends: `butt`, `round` or `square`; round when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub cap: Option<String>,
     /// Outline corners: `miter`, `round` or `bevel`; round when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub join: Option<String>,
     /// How the mark mixes with what is beneath it; normal when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub blend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shadow>,
@@ -347,7 +375,7 @@ pub struct Style {
 /// white balance, exposure, contrast, curve, highlights and
 /// shadows, hue, saturation, vibrance, grayscale, invert; then blur,
 /// sharpen and vignette. Absent or zero leaves a step out.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 #[serde(deny_unknown_fields)]
 pub struct Adjust {
     /// Stops, -5 to 5. Others -1 to 1 unless noted.
@@ -376,6 +404,7 @@ pub struct Adjust {
     /// Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets
     /// black and white points.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[model(atom)]
     pub curve: Option<Vec<[f64; 2]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grayscale: Option<bool>,
@@ -581,15 +610,42 @@ impl Default for Artwork {
     }
 }
 
+// A gradient, a shadow, the picture traced, the area selected and a medium
+// are each replaced together: one value, last writer wins.
 tilo_resource::json_model!(
-    Ground,
-    Shape,
-    Style,
-    Adjust,
+    Gradient,
+    Shadow,
     Reference,
     Selection,
     crate::media::MediumSpec
 );
+
+impl Default for Gradient {
+    /// A gradient with no stops, which paints nothing: what an absent value
+    /// reads as. A mark's gradient is an `Option`, so this is never one
+    /// someone chose.
+    fn default() -> Self {
+        Self {
+            kind: "linear".into(),
+            from: [0.0, 0.0],
+            to: [1.0, 0.0],
+            stops: Vec::new(),
+            focal: None,
+        }
+    }
+}
+
+impl Default for Shadow {
+    /// A shadow that draws nothing: what an absent value reads as. A mark's
+    /// shadow is an `Option`, so this is never one someone chose.
+    fn default() -> Self {
+        Self {
+            offset: [0.0, 0.0],
+            blur: 0.0,
+            colour: None,
+        }
+    }
+}
 
 /// A blank rectangle: what a mark is before it is given a shape.
 impl Default for Shape {
@@ -848,6 +904,37 @@ pub fn valid_group(group: &str) -> bool {
 }
 
 impl Artwork {}
+
+/// Bring a document written when a mark's shape and style, a layer's
+/// adjustments and the ground were each stored as one JSON string up to the
+/// storage the artwork reads now.
+///
+/// Version 1 stored them whole, last writer wins: two people changing
+/// different fields of one mark (a fill and an opacity, a position and a
+/// width) overwrote each other. Version 2 stores each field on its own.
+/// [`retype_json`] reads an old string with its serde form, the form it was
+/// written with, so every value reads as it did.
+///
+/// # Errors
+/// Returns why an old value does not read, or the document's write error.
+pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
+    use tilo_resource::evolution::{map_values, retype_json};
+    if from != 1 {
+        return Err(tilo_resource::ModelError::invalid(format!(
+            "no canvas migration from storage version {from}"
+        )));
+    }
+    let root = &ui::automerge::ROOT;
+    for (_, mark) in map_values(doc, root, "marks")? {
+        retype_json::<Shape>(doc, &mark, "shape")?;
+        retype_json::<Style>(doc, &mark, "style")?;
+    }
+    for (_, layer) in map_values(doc, root, "layers")? {
+        retype_json::<Option<Adjust>>(doc, &layer, "adjust")?;
+    }
+    retype_json::<Ground>(doc, root, "ground")?;
+    Ok(())
+}
 
 /// A valid id: 1–48 of `a-z`, `0-9`, `-` and `_`, so an agent can name a mark
 /// (`sun`, `tree-3`) and address it later.
