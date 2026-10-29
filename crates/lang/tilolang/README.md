@@ -250,6 +250,29 @@ state its arguments use when the control fires (`send(c, draft)`, `set(open, not
 `send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
 pressed twice before the view draws again toggles twice.
 
+**Outside origins** (convergence.md, "Origins" and "Outside services"). A type holds the
+resources of an outside service when it names one of the service's kinds:
+
+```
+type Message (origin: imap.message) {
+    subject: Text (title)
+    from: Text
+    unread: Bool
+    mailbox: Text
+    note: Text            // the app's own field: the service never touches it
+}
+```
+
+The system keeps such resources in step with the service (getting, searching, and telling it
+what people changed), with credentials the package never sees. The fields the type declares of
+the kind take the kind's types (E112); the type may add fields of its own. Only the service
+writes the kind's other fields: code writing one is E113, except in a scenario. People change the
+fields the kind marks as theirs (a message's `unread`, `flagged` and `mailbox`): the change
+applies at once and becomes final when the service accepts it. The kinds are in
+`src/origin.rs`: `imap.account`, `imap.mailbox`, `imap.thread`, `imap.message`.
+`outside(capability, payload)` takes one of the platform's capabilities (`post`, `smtp.send`),
+checked by the compiler.
+
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
 Without one, every Bool, enum, Date, Time, number, reference, identifier and Set field is a

@@ -314,6 +314,7 @@ impl Reader<'_> {
                     fields,
                     search: SearchMeta::default(),
                     holder: false,
+                    origin: None,
                 });
             }
         }
@@ -347,6 +348,7 @@ impl Reader<'_> {
             fields,
             search: SearchMeta::default(),
             holder: false,
+            origin: None,
         });
     }
 
