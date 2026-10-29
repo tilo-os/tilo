@@ -144,6 +144,10 @@ const WORDS: &str = "abandon ability able about above absent absorb abstract abs
                      actress actual";
 
 /// The page `name` shows.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one plain page per review scenario, side by side"
+)]
 fn scenario(name: &str) -> Page {
     let identity = || Page {
         screen: Screen::Done,

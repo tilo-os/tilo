@@ -24,7 +24,7 @@ use super::{
 
 /// The instance the app is mounted as: past every tab id, so setup never
 /// names a window.
-const SETUP_INSTANCE: u64 = u64::MAX - 0x5e7_0b;
+const SETUP_INSTANCE: u64 = u64::MAX - 0x0005_e70b;
 
 /// The mounted app and where it is laid out.
 pub(super) struct Hosted {
@@ -422,7 +422,7 @@ impl OnboardingView {
             (OnboardingEffect::Continue, Step::Backup) => KEY_BACKUP_CONTINUE,
             (OnboardingEffect::Continue, Step::Tour(_)) => KEY_TOUR_NEXT,
             (OnboardingEffect::Continue, Step::Codecs) => KEY_CODECS_CONTINUE,
-            (OnboardingEffect::Continue, Step::Ready) => KEY_FINISH,
+            (OnboardingEffect::Continue, Step::Ready) | (OnboardingEffect::Finish, _) => KEY_FINISH,
             (OnboardingEffect::Continue | OnboardingEffect::Retry, Step::Migration) => {
                 "onboarding.migration.next"
             }
@@ -453,7 +453,6 @@ impl OnboardingView {
             (OnboardingEffect::Cancel, Step::Nearby) => KEY_CONNECT_CANCEL,
             (OnboardingEffect::Cancel, Step::Migration) => "onboarding.migration.cancel",
             (OnboardingEffect::Cancel, Step::Backup) if self.portable_backup_only => KEY_FINISH,
-            (OnboardingEffect::Finish, _) => KEY_FINISH,
             _ => return None,
         })
     }

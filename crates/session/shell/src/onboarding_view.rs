@@ -1850,10 +1850,9 @@ impl OnboardingView {
         passphrase: &[u8],
         confirmation: &[u8],
     ) -> Result<(), ()> {
-        if !self
-            .backup_status()
-            .is_some_and(|status| status["can_save"] == true)
-            || destination.len() > 4096
+        if !self.backup_status().is_some_and(|status| {
+            status.get("can_save").and_then(serde_json::Value::as_bool) == Some(true)
+        }) || destination.len() > 4096
             || !Path::new(destination).is_absolute()
             || passphrase.len() > 4096
             || passphrase != confirmation
@@ -2707,7 +2706,7 @@ impl Widget for OnboardingView {
         let child = self
             .app
             .widget_mut()
-            .is_some_and(|app| app.take_structure_dirty());
+            .is_some_and(Widget::take_structure_dirty);
         own || child
     }
 

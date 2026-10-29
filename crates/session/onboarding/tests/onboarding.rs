@@ -204,8 +204,7 @@ fn a_typed_passphrase_stays_in_the_shells_buffer() {
     let field = tilo_onboarding::t("onboarding-connect-passphrase");
     let at = named(&mut app)
         .into_iter()
-        .filter(|(name, _)| *name == field)
-        .last()
+        .rfind(|(name, _)| *name == field)
         .expect("the passphrase field")
         .1;
     app.harness().click_at(at.center().x, at.center().y);
