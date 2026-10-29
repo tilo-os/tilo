@@ -46,6 +46,10 @@ const KEY_A: u32 = 30;
 const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per event a test client waits for"
+)]
 struct Seen {
     globals: Vec<String>,
     lock_manager: Option<ExtSessionLockManagerV1>,

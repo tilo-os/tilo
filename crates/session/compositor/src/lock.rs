@@ -128,10 +128,10 @@ impl SessionLockHandler for State {
         };
         if let Some(mode) = output.current_mode() {
             let scale = output.current_scale().fractional_scale();
-            let size = mode.size.to_f64().to_logical(scale).to_i32_round();
+            let size = mode.size.to_f64().to_logical(scale).to_i32_round::<i32>();
             #[allow(clippy::cast_sign_loss, reason = "output sizes are positive")]
             surface.with_pending_state(|state| {
-                state.size = Some((size.w as u32, size.h as u32).into())
+                state.size = Some((size.w as u32, size.h as u32).into());
             });
         }
         surface.send_configure();

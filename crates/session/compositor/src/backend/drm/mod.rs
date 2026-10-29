@@ -22,13 +22,10 @@ use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode};
-use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::input::{
-    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event as _, InputBackend,
-    InputEvent as Libinput, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
-    PointerMotionEvent,
+use smithay::backend::drm::{
+    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
 };
+use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::ImportDma as _;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -46,15 +43,14 @@ use smithay::utils::{DeviceFd, Point, Transform};
 use super::{Backend, BackendError, failed};
 use crate::input::InputEvent;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
+use crate::output::refresh_interval;
+use crate::present::{Presentation, Shown};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, RequestedMode, select_mode};
 
 /// Formats tried for an output's primary plane, best first.
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
-
-/// The refresh interval assumed when a mode reports none.
-const FALLBACK_INTERVAL: Duration = Duration::from_micros(16_667);
 
 /// What the person configured for the outputs, by connector name.
 #[derive(Clone, Debug, Default)]
@@ -67,8 +63,11 @@ pub struct DisplayConfig {
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
-type Manager = DrmOutputManager<Allocator, Exporter, (), DrmDeviceFd>;
-type Surface = DrmOutput<Allocator, Exporter, (), DrmDeviceFd>;
+/// What a queued frame carries to its vertical blank: its clients'
+/// presentation feedback.
+type Queued = Option<Presentation>;
+type Manager = DrmOutputManager<Allocator, Exporter, Queued, DrmDeviceFd>;
+type Surface = DrmOutput<Allocator, Exporter, Queued, DrmDeviceFd>;
 
 /// One lit output.
 struct Lit {
@@ -144,7 +143,7 @@ impl DrmBackend {
         let input = LibinputInputBackend::new(libinput);
         handle
             .insert_source(input, |event, (), data| {
-                if let Some(event) = translate(event, pointer_extent(&data.state)) {
+                if let Some(event) = InputEvent::from_device(event, pointer_extent(&data.state)) {
                     data.state.handle_input(event);
                 }
             })
@@ -176,7 +175,7 @@ impl DrmBackend {
                     }
                 }
                 UdevEvent::Added { path, .. } => {
-                    tracing::info!(path = %path.display(), "GPU added; not driven")
+                    tracing::info!(path = %path.display(), "GPU added; not driven");
                 }
                 UdevEvent::Removed { device_id } => {
                     let ours = udev_inner
@@ -236,23 +235,31 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
             BACKGROUND,
             FrameFlags::DEFAULT,
         ) {
-            Ok(frame) if !frame.is_empty => match lit.surface.queue_frame(()) {
-                Ok(()) => lit.queued = true,
-                Err(error) => {
-                    tracing::warn!(?error, output = lit.output.name(), "frame not queued")
+            Ok(frame) => {
+                // Clients draw their next frame now; an output with nothing
+                // new is asked again one refresh later.
+                let presentation = state.frame_drawn(&lit.output, Some(&frame.states));
+                if frame.is_empty {
+                    presentation.shown(Shown::Host);
+                } else {
+                    match lit.surface.queue_frame(Some(presentation)) {
+                        Ok(()) => lit.queued = true,
+                        Err(error) => {
+                            tracing::warn!(?error, output = lit.output.name(), "frame not queued");
+                        }
+                    }
                 }
-            },
-            Ok(_) => {}
-            Err(error) => tracing::warn!(?error, output = lit.output.name(), "frame not rendered"),
+            }
+            Err(error) => {
+                tracing::warn!(?error, output = lit.output.name(), "frame not rendered");
+                state.frame_drawn(&lit.output, None).shown(Shown::Host);
+            }
         }
-        // Clients draw their next frame now; an output with nothing new is
-        // asked again one refresh later.
-        state.frame_shown(&lit.output);
         lit.next_frame = now.checked_add(lit.interval).unwrap_or(now);
     }
 }
 
-fn vblank(inner: &Rc<RefCell<Inner>>, crtc: crtc::Handle) {
+fn vblank(inner: &Rc<RefCell<Inner>>, crtc: crtc::Handle, metadata: Option<&DrmEventMetadata>) {
     let mut inner = inner.borrow_mut();
     let Some(lit) = inner
         .gpu
@@ -261,11 +268,28 @@ fn vblank(inner: &Rc<RefCell<Inner>>, crtc: crtc::Handle) {
     else {
         return;
     };
-    if let Err(error) = lit.surface.frame_submitted() {
-        tracing::warn!(?error, output = lit.output.name(), "page flip not retired");
+    match lit.surface.frame_submitted() {
+        Ok(Some(Some(presentation))) => presentation.shown(vblank_shown(metadata)),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
     lit.queued = false;
     lit.next_frame = Instant::now();
+}
+
+/// How a vertical blank reports its frame: the kernel's monotonic time and
+/// counter, or our clock when it gave none (or a realtime stamp).
+fn vblank_shown(metadata: Option<&DrmEventMetadata>) -> Shown {
+    match metadata {
+        Some(DrmEventMetadata {
+            time: DrmEventTime::Monotonic(time),
+            sequence,
+        }) => Shown::Vblank {
+            time: *time,
+            sequence: *sequence,
+        },
+        _ => Shown::Host,
+    }
 }
 
 fn pause(inner: &Rc<RefCell<Inner>>) {
@@ -371,9 +395,9 @@ fn open_gpu(
 
     let vblank_inner = Rc::clone(inner);
     let token = handle
-        .insert_source(notifier, move |event, _metadata, data| match event {
+        .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
-                vblank(&vblank_inner, crtc);
+                vblank(&vblank_inner, crtc, metadata.as_ref());
                 render_ready(&vblank_inner, &data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
@@ -447,69 +471,78 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             tracing::warn!(output = name, "connector advertises no usable mode");
             continue;
         };
-        let Some(crtc) = free_crtc(device, &resources, info, &used) else {
+        let Some(crtc) = free_crtc(gpu.manager.device(), &resources, info, &used) else {
             tracing::warn!(output = name, "no free CRTC");
             continue;
         };
         let scale = config.scales.get(&name).copied().unwrap_or(1.0);
-        let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
-        let output = Output::new(
-            name.clone(),
-            PhysicalProperties {
-                size: (
-                    i32::try_from(mm_w).unwrap_or(0),
-                    i32::try_from(mm_h).unwrap_or(0),
-                )
-                    .into(),
-                subpixel: Subpixel::Unknown,
-                make: "Unknown".into(),
-                model: name.clone(),
-            },
-        );
-        let output_mode = OutputMode::from(*mode);
-        let location = Point::from((next_x(state), 0));
-        output.change_current_state(
-            Some(output_mode),
-            Some(Transform::Normal),
-            Some(Scale::Fractional(scale)),
-            Some(location),
-        );
-        output.set_preferred(output_mode);
-        let surface = match gpu
-            .manager
-            .initialize_output::<_, OutputRenderElement<GlesRenderer>>(
-                crtc,
-                *mode,
-                &[info.handle()],
-                &output,
-                None,
-                &mut gpu.renderer,
-                &DrmOutputRenderElements::default(),
-            ) {
-            Ok(surface) => surface,
-            Err(error) => {
-                tracing::warn!(?error, output = name, "output not lit");
-                continue;
-            }
-        };
-        let global = output.create_global::<State>(&state.display);
-        state.add_output(&output, location);
-        used.insert(crtc);
-        let interval = refresh_interval(output_mode.refresh);
-        tracing::info!(output = name, ?interval, "output lit");
-        gpu.outputs.insert(
-            crtc,
-            Lit {
-                output,
-                global,
-                connector: info.handle(),
-                surface,
-                queued: false,
-                next_frame: Instant::now(),
-                interval,
-            },
-        );
+        if let Some(lit) = light(gpu, state, info, &name, crtc, *mode, scale) {
+            used.insert(crtc);
+            gpu.outputs.insert(crtc, lit);
+        }
     }
+}
+
+/// Drive `info`'s connector from `crtc` in `mode` and make it an output
+/// right of the others.
+fn light(
+    gpu: &mut Gpu,
+    state: &mut State,
+    info: &connector::Info,
+    name: &str,
+    crtc: crtc::Handle,
+    mode: smithay::reexports::drm::control::Mode,
+    scale: f64,
+) -> Option<Lit> {
+    let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
+    let output = Output::new(
+        name.to_owned(),
+        PhysicalProperties {
+            size: (
+                i32::try_from(mm_w).unwrap_or(0),
+                i32::try_from(mm_h).unwrap_or(0),
+            )
+                .into(),
+            subpixel: Subpixel::Unknown,
+            make: "Unknown".into(),
+            model: name.to_owned(),
+        },
+    );
+    let output_mode = OutputMode::from(mode);
+    let location = Point::from((next_x(state), 0));
+    output.change_current_state(
+        Some(output_mode),
+        Some(Transform::Normal),
+        Some(Scale::Fractional(scale)),
+        Some(location),
+    );
+    output.set_preferred(output_mode);
+    let surface = gpu
+        .manager
+        .initialize_output::<_, OutputRenderElement<GlesRenderer>>(
+            crtc,
+            mode,
+            &[info.handle()],
+            &output,
+            None,
+            &mut gpu.renderer,
+            &DrmOutputRenderElements::default(),
+        )
+        .map_err(|error| tracing::warn!(?error, output = name, "output not lit"))
+        .ok()?;
+    let global = output.create_global::<State>(&state.display);
+    state.add_output(&output, location);
+    let interval = refresh_interval(output_mode.refresh);
+    tracing::info!(output = name, ?interval, "output lit");
+    Some(Lit {
+        output,
+        global,
+        connector: info.handle(),
+        surface,
+        queued: false,
+        next_frame: Instant::now(),
+        interval,
+    })
 }
 
 fn free_crtc(
@@ -535,81 +568,10 @@ fn next_x(state: &State) -> i32 {
         .unwrap_or(0)
 }
 
-fn refresh_interval(refresh_mhz: i32) -> Duration {
-    u64::try_from(refresh_mhz)
-        .ok()
-        .filter(|mhz| *mhz > 0)
-        .map_or(FALLBACK_INTERVAL, |mhz| {
-            Duration::from_nanos(1_000_000_000_000 / mhz)
-        })
-}
-
 /// The logical size absolute pointer devices map onto: the first output.
 fn pointer_extent(state: &State) -> smithay::utils::Size<i32, smithay::utils::Logical> {
     state
         .output_geometries()
         .first()
         .map_or_else(|| (1, 1).into(), |geometry| geometry.size)
-}
-
-/// A libinput event as the compositor routes it.
-fn translate<B: InputBackend>(
-    event: Libinput<B>,
-    extent: smithay::utils::Size<i32, smithay::utils::Logical>,
-) -> Option<InputEvent> {
-    match event {
-        Libinput::Keyboard { event } => Some(InputEvent::Key {
-            keycode: event.key_code().raw().saturating_sub(8),
-            pressed: event.state() == KeyState::Pressed,
-        }),
-        Libinput::PointerMotion { event } => {
-            let delta = event.delta();
-            Some(InputEvent::PointerMotionRelative {
-                dx: delta.x,
-                dy: delta.y,
-            })
-        }
-        Libinput::PointerMotionAbsolute { event } => {
-            let at = event.position_transformed(extent);
-            Some(InputEvent::PointerMotion { x: at.x, y: at.y })
-        }
-        Libinput::PointerButton { event } => Some(InputEvent::PointerButton {
-            button: event.button_code(),
-            pressed: event.state() == ButtonState::Pressed,
-        }),
-        Libinput::PointerAxis { event } => {
-            let amount = |axis| scroll_amount(&event, axis);
-            Some(InputEvent::PointerAxis {
-                horizontal: amount(Axis::Horizontal),
-                vertical: amount(Axis::Vertical),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Logical pixels scrolled on `axis`: a wheel notch (120 in v120 units) is
-/// 15 pixels, as clients expect; fingers and continuous devices report
-/// pixels.
-fn scroll_amount<B: InputBackend>(event: &B::PointerAxisEvent, axis: Axis) -> f64 {
-    match event.source() {
-        AxisSource::Wheel | AxisSource::WheelTilt => event.amount_v120(axis).map_or_else(
-            || event.amount(axis).unwrap_or(0.0),
-            |v120| v120 * 15.0 / 120.0,
-        ),
-        _ => event.amount(axis).unwrap_or(0.0),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn refresh_intervals_follow_the_mode_and_fall_back_to_60_hz() {
-        assert_eq!(refresh_interval(60_000), Duration::from_nanos(16_666_666));
-        assert_eq!(refresh_interval(120_000), Duration::from_nanos(8_333_333));
-        assert_eq!(refresh_interval(0), FALLBACK_INTERVAL);
-        assert_eq!(refresh_interval(-1), FALLBACK_INTERVAL);
-    }
 }

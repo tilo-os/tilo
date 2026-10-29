@@ -1,12 +1,14 @@
-//! The compositor on its own: `tilo-compositor [--backend drm|headless]
-//! [--size WxH] [-- command args...]`. Listens on a fresh `wayland-N`
-//! socket, prints its name and starts `command` with `WAYLAND_DISPLAY` set to
-//! it. Windows float on a plain background; no shell surfaces.
+//! The compositor on its own: `tilo-compositor [--backend
+//! nested|drm|headless] [--size WxH] [--scale S] [-- command args...]`.
+//! Listens on a fresh `wayland-N` socket, prints its name and starts
+//! `command` with `WAYLAND_DISPLAY` set to it. Windows float on a plain
+//! background; no shell surfaces. Inside a desktop (`DISPLAY` set) it runs in
+//! a window by default, else on the TTY.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
-    use tilo_compositor::{Compositor, DisplayConfig, OutputConfig, StackPolicy};
+    use tilo_compositor::{Compositor, DisplayConfig, NestedConfig, OutputConfig, StackPolicy};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -21,20 +23,38 @@ fn main() -> std::process::ExitCode {
             .position(|arg| arg == flag)
             .and_then(|index| ours.get(index.saturating_add(1)))
     };
-    let backend = value("--backend").map_or("drm", String::as_str);
-    let size = value("--size")
+    let inside_desktop = std::env::var_os("DISPLAY").is_some();
+    let backend = value("--backend").map_or(
+        if inside_desktop { "nested" } else { "drm" },
+        String::as_str,
+    );
+    let size: (u16, u16) = value("--size")
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
+    let scale = value("--scale")
+        .and_then(|scale| scale.parse().ok())
+        .unwrap_or(1.0);
 
     let started = match backend {
         "headless" => Compositor::headless(Box::new(StackPolicy)).and_then(|mut compositor| {
-            compositor.add_output(&OutputConfig::new("HEADLESS-1", size.0, size.1))?;
+            compositor.add_output(
+                &OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1))
+                    .with_scale(scale),
+            )?;
             Ok(compositor)
         }),
+        "nested" => Compositor::nested(
+            Box::new(StackPolicy),
+            &NestedConfig {
+                size,
+                scale,
+                ..NestedConfig::default()
+            },
+        ),
         "drm" => Compositor::drm(Box::new(StackPolicy), DisplayConfig::default()),
         other => {
-            eprintln!("tilo-compositor: unknown backend {other} (drm, headless)");
+            eprintln!("tilo-compositor: unknown backend {other} (nested, drm, headless)");
             return ExitCode::FAILURE;
         }
     };

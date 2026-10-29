@@ -5,7 +5,8 @@
 //! are composited per output ([`render`]); where windows go and who has focus
 //! is a [`WindowPolicy`]'s decision; a [`Backend`] supplies outputs and
 //! input ([`backend::headless`]: CPU composition with no display, for tests
-//! and screenshots).
+//! and screenshots; [`backend::nested`]: a window inside another desktop;
+//! [`backend::drm`]: a bare TTY).
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +28,7 @@ pub mod input;
 mod lock;
 pub mod output;
 pub mod policy;
+mod present;
 mod protocols;
 pub mod render;
 mod state;
@@ -40,7 +42,10 @@ use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAct
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
-pub use backend::{Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, Screenshot};
+pub use backend::{
+    Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, NestedBackend, NestedConfig,
+    Screenshot,
+};
 pub use host::{HostLayer, SurfaceHost};
 pub use input::{HostKey, InputEvent, KeyModifiers};
 pub use output::OutputConfig;
@@ -146,12 +151,20 @@ impl Compositor {
         })
     }
 
-    /// Run until `stop` holds: wait for clients, devices and due frames,
+    /// A compositor in a window of the desktop it runs inside (see
+    /// [`backend::nested`]).
+    pub fn nested(policy: Box<dyn WindowPolicy>, config: &NestedConfig) -> Result<Self, Error> {
+        Self::new(policy, |handle, state| {
+            Ok(Box::new(NestedBackend::start(handle, state, config)?))
+        })
+    }
+
+    /// Run until `stop` holds or the backend is done: wait for clients, devices and due frames,
     /// handle them and draw.
     pub fn run(&mut self, mut stop: impl FnMut(&Self) -> bool) -> Result<(), Error> {
         /// The longest the loop sleeps with nothing due, so `stop` is asked.
         const IDLE: Duration = Duration::from_millis(250);
-        while !stop(self) {
+        while !self.data.backend.closed() && !stop(self) {
             let timeout = self.data.backend.next_deadline().map_or(IDLE, |at| {
                 at.saturating_duration_since(std::time::Instant::now())
                     .min(IDLE)

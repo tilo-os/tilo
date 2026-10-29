@@ -4,11 +4,25 @@
 //! logical layout is its mode over its scale, which is what clients see
 //! (`wl_output`, `xdg_output`) and the pointer moves in.
 
+use std::time::Duration;
+
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Logical, Point, Transform};
 
 use crate::state::State;
+
+/// The refresh interval assumed when a mode reports none (60 Hz).
+const FALLBACK_INTERVAL: Duration = Duration::from_micros(16_667);
+
+/// The time between frames at `refresh_mhz` millihertz; 60 Hz when the
+/// mode reports no rate.
+pub(crate) fn refresh_interval(refresh_mhz: i32) -> Duration {
+    u64::try_from(refresh_mhz)
+        .ok()
+        .and_then(|mhz| 1_000_000_000_000_u64.checked_div(mhz))
+        .map_or(FALLBACK_INTERVAL, Duration::from_nanos)
+}
 
 /// One output as a backend describes it.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,5 +93,18 @@ impl OutputConfig {
         output.set_preferred(mode);
         output.create_global::<State>(display);
         output
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_intervals_follow_the_mode_and_fall_back_to_60_hz() {
+        assert_eq!(refresh_interval(60_000), Duration::from_nanos(16_666_666));
+        assert_eq!(refresh_interval(120_000), Duration::from_nanos(8_333_333));
+        assert_eq!(refresh_interval(0), FALLBACK_INTERVAL);
+        assert_eq!(refresh_interval(-1), FALLBACK_INTERVAL);
     }
 }

@@ -30,7 +30,7 @@ fn trusted(client: &Client) -> bool {
 
 pub(crate) struct TextInput {
     popups: Vec<PopupSurface>,
-    _text_input: TextInputManagerState,
+    _text_inputs: TextInputManagerState,
     _input_method: InputMethodManagerState,
     _virtual_keyboard: VirtualKeyboardManagerState,
 }
@@ -39,7 +39,7 @@ impl TextInput {
     pub(crate) fn new(display: &DisplayHandle) -> Self {
         Self {
             popups: Vec::new(),
-            _text_input: TextInputManagerState::new::<State>(display),
+            _text_inputs: TextInputManagerState::new::<State>(display),
             // Only the session's own input methods may read and type text.
             _input_method: InputMethodManagerState::new::<State, _>(display, trusted),
             _virtual_keyboard: VirtualKeyboardManagerState::new::<State, _>(display, trusted),
