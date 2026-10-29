@@ -172,11 +172,6 @@ impl AboutInfo {
     }
 }
 
-/// The device's facts, without the problems it recorded.
-pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
-    crate::widgets::page(fact_sections(info))
-}
-
 fn fact_sections(info: &AboutInfo) -> Vec<SettingsSection> {
     // The device's name in the accent, the OS beneath: said once.
     let mut hero_column = ui::widget::Column::new()
@@ -801,7 +796,7 @@ mod tests {
             missing,
         );
         assert_eq!(info.cpu, "Snapdragon X1E80100", "the chip's own name");
-        let text = crate::widgets::announced_text(build_with(&info).as_ref());
+        let text = page_shown(info);
         assert!(
             text.iter().any(|line| line == "Snapdragon X1E80100"),
             "{text:#?}"
@@ -816,7 +811,7 @@ mod tests {
             &[&cpuinfo, &soc],
             missing,
         );
-        let text = crate::widgets::announced_text(build_with(&info).as_ref());
+        let text = page_shown(info);
         for gone in [
             t("settings-about-processor"),
             "unknown".to_owned(),
@@ -939,6 +934,12 @@ mod tests {
             .expect("the Settings window is mounted");
         app.settle();
         changed
+    }
+
+    /// What About's page announces for a device with the facts `info`.
+    fn page_shown(info: AboutInfo) -> Vec<String> {
+        let mut app = window_on(move |cx| AboutModel::new(cx, info, None));
+        crate::widgets::announced_text(crate::effects::page_of(app.harness().root_widget()))
     }
 
     /// What the window announces.
