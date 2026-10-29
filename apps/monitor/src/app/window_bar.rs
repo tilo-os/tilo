@@ -38,6 +38,7 @@ impl MonitorApp {
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
+        let state = self.state.borrow();
         toolbar.views = Some(ToolbarViews {
             name: String::from("View"),
             choices: Tab::ALL
@@ -47,10 +48,10 @@ impl MonitorApp {
                     label: tab.label().to_owned(),
                 })
                 .collect(),
-            chosen: self.tab.view_id().to_owned(),
+            chosen: state.tab.view_id().to_owned(),
         });
         let bar: &BarCommands<BarCommand> = &self.bar;
-        let chosen = self.cadence();
+        let chosen = state.cadence();
         let cadences = Cadence::all()
             .into_iter()
             .map(|cadence| {
@@ -72,24 +73,24 @@ impl MonitorApp {
             )
             .with_items(cadences),
         ];
-        let lists = self.tab == Tab::Processes
-            && self.model.process_status == ProcessDataStatus::Ready
-            && self.shared.borrow().total > 0;
+        let lists = state.tab == Tab::Processes
+            && state.model.process_status == ProcessDataStatus::Ready
+            && state.shared.borrow().total > 0;
         if lists {
             actions.push(
                 bar.entry("list-tree", "Tree view", BarCommand::TreeMode)
-                    .on(self.tree_mode),
+                    .on(state.tree_mode),
             );
-            if self.tree_mode {
+            if state.tree_mode {
                 actions.push(
                     bar.entry("layers", "Include children", BarCommand::SumChildren)
-                        .on(self.sum_mode == SumMode::SumSubtree)
+                        .on(state.sum_mode == SumMode::SumSubtree)
                         .in_menu(),
                 );
             }
             actions.push(
                 bar.entry("eye", "Kernel threads", BarCommand::KernelThreads)
-                    .on(self.prefs.show_kernel_threads)
+                    .on(state.prefs.show_kernel_threads)
                     .in_menu(),
             );
         }
@@ -107,18 +108,19 @@ impl MonitorApp {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
+            let mut state = self.state.borrow_mut();
             let request = match self.bar.pressed(&event) {
                 Some(BarCommand::Cadence(cadence)) => {
-                    self.set_cadence(cadence);
+                    state.set_cadence(cadence);
                     continue;
                 }
                 Some(BarCommand::Refresh) => Request::Refresh,
-                Some(BarCommand::TreeMode) => Request::TreeMode(!self.tree_mode),
+                Some(BarCommand::TreeMode) => Request::TreeMode(!state.tree_mode),
                 Some(BarCommand::SumChildren) => {
-                    Request::SumChildren(self.sum_mode != SumMode::SumSubtree)
+                    Request::SumChildren(state.sum_mode != SumMode::SumSubtree)
                 }
                 Some(BarCommand::KernelThreads) => {
-                    Request::KernelThreads(!self.prefs.show_kernel_threads)
+                    Request::KernelThreads(!state.prefs.show_kernel_threads)
                 }
                 None => {
                     let ToolbarEvent::Action { id } = event else {
@@ -130,7 +132,7 @@ impl MonitorApp {
                     }
                 }
             };
-            self.shared.borrow_mut().push(request);
+            state.shared.borrow_mut().push(request);
         }
         asked
     }
