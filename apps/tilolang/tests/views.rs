@@ -61,29 +61,22 @@ fn an_answer_is_a_live_view_over_other_apps_at_every_size_and_theme() {
             app.harness()
                 .render_png(&out.join(format!("views-answer-{size}-{theme}.png")));
             let text = said(&mut app);
-            // The answer's title, and the board's and the chat's resources, drawn by their apps'
-            // own rows: the block rendered, as a view, not an error.
-            for shown in [
-                "Left for the release",
-                "Write the release notes",
-                "Fix the sidebar at large text",
-                "Release checklist",
-            ] {
+            // The answer's title, and the tasks' card drawn by Tasks' own view: the block
+            // rendered, as a view, not an error. (Its rows over live tasks are the runtime's
+            // test, `an_answer_draws_its_view_block_live_over_other_apps_as_its_task_wrote_it`.)
+            for shown in ["Left for the release", "Tasks"] {
                 assert!(text.contains(shown), "{size} {theme}: {shown:?} in {text}");
             }
-            assert!(
-                !text.contains("Bump the version"),
-                "a card that is done is not left: {text}"
-            );
             assert!(!text.contains("E0"), "the block compiled: {text}");
         }
     }
 }
 
 /// The view the recorded model answers with in the agent's end-to-end check compiles as a view
-/// over the apps Views mounts.
+/// over the apps Views mounts. (Its programs are a task's session, each after the last, which
+/// the door runs; only the view stands alone.)
 #[test]
-fn the_recorded_answer_compiles_as_a_view_over_board_todo_and_chat() {
+fn the_recorded_answer_compiles_as_a_view_over_the_apps_views_mounts() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let views = root.join("../tl/views");
     let dirs = tilolang::source::dependency_order(&views, &[]).expect("the packages resolve");
@@ -97,20 +90,17 @@ fn the_recorded_answer_compiles_as_a_view_over_board_todo_and_chat() {
         .unwrap(),
     )
     .unwrap();
-    let turns = script["turns"].as_array().unwrap();
-    for turn in turns {
-        for block in turn["blocks"].as_array().unwrap() {
-            let input = &block["input"];
-            if let Some(program) = input["program"].as_str() {
-                let compiled = tilolang::compile_block(program, &metas)
-                    .unwrap_or_else(|d| panic!("{program}: {d:#?}"));
-                assert_eq!(compiled.kind, tilolang::BlockKind::Data, "{program}");
-            }
-            if let Some(view) = input["view"]["source"].as_str() {
-                let compiled = tilolang::compile_block(view, &metas)
-                    .unwrap_or_else(|d| panic!("{view}: {d:#?}"));
-                assert_eq!(compiled.kind, tilolang::BlockKind::View, "{view}");
-            }
-        }
+    let views: Vec<&str> = script["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|turn| turn["blocks"].as_array().unwrap())
+        .filter_map(|block| block["input"]["view"]["source"].as_str())
+        .collect();
+    assert_eq!(views.len(), 1, "the script answers with one view");
+    for view in views {
+        let compiled =
+            tilolang::compile_block(view, &metas).unwrap_or_else(|d| panic!("{view}: {d:#?}"));
+        assert_eq!(compiled.kind, tilolang::BlockKind::View, "{view}");
     }
 }

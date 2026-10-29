@@ -1168,33 +1168,14 @@ mod cases {
     fn an_answer_draws_its_view_block_live_over_other_apps_as_its_task_wrote_it() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let board = w.rt.create_root("Board").unwrap();
         let list = w.rt.create_root("Tasks").unwrap();
-        w.rt.create_root("Conversations").unwrap();
-        let column = |title: &str| {
-            let made = returned_ref(w.call(&apps.board, "new_column", vec![res(&board)]));
-            w.call(
-                &apps.board,
-                "rename_column",
-                vec![res(&made), Value::text(title)],
-            );
-            made
+        let add = |title: &str| {
+            returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(title)]))
         };
-        let (todo, done) = (column("To do"), column("Done"));
-        let card = |col: &ResourceRef, title: &str| {
-            w.call(
-                &apps.board,
-                "add_card",
-                vec![res(&board), res(col), Value::text(title), Value::text("")],
-            );
-        };
-        card(&todo, "Write the release notes");
-        card(&done, "Bump the version");
-        w.call(
-            &apps.todo,
-            "add",
-            vec![res(&list), Value::text("Record the demo video")],
-        );
+        add("Record the demo video");
+        add("Update the changelog");
+        let frozen = add("Freeze the strings for translation");
+        w.call(&apps.todo, "check", vec![res(&frozen)]);
         let answers = w.rt.create_root("Answers").unwrap();
         // The agent's task answers; the answer records it as the block's author.
         let task = Principal::new("agent-task:release");
@@ -1221,21 +1202,24 @@ mod cases {
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
         let shown = row_titles(found[0]);
         assert!(
-            shown.contains(&"Write the release notes".to_owned())
-                && shown.contains(&"Record the demo video".to_owned()),
+            shown.contains(&"Record the demo video".to_owned())
+                && shown.contains(&"Update the changelog".to_owned()),
             "{shown:?}\n{}",
             dump(view.tree())
         );
-        assert!(!shown.contains(&"Bump the version".to_owned()), "{shown:?}");
-        // Live: a card added later is in the answer on its next frame.
-        card(&todo, "Screenshots for the docs");
+        assert!(
+            !shown.contains(&"Freeze the strings for translation".to_owned()),
+            "{shown:?}"
+        );
+        // Live: a task added later is in the answer on its next frame.
+        add("Screenshots for the docs");
         view.poll_patches().unwrap();
         assert!(
             row_titles(embeds(view.tree())[0]).contains(&"Screenshots for the docs".to_owned()),
             "{}",
             dump(view.tree())
         );
-        // As a window draws it, with rows built as they are shown: the answer's cards are there.
+        // As a window draws it, with rows built as they are shown: the answer's rows are there.
         let lazy =
             w.rt.open_view(&me(), &apps.views.view("answer_page"), vec![res(&answer)])
                 .unwrap();
@@ -1243,7 +1227,7 @@ mod cases {
         assert_eq!(
             lazy_rows,
             3,
-            "a card's preview rows are built: {}",
+            "the open tasks' rows are built: {}",
             dump(lazy.tree())
         );
     }

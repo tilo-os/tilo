@@ -983,6 +983,7 @@ program-step-undo = Undo
 program-step-approve = Approve
 program-step-decline = Decline
 program-step-waits = Waits for you to confirm it.
+program-step-planned = Nothing changed yet. Once confirmed, this changes:
 
 # A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
 signal-meter-unknown = Signal strength unknown

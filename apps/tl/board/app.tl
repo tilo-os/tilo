@@ -47,11 +47,6 @@ action new_card(col: Column) -> Card (icon: .plus, label: "New card") {
     col.cards.insert(Card(title: "Untitled"))
 }
 
-/// Adds a card with a title, and notes when given, at the foot of a column.
-action add_card(b: Board, col: Column, title: Text, notes: Text = "") -> Card (icon: .plus, label: "Add card") {
-    b.cards.insert(Card(title: title, notes: notes, column: col))
-}
-
 /// Moves a card to the foot of a column.
 action move_to(card: Card, col: Column) (icon: .arrow_right, label: "Move to {col.title}") {
     col.cards.move(card, to: col.cards.len())

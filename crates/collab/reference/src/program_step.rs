@@ -80,6 +80,9 @@ pub struct ProgramStep {
     /// What it proposes and waits on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previews: Vec<StepPreview>,
+    /// What a previewed program would change once it is confirmed: nothing ran yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planned: Vec<StepChange>,
 }
 
 impl ProgramStep {
@@ -103,6 +106,7 @@ impl ProgramStep {
         self.refs.truncate(MAX_STEP_ITEMS);
         self.changes.truncate(MAX_STEP_ITEMS);
         self.previews.truncate(MAX_STEP_ITEMS);
+        self.planned.truncate(MAX_STEP_ITEMS);
         self
     }
 }
@@ -129,6 +133,7 @@ mod tests {
             }],
             changes: Vec::new(),
             previews: Vec::new(),
+            planned: Vec::new(),
         };
         let written = serde_json::to_string(&step).unwrap();
         assert!(!written.contains("changes"), "{written}");

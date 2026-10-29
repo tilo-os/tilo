@@ -972,6 +972,7 @@ program-step-undo = Rückgängig
 program-step-approve = Genehmigen
 program-step-decline = Ablehnen
 program-step-waits = Wartet auf deine Bestätigung.
+program-step-planned = Noch nichts geändert. Nach der Bestätigung ändert sich:
 
 # A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
 signal-meter-unknown = Signalstärke unbekannt

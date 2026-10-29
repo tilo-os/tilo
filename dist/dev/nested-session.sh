@@ -151,7 +151,7 @@ bin=$build_out/bin
 # A build shared read-only between sessions (TILO_NESTED_SESSION_BUILD) runs from this
 # session's own copy of its programs: hard links, so nothing is duplicated, with room for the
 # session's fonts beside them.
-if [[ ! -w $bin ]]; then
+if [[ -d $bin && ! -w $bin ]]; then
     rm -rf "$state/bin"
     mkdir -p "$state"
     cp -al "$bin" "$state/bin" 2>/dev/null || { chmod -R u+w "$state/bin" 2>/dev/null; rm -rf "$state/bin"; cp -a "$bin" "$state/bin"; }

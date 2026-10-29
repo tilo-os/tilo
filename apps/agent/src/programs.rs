@@ -4,14 +4,12 @@
 //! The model sends a program; what comes back is tilolang, and output pastes back as input. Each
 //! call is one step of the task, recorded on its issue as a [`ProgramStep`] that the composer and
 //! Tasks draw: the program as code, the resources the answer names as references that open, what
-//! it changed as rows that undo, and what it proposes as previews to confirm.
+//! it changed as rows that undo, and what it would change as a preview.
 //!
-//! Where a program runs is the door's business, not the loop's: the loop hands it to the room's
-//! tilolang hosts through the broker, as an invocation of their published `run-block` (the same
-//! path, grants and asks as any operation), and reads back what the host answered. A program
-//! that names one app runs on that app's host, which holds its data and its actions. One that
-//! names several runs on a host that mounts all of them, for reading. The door's own `tilo`
-//! tool takes the same programs once it is published; only [`route`] changes then.
+//! The session's door runs every task's programs ([`tilo_actions::remote::task_programs`]): the
+//! loop hands each program to it as a step of its run, and the door runs it in the task's own
+//! tilolang host, as the agent for its person, the same way it runs an MCP client's `tilo` calls.
+//! This module only says what the model is offered and reads back what the door answered.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -21,6 +19,8 @@ use serde_json::{Value, json};
 use ui::tilo_reference::{
     ProgramStep, ResourceAt, ResourceRef, StepChange, StepOutcome, StepPreview,
 };
+
+use tilo_actions::remote::task_programs::ProgramAnswer;
 
 use crate::surface::{Catalogue, Offer};
 
@@ -45,19 +45,22 @@ pub fn definition() -> ToolDefinition {
         name: TILO.into(),
         description: ("Run a tilolang program over the apps listed under \"Apps\" and get its \
              answer, in tilolang. Each call is one step of the task that the person sees and \
-             can undo. A value answers with its items, each line led by its reference \
-             (`@board.Card:...`), which you can paste into the next program; an action call \
-             (`todo.check(@todo.Todo:..., done: true)`) changes it, or asks the person first \
-             when it needs their approval. A program that does not compile answers with what \
-             is valid. Name one app per program to change things in it.")
+             can undo. An answer names each resource by a short reference at the start of its \
+             line (`t3`), which later programs take as it is: `tasks.check(t3)`. `this` is \
+             what the person pointed at. Read with `find`, `grep`, `describe` and fields; \
+             change things by calling actions or assigning fields. A program that would \
+             change many things or destroy something answers with a preview; send it again \
+             with `confirm` once the person's request asks for it. `undo` takes back the last \
+             step, `undo task` every step, `history task` lists them. A program that does not \
+             compile answers with what is valid.")
             .into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "program": {
                     "type": "string",
-                    "description": "The program: one tilolang expression, such as \
-                        `board.cards_of(root board.Board, @board.Column:...)` or a block."
+                    "description": "The program: tilolang statements, one per line, such \
+                        as `find(tasks.Task, done: false)`."
                 },
                 "confirm": {
                     "type": "boolean",
@@ -159,116 +162,6 @@ fn title_of(catalogue: &Catalogue, app: &str) -> String {
             },
             |offer| offer.descriptor.resource_label.clone(),
         )
-}
-
-/// The aliases of `mounted` that `source` names, in the order it first names them: an
-/// identifier followed by a dot that is not itself a field (`board.cards`), or a reference
-/// (`@board.Card:...`).
-#[must_use]
-pub fn named<'a>(source: &str, mounted: &'a [Mounted]) -> Vec<&'a Mounted> {
-    let mut found: Vec<&Mounted> = Vec::new();
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut word = String::new();
-    // Whether the word being read may name an app: it starts with a letter and follows no dot
-    // (a field) and no digit (a number's unit).
-    let mut may_name = false;
-    let mut previous: Option<char> = None;
-    // A word ends at the character after it; the end of the source is the last such place.
-    for c in source.chars().map(Some).chain(std::iter::once(None)) {
-        if in_string {
-            match c {
-                Some('\\') if !escaped => escaped = true,
-                Some('"') if !escaped => in_string = false,
-                _ => escaped = false,
-            }
-            previous = c;
-            continue;
-        }
-        match c {
-            Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
-                if word.is_empty() {
-                    may_name = (c.is_ascii_alphabetic() || c == '_')
-                        && !previous.is_some_and(|p| p == '.' || p.is_ascii_digit());
-                }
-                word.push(c);
-            }
-            other => {
-                if other == Some('.')
-                    && may_name
-                    && let Some(app) = mounted.iter().find(|m| m.alias == word)
-                    && !found.iter().any(|f| f.app == app.app)
-                {
-                    found.push(app);
-                }
-                word.clear();
-                in_string = other == Some('"');
-            }
-        }
-        previous = c;
-    }
-    found
-}
-
-/// Where `source` runs: the host of the one app it names, or, naming several, the first host
-/// that mounts every one of them (`mounts` says which apps each host mounts).
-///
-/// # Errors
-/// In words for the model: a program that names no app it can reach, or apps no one host holds.
-pub fn route<'a>(
-    source: &str,
-    mounted: &'a [Mounted],
-    mounts: &BTreeMap<String, Vec<String>>,
-) -> Result<&'a Mounted, String> {
-    let names = named(source, mounted);
-    let apps = || {
-        mounted
-            .iter()
-            .map(|m| format!("`{}`", m.alias))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    match names.as_slice() {
-        [] => Err(format!(
-            "the program names no app; start from one of {}, as in `{}.…`",
-            apps(),
-            mounted.first().map_or("todo", |m| m.alias.as_str())
-        )),
-        [one] => Ok(one),
-        several => mounted
-            .iter()
-            .find(|host| {
-                let held = mounts.get(&host.app);
-                several
-                    .iter()
-                    .all(|app| app.app == host.app || held.is_some_and(|h| h.contains(&app.app)))
-            })
-            .ok_or_else(|| {
-                format!(
-                    "no one place holds {} together; read each in its own step",
-                    several
-                        .iter()
-                        .map(|m| format!("`{}`", m.alias))
-                        .collect::<Vec<_>>()
-                        .join(" and ")
-                )
-            }),
-    }
-}
-
-/// The apps each host mounts besides its own, read from its `catalogue` answer: every app a
-/// declaration of it belongs to.
-#[must_use]
-pub fn mounts_of(catalogue: &Value) -> Vec<String> {
-    let mut apps: Vec<String> = Vec::new();
-    for signature in catalogue.as_array().into_iter().flatten() {
-        if let Some(app) = signature.get("app").and_then(Value::as_str)
-            && !apps.iter().any(|a| a == app)
-        {
-            apps.push(app.to_owned());
-        }
-    }
-    apps
 }
 
 /// The types each app declares, from a host's `catalogue` answer: what a projected record's
@@ -558,6 +451,130 @@ fn inline(value: &Value, naming: &Naming<'_>) -> Option<String> {
     })
 }
 
+/// The resource a literal names (`@tasks.Task:root/items:x`), labelled `label`: its app by how
+/// programs name it in `mounted`.
+fn literal_resource(literal: &str, label: &str, mounted: &[Mounted]) -> Option<ResourceAt> {
+    let (path, id) = literal.strip_prefix('@')?.split_once(':')?;
+    let (alias, type_name) = path.rsplit_once('.')?;
+    let app = mounted
+        .iter()
+        .find(|m| m.alias == alias)
+        .map_or_else(|| format!("so.tilo.lang.{alias}"), |m| m.app.clone());
+    Some(ResourceAt {
+        reference: ResourceRef::whole(
+            format!("tl.{app}.{type_name}"),
+            format!("tl:{app}:{id}"),
+            if label.is_empty() { type_name } else { label },
+        ),
+        app,
+        record: None,
+    })
+}
+
+/// The title the answer shows after the reference `shown` at the start of a line
+/// (`t3 "Record the demo video" ...`), if it shows one.
+fn shown_title(text: &str, shown: &str) -> String {
+    text.lines()
+        .find_map(|line| {
+            let rest = line.trim_start().strip_prefix(shown)?;
+            let rest = rest.strip_prefix(' ')?.strip_prefix('"')?;
+            let mut title = String::new();
+            let mut escaped = false;
+            for c in rest.chars() {
+                match c {
+                    _ if escaped => {
+                        title.push(c);
+                        escaped = false;
+                    }
+                    '\\' => escaped = true,
+                    '"' => return Some(title),
+                    _ => title.push(c),
+                }
+            }
+            None
+        })
+        .unwrap_or_default()
+}
+
+/// The step a program was, from what the door answered: the door's text as its answer, the
+/// resources it shows as references, what it changed as rows that undo, and what a preview
+/// would change once it is confirmed.
+#[must_use]
+pub fn door_step(source: &str, answered: &ProgramAnswer, mounted: &[Mounted]) -> ProgramStep {
+    let mut step = ProgramStep {
+        program: source.to_owned(),
+        answer: answered.text.lines().map(str::to_owned).collect(),
+        ..ProgramStep::default()
+    };
+    for (shown, literal) in &answered.refs {
+        let title = shown_title(&answered.text, shown);
+        if let Some(resource) = literal_resource(literal, &title, mounted)
+            && !step.refs.contains(&resource)
+        {
+            step.refs.push(resource);
+        }
+    }
+    let answer = answered.answer.as_ref();
+    let state = answer
+        .and_then(|answer| answer.get("state"))
+        .and_then(Value::as_str);
+    step.outcome = match state {
+        Some("done") | None if !answered.failed => StepOutcome::Done,
+        Some("preview") => StepOutcome::Preview,
+        Some("suspended") => StepOutcome::Asked,
+        Some("rejected") => StepOutcome::Rejected,
+        _ => StepOutcome::Failed,
+    };
+    let planned = answer
+        .and_then(|answer| answer.get("steps"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let changed = answer
+        .and_then(|answer| answer.get("changed"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let known = step.refs.clone();
+    let resource_of = |app: &str, id: &str, action: &str| {
+        known
+            .iter()
+            .find(|known| known.reference.id == id)
+            .cloned()
+            .unwrap_or_else(|| ResourceAt {
+                app: app.to_owned(),
+                record: None,
+                reference: ResourceRef::whole(format!("tl.{app}"), id, action),
+            })
+    };
+    for planned in &planned {
+        let app = planned
+            .get("app")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let action = planned
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        // The resource an action is about is the first it names.
+        let Some(id) = planned
+            .get("resources")
+            .and_then(Value::as_array)
+            .and_then(|resources| resources.first())
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let resource = resource_of(app, id, &action);
+        match step.outcome {
+            StepOutcome::Done if changed > 0 => step.changes.push(StepChange { resource, action }),
+            StepOutcome::Preview => step.planned.push(StepChange { resource, action }),
+            _ => {}
+        }
+    }
+    step.bounded()
+}
+
 /// What the model reads of a step: its answer as tilolang, led by how it ended when it did not
 /// simply run.
 #[must_use]
@@ -596,44 +613,6 @@ mod tests {
             catalogue: None,
         })
         .collect()
-    }
-
-    #[test]
-    fn a_program_names_the_apps_it_starts_from_not_fields_or_text() {
-        let mounted = board();
-        let named = named(
-            "board.cards.filter(c -> c.board.title != \"todo.x\") + @todo.Todo:t1",
-            &mounted,
-        );
-        let aliases: Vec<&str> = named.iter().map(|m| m.alias.as_str()).collect();
-        assert_eq!(aliases, ["board", "todo"]);
-    }
-
-    #[test]
-    fn one_app_runs_on_its_host_and_several_on_one_that_mounts_them() {
-        let mounted = board();
-        let mut mounts = BTreeMap::new();
-        assert_eq!(
-            route("board.cards", &mounted, &mounts).unwrap().alias,
-            "board"
-        );
-        let refused = route("board.cards + todo.todos.items", &mounted, &mounts).unwrap_err();
-        assert!(refused.contains("`board` and `todo`"), "{refused}");
-        mounts.insert(
-            "so.tilo.lang.views".to_owned(),
-            vec![
-                "so.tilo.lang.board".to_owned(),
-                "so.tilo.lang.todo".to_owned(),
-            ],
-        );
-        assert_eq!(
-            route("board.cards + todo.todos.items", &mounted, &mounts)
-                .unwrap()
-                .alias,
-            "views"
-        );
-        let none = route("1 + 2", &mounted, &mounts).unwrap_err();
-        assert!(none.contains("`board`, `todo`, `views`"), "{none}");
     }
 
     #[test]

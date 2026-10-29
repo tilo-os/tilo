@@ -97,7 +97,7 @@ pub struct McpServer<H> {
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
 }
 
-pub use agent::TaskHosts;
+pub use agent::{TaskHosts, TaskProgram};
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

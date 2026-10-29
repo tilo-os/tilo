@@ -73,13 +73,12 @@ view answer_page(v: Answer) {
     }
 }
 
-/// An agent's answer to "what's left for the release?", over the release board and the release
-/// conversation.
+/// An agent's answer to "what's left for the release?", over the workspace's tasks.
 scenario "a release answer" -> Answer {
     answers.items.insert(Answer(
         title: "Left for the release",
         question: "What's left for the release?",
-        source: "grid(min: 22rem) \{\n    card(root board.Board, count: (root board.Board).cards.count(c -> c.column.title != \"Done\")) \{\n        list((root board.Board).cards.filter(c -> c.column.title != \"Done\")) \{ c ->\n            row(c)\n        }\n    }\n    card(chat.conversations, count: 1) \{\n        list(chat.conversations.filter(c -> c.title == \"Release checklist\")) \{ c ->\n            row(c)\n        }\n    }\n}",
+        source: "card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) \{\n    list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n        row(t)\n    }\n}",
         author: invoker
     ))
 }

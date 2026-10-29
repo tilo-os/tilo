@@ -769,6 +769,7 @@ mod shots_release {
                 action: t("agent-quick-shots-preview-post"),
                 summary: t("agent-quick-shots-preview-summary"),
             }],
+            planned: Vec::new(),
         }
     }
 

@@ -2613,6 +2613,7 @@ mod tests {
                     action: "Post in Release".into(),
                     summary: String::new(),
                 }],
+                planned: Vec::new(),
             }],
             answer: answer.then(|| ResourceAt {
                 app: "so.tilo.lang.views".into(),

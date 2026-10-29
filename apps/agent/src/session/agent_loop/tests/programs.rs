@@ -1,6 +1,7 @@
-//! A task that works through tilolang programs: each `tilo` call runs on the host of the app it
-//! names, is recorded on the issue as a step with its answer, and a `view` finish is checked by
-//! the Views host, kept by its `answer` action and recorded as the run's answer.
+//! A task that works through tilolang programs: each `tilo` call is run by the session's door as
+//! a step of the task's run, is recorded on the issue as a step with its answer, and a `view`
+//! finish is checked by the Views host, kept by its `answer` action and recorded as the run's
+//! answer.
 
 use super::*;
 use ui::tilo_reference::{ProgramStep, ResourceAt, StepOutcome};
@@ -8,6 +9,7 @@ use ui::tilo_reference::{ProgramStep, ResourceAt, StepOutcome};
 const BOARD_PEER: u64 = 21;
 const VIEWS_PEER: u64 = 22;
 const TRACKER_PEER: u64 = 23;
+const DOOR_PEER: u64 = 24;
 const BOARD: &str = "so.tilo.lang.board";
 const VIEWS: &str = "so.tilo.lang.views";
 
@@ -94,7 +96,27 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         )
     };
+    let door = ExportedAction {
+        resource: tilo_actions::remote::task_programs::RESOURCE.into(),
+        resource_kind: tilo_actions::remote::task_programs::RESOURCE.into(),
+        resource_label: "Task programs".into(),
+        ..descriptor(
+            tilo_actions::remote::task_programs::RUN,
+            "Run a step of a task",
+            tilo_actions::OperationKind::View,
+            vec![
+                ActionParam::required("program", ParamType::Text, "program"),
+                ActionParam::optional("confirm", ParamType::Boolean, "confirm"),
+                ActionParam::optional("this", ParamType::Text, "this"),
+                ActionParam::required("run", ParamType::Text, "run"),
+                ActionParam::optional("label", ParamType::Text, "label"),
+            ],
+            Availability::Available,
+            vec![],
+        )
+    };
     vec![
+        surface(DOOR_PEER, "so.tilo.agent", vec![door]),
         surface(BOARD_PEER, BOARD, host("Board")),
         surface(VIEWS_PEER, VIEWS, views),
         surface(
@@ -167,25 +189,38 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
     reason = "one task end to end: its programs, their records, and the view it answers with"
 )]
 fn a_task_works_in_programs_and_answers_with_a_view() {
-    let cards = serde_json::json!({"kind": "data", "value": {"count": 1, "items": [
-        {"type": "Card", "id": "root/cards:c1", "label": "Write the release notes",
-         "fields": {"title": "Write the release notes"}}
-    ]}});
+    let cards = serde_json::json!({
+        "text": "c1 \"Write the release notes\" column: c2",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+        "refs": [["c1", "@board.Card:root/cards:c1"], ["c2", "@board.Column:root/columns:k1"]],
+    });
+    let moved = serde_json::json!({
+        "text": "step 1: 1 change in board; `undo` takes it back",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "changed": 1, "apps": [BOARD],
+            "steps": [{"app": BOARD, "action": "move_card",
+                "resources": [format!("tl:{BOARD}:root/cards:c1")], "destructive": false}]},
+    });
     let world = World {
         tilolang: true,
-        // Matched in order: the view (its rows), the program that does not compile, the cards.
-        tl_blocks: vec![
-            (
-                "row(c)",
-                serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"}}),
-            ),
+        // The view's rows, checked by the Views host.
+        tl_blocks: vec![(
+            "row(c)",
+            serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"}}),
+        )],
+        // Matched in order: the program that does not compile, the move, the cards.
+        tl_programs: vec![
             (
                 "nope",
-                Value::String(
-                    "the block does not compile:\n1:7: E0101 `board` has no `nope`".into(),
-                ),
+                serde_json::json!({
+                    "text": "error: the program does not compile; nothing ran\n1:7: `board` has no `nope`",
+                    "failed": true,
+                    "answer": {"state": "rejected", "detail": ["1:7: `board` has no `nope`"]},
+                }),
             ),
-            ("cards", cards),
+            ("move", moved),
+            ("board.Card", cards),
         ],
         ..World::default()
     };
@@ -197,10 +232,11 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
             turn(&[tilo("board.nope")], 64),
             turn(
                 &[tilo(
-                    "(root board.Board).cards.filter(c -> c.column.title != \"Done\")",
+                    "find(board.Card).filter(c -> c.column.title != \"Done\")",
                 )],
                 64,
             ),
+            turn(&[tilo("board.move_card(c1, c2)")], 64),
             turn(
                 &[(
                     tools::PLAN,
@@ -218,7 +254,7 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     let bodies = f.script.bodies.lock().unwrap();
     assert_eq!(
         bodies.len(),
-        3,
+        4,
         "a turn per program and the finish; the last one read: {}",
         said_last(bodies.last().unwrap())
     );
@@ -236,19 +272,16 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     assert!(tool_names(&bodies[0]).contains(&crate::programs::TILO.to_owned()));
     // A program that does not compile answers what is valid; the next one answers in tilolang.
     let second = bodies[1].to_string();
-    assert!(second.contains("did not compile"), "{second}");
+    assert!(second.contains("does not compile"), "{second}");
     let third = said_last(&bodies[2]);
-    assert!(
-        third.contains("@board.Card:root/cards:c1 \"Write the release notes\""),
-        "{third}"
-    );
+    assert!(third.contains("c1 \"Write the release notes\""), "{third}");
     drop(bodies);
     let sent = f.sent.borrow();
     let steps: Vec<ProgramStep> = recorded(&sent, "record-step")
         .into_iter()
         .map(|arguments| serde_json::from_value(arguments["step"].clone()).unwrap())
         .collect();
-    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(steps.len(), 3, "{steps:?}");
     assert_eq!(steps[0].outcome, StepOutcome::Rejected);
     assert_eq!(steps[1].outcome, StepOutcome::Done);
     assert_eq!(steps[1].refs[0].app, BOARD);
@@ -256,6 +289,26 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         steps[1].refs[0].reference.id,
         format!("tl:{BOARD}:root/cards:c1")
     );
+    assert_eq!(steps[1].refs[0].reference.label, "Write the release notes");
+    assert_eq!(steps[1].refs[0].reference.kind, format!("tl.{BOARD}.Card"));
+    // A program that changed something is a row that undoes it.
+    assert_eq!(steps[2].changes.len(), 1, "{:?}", steps[2]);
+    assert_eq!(steps[2].changes[0].action, "move_card");
+    assert_eq!(
+        steps[2].changes[0].resource.reference.id,
+        format!("tl:{BOARD}:root/cards:c1")
+    );
+    // Every program went to the door as a step of the task's run.
+    let world = f.world.borrow();
+    let ran: Vec<&serde_json::Map<String, Value>> = world
+        .steps
+        .iter()
+        .filter(|(action, _)| action == tilo_actions::remote::task_programs::RUN)
+        .map(|(_, arguments)| arguments)
+        .collect();
+    assert_eq!(ran.len(), 3);
+    assert_eq!(ran[0]["run"], Value::String(f.run.group()));
+    drop(world);
     // The view was checked by the Views host before it was kept, and the answer names the
     // resource keeping it.
     let world = f.world.borrow();
@@ -265,7 +318,7 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         .map(|(action, _)| action.as_str())
         .filter(|action| ["run-block", "answer"].contains(action))
         .collect();
-    assert_eq!(kept, ["run-block", "run-block", "run-block", "answer"]);
+    assert_eq!(kept, ["run-block", "answer"]);
     let answers: Vec<ResourceAt> = recorded(&sent, "record-answer")
         .into_iter()
         .map(|arguments| serde_json::from_value(arguments["view"].clone()).unwrap())

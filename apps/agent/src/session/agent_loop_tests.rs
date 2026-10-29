@@ -512,6 +512,8 @@ struct World {
     tilolang: bool,
     /// What each `run-block` answers, by a word its source holds.
     tl_blocks: Vec<(&'static str, Value)>,
+    /// What the door answers each task program, by a word the program holds.
+    tl_programs: Vec<(&'static str, Value)>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -811,6 +813,18 @@ impl World {
                     }
                     Some(answer) => (serde_json::json!({"succeeded": {"value": answer}}), false),
                     None => (serde_json::json!({"failed": "no block"}), false),
+                }
+            }
+            "run-program" => {
+                let program = text("program");
+                let answer = self
+                    .tl_programs
+                    .iter()
+                    .find(|(word, _)| program.contains(word))
+                    .map(|(_, answer)| answer.clone());
+                match answer {
+                    Some(answer) => (serde_json::json!({"succeeded": {"value": answer}}), false),
+                    None => (serde_json::json!({"failed": "no program"}), false),
                 }
             }
             "catalogue" => (

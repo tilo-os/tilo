@@ -113,6 +113,16 @@ impl ProgramStepView {
         for (index, preview) in self.step.previews.iter().enumerate() {
             column = column.push(self.preview(index, preview));
         }
+        if !self.step.planned.is_empty() {
+            column = column.push(Box::new(
+                Text::new(&widget_format("program-step-planned", &[]))
+                    .with_role(TextRole::Caption)
+                    .with_wrap_mode(TextWrapMode::WordOrGlyph),
+            ));
+            for (index, planned) in self.step.planned.iter().enumerate() {
+                column = column.push(self.planned(index, planned));
+            }
+        }
         Box::new(column)
     }
 
@@ -209,6 +219,18 @@ impl ProgramStepView {
             ));
         }
         Box::new(row)
+    }
+
+    /// A change a preview would make, as a row: what, to what. Nothing to undo: it has not run.
+    fn planned(&self, index: usize, planned: &StepChange) -> Element {
+        Box::new(
+            ListRow::new(
+                format!("{}-planned-{index}", self.id),
+                planned.action.clone(),
+            )
+            .secondary(planned.resource.reference.label.clone())
+            .icon(Icon::Pencil),
+        )
     }
 
     /// A proposal as an object card: the action, what it would do, Confirm and Decline.
@@ -395,6 +417,7 @@ mod tests {
                 action: "Check the todo".into(),
                 summary: String::new(),
             }],
+            planned: Vec::new(),
         };
         let mut bare = Vec::new();
         ids(

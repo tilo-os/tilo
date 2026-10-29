@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """The Tasks agent working in tilolang, end to end, in a headless nested session.
 
-Board, Todo, Chat, Notes and Views are built with `tilolang build` and installed into a
-headless nested Tilo session (dist/dev/nested-session.sh, lavapipe only) beside the Tasks agent,
-Tasks and Settings. The workspace's model is a recorded one: the fake Anthropic Messages
+Tasks, Notes, Chat and Views are built with `tilolang build` and installed into a headless
+nested Tilo session (dist/dev/nested-session.sh, lavapipe only) beside the Tasks agent, the
+Tasks tracker and Settings. The workspace's model is a recorded one: the fake Anthropic Messages
 endpoint of scripts/perf/agent_task.py on loopback, replaying
 scripts/headless-examples/agent-tilolang/release.json, configured as a provider on this device
 through Settings' own provider actions, as a person adds LM Studio. Nothing reaches a hosted
 model and no key is used.
 
-Board, Todo and Chat are filled through their own actions with a release a week out. Board is
-focused, the quick composer opened on it (Super+C), "what's left for the release?" typed and
-sent, as a person asks. Then:
+Tasks, Notes and Chat are filled through their own actions with a release a week out. Tasks is
+focused, the quick composer opened on it (Super+C), the request typed and sent, as a person
+asks. The agent works through tilolang programs, each run by the session's door as a step of
+the task:
 
-- **steps**: the run records each program it ran on its issue, with what it answered, in
-  tilolang: three steps over Board, Todo and Chat, each answer naming their resources.
+- **steps**: the run records each program on its issue with what it answered: reads over
+  Tasks, Notes and Chat, a note it writes, a step it undoes, a change to many tasks previewed
+  and then confirmed.
 - **answer**: the run finishes with a view: a View in Views, written by the agent's task, which
-  the composer opens beside Board.
+  the composer opens beside Tasks.
 - **shots**: PNGs of the session while it works and once it answered (OUT/*.png).
 
   scripts/headless-examples/agent-tilolang-e2e.py [--no-build] [--out DIR] [--keep]
@@ -49,7 +51,7 @@ e2e = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(e2e)
 Failed, Session, until, run = e2e.Failed, e2e.Session, e2e.until, e2e.run
 
-APPS = ["board", "todo", "chat", "notes", "views"]
+APPS = ["tasks", "notes", "chat", "views"]
 NATIVE = "agent tasks settings"
 SCRIPT = HERE / "agent-tilolang/release.json"
 TRACKER = "tasks.tracker"
@@ -67,7 +69,10 @@ def app_id(name: str) -> str:
 def tl_resource(found: dict) -> str | None:
     """The tilolang resource an action is bound to (`tl:<app>:<id>`): a bound resource's id
     ends with its published id in hex."""
-    tail = (found.get("resource") or "").rsplit(":", 1)[-1]
+    resource = found.get("resource") or ""
+    if resource.startswith("tl:"):
+        return resource
+    tail = resource.rsplit(":", 1)[-1]
     try:
         return bytes.fromhex(tail).decode()
     except ValueError:
@@ -120,41 +125,17 @@ def configure_model(session: Session, port: int) -> dict:
     return {"port": port, "agent": AGENT, "says": ready[0].get("subtitle")}
 
 
-def card_column(session: Session, board: str, title: str) -> dict:
-    """A column of the board as a picked resource, made and named `title`."""
-    before = {tl_resource(a) for a in actions_of(session, board, "Rename column")}
-    act(session, board, "New column")
-    made = until(f"the new column {title!r}", lambda: [
-        a for a in actions_of(session, board, "Rename column") if tl_resource(a) not in before])
-    invoke(session, made[0], {"title": title})
-    return {"app": board, "kind": f"tl.{board}.Column", "id": tl_resource(made[0]), "label": title}
-
-
 def seed(session: Session) -> dict:
-    """A release a week out, through each app's own actions: Board's columns and cards, the
-    Todo list and the release conversation in Chat."""
-    board, todo, chat = app_id("board"), app_id("todo"), app_id("chat")
-    columns = {title: card_column(session, board, title) for title in ["To do", "Doing", "Done"]}
-    cards = [
-        ("To do", "Write the release notes", "Lead with the sync fix, then the new board."),
-        ("To do", "Screenshots for the docs", ""),
-        ("To do", "Translate the onboarding", "German and French first."),
-        ("To do", "Check the importer on large tables", ""),
-        ("Doing", "Fix the sidebar at large text", "It collapses too early above 150%."),
-        ("Doing", "Review the sharing dialog", ""),
-        ("Done", "Bump the version", ""),
-        ("Done", "Merge the offline queue", "Landed on Tuesday."),
-    ]
-    for column, title, notes in cards:
-        act(session, board, "Add card", {"col": columns[column], "title": title, "notes": notes})
-    act(session, todo, "Rename", {"name": "Release 2.4"})
-    items = ["Record the demo video", "Update the changelog", "Check the upgrade from 2.3"]
-    for title in items:
-        act(session, todo, "Add", {"title": title})
-    act(session, chat, "Start", {"title": "Release checklist"})
-    for text in ["Docs still need the new screenshots.", "I'll take the screenshots after lunch."]:
-        act(session, chat, "Send", {"text": text})
-    return {"columns": len(columns), "cards": len(cards), "todos": len(items)}
+    """A release a week out, through each app's own actions: what is left in Tasks, a note in
+    Notes, and the team's channel in Chat."""
+    tasks, notes, chat = app_id("tasks"), app_id("notes"), app_id("chat")
+    left = ["Record the demo video", "Update the changelog", "Check the upgrade from 2.3",
+            "Write the release notes"]
+    for title in left:
+        act(session, tasks, "Add", {"title": title})
+    act(session, notes, "New note")
+    act(session, chat, "New channel", {"name": "release"})
+    return {"tasks": len(left), "notes": 1, "channels": 1}
 
 
 def open_apps(session: Session) -> dict:
@@ -175,18 +156,28 @@ def tracker_runs(session: Session) -> list:
 
 
 def ask(session: Session, windows: dict, request: str, out: Path) -> dict:
-    """Board in front, the composer opened on it, the request typed and sent."""
-    board = windows[app_id("board")]
-    session.invoke("desktop-windows", f"tab.focus:{board['group']}:{board['tab']}")
+    """Tasks in front, the composer opened on it, the request typed and sent."""
+    front = windows[app_id("tasks")]
+    session.invoke("desktop-windows", f"tab.focus:{front['group']}:{front['tab']}")
     time.sleep(0.5)
     session.control_cmd("modifiers", "logo")
     session.control_cmd("key", "c")
     session.control_cmd("modifiers", "")
-    until("the composer", lambda: "agent-quick-editor" in session.control_cmd("list-targets"), 15)
+    try:
+        # The agent the chord starts takes up to its start wait to come up.
+        until("the composer", lambda: "agent-quick-editor" in session.control_cmd("list-targets"), 30)
+    except Failed:
+        # The palette's ask makes the same task for the same agent.
+        session.control_cmd("snapshot", str(out / "no-composer.png"))
+        found = until("the palette's ask", lambda: [
+            a for a in session.actions(f"Ask an agent: {request}")
+            if a.get("provider") == "ask-agent"], 30)
+        invoke(session, found[0])
+        return {"asked": request, "through": "palette"}
     session.control_cmd("type", request)
     session.control_cmd("snapshot", str(out / "asking.png"))
     session.control_cmd("click", "agent-quick-send")
-    return {"asked": request}
+    return {"asked": request, "through": "composer"}
 
 
 def follow(session: Session, out: Path, replay) -> dict:
@@ -202,7 +193,7 @@ def follow(session: Session, out: Path, replay) -> dict:
         state = session.control_json("state-dump")
         if '"Done"' in json.dumps(state.get("tasks", {})):
             break
-        if len(replay.requests) >= 4:
+        if len(replay.requests) >= 9:
             time.sleep(3)
             break
         time.sleep(1)
@@ -213,8 +204,7 @@ def follow(session: Session, out: Path, replay) -> dict:
 def check_steps(session: Session) -> dict:
     """The run's steps, as its issue records them: one per program, each with its answer."""
     dump = json.dumps(session.control_json("read", TRACKER))
-    for needle in ["Write the release notes", "Record the demo video", "Release checklist",
-                   "Left for the release"]:
+    for needle in ["Record the demo video", "Left for 2.4", "undone", "Left for the release"]:
         if needle not in dump:
             raise Failed(f"the issue does not record {needle!r}: {dump[:3000]}")
     return {"recorded": True}

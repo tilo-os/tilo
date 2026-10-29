@@ -132,7 +132,7 @@
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
 "crates/session/shell/src/shell/network.rs" = 13000
-"crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4500
+"crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4000
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500

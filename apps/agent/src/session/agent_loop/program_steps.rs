@@ -1,28 +1,29 @@
-//! The loop's `tilo` calls and view answers: each program is one step of the task, run through
-//! the room's tilolang hosts and recorded on the task's issue ([`crate::programs`]).
+//! The loop's `tilo` calls and view answers: each program is one step of the task, run by the
+//! session's door as a step of the task's run and recorded on the task's issue
+//! ([`crate::programs`]).
 
 use std::collections::BTreeMap;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use ui::tilo_reference::{ProgramStep, ResourceAt};
+use ui::tilo_reference::ResourceAt;
 
 use super::{Handled, LoopState, StreamedCall, TaskActionStop};
 use crate::programs::{self, Mounted, Naming};
 use crate::session::Session;
 use crate::tools;
+use tilo_actions::remote::task_programs;
 
 /// The app a task's view answers are kept in until the person keeps or discards them.
 pub(crate) const VIEWS_APP: &str = "so.tilo.lang.views";
 /// The Views action that keeps a view answer.
 const ANSWER_ACTION: &str = "answer";
 
-/// What the loop knows of the room's tilolang apps for this task: the hosts it can run programs
-/// on, which apps each one mounts, and which app declares each type.
+/// What the loop knows of the room's tilolang apps for this task: the apps its programs can use,
+/// and which app declares each type.
 #[derive(Debug, Default)]
 pub(in crate::session) struct ProgramWorld {
     pub(in crate::session) mounted: Vec<Mounted>,
-    mounts: BTreeMap<String, Vec<String>>,
     types: BTreeMap<String, String>,
     /// Every host's declarations, merged: what the first message's app lines are read from.
     catalogue: Vec<Value>,
@@ -44,8 +45,8 @@ impl ProgramWorld {
 }
 
 impl Session {
-    /// Read the room's tilolang hosts once per task: which apps each mounts and what they
-    /// declare. A host whose catalogue cannot be read still runs programs on its own app.
+    /// Read the room's tilolang hosts once per task: what each declares, for the first message's
+    /// app lines.
     pub(in crate::session) fn program_world(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -70,10 +71,6 @@ impl Session {
                 self.host_call(run, state, &operation, &serde_json::Map::new())?
             {
                 let declared = Value::Array(signatures.clone());
-                state
-                    .programs
-                    .mounts
-                    .insert(app.app.clone(), programs::mounts_of(&declared));
                 for (name, of) in programs::types_of(&declared) {
                     state.programs.types.entry(name).or_insert(of);
                 }
@@ -142,36 +139,45 @@ impl Session {
                     .into(),
             ));
         }
-        let mounted = state.programs.mounted.clone();
-        let host = match programs::route(&program.source, &mounted, &state.programs.mounts) {
-            Ok(host) => host.clone(),
-            Err(error) => {
-                let step = ProgramStep {
-                    program: program.source.clone(),
-                    outcome: ui::tilo_reference::StepOutcome::Rejected,
-                    answer: vec![format!("// {error}")],
-                    ..ProgramStep::default()
-                };
-                self.record_step(run, &step)?;
-                return Ok(Handled::Result(programs::observation(&step)));
-            }
+        let catalogue = self.task_catalogue();
+        let Some(door) = catalogue.offers.iter().find(|offer| {
+            offer.descriptor.address.resource == task_programs::RESOURCE
+                && offer.descriptor.address.action == task_programs::RUN
+        }) else {
+            return Ok(Handled::Result(
+                "This session runs no programs: its door does not offer them. Use the other \
+                 tools instead."
+                    .into(),
+            ));
         };
         let mut parameters = serde_json::Map::new();
-        parameters.insert("source".into(), Value::String(program.source.clone()));
-        let answered = self.host_call(run, state, &host.run_block, &parameters)?;
-        let types = state.programs.types.clone();
-        let naming = Naming {
-            host: &host,
-            mounted: &mounted,
-            types: &types,
+        parameters.insert("program".into(), Value::String(program.source.clone()));
+        parameters.insert("confirm".into(), Value::Bool(program.confirm));
+        parameters.insert("run".into(), Value::String(run.group()));
+        parameters.insert("label".into(), Value::String(run.title.clone()));
+        if let Some(this) = run
+            .subject
+            .as_ref()
+            .and_then(|subject| this_literal(subject, &state.programs))
+        {
+            parameters.insert("this".into(), Value::String(this));
+        }
+        let answered = match self.host_call(run, state, &door.id(), &parameters)? {
+            Ok(value) => serde_json::from_value::<task_programs::ProgramAnswer>(value)
+                .unwrap_or_else(|error| task_programs::ProgramAnswer {
+                    text: format!("error: the door's answer was unreadable: {error}"),
+                    failed: true,
+                    ..task_programs::ProgramAnswer::default()
+                }),
+            Err(error) => task_programs::ProgramAnswer {
+                text: format!("error: {error}"),
+                failed: true,
+                ..task_programs::ProgramAnswer::default()
+            },
         };
-        let step = programs::step_of(
-            &program.source,
-            &naming,
-            answered.as_ref().map_err(String::as_str),
-        );
+        let step = programs::door_step(&program.source, &answered, &state.programs.mounted);
         self.record_step(run, &step)?;
-        Ok(Handled::Result(programs::observation(&step)))
+        Ok(Handled::Result(answered.text))
     }
 
     /// Keep the view a finishing `plan` answers with: checked by the Views host first (it must
@@ -311,12 +317,16 @@ pub(super) fn where_section(
         out,
         "Limits: at most {most_steps} steps and {seconds} seconds for the whole task."
     );
-    if let Some(this) = run
+    if let Some(subject) = run
         .subject
         .as_ref()
-        .and_then(|subject| this_literal(subject, world))
+        .filter(|subject| this_literal(subject, world).is_some())
     {
-        let _ = writeln!(out, "`this` is {this}: what the person pointed at.");
+        let _ = writeln!(
+            out,
+            "`this` is what the person pointed at: {}.",
+            subject.resource.label
+        );
     }
     let apps = world.apps_section();
     if !apps.is_empty() {

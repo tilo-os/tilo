@@ -24,8 +24,8 @@ use tilo_actions::{ActionDescriptor, OperationKind};
 
 #[path = "mcp_tilo.rs"]
 mod tilo;
-pub use tilo::TaskHosts;
 pub(super) use tilo::{Programs, TaskLink};
+pub use tilo::{TaskHosts, TaskProgram};
 
 /// Resource rows one directory level reads at most, across its pages.
 const LEVEL_PAGES: usize = 4;
