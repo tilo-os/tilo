@@ -331,6 +331,14 @@ impl CapnpChannelHandle {
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), capnp::Error>>>>;
 
 /// A service's answer on its way.
+/// A change to an app's published action surface.
+pub(super) enum SurfaceChange {
+    /// The whole surface, replacing what was published.
+    Whole(Vec<runtime_collab::ExportedAction>),
+    /// A change to what was published.
+    Delta(runtime_collab::SurfaceDelta),
+}
+
 /// What the host answers once its work is done.
 pub(super) type Answer<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, capnp::Error>>>>;
 
@@ -1557,6 +1565,87 @@ impl CapnpChannelHandle {
         })
     }
 
+    /// Publish the app's action surface on this channel: a whole one, or a
+    /// change to the one it published, applied all or not at all.
+    pub(super) fn publish_surface(
+        &self,
+        claimed_app: &str,
+        change: SurfaceChange,
+    ) -> Result<(), capnp::Error> {
+        // No app changes another app's route: a channel held to read refuses.
+        self.writable()?;
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        if route.app_id.is_empty() || claimed_app != route.app_id {
+            return Err(capnp::Error::failed(
+                "a published surface's appId must match the certified connection route".into(),
+            ));
+        }
+        let peer_id = self.peer_id;
+        let unavailable = || capnp::Error::failed("action surface registry unavailable".into());
+        let (actions, table) = match change {
+            SurfaceChange::Whole(rows) => (validate_published_surface(rows)?, None),
+            SurfaceChange::Delta(delta) => {
+                // Apply to a copy: a delta that does not apply, or whose
+                // result is not a valid surface, changes nothing.
+                let mut table = self
+                    .state
+                    .surface_tables
+                    .lock()
+                    .map_err(|_| unavailable())?
+                    .get(&peer_id)
+                    .cloned()
+                    .unwrap_or_default();
+                table.apply(&delta).map_err(|reason| {
+                    capnp::Error::failed(format!("action surface delta refused: {reason}"))
+                })?;
+                (validate_published_surface(table.actions())?, Some(table))
+            }
+        };
+        let offers = !actions.is_empty();
+        let surface = PublishedSurface {
+            peer_id,
+            app_id: route.app_id.clone(),
+            route,
+            actions,
+            live: true,
+        };
+        {
+            let mut tables = self
+                .state
+                .surface_tables
+                .lock()
+                .map_err(|_| unavailable())?;
+            match table {
+                Some(table) => {
+                    tables.insert(peer_id, table);
+                }
+                // A whole surface supersedes any delta state: a later delta
+                // without `reset` finds no shapes and is refused, so the
+                // publisher resets.
+                None => {
+                    tables.remove(&peer_id);
+                }
+            }
+        }
+        self.state.launchable.retain(&surface);
+        let previous = self
+            .state
+            .surfaces
+            .lock()
+            .map_err(|_| unavailable())?
+            .insert(peer_id, surface.clone());
+        self.state
+            .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
+        self.state
+            .surface_republished(peer_id, &surface, previous.as_ref());
+        if offers {
+            self.state.launch_published(peer_id);
+        }
+        Ok(())
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -2013,6 +2102,32 @@ impl WireConnection {
                 let reported = session.report(&session.route().app_id, report);
                 drop(session);
                 reported.map_err(|error| error.to_string())?;
+                Ok(Reply::Done)
+            }
+            Request::Publish {
+                channel,
+                publication: Publication::Actions(actions),
+            } => {
+                let actions = serde_json::from_str(&actions)
+                    .map_err(|error| format!("invalid published actions: {error}"))?;
+                let session = self.channel(channel)?;
+                let published =
+                    session.publish_surface(&session.route().app_id, SurfaceChange::Whole(actions));
+                drop(session);
+                published.map_err(|error| error.to_string())?;
+                Ok(Reply::Done)
+            }
+            Request::Publish {
+                channel,
+                publication: Publication::Surface(delta),
+            } => {
+                let delta = serde_json::from_str(&delta)
+                    .map_err(|error| format!("invalid surface change: {error}"))?;
+                let session = self.channel(channel)?;
+                let published =
+                    session.publish_surface(&session.route().app_id, SurfaceChange::Delta(delta));
+                drop(session);
+                published.map_err(|error| error.to_string())?;
                 Ok(Reply::Done)
             }
             Request::Publish {

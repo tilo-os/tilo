@@ -696,6 +696,52 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_app_publishes_its_action_surface_whole_or_as_a_change() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[14]);
+            let mut endpoint = room.endpoint(14);
+            let channel = endpoint.channel;
+            let reset = serde_json::to_string(&runtime_collab::SurfaceDelta {
+                reset: true,
+                ..runtime_collab::SurfaceDelta::default()
+            })
+            .unwrap();
+            for publication in [
+                Publication::Actions("[]".into()),
+                Publication::Surface(reset),
+            ] {
+                assert_eq!(
+                    endpoint
+                        .call(Request::Publish {
+                            channel,
+                            publication: publication.clone(),
+                        })
+                        .await,
+                    Ok(Reply::Done),
+                    "{publication:?}"
+                );
+            }
+            for publication in [
+                Publication::Actions("not actions".into()),
+                Publication::Surface("{}".into()),
+            ] {
+                assert!(
+                    endpoint
+                        .call(Request::Publish {
+                            channel,
+                            publication: publication.clone(),
+                        })
+                        .await
+                        .is_err(),
+                    "{publication:?} does not decode"
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn the_wire_client_calls_and_subscribes_against_the_host() {
     use runtime_collab::wire::client::{Client, Delivery};
     tokio::task::LocalSet::new()

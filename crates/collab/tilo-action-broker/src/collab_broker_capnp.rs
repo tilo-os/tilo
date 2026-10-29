@@ -9608,59 +9608,17 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishActionsParams,
         _results: channel_handle::PublishActionsResults,
     ) -> Promise<(), capnp::Error> {
-        // No app changes another app's route: a channel held to read refuses.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        Promise::from_future(async move {
+        Promise::from((|| {
             let request = params.get()?;
-            let app_id = request.get_app_id()?.to_str()?.to_owned();
-            if route.app_id.is_empty() || app_id != route.app_id {
-                return Err(capnp::Error::failed(
-                    "publishActions appId must match the certified connection route".into(),
-                ));
-            }
             let mut rows = Vec::with_capacity(request.get_actions()?.len() as usize);
             for row in request.get_actions()? {
                 rows.push(runtime_collab::decode_exported_action(row)?);
             }
-            let actions = validate_published_surface(rows)?;
-            let offers = !actions.is_empty();
-            let surface = PublishedSurface {
-                peer_id,
-                app_id,
-                route,
-                actions,
-                live: true,
-            };
-            // A whole surface supersedes any delta state: a later delta
-            // without `reset` finds no shapes and is refused, so the
-            // publisher resets.
-            if let Ok(mut tables) = state.surface_tables.lock() {
-                tables.remove(&peer_id);
-            }
-            state.launchable.retain(&surface);
-            let previous = state
-                .surfaces
-                .lock()
-                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface.clone());
-            state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surface_republished(peer_id, &surface, previous.as_ref());
-            if offers {
-                state.launch_published(peer_id);
-            }
-            Ok(())
-        })
+            self.publish_surface(
+                request.get_app_id()?.to_str()?,
+                wire::SurfaceChange::Whole(rows),
+            )
+        })())
     }
 
     fn publish_action_surface(
@@ -9668,67 +9626,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::PublishActionSurfaceParams,
         _results: channel_handle::PublishActionSurfaceResults,
     ) -> Promise<(), capnp::Error> {
-        // No app changes another app's route: a channel held to read refuses.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        Promise::from_future(async move {
+        Promise::from((|| {
             let request = params.get()?;
-            let app_id = request.get_app_id()?.to_str()?.to_owned();
-            if route.app_id.is_empty() || app_id != route.app_id {
-                return Err(capnp::Error::failed(
-                    "publishActionSurface appId must match the certified connection route".into(),
-                ));
-            }
-            let delta = runtime_collab::decode_surface_delta(request)?;
-            // Apply to a copy: a delta that does not apply, or whose result
-            // is not a valid surface, changes nothing.
-            let mut table = state
-                .surface_tables
-                .lock()
-                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .get(&peer_id)
-                .cloned()
-                .unwrap_or_default();
-            table.apply(&delta).map_err(|reason| {
-                capnp::Error::failed(format!("action surface delta refused: {reason}"))
-            })?;
-            let actions = validate_published_surface(table.actions())?;
-            let offers = !actions.is_empty();
-            let surface = PublishedSurface {
-                peer_id,
-                app_id,
-                route,
-                actions,
-                live: true,
-            };
-            state
-                .surface_tables
-                .lock()
-                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, table);
-            state.launchable.retain(&surface);
-            let previous = state
-                .surfaces
-                .lock()
-                .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
-                .insert(peer_id, surface.clone());
-            state.advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
-            state.surface_republished(peer_id, &surface, previous.as_ref());
-            if offers {
-                state.launch_published(peer_id);
-            }
-            Ok(())
-        })
+            self.publish_surface(
+                request.get_app_id()?.to_str()?,
+                wire::SurfaceChange::Delta(runtime_collab::decode_surface_delta(request)?),
+            )
+        })())
     }
 
     fn publish_action_directory(

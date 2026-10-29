@@ -252,6 +252,11 @@ pub enum Publication {
         action: String,
         update: String,
     },
+    /// The app's whole action surface, as JSON `Vec<ExportedAction>`,
+    /// replacing what it published.
+    Actions(String),
+    /// A change to the app's action surface, as `SurfaceDelta` JSON.
+    Surface(String),
 }
 
 /// What an app reports about the window it runs in or the record it holds.
