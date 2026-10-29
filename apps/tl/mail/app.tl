@@ -4,7 +4,7 @@ app so.tilo.lang.mail "Mail" (icon: .mail, category: .office)
 /// address, servers and signature, is the workspace settings', and its credentials stay in
 /// custody; the system keeps this in step with the server.
 type Account (origin: imap.account) {
-    key: Text
+    key: Text merge register
     address: Text (title)
     name: Text
     trouble: Text
@@ -15,17 +15,17 @@ type Account (origin: imap.account) {
 
 /// A mailbox of an account.
 type Mailbox (origin: imap.mailbox) {
-    key: Text
+    key: Text merge register
     name: Text (title)
-    role: Text
+    role: Text merge register
     unread: Int
     total: Int
 }
 
 /// A conversation: messages that answer each other, newest last.
 type Thread (origin: imap.thread) {
-    key: Text
-    account: Text
+    key: Text merge register
+    account: Text merge register
     subject: Text (title)
     latest: Time
     snippet: Text (body)
@@ -53,8 +53,8 @@ type Thread (origin: imap.thread) {
 
 /// A message.
 type Message (origin: imap.message) {
-    key: Text
-    account: Text
+    key: Text merge register
+    account: Text merge register
     subject: Text (title)
     from: Text
     from_name: Text
@@ -63,8 +63,8 @@ type Message (origin: imap.message) {
     received: Time
     snippet: Text
     body: Text (body)
-    message_id: Text
-    references: Text
+    message_id: Text merge register
+    references: Text merge register
     attachments: Text
     unread: Bool
     flagged: Bool
@@ -117,6 +117,7 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
 
 /// Starts a message from the first account.
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
+    require not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from))
 }
@@ -206,16 +207,20 @@ action flag(t: Thread, flagged: Bool = not t.flagged) (label: if t.flagged { "Un
 
 /// Marks the conversation read, or unread again.
 action mark_read(t: Thread, unread: Bool = not t.unread) (label: if t.unread { "Mark as read" } else { "Mark as unread" }, icon: .mail_open, on: not t.unread) {
-    if unread {
-        if let last = t.messages.last() {
-            last.unread = true
+    if t.unread != unread {
+        if unread {
+            if let last = t.messages.last() {
+                last.unread = true
+            }
+        } else {
+            for m in t.messages {
+                if m.unread {
+                    m.unread = false
+                }
+            }
         }
-    } else {
-        for m in t.messages {
-            m.unread = false
-        }
+        t.unread = unread
     }
-    t.unread = unread
 }
 
 /// Throws a message being written away.
@@ -245,10 +250,72 @@ view compose(d: Draft) {
 /// the list. The mailboxes are the conversations' places.
 view mail(m: Mail) {
     if let a = m.accounts.first() {
-        std.list(a, a.threads, place: "is:inbox", everything: "All mail", empty: "Nothing here")
+        mailboxes(a)
     } else {
-        std.page(m, empty: true) {
-            text("Add a mail account in Settings")
+        std.page(m) {
+            ui.EmptyState("Add a mail account in Settings", icon: .mail)
+        }
+    }
+}
+
+/// An account's window: its mailboxes in the sidebar with how many unread each holds, the
+/// conversations of the one chosen, newest first, and the one open beside them. Opening a
+/// conversation reads it. The mailbox is the window's, as people type it in search
+/// (`is:inbox`), so everyone looking sees the same list; it starts on the inbox.
+view mailboxes(a: Account) {
+    window query: Text = "is:inbox"
+    let places = filters(Thread).filter(f -> f.toggle)
+    let shown = a.threads.matching(query)
+    let title = places.find(p -> p.query == query)?.label ?? "All mail"
+    ui.NavShell(content_kind: .document, sidebar_title: .some(a.address), overview_title: .some(title), overview_count: .some(shown.len())) {
+        sidebar: {
+            ui.NavList(selected: if query == "" { "all" } else { query }) {
+                for p in places {
+                    let unread = a.threads.matching("{p.query} is:unread").len()
+                    ui.NavItem(p.query, p.label, icon: p.icon, count: if unread > 0 { .some(unread) } else { .none }) {
+                        on select: set(query, p.query)
+                    }
+                }
+                ui.NavItem("all", "All mail", icon: .mail) {
+                    on select: set(query, "")
+                }
+            }
+        }
+        overview_actions: {
+            std.header(actions(a))
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("Nothing here", icon: .inbox)
+            } else {
+                ui.VirtualList(selection_follows_focus: true, in_column: true) {
+                    on select(x: Thread): open(x, front: false).then(mark_read(x, false))
+                    on activate(x: Thread): open(x).then(mark_read(x, false))
+                    for x in shown {
+                        let offered = actions(x)
+                        ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
+                            menu: {
+                                for o in offered {
+                                    ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
+                                        on choose: o.run
+                                    }
+                                }
+                            }
+                            swipe: {
+                                if let o = offered.find(.destructive) {
+                                    ui.SwipeAction(o.label, icon: o.icon, destructive: true) {
+                                        on swipe: o.run
+                                    }
+                                }
+                            }
+                            thread_row(x)
+                        }
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState("No conversation selected", icon: .mail)
         }
     }
 }
@@ -256,7 +323,7 @@ view mail(m: Mail) {
 /// One conversation in a list: who wrote, the subject, the start of the newest message and
 /// when it came.
 view thread_row(t: Thread) {
-    row(t.senders, secondary: "{t.subject}: {t.snippet}", meta: t.latest, mark: if t.flagged { .flag } else if t.unread { .mail })
+    row(t.senders, secondary: t.subject, meta: t.latest, mark: if t.flagged { .flag } else if t.unread { .mail })
 }
 
 /// One message being written in a list: its subject and who it goes to.

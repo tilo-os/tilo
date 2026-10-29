@@ -630,6 +630,7 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     steps["agent"] = session.invoke("actions", "agent.invite", {"name": "Claude", "preset": "contributor"})
     # Adding an agent opens its access review in the workspace settings; close it.
     session.key("Escape")
+    time.sleep(1.0)
     session.invoke("actions", "workspace.show-canvas")
     state = until("the canvas", lambda: (lambda s: s if s.get("shown") and s.get("frame") else None)(
         canvas_state(session)), 30)
