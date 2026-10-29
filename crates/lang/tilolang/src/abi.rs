@@ -158,6 +158,7 @@ imports! {
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
+    RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
 
     SpaceI = "space_i" ([H] -> [I64]);

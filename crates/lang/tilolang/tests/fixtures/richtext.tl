@@ -32,6 +32,11 @@ action add_task(b: Board, title: Text) -> Task {
     b.tasks.insert(Task(title: title))
 }
 
+/// Posts when the standup is: a time each reader reads in their own zone.
+action schedule(b: Board, at: Time) -> Post {
+    b.posts.insert(Post(body: RichText("Standup at ", at)))
+}
+
 /// Renames a task.
 action rename(t: Task, title: Text) {
     t.title = title

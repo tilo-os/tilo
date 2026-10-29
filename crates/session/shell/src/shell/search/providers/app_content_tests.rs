@@ -48,6 +48,7 @@ fn note(key: &str, title: &str) -> IndexEntry {
         boost: 0,
         fields: Vec::new(),
         secret: false,
+        references: Vec::new(),
     }
 }
 
@@ -391,4 +392,65 @@ fn opening_prefers_the_entrys_own_action_then_the_apps_open_at_its_resource() {
     // Another room's or app's surfaces never open it.
     let elsewhere = SlotKey::new(NOTES, &RoomId::new().to_string(), "tab:0001");
     assert!(opening(vec![surface(true, Vec::new())], &elsewhere, &entry).is_none());
+}
+
+/// A reference to the resource `id` of `app`, as rich text writes one.
+fn reference_to(app: &str, kind: &str, id: &str) -> String {
+    tilo_reference::Embed::resource(app, kind, id).mark_value()
+}
+
+#[test]
+fn a_text_is_found_by_what_it_refers_to_as_that_is_called_now() {
+    const TASKS: &str = "so.tilo.tasks";
+    let (chrome, room) = chrome();
+    let index = Arc::new(AppContentIndex::in_memory());
+    let provider = AppContentProvider::without_broker(Arc::clone(&index));
+    let (mut tasks, mut notes) = (Publisher::default(), Publisher::default());
+    let task = |title: &str| note("tasks.task:t1", title);
+    publish(
+        &index,
+        &mut tasks,
+        &room,
+        TASKS,
+        state(1, None),
+        vec![task("Fix the build")],
+    );
+    // A note whose text refers to the task, written while it was called "Fix the build".
+    let plan = IndexEntry {
+        references: vec![reference_to(TASKS, "tasks.task", "tasks.task:t1")],
+        ..note("notes.page:p1", "Plan for Monday")
+    };
+    publish(&index, &mut notes, &room, NOTES, state(1, None), vec![plan]);
+    assert!(titles(&query(&provider, "fix build", &chrome)).contains(&"Plan for Monday"));
+
+    // The task is renamed in its app; the note is found by the new name, and no longer by the
+    // old one, though nothing republished the note.
+    publish(
+        &index,
+        &mut tasks,
+        &room,
+        TASKS,
+        state(2, None),
+        vec![task("Ship the release")],
+    );
+    let found = titles(&query(&provider, "ship release", &chrome))
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(found.contains(&"Plan for Monday".to_owned()), "{found:?}");
+    assert!(
+        !titles(&query(&provider, "fix build", &chrome)).contains(&"Plan for Monday"),
+        "the old name is not what it is found by"
+    );
+
+    // Which texts refer to the task: the system's backlinks, in any app.
+    let links = index.backlinks(&room, TASKS, "tasks.task:t1");
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].slot.app, NOTES);
+    assert_eq!(links[0].entry.title, "Plan for Monday");
+    assert_eq!(links[0].referenced, ["Ship the release"]);
+    assert!(index.backlinks(&room, TASKS, "tasks.task:t2").is_empty());
+    // Removing the note removes its backlink.
+    publish(&index, &mut notes, &room, NOTES, state(2, None), Vec::new());
+    assert!(index.backlinks(&room, TASKS, "tasks.task:t1").is_empty());
 }

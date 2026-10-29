@@ -72,6 +72,7 @@ pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
                 .map(|text| (text.clone(), IndexWeight::Metadata))
                 .collect(),
             secret: false,
+            references: hit.references.clone(),
         });
         rows.push((hit.resource.clone(), hit.texts.join("\n"), result));
     }

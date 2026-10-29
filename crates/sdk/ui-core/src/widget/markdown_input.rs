@@ -9,8 +9,9 @@
 //! neutral [`InlineKind`] that each editor maps onto its own formatting.
 //!
 //! [`detect_inline`] recognises `**b**`/`__b__` (bold), `*i*`/`_i_`
-//! (italic), `` `c` `` (code) and `~~s~~` (strikethrough), fired by the
-//! keystroke that types the closing delimiter.
+//! (italic), `` `c` `` (code), `~~s~~` (strikethrough) and `[text](url)`
+//! (a link), fired by the keystroke that types the closing delimiter, and a
+//! web address followed by a space (an autolink).
 
 use std::ops::Range;
 
@@ -21,6 +22,8 @@ pub enum InlineKind {
     Italic,
     Code,
     Strikethrough,
+    /// A link to [`InlineMatch::target`]: `[text](url)`, or a typed address.
+    Link,
 }
 
 /// A span completed by the last character of the text before the caret.
@@ -36,8 +39,68 @@ pub struct InlineMatch {
     pub open: Range<usize>,
     /// The text between the delimiters, kept and formatted.
     pub content: Range<usize>,
-    /// The closing delimiter, ending at the caret, deleted.
+    /// The closing delimiter, ending at the caret, deleted. What lies between
+    /// the content and it stays (the space after an autolinked address).
     pub close: Range<usize>,
+    /// Where a [`InlineKind::Link`] goes.
+    pub target: Option<String>,
+}
+
+/// Whether `target` is an address a typed link may go to: the web, mail,
+/// or a resource of this desktop (`tilo://open#…`).
+fn linkable(target: &str) -> bool {
+    let rest = ["https://", "http://", "mailto:", "tilo://open#"]
+        .iter()
+        .find_map(|scheme| target.strip_prefix(scheme));
+    rest.is_some_and(|rest| !rest.is_empty())
+        && !target.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// `[text](url)` ending at the caret.
+fn detect_link(before_caret: &str) -> Option<InlineMatch> {
+    let caret = before_caret.len();
+    let head = before_caret.strip_suffix(')')?;
+    let target_start = head.rfind("](")?.checked_add(2)?;
+    let target = head.get(target_start..)?;
+    if !linkable(target) {
+        return None;
+    }
+    let text_end = target_start.checked_sub(2)?;
+    let open = before_caret.get(..text_end)?.rfind('[')?;
+    let text = before_caret.get(open.checked_add(1)?..text_end)?;
+    if text.is_empty() || text.contains(['[', ']']) || text.trim() != text {
+        return None;
+    }
+    Some(InlineMatch {
+        kind: InlineKind::Link,
+        open: open..open.saturating_add(1),
+        content: open.saturating_add(1)..text_end,
+        close: text_end..caret,
+        target: Some(target.to_owned()),
+    })
+}
+
+/// A web address the space just typed ended: the address is linked, the
+/// space kept. Punctuation closing a sentence after it is not part of it.
+fn detect_autolink(before_caret: &str) -> Option<InlineMatch> {
+    let caret = before_caret.len();
+    let head = before_caret.strip_suffix(' ')?;
+    let start = head
+        .rfind(char::is_whitespace)
+        .map_or(0, |at| at.saturating_add(1));
+    let word = head.get(start..)?;
+    let address = word.trim_end_matches(['.', ',', ';', ':', '!', '?', ')']);
+    if !(address.starts_with("https://") || address.starts_with("http://")) || !linkable(address) {
+        return None;
+    }
+    let end = start.saturating_add(address.len());
+    Some(InlineMatch {
+        kind: InlineKind::Link,
+        open: start..start,
+        content: start..end,
+        close: caret..caret,
+        target: Some(address.to_owned()),
+    })
 }
 
 /// The span the last character of `before_caret` completes, if any.
@@ -57,6 +120,11 @@ pub struct InlineMatch {
 ///   stays as typed.
 #[must_use]
 pub fn detect_inline(before_caret: &str) -> Option<InlineMatch> {
+    match before_caret.as_bytes().last()? {
+        b')' => return detect_link(before_caret),
+        b' ' => return detect_autolink(before_caret),
+        _ => {}
+    }
     let bytes = before_caret.as_bytes();
     let caret = bytes.len();
     let &delimiter = bytes.last()?;
@@ -101,6 +169,7 @@ pub fn detect_inline(before_caret: &str) -> Option<InlineMatch> {
         open: open_start..open_end,
         content: open_end..content_end,
         close: content_end..caret,
+        target: None,
     })
 }
 
@@ -112,9 +181,10 @@ mod tests {
     fn applied(text: &str) -> Option<(InlineKind, String, String)> {
         let found = detect_inline(text)?;
         let stripped = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             &text[..found.open.start],
             &text[found.content.clone()],
+            &text[found.content.end..found.close.start],
             &text[found.close.end..]
         );
         Some((found.kind, text[found.content].to_string(), stripped))
@@ -140,6 +210,45 @@ mod tests {
                 Some((kind, content.to_string(), stripped.to_string())),
                 "{typed:?}"
             );
+        }
+    }
+
+    #[test]
+    fn links_and_typed_addresses_become_links() {
+        let link = detect_inline("see [the plan](https://tilo.so/plan)").expect("a link");
+        assert_eq!(link.kind, InlineKind::Link);
+        assert_eq!(link.target.as_deref(), Some("https://tilo.so/plan"));
+        assert_eq!(
+            applied("see [the plan](https://tilo.so/plan)")
+                .map(|(_, content, text)| (content, text)),
+            Some(("the plan".to_owned(), "see the plan".to_owned()))
+        );
+        let resource = detect_inline("[Standup](tilo://open#/me/so.tilo.calendar/-/e:1)");
+        assert_eq!(
+            resource.and_then(|found| found.target),
+            Some("tilo://open#/me/so.tilo.calendar/-/e:1".to_owned())
+        );
+        // A typed address is linked by the space after it; the space and the full stop stay.
+        let typed = detect_inline("read https://tilo.so/docs. ").expect("an autolink");
+        assert_eq!(typed.target.as_deref(), Some("https://tilo.so/docs"));
+        assert_eq!(
+            applied("read https://tilo.so/docs. ").map(|(_, content, text)| (content, text)),
+            Some((
+                "https://tilo.so/docs".to_owned(),
+                "read https://tilo.so/docs. ".to_owned()
+            ))
+        );
+        for typed in [
+            "[x](not a url)",
+            "[](https://tilo.so)",
+            "[x](javascript:alert(1))",
+            "(https://tilo.so)",
+            "https:// ",
+            "ftp://host ",
+            "word ",
+            " ",
+        ] {
+            assert_eq!(detect_inline(typed), None, "{typed:?}");
         }
     }
 

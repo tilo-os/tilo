@@ -504,8 +504,9 @@ impl Checker<'_> {
 
     /// `person("Mia")` in a scenario: a principal named for the sample data, whose id is
     /// `scenario:Mia`. Nothing else can make a principal from text.
-    /// `RichText("Ask ", ada, " about ", task)`: text as it is, and a run naming each person
-    /// (`@Ada`) or resource (its title) that refers to it; `RichText()` is empty.
+    /// `RichText("Ask ", ada, " about ", task)`: text as it is, a run naming each person
+    /// (`@Ada`) or resource (its title) that refers to it, and each time as a run every reader
+    /// reads in their own zone and language; `RichText()` is empty.
     fn builtin_rich_text(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let list_ty = Ty::List(Box::new(Ty::Text));
         let tmp = self.fresh(list_ty.clone());
@@ -521,7 +522,11 @@ impl Checker<'_> {
                     "`RichText(...)` takes its parts in order, unnamed: `RichText(\"Ask \", ada)`",
                 );
             }
-            let v = self.expr(&a.value, None);
+            let mut v = self.expr(&a.value, None);
+            // A moment is a run every reader reads in their own zone and language.
+            if v.ty == Ty::Time {
+                v = Ex::host(Imp::RichTime, vec![v], Ty::RichText);
+            }
             let fits = matches!(
                 v.ty,
                 Ty::Text | Ty::RichText | Ty::Principal | Ty::Record(_) | Ty::Error
@@ -532,7 +537,7 @@ impl Checker<'_> {
                     "E023",
                     a.value.span,
                     format!(
-                        "a part of rich text is text, rich text, a person or a resource, not {t}"
+                        "a part of rich text is text, rich text, a time, a person or a resource, not {t}"
                     ),
                 );
                 continue;

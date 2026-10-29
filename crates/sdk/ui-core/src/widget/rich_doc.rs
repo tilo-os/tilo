@@ -49,7 +49,7 @@ fn indent_of(view: &BlockView) -> u8 {
 pub fn kind_of(view: &BlockView) -> BlockKind {
     match view.kind.as_str() {
         "heading" => BlockKind::Heading(
-            u8::try_from(int_attr(view, "level").unwrap_or(1).clamp(1, 3)).unwrap_or(1),
+            u8::try_from(int_attr(view, "level").unwrap_or(1).clamp(1, 6)).unwrap_or(1),
         ),
         "quote" | "blockquote" => str_attr(view, CALLOUT)
             .and_then(CalloutKind::from_name)
@@ -239,43 +239,164 @@ pub fn reference_label(view: &tilo_ui_graph::rich::InlineView, run: &str) -> Str
     }
 }
 
-/// The blocks rich text shows as, each reference reading as the text says it reads for the
-/// person reading ([`reference_label`]); paragraph ids are their places.
+/// The mark a time's run carries (`tilo_doc::inline_time`).
+pub const TIME_MARK: &str = tilo_doc::inline_time::MARK;
+
+/// How an inline time reads for the person reading.
+pub use tilo_doc::inline_time::Show as TimeShow;
+
+/// A moment written into rich text (`tilo_doc::inline_time`), read: every reader sees it as
+/// [`time_label`] reads it for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlineTime {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub show: TimeShow,
+}
+
+impl InlineTime {
+    /// The time a [`TIME_MARK`] mark's value names.
+    #[must_use]
+    pub fn of_mark(value: &str) -> Option<Self> {
+        let written = tilo_doc::inline_time::InlineTime::of_mark(value)?;
+        let at = chrono::DateTime::parse_from_rfc3339(&written.at)
+            .ok()?
+            .with_timezone(&chrono::Utc);
+        Some(Self {
+            at,
+            show: written.show,
+        })
+    }
+
+    /// The [`TIME_MARK`] mark's value naming it.
+    #[must_use]
+    pub fn mark_value(&self) -> String {
+        tilo_doc::inline_time::InlineTime {
+            at: self.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            show: self.show,
+        }
+        .mark_value()
+    }
+
+    /// How long until what it reads as changes, at `now`: a countdown each
+    /// second, a relative time each minute, an absolute one never.
+    #[must_use]
+    pub fn changes_in(&self, now: chrono::DateTime<chrono::Utc>) -> Option<std::time::Duration> {
+        let ahead = self.at.signed_duration_since(now).num_seconds();
+        match self.show {
+            TimeShow::Absolute => None,
+            TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
+                Some(std::time::Duration::from_secs(1))
+            }
+            TimeShow::Countdown | TimeShow::Relative => Some(std::time::Duration::from_secs(60)),
+        }
+    }
+}
+
+/// What `time` reads as for a person at `now`, in `zone` and `formats`.
+#[must_use]
+pub fn time_label<Tz: chrono::TimeZone>(
+    time: &InlineTime,
+    now: chrono::DateTime<chrono::Utc>,
+    zone: &Tz,
+    formats: crate::format::Formats,
+) -> String {
+    let ahead = time.at.signed_duration_since(now).num_seconds();
+    match time.show {
+        TimeShow::Absolute => formats.timestamp(time.at.with_timezone(zone).naive_local()),
+        TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
+            crate::format::timecode(u64::try_from(ahead).unwrap_or_default())
+        }
+        TimeShow::Relative | TimeShow::Countdown if ahead > 0 => {
+            crate::format::relative_ahead(ahead)
+        }
+        TimeShow::Relative | TimeShow::Countdown => crate::format::relative(-ahead),
+    }
+}
+
+/// Where, at `now`, a person reads rich text: their zone and formats.
+#[derive(Clone, Copy, Debug)]
+pub struct Reading<Tz: chrono::TimeZone> {
+    pub now: chrono::DateTime<chrono::Utc>,
+    pub zone: Tz,
+    pub formats: crate::format::Formats,
+}
+
+/// The person reading here, now.
+#[must_use]
+pub fn reading_here() -> Reading<chrono::Local> {
+    Reading {
+        now: crate::clock::local_now().with_timezone(&chrono::Utc),
+        zone: chrono::Local,
+        formats: crate::format::Formats::current(),
+    }
+}
+
+/// The blocks rich text shows as for the person reading here, now ([`blocks_at`]).
 #[must_use]
 pub fn blocks_of(rich: &tilo_ui_graph::rich::RichText) -> Vec<BlockContent> {
+    blocks_at(rich, &reading_here())
+}
+
+/// The blocks rich text shows as for `reading`: each reference as the text says it reads for
+/// the person ([`reference_label`]), each time as it reads for them ([`time_label`]);
+/// paragraph ids are their places.
+#[must_use]
+pub fn blocks_at<Tz: chrono::TimeZone>(
+    rich: &tilo_ui_graph::rich::RichText,
+    reading: &Reading<Tz>,
+) -> Vec<BlockContent> {
     rich.blocks
         .iter()
         .enumerate()
         .map(|(index, block)| {
             let mut view = view_of(block, format!("p{index}"));
-            if !rich.embeds.is_empty() {
-                relabel(&mut view, rich);
-            }
+            relabel(&mut view, |name, value, run| match name {
+                REFERENCE_MARK => rich.embed(value).map(|embed| reference_label(embed, run)),
+                TIME_MARK => InlineTime::of_mark(value)
+                    .map(|time| time_label(&time, reading.now, &reading.zone, reading.formats)),
+                _ => None,
+            });
             content_of(&view)
         })
         .collect()
 }
 
-/// Rewrite each reference's run of `view` as it reads, shifting the marks after it.
-fn relabel(view: &mut BlockView, rich: &tilo_ui_graph::rich::RichText) {
+/// How soon, at `now`, any time in `rich` reads differently.
+#[must_use]
+pub fn changes_in(
+    rich: &tilo_ui_graph::rich::RichText,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<std::time::Duration> {
+    rich.blocks
+        .iter()
+        .flat_map(|block| &block.marks)
+        .filter(|mark| mark.name == TIME_MARK)
+        .filter_map(|mark| match &mark.value {
+            tilo_ui_graph::rich::Attr::Text(value) => InlineTime::of_mark(value),
+            _ => None,
+        })
+        .filter_map(|time| time.changes_in(now))
+        .min()
+}
+
+/// Rewrite each run of `view` that `label` reads otherwise (given the mark's name, its value
+/// and the run), shifting the marks after it.
+fn relabel(view: &mut BlockView, label: impl Fn(&str, &str, &str) -> Option<String>) {
     let mut references: Vec<(usize, usize, String)> = view
         .marks
         .iter()
-        .filter(|mark| mark.name == REFERENCE_MARK && mark.start < mark.end)
+        .filter(|mark| mark.start < mark.end)
         .filter_map(|mark| match &mark.value {
-            MarkValue::Str(value) => rich
-                .embed(value)
-                .map(|embed| (mark.start, mark.end, embed.clone())),
+            MarkValue::Str(value) => {
+                let run: String = view
+                    .text
+                    .chars()
+                    .skip(mark.start)
+                    .take(mark.end.saturating_sub(mark.start))
+                    .collect();
+                label(&mark.name, value, &run).map(|label| (mark.start, mark.end, label))
+            }
             MarkValue::Bool(_) | MarkValue::Int(_) => None,
-        })
-        .map(|(start, end, embed)| {
-            let run: String = view
-                .text
-                .chars()
-                .skip(start)
-                .take(end.saturating_sub(start))
-                .collect();
-            (start, end, reference_label(&embed, &run))
         })
         .collect();
     // From the last, so the offsets of those before stay as they are.
@@ -308,5 +429,135 @@ fn relabel(view: &mut BlockView, rich: &tilo_ui_graph::rich::RichText) {
                 mark.end = shift(mark.end);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::clock::TimeStyle;
+    use crate::format::{DateStyle, Formats, RegionFormats};
+    use tilo_ui_graph::rich::{Attr, Block, Mark as RichMark, RichText};
+
+    fn at(text: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(text)
+            .expect("a moment")
+            .with_timezone(&chrono::Utc)
+    }
+
+    /// `Standup ⟨time⟩, release ⟨time⟩, launch ⟨time⟩.` with the three ways a time is shown.
+    fn three_times() -> RichText {
+        let mark = |start: usize, end: usize, time: InlineTime| RichMark {
+            start,
+            end,
+            name: TIME_MARK.into(),
+            value: Attr::Text(time.mark_value()),
+        };
+        let standup = InlineTime {
+            at: at("2026-10-29T23:30:00Z"),
+            show: TimeShow::Absolute,
+        };
+        let release = InlineTime {
+            at: at("2026-10-29T12:00:00Z"),
+            show: TimeShow::Relative,
+        };
+        let launch = InlineTime {
+            at: at("2026-10-29T11:04:59Z"),
+            show: TimeShow::Countdown,
+        };
+        // Each run is the moment as its writer wrote it.
+        let text = "Standup 23:30 UTC, release noon, launch 11:05.";
+        RichText {
+            blocks: vec![Block {
+                kind: "paragraph".into(),
+                text: text.into(),
+                marks: vec![
+                    mark(8, 17, standup),
+                    mark(27, 31, release),
+                    mark(40, 45, launch),
+                ],
+                ..Block::default()
+            }],
+            embeds: Vec::new(),
+        }
+    }
+
+    fn reading<Tz: chrono::TimeZone>(zone: Tz) -> Reading<Tz> {
+        Reading {
+            now: at("2026-10-29T10:00:00Z"),
+            zone,
+            formats: Formats::with(RegionFormats {
+                date: DateStyle::Iso,
+                time: TimeStyle::H24,
+                ..RegionFormats::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn a_time_reads_for_each_reader_in_their_zone_and_ticks_toward_it() {
+        let rich = three_times();
+        assert_eq!(
+            InlineTime::of_mark(
+                &InlineTime {
+                    at: at("2026-10-29T12:00:00Z"),
+                    show: TimeShow::Relative
+                }
+                .mark_value()
+            ),
+            Some(InlineTime {
+                at: at("2026-10-29T12:00:00Z"),
+                show: TimeShow::Relative
+            })
+        );
+        let utc = blocks_at(&rich, &reading(chrono::Utc));
+        let tokyo = blocks_at(
+            &rich,
+            &reading(chrono::FixedOffset::east_opt(9 * 3600).expect("a zone")),
+        );
+        let (utc, tokyo) = (utc[0].text.as_str(), tokyo[0].text.as_str());
+        assert!(utc.contains("2026-10-29") && utc.contains("23:30"), "{utc}");
+        assert!(
+            tokyo.contains("2026-10-30") && tokyo.contains("08:30"),
+            "the next morning in Tokyo: {tokyo}"
+        );
+        assert!(utc.contains("release in 2 hr,"), "{utc}");
+        assert!(utc.contains("launch 1:04:59."), "a countdown: {utc}");
+        assert!(
+            !utc.contains("noon"),
+            "nobody reads the writer's words for it"
+        );
+
+        // Past the moment, a countdown says how long ago it was; times tick on their own.
+        let mut later = reading(chrono::Utc);
+        later.now = at("2026-10-29T11:08:00Z");
+        assert!(
+            blocks_at(&rich, &later)[0]
+                .text
+                .contains("launch 3 min ago."),
+            "{}",
+            blocks_at(&rich, &later)[0].text
+        );
+        assert_eq!(
+            changes_in(&rich, at("2026-10-29T10:00:00Z")),
+            Some(std::time::Duration::from_secs(1)),
+            "a running countdown changes every second"
+        );
+        assert_eq!(
+            changes_in(&rich, at("2026-10-29T12:30:00Z")),
+            Some(std::time::Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn a_time_reads_in_the_readers_language() {
+        use crate::i18n::I18nManager;
+        let rich = three_times();
+        I18nManager::init("en-US");
+        I18nManager::register_widget_messages();
+        I18nManager::set_locale("de-DE");
+        let german = blocks_at(&rich, &reading(chrono::Utc))[0].text.clone();
+        I18nManager::set_locale("en-US");
+        assert!(german.contains("in 2 Std."), "{german}");
     }
 }
