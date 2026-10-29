@@ -838,12 +838,9 @@ impl SnippetsWindow {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(state) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let state = live.get();
+        };
         self.show_library(&state);
     }
 

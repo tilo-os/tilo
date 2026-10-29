@@ -961,12 +961,10 @@ impl DisksApp {
         let Some(document) = &self.document else {
             return;
         };
-        let held = (document.revision(), document.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = document.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let names = document.with(Disks::names);
+        };
+        let names = Disks::names(&shown);
         self.state().adopt_names(&names);
     }
 
