@@ -359,8 +359,7 @@ class CargoReaderTests(unittest.TestCase):
                 )
         self.assertEqual(
             suites.select_packages(manifest, [prefix + "empty.svg"]), ["tilo-fs"])
-        # Import consumers select only the fixtures they read. (The CLI reads the provider's
-        # sources as a dependency of the apps, which tools/ci/t_toml.py derives.)
+        # Import consumers select only the fixtures they read.
         self.assertEqual(
             suites.select_packages(manifest, [prefix + "unrelated.rs"]), [])
 
@@ -466,16 +465,6 @@ class CargoReaderTests(unittest.TestCase):
             text = ('fn scratch() {\n    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");\n'
                     '    write(root.join("apps/new/tilo-app.toml"));\n    read(root.join("crates/ui/src"));\n}\n')
             self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated), [])
-
-    def test_dependencies_of_names_directories_holding_packages(self):
-        manifest = READER_MANIFEST + 'dependencies_of = ["apps/"]\n'
-        self.assertEqual(suites.parse(manifest).cargo[0].dependencies_of, ("apps/",))
-        self.assertEqual(self.audit({}, manifest), [])
-        problems = self.audit({}, manifest.replace('["apps/"]', '["tools/"]'))
-        self.assertEqual(problems, ["tools/ci/suites.toml: cargo ui: dependencies_of tools/ holds no tracked package"])
-        for value in ('["apps"]', '[]', '"apps/"', '["../apps/"]'):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                suites.parse(manifest.replace('["apps/"]', value))
 
     def test_a_file_the_checked_change_deletes_is_not_tracked(self):
         # t checks a commit its server has not seen as uncommitted changes on

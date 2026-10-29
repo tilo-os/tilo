@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# One KPI group of the scheduled performance run, as a t check (t.toml,
-# perf-*). Each group measures this tree and writes its records to
+# One KPI group of the scheduled performance run. Each group measures this tree and writes its records to
 # /target/perf/<group>/<group>.jsonl (with its logs beside them); perf-compare
 # takes every group's records, compares them with the store and, on main,
 # publishes them.

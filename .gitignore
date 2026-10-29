@@ -92,10 +92,8 @@ __pycache__/
 /docs/verification/android-arity/
 /docs/verification/android-mediation/
 /docs/verification/android-integration/
-# Agent configuration is per contributor, not project content. .claude/settings.json
-# stays tracked: it is what wires `t inbox --hook claude` into a session (docs/t.md).
+# Agent configuration is per contributor, not project content.
 .claude/
-!.claude/settings.json
 .pi/
 
 

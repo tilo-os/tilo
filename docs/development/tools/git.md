@@ -1,7 +1,7 @@
 # Work with Git hooks and generated files
 
 For branch integration, the push gate and release ownership, use
-[the t workflow](../../t.md#how-changes-reach-a-release). This page covers
+the t workflow. This page covers
 checkout-local tooling.
 
 ## Install hooks without replacing someone else's

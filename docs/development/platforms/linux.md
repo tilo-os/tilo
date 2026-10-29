@@ -54,7 +54,7 @@ For fonts, use the
 - **Desktop in a window:** use the
   [nested-session tool](../../../dist/dev/nested-session.sh). Start with
   `dist/dev/nested-session.sh --help`. It obtains a matching shell, signed
-  development apps and runtime from [t](../../t.md), and keeps a private profile
+  development apps and runtime from t, and keeps a private profile
   and session bus. Windowed mode needs a Wayland session on the host, not a
   toolbox/container namespace. It does not test DRM seat ownership or
   login-session locking. See [headless testing](../../headless-testing.md) for

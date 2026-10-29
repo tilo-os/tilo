@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# A branch's own dev image of one target (sign-ref-os-<target> and publish-os-ref-<target> in
-# t.toml: `t dispatch publish-os-ref-<target> --ref BRANCH --publish`, which `tilo device vm
-# upgrade --ref` runs), signed with the development key and published as
+# A branch's own dev image of one target, signed with the development key and published as
 #
 #   registry.tilo.so/tilo/tilo-vm-ref:ref-<branch>-<commit7>-TARGET
 #

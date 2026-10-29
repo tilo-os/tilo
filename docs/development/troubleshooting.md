@@ -16,8 +16,8 @@ failures; name a check and `--test` to reproduce a single test or module. Use
 
 Exit `1` means a failure may be yours; `3` means all failures also occur on
 main; `2` means t could not carry out the request. Do not report an execution
-error as a passing check. [t](../t.md) explains baseline comparison and failure
-ownership; [its setup section](../t.md#setting-up) covers access. If scope
+error as a passing check. t explains baseline comparison and failure
+ownership; its setup section covers access. If scope
 discovery cannot find a base, inspect the reported Git/base error rather than
 treating an empty selection as verification.
 
@@ -50,7 +50,7 @@ get past a missing capability.
   missing PDFium must remain a failure for capture coverage.
 
 Do not rerun a privileged storage suite on the host as a generic fix. Use a
-named check with its declared environment; the [check definitions](../../t.toml)
+named check with its declared environment; the check definitions
 describe requirements. For device problems, start with `tilo device doctor` and
 `tilo device guide troubleshooting`.
 

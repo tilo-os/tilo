@@ -6,14 +6,14 @@ Linux provides the Wayland login desktop and Tilo OS.
 
 ## Linux: desktop with packaged apps
 
-This route needs hosted [t](../t.md) access and a Wayland desktop. From the
+This route needs hosted t access and a Wayland desktop. From the
 checkout root:
 
 ```sh
 dist/dev/nested-session.sh --apps "notes chat"
 ```
 
-This downloads a matched build from [t](../t.md), installs signed development
+This downloads a matched build from t, installs signed development
 apps into private state, and starts the shell. No root or host installation is
 needed. Close the window or press Ctrl-C to stop it.
 

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""The workspace's package sets that t's checks lint and build.
+"""The workspace's package sets that CI lints and builds.
 
   package_sets.py android   apps with an `<app>-android` example
   package_sets.py browser   crates that build for the browser (wasm-bindgen)
   package_sets.py wasm      those, and the crates the page runtime builds for the
-                            browser through them (t_cargo_compile.py's wasm pass)
+                            browser through them
 
 prints the `-p NAME` arguments of one set, over every workspace package.
-tools/ci/t_toml.py keys the checks of t.toml by the same sets.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ import sys
 EXAMPLE_APPS = "examples/apps/"
 # Patched vendored crates with test suites of their own. The workspace builds
 # them only as path dependencies, so its tests never run theirs;
-# tools/ci/test-vendored-crates.sh does (t.toml's `vendored` check).
+# tools/ci/test-vendored-crates.sh does.
 VENDORED_TEST_CRATES = ("vendor/automerge", "vendor/vello_encoding")
 
 
@@ -80,7 +79,7 @@ def wasm_crates(packages: dict[str, dict]) -> set[str]:
 
 
 # What makes a package's code differ between x86_64 and aarch64, so that a check's result on one
-# says nothing about the other (t.toml's per-architecture families):
+# says nothing about the other:
 #
 #   * a cfg naming a CPU architecture: `cfg(target_arch = "aarch64")`, `cfg!(...)`, `cfg_attr`,
 #     `not(...)`. wasm is not one (the wasm checks build its paths, no node runs them), nor is a

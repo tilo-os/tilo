@@ -9,7 +9,7 @@ cargo test --locked -p tilo-clock
 ```
 
 Choose your own package and test filter. For Linux services, boot tests or a
-prepared remote environment, [t](../t.md) can check working-tree edits without
+prepared remote environment, t can check working-tree edits without
 building locally. Hosted access currently requires a maintainer-issued token.
 
 ## With hosted t: choose the scope
@@ -46,7 +46,7 @@ For browser-built crates, use `check/<package>` or `clippy/<package>`: their
 wrapper checks the library for `wasm32-unknown-unknown` as well as natively.
 Native tests alone cannot compile wasm-only code. Select `wasm` when the
 complete linked web runtime needs checking; see
-[t's check model](../t.md#adding-a-check).
+t's check model.
 
 ## Run only what needs rerunning
 
@@ -62,7 +62,7 @@ narrower rerun. A pass after a retry does not explain a race.
 Use `t test --rev HEAD <check>` when you need evidence for the committed
 snapshot rather than the current working tree. Keep those results distinct. The
 push gate checks the pushed commit and deliberately does not run the test
-suites. Delivery and failure ownership are covered in [t's workflow](../t.md),
+suites. Delivery and failure ownership are covered in t's workflow,
 not by a second checklist here.
 
 ## Choose evidence that can see the behavior

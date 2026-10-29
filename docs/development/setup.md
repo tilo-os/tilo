@@ -32,6 +32,6 @@ just to work on one app or a library.
 
 ## Optional hosted builds
 
-[t](../t.md) can build and test on the project's builders instead of your
+t can build and test on the project's builders instead of your
 machine. Hosted access currently needs a maintainer-issued token; ask us if you
 need it. You don't need a build-service account to contribute.

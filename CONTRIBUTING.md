@@ -79,7 +79,7 @@ The [code map](docs/codemap.md) can help you find it. Append a test name to
 
 To try a shell UI change,
 [run the desktop in a window](docs/development/run-desktop.md). Linux's packaged
-development desktop currently needs hosted [t](docs/t.md) access; ask us if you
+development desktop currently needs hosted t access; ask us if you
 need it. Building and testing a crate doesn't require it. For boot or hardware
 changes, use a [development VM](docs/development/dev-vms.md).
 
@@ -110,7 +110,7 @@ platform and runtime details when you need them.
 `main` is a rather unstable integration branch during the alpha, not a release.
 Trusted collaborators can integrate directly there; release testing happens on
 `stable`. This workflow is described in
-[Testing and integrating changes](docs/t.md).
+Testing and integrating changes.
 
 If you use an agent, you remain responsible for understanding the change, having
 the right to contribute it and accurately reporting what was tested. Agents

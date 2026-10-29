@@ -250,18 +250,6 @@ for owner, accepted in (
     result = subprocess.run(["bash", "-c", owner_check], env=check_env, capture_output=True)
     assert (result.returncode == 0) == accepted, "package-lane registry-owner preflight"
 
-# Stable publishes the desktop payload only from RPMs that logged in on stock Fedora: the login
-# test takes the amd64 lane's packages, and the payload's publication needs it.
-desktop_checks = {
-    check["name"]: check
-    for matrix in tomllib.loads((ROOT / "tools/ci/products.toml").read_text())["matrix"]
-    if matrix["family"] == "desktop"
-    for check in matrix["check"]
-}
-assert desktop_checks["host-session-e2e"]["needs"] == ["desktop-package-amd64"]
-assert "stable" in desktop_checks["host-session-e2e"]["on"]
-assert "host-session-e2e" in desktop_checks["publish-desktop-payload"]["needs"]
-
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()

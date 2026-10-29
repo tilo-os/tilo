@@ -3190,7 +3190,7 @@ impl App {
         if !on_path("t") {
             return Err(CliError::ToolMissing {
                 tool: "t".into(),
-                purpose: "build and publish the branch's image (docs/t.md)".into(),
+                purpose: "build and publish the branch's image".into(),
             });
         }
         let check = format!("publish-os-ref-{target}");

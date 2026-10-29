@@ -10,9 +10,7 @@
 //! refusal is checked against the other room's state afterwards, so a door
 //! that answered "no" but acted anyway still fails.
 //!
-//! The suite is the `tenant_isolation::` module of the relay's `it` target;
-//! t.toml's `security-isolation` check runs it nightly and on
-//! demand alongside the room-access and agent-confinement suites.
+//! The suite is the `tenant_isolation::` module of the relay's `it` target.
 
 #![allow(
     clippy::unwrap_used,

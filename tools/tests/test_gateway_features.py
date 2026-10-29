@@ -42,7 +42,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             root = Path(directory)
             ci = root / "tools/ci"
             ci.mkdir(parents=True)
-            for name in ("t-nextest.sh", "package_features.py"):
+            for name in ("nextest.sh", "package_features.py"):
                 shutil.copy(ROOT / "tools/ci" / name, ci / name)
             # A nextest run executes as given (its profile sets up the test
             # environment); other commands run under tools/test-env.sh.
@@ -57,7 +57,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             for package in ("tilo-model-gateway", "chat"):
                 with self.subTest(package=package):
                     result = subprocess.run(
-                        ["bash", str(ci / "t-nextest.sh"), "cargo", "nextest", "run",
+                        ["bash", str(ci / "nextest.sh"), "cargo", "nextest", "run",
                          "--locked", "-p", package, "-E", "all()"],
                         capture_output=True, text=True, check=True, env=env)
                     argv = json.loads(result.stdout)
@@ -70,7 +70,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             command = ["cargo", "nextest", "run", "--locked", "-p", "chat",
                        "--package", "tilo-model-gateway", "-E", "all()"]
             result = subprocess.run(
-                ["bash", str(ci / "t-nextest.sh"), *command],
+                ["bash", str(ci / "nextest.sh"), *command],
                 capture_output=True, text=True, check=True, env=env)
             self.assertEqual(json.loads(result.stdout)[:len(command) + 2],
                              command + ["-p", "workspace-unify"])
@@ -82,7 +82,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                                          set(gateway["features"]))
             command = ["cargo", "check", "--locked", "-p", "tilo-model-gateway"]
             result = subprocess.run(
-                ["bash", str(ci / "t-nextest.sh"), *command],
+                ["bash", str(ci / "nextest.sh"), *command],
                 capture_output=True, text=True, check=True, env=env)
             self.assertEqual(json.loads(result.stdout), command)
 

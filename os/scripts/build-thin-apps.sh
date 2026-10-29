@@ -10,8 +10,7 @@ EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
 # BUILD_RUNTIME_ONLY=1 builds the shared runtime, its engines and the account probe in the
-# collection's graph and no app binary: what every app's thin build has in common
-# (tools/apps/t-release.sh thin-runtime). Apps built later in the same build directory, with
+# collection's graph and no app binary: what every app's thin build has in common. Apps built later in the same build directory, with
 # the same packages and features, find these units fresh.
 BUILD_RUNTIME_ONLY="${BUILD_RUNTIME_ONLY:-}"
 case "$BUILD_RUNTIME_ONLY" in ""|1) ;; *) echo "BUILD_RUNTIME_ONLY must be 1 or unset" >&2; exit 1 ;; esac

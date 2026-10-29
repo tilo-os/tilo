@@ -87,13 +87,6 @@ nav = "Find a reference"
 description = "Look up platform, testing and runtime instructions."
 
 [[page]]
-slug = "t"
-source = "docs/t.md"
-section = "Reference"
-nav = "t"
-description = "Hosted builds, check selection and main/stable integration."
-
-[[page]]
 slug = "nested-session"
 source = "docs/development/tools/nested-session.md"
 section = "Reference"

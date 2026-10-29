@@ -13,9 +13,7 @@ set -euo pipefail
 memory=${1:?usage: native-envelope.sh MEMORY_GIB SCRIPT}
 script=${2:?usage: native-envelope.sh MEMORY_GIB SCRIPT}
 case $memory in 22|36) ;; *) echo "unsupported envelope: ${memory} GiB" >&2; exit 2 ;; esac
-image=$(sed -n 's/^image = "\(.*\)"$/\1/p' t.toml)
-image=${image%%$'\n'*}
-[[ $image == *@sha256:* ]] || { echo "t.toml names no pinned project image" >&2; exit 2; }
+image=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
 # The node's storage takes neither overlay nor a CNI network database.
 exec podman --storage-driver vfs run --rm --network host \
     --memory "${memory}g" --memory-swap "${memory}g" --cpus 24 \

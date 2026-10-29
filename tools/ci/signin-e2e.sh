@@ -15,9 +15,6 @@
 #
 # OUT receives report.md / report.json, the boot sign-in and greeter screenshots, and per-boot
 # serial logs and journals, each searched for every secret the run used.
-#
-# tools/ci/signin-e2e-builder.sh builds the image and the medium and runs this on a machine
-# without t, such as an rcargo builder.
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
@@ -40,8 +37,8 @@ if ((${#args[@]} == 0)); then
   [[ -n ${T_INPUT_PRE_PAM_TILO_IMAGE:-} ]] && args+=(--pre-pam-tilo-image "$T_INPUT_PRE_PAM_TILO_IMAGE")
 fi
 
-# QEMU, firmware and swtpm for vm.sh; tesseract and ImageMagick read the boot screens. The
-# check's setup has them already (t.toml); without it, they come from dnf.
+# QEMU, firmware and swtpm for vm.sh; tesseract and ImageMagick read the boot screens. Where
+# the image lacks them, they come from dnf.
 bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt "tools/ci/packages/signin-e2e-$arch.txt"
 python3 os/dev/probe-kvm.py "$arch" || { echo 'this node cannot create a KVM VM' >&2; exit 1; }
 

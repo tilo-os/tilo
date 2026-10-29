@@ -24,10 +24,8 @@ and a run that passes the room's own guest cap and so refuses. `summarize`
 reports the three as the workload's budget; a run that breaks it fails the
 fast, dispatched check.
 
-t's perf-room-capacity check (t.toml) runs the sweep on a node of known size;
-docs/benchmarks/room-host-capacity-2026-10.md records a run. The degraded
-probe is `perf-room-degraded` (t.toml, tools/ci/perf-room-degraded.sh), in
-the performance run, and docs/architecture/hosting-capacity.md states the
+Run the sweep on a node of known size. The degraded probe is
+tools/ci/perf-room-degraded.sh, in the performance run, and docs/architecture/hosting-capacity.md states the
 budget it holds and what it establishes.
 
     python3 tools/perf/room_capacity.py sweep --bin target/release/tilo-room-load --out sweep

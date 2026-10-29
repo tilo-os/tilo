@@ -5,7 +5,7 @@ operator manual. [Test a change](../testing.md) covers the working loop.
 
 ## Select and inspect remote checks
 
-The canonical workflow and check model are in [t](../../t.md). Its per-command
+The canonical workflow and check model are in t. Its per-command
 help is the current CLI reference:
 
 ```sh
@@ -33,10 +33,10 @@ selects a full test name or module path within a test check. It is not Cargo's
 `--test <integration-target>` option. Copy the name from a failure or the
 source; an empty match fails rather than supplying coverage.
 
-Definitions live in [t.toml](../../../t.toml). Test families use
-[the nextest wrapper](../../../tools/ci/t-nextest.sh), which supplies package
+Definitions live in t.toml. Test families use
+the nextest wrapper, which supplies package
 features, fixtures and filters. Check/clippy families use
-[the compile wrapper](../../../tools/ci/t_cargo_compile.py). Prefer these checks
+the compile wrapper. Prefer these checks
 over rebuilding their commands by hand.
 
 ## Check installer or packaging contracts

@@ -166,11 +166,7 @@ if ! podman image exists "$host_image"; then
     || { tail -n 50 "$host_dir/build.log"; exit 1; }
 fi
 
-builder_image=$(python3 -c '
-import sys
-sys.path.insert(0, "tools/ci")
-import t_matrix
-print(t_matrix.load(t_matrix.ROOT)["image"])')
+builder_image=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
 
 mkdir -p "$out"
 out=$(realpath "$out")

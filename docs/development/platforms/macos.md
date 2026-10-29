@@ -67,7 +67,7 @@ locally does not qualify its signing, notarization or installation.
 ## Linux and OS changes from a Mac
 
 A Mac check sees only the code enabled for that target. For changes involving
-Linux services, use the affected Linux checks through [t](../../t.md), or a Tilo
+Linux services, use the affected Linux checks through t, or a Tilo
 development VM. Do not treat a passing Mac check as Linux coverage.
 
 `tilo device guide quickstart` and `tilo device guide platforms` own VM setup

@@ -101,7 +101,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/steps.toml": "tools/tests/test_policy_steps.py",
     "tools/policy/steps.py": "tools/tests/test_policy_steps.py",
-    "tools/ci/pre_push.py": "tools/tests/test_pre_push.py",
     "tools/policy/added_line_policy.py": "tools/tests/test_added_line_policy.py",
     "tools/policy/check_commit_policy.py": "tools/tests/test_commit_hooks.py",
     "scripts/scan-secrets.sh": "tools/tests/test_added_line_policy.py",

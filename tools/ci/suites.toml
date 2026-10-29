@@ -6,7 +6,7 @@
 #   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
 #     on every applicable change;
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
-#     built image or network) whose `suite-<group>` check in t.toml runs whenever
+#     built image or network) that check.yml runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
 #   * a [[covered]] entry: exercised by the named, already gated suite; or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
@@ -37,8 +37,7 @@
 # `inputs` saying what they read. A [[cargo-exempt]] entry names a reading file
 # whose read CI never runs, with the reason.
 
-# The archive smoke remains a prerequisite of t's image publication. Its
-# required hermetic contract runs the real shell with a stub archive runner.
+# The archive smoke's required hermetic contract runs the real shell with a stub archive runner.
 [[covered]]
 suite = "os/tests/ci_fast_images.sh"
 by = "os/tests/test_ci_fast_images.py"
@@ -78,9 +77,9 @@ suites = ["tools/ci/test_runtime_dylib_lazy_link.py"]
 [[group]]
 name = "release-trust"
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
-# the image recipes install what it names, and t's signing scripts sign the
+# the image recipes install what it names, and the signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
@@ -257,7 +256,7 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/", "t.toml", "tools/ci/t_matrix.py", "tools/ci/publish/"]
+inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
@@ -282,7 +281,7 @@ suites = ["os/tests/test_pipewire_echo_cancel.py"]
 name = "no-cisco-openh264"
 # No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
-inputs = ["os/", "t.toml", "tools/ci/t_matrix.py", "dist/ci/install-build-deps.sh"]
+inputs = ["os/", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
 
 [[group]]
@@ -413,7 +412,7 @@ inputs = [
   "crates/session/shell/src/shell/windows_compat.rs",
   # test_windows_compat_sysext.py: the helper that installs the image, and the checks that
   # publish it.
-  "crates/system/extension-helper/src/", "t.toml", "tools/ci/t_matrix.py",
+  "crates/system/extension-helper/src/",
 ]
 suites = [
   "os/tests/test_windows_compat_sysext.py",
@@ -427,7 +426,7 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", "tools/ci/products.toml", "dist/session/vm-e2e/run.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", "dist/session/vm-e2e/run.py"]
 suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
 
 [[group]]
@@ -442,7 +441,7 @@ suites = ["crates/session/tilo-ntfs-helper/tests/test_build_native.py", "crates/
 
 [[group]]
 name = "dist"
-inputs = ["dist/", "os/registry-runtime-publisher.hex", "tools/ci/products.toml"]
+inputs = ["dist/", "os/registry-runtime-publisher.hex"]
 suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/ci/tests/test_failed_rpm_retention.py",
@@ -487,9 +486,9 @@ name = "perf-tools"
 inputs = [
   "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
   # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
-  # t checks and benchmarks, and vm-acceptance-perf's groups equal to the
+  # benchmarks, and vm-acceptance-perf's groups equal to the
   # budgets' lanes and the A/B groups.
-  "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh", "t.toml",
+  "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh",
   # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
@@ -687,10 +686,7 @@ suites = [
 # A change to an input tests the whole package, unless every changed input is
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
-# `dependencies_of` names directories whose packages' normal local dependencies
-# the package reads too; tools/ci/t_toml.py adds those packages' directories to
-# its inputs from the workspace's metadata, so a crate an app comes to depend on
-# is counted without listing it here. `tools/ci/suites.py check` holds each
+# `tools/ci/suites.py check` holds each
 # entry's inputs to what its code reads where literals say: includes, and paths
 # built from CARGO_MANIFEST_DIR, including every entry of a directory it lists.
 
@@ -804,7 +800,7 @@ readers = [
 [[cargo]]
 package = "onboarding-walk"
 # The names test reads the shell's onboarding view it walks.
-inputs = ["crates/session/shell/src/onboarding_view.rs"]
+inputs = ["crates/session/shell/src/onboarding_view.rs", "crates/session/shell/src/onboarding_view/"]
 readers = ["crates/session/onboarding-walk/tests/names.rs"]
 
 [[cargo]]
@@ -1106,7 +1102,6 @@ inputs = [
 ]
 # The record-kinds tests read the sources of the local crates the apps depend on, the
 # production resource regression Music's whole normal local dependency closure.
-dependencies_of = ["apps/"]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
@@ -1474,15 +1469,15 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
-reason = "needs the built web entry image: t's image-web-entry check runs it, and carry-web-entry on the release"
+reason = "needs the built web entry image"
 
 [[unrequired]]
 suite = "crates/hosting/tilo-room-service/container/test-image.sh"
-reason = "needs the built room-service image: t's image-room-service check runs it"
+reason = "needs the built room-service image"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"
-reason = "needs the built registry-server image: t's image-registry-server check runs it"
+reason = "needs the built registry-server image"
 
 [[unrequired]]
 suite = "crates/session/tilo-ntfs-helper/tests/test_stage_install.py"
@@ -1524,23 +1519,23 @@ reason = "requires a native ARM KVM host and QEMU"
 
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
-reason = "boots the gated dev disk in a VM and signs in; t's os-acceptance-<arch> runs it"
+reason = "boots the gated dev disk in a VM and signs in"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect; t's os-acceptance-<arch> runs it"
+reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
-reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs; t's os-acceptance-<arch> runs it"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
 
 [[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
-reason = "boots the gated dev disk in a VM and signs in at its greeter; t's os-acceptance-<arch> runs it"
+reason = "boots the gated dev disk in a VM and signs in at its greeter"
 
 [[unrequired]]
 suite = "os/dev/test-slow-frame-launch.sh"
-reason = "signs in again on the booted, gated dev disk's VM and opens apps there; t's os-acceptance-<arch> runs it"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1597,7 +1592,7 @@ reason = "needs a booted image (SSH into a VM)"
 
 [[unrequired]]
 suite = "os/tests/booted_app_update.sh"
-reason = "drives a booted, logged-in dev VM over SSH (the dev image gate); t's os-acceptance-<arch> runs it"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
 
 [[unrequired]]
 suite = "os/tests/booted_flatpak_lifecycle.sh"
@@ -1609,7 +1604,7 @@ reason = "build helper: needs a Windows guest SDK"
 
 [[unrequired]]
 suite = "os/tests/collaborative-files-image-contract.sh"
-reason = "needs an assembled image root (OS_ROOT); t's os-acceptance-<arch> runs it"
+reason = "needs an assembled image root (OS_ROOT)"
 
 [[unrequired]]
 suite = "os/tests/container_build_context.py"
@@ -1617,39 +1612,39 @@ reason = "needs rootless Podman"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
-reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Podman"
 
 [[unrequired]]
 suite = "os/tests/development_prediction_native.py"
-reason = "needs the disposable root native container with Cosign: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Cosign"
 
 [[unrequired]]
 suite = "os/tests/development_retention_native.py"
-reason = "needs the disposable root native container with Cosign and Podman: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Cosign and Podman"
 
 [[unrequired]]
 suite = "os/tests/release_trust_chain_native.py"
-reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks: t's release-trust check installs them in a micro-VM and runs it"
+reason = "needs skopeo and the OpenSSL CLI, which the hermetic ci-fast image lacks"
 
 [[unrequired]]
 suite = "os/tests/development_rebind_native.py"
-reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Cosign, Podman and packaged-kernel dracut"
 
 [[unrequired]]
 suite = "os/tests/development_rootfs.py"
-reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Podman"
 
 [[unrequired]]
 suite = "os/tests/development_signer.py"
-reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container"
 
 [[unrequired]]
 suite = "os/tests/development_source_registry.py"
-reason = "needs Podman, Cosign and a TLS registry: t's development-signing-<arch> checks run it"
+reason = "needs Podman, Cosign and a TLS registry"
 
 [[unrequired]]
 suite = "os/tests/development_stage_reuse.py"
-reason = "needs the disposable root native container with Podman: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container with Podman"
 
 [[unrequired]]
 suite = "os/tests/fex-assembler.sh"
@@ -1665,7 +1660,7 @@ reason = "needs a FEX runtime container"
 
 [[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
-reason = "needs the disposable root native container: t's development-signing-<arch> checks run it"
+reason = "needs the disposable root native container"
 
 [[unrequired]]
 suite = "os/tests/installed_atspi_apps.sh"
@@ -1681,15 +1676,15 @@ reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
-reason = "runs inside a booted guest as its device admin, after first login; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted guest as its device admin, after first login"
 
 [[unrequired]]
 suite = "os/tests/live-update-check.sh"
-reason = "runs inside a booted dev VM as root and stages an update; t's os-dev-gate-<arch> runs it"
+reason = "runs inside a booted dev VM as root and stages an update"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
-reason = "runs inside a booted guest's graphical session, partly as root; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted guest's graphical session, partly as root"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
@@ -1722,7 +1717,7 @@ reason = "needs a FEX runtime container"
 
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
-reason = "runs inside a booted guest; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted guest"
 
 [[unrequired]]
 suite = "os/tests/h264-boot-check.py"
@@ -1746,7 +1741,7 @@ reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
 suite = "os/tests/boot_assessment_rollback.sh"
-reason = "stages an update on a booted disk and reboots it until the boot loader falls back: t's boot-assessment-x86_64 check runs it on a dev disk, boot-assessment-release-x86_64 on the sealed release disk"
+reason = "stages an update on a booted disk and reboots it until the boot loader falls back"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
@@ -1756,11 +1751,11 @@ workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
 suite = "os/tests/development_signing_native.sh"
-reason = "needs a privileged node for nested Podman: t's development-signing-<arch> checks run it"
+reason = "needs a privileged node for nested Podman"
 
 [[unrequired]]
 suite = "os/tests/release_tools_image.sh"
-reason = "needs the built release-tools image: t's image-release-tools-<arch> checks run it"
+reason = "needs the built release-tools image"
 
 [[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
@@ -1780,15 +1775,15 @@ reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs 
 
 [[unrequired]]
 suite = "os/tests/session-context-check.sh"
-reason = "runs inside a booted guest after a greetd login; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted guest after a greetd login"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
-reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
+reason = "destructive, root: loop devices"
 
 [[unrequired]]
 suite = "os/tests/staging_reclaim_loop.sh"
-reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
+reason = "destructive, root: loop devices"
 
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
@@ -1800,7 +1795,7 @@ reason = "asserts preserved sparse holes, which the container overlay root of th
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
-reason = "needs a root-owned /usr/local/bin/tilo-crypto: t's development-signing-<arch> checks run it"
+reason = "needs a root-owned /usr/local/bin/tilo-crypto"
 
 [[unrequired]]
 suite = "os/tests/test_kernel_checkpoint_make.py"
@@ -1816,7 +1811,7 @@ reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows
 
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
-reason = "drives a VM over SSH; the real-fuse check in t.toml runs it"
+reason = "drives a VM over SSH"
 
 [[unrequired]]
 suite = "os/tests/named_public_trust_context.sh"
@@ -1824,11 +1819,7 @@ reason = "needs a container engine and builds images in it; run by hand where a 
 
 [[unrequired]]
 suite = "tools/ci/test-vendored-crates.sh"
-reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
-
-[[unrequired]]
-suite = "tools/ci/nightly-workspace-test.sh"
-reason = "the nightly workspace-test checks' runner (t.toml); it runs the workspace's tests, it is not a suite of its own"
+reason = "compiles each patched vendored crate's own tests"
 
 [[unrequired]]
 suite = "tools/test-env.sh"
@@ -1974,7 +1965,7 @@ readers = ["crates/packaging/install/tests/runtime_package.rs"]
 
 [[unrequired]]
 suite = "tools/ci/windows/wine-test.sh"
-reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary, so t's wine/windows-x86_64-tests check runs it after build/windows-x86_64-tests"
+reason = "runs the imager's Windows unit-test executable under Wine; needs the cross-built test binary"
 
 [[group]]
 name = "cloud-rystic-ci"
@@ -1983,7 +1974,7 @@ suites = ["tools/ci/test_rystic_ci.py"]
 
 [[unrequired]]
 suite = "tools/ci/run-rystic-ci.sh"
-reason = "metered integration runner; t's cloud-rystic, weekly-cloud-rystic and cloud-rystic-contracts checks execute it with native build artifacts and a trusted RYSTIC_CI_TOKEN secret"
+reason = "metered integration runner"
 
 [[cargo]]
 package = "tilo-cli"

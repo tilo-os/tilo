@@ -28,8 +28,7 @@ push_only = """
 # imager's and its backend's need ext4, XFS or Btrfs under their caches and
 # TMPDIR, which a node's build directory and TMPDIR may not be (ZFS, an
 # overlay, tmpfs): `imager-tests-<arch>` runs them on the step's own ext4
-# scratch disk. tools/ci/t_toml.py leaves these packages out of the test
-# family, and the whole-workspace runs leave them out by this filter.
+# scratch disk. The whole-workspace runs leave them out by this filter.
 micro_vm = """
 package(imager) | package(imager-backend)
 """

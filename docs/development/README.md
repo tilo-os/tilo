@@ -32,7 +32,7 @@ environment.
 
 ## Look up a tool or a specific detail
 
-- [t: builds, checks and integration](../t.md)
+- t: builds, checks and integration
 - [Nested-session tool](tools/nested-session.md)
 - [Test environments and headless tools](tools/testing.md)
 - [Git hooks and generated files](tools/git.md)
