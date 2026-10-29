@@ -7,6 +7,10 @@ use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SealedCompaction,
 /// The most bytes one capture hands out, whatever the caller allows.
 const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Opens one sealed operation of an encrypted record into its plaintext,
+/// through the embedding owner's channel keys.
+pub type OpenSealed<'a> = &'a mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>;
+
 /// Why a record was not captured. These are observations; the embedding
 /// owner authenticates caller and time.
 #[derive(Debug, PartialEq, Eq)]
@@ -114,7 +118,7 @@ impl StatePeer {
         (app, record): (&str, &str),
         now: SystemTime,
         maximum: usize,
-        open: Option<&mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>>,
+        open: Option<OpenSealed<'_>>,
     ) -> Result<PeerDocumentCapture, PeerDocumentReadError> {
         let member = self
             .permissions(reader, now)
