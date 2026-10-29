@@ -98,6 +98,11 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
     if registry.get(app_id).is_some_and(|named| named.hash == hash) {
         return;
     }
+    // Readers below parse it on each use and take a surface that does not
+    // parse as declaring nothing: say so once, here.
+    if let Err(error) = collab_types::surface::SurfaceFile::parse(bytes) {
+        tracing::warn!(app = app_id, %error, "package surface does not parse; it declares no records, reads or footprints");
+    }
     // Kept for the process's life, once per distinct surface.
     let bytes = held_bytes(hash, bytes);
     registry.insert(app_id.to_owned(), Named { hash, bytes });
@@ -159,6 +164,7 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 #[must_use]
 pub fn person_record_kinds(app_id: &str) -> Vec<String> {
     bytes_of(app_id)
+        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
         .map(|file| {
             file.resources
@@ -183,6 +189,7 @@ pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
 #[must_use]
 pub fn reads_app(reader: &str, owner: &str) -> bool {
     let parse = |app: &str| {
+        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         bytes_of(app).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
     };
     match (parse(reader), parse(owner)) {
@@ -204,6 +211,7 @@ pub fn with_footprints(
 ) -> Vec<collab_types::ChangeClaim> {
     use collab_types::ReceiptSurface as _;
     let Some(file) =
+        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         bytes_of(app_id).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
     else {
         return claims;
@@ -231,6 +239,7 @@ pub fn with_footprints(
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
+    // optional-decode: callers report a hash that does not parse (`register_named` refuses with the text)
     let bytes = hex::decode(hex.trim()).ok()?;
     bytes.try_into().ok()
 }

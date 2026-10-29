@@ -20,7 +20,7 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
-use crate::component::{Bound, Component, Described, Person, Value};
+use crate::component::{Bound, Component, Described, Event, Person, Value};
 use crate::i18n::I18nManager;
 use crate::permissions::UserId;
 use crate::presence::{ParticipantKind, PresenceCtx};
@@ -51,6 +51,10 @@ pub struct RichInputProps {
     /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
     /// system gives it to every rich input; given no one, the drawer offers the room's roster.
     pub people: Vec<Person>,
+    /// Enter was pressed: what was written is done (a composer's message is sent). With it,
+    /// Enter sends rather than breaking the line; Shift+Enter still breaks it.
+    #[component(event)]
+    pub submit: Event,
 }
 
 impl Default for RichInputProps {
@@ -61,6 +65,7 @@ impl Default for RichInputProps {
             enabled: true,
             speakers: Vec::new(),
             people: Vec::new(),
+            submit: Event::None,
         }
     }
 }
@@ -391,6 +396,18 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
     RichText { blocks, embeds }
 }
 
+impl RichInput {
+    /// Fire `submit` on a submitting Enter, or, with none, let Enter break the line.
+    fn submit_with(&mut self, submit: Event) {
+        let callback: Option<Box<dyn FnMut(&str)>> = if submit.is_none() {
+            None
+        } else {
+            Some(Box::new(move |_: &str| submit.fire(None)))
+        };
+        self.line.inner_mut().set_on_submit(callback);
+    }
+}
+
 impl Described for RichInput {
     type Props = RichInputProps;
 
@@ -401,6 +418,7 @@ impl Described for RichInput {
             enabled,
             speakers,
             people,
+            submit,
         } = props;
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -413,6 +431,7 @@ impl Described for RichInput {
         input.seen = input.value.state.revision();
         input.line.inner_mut().set_disabled(!enabled);
         input.line.inner_mut().set_accessible_name(&name);
+        input.submit_with(submit);
         input
     }
 
@@ -425,6 +444,7 @@ impl Described for RichInput {
             enabled,
             speakers,
             people,
+            submit,
         } = props;
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -441,6 +461,7 @@ impl Described for RichInput {
         self.follow();
         self.line.inner_mut().set_placeholder(&placeholder);
         self.line.inner_mut().set_disabled(!enabled);
+        self.submit_with(submit);
         true
     }
 }

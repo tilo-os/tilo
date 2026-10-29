@@ -427,12 +427,24 @@ pub fn undone(doc: &AutoCommit) -> HashSet<String> {
         .collect()
 }
 
+/// A change id the document's history records as text. One that does not
+/// parse names no change; it is logged, since history then leaves it out.
+pub(crate) fn recorded_hash(text: &str) -> Option<ChangeHash> {
+    match text.parse() {
+        Ok(hash) => Some(hash),
+        Err(error) => {
+            tracing::warn!(recorded = text, %error, "history: a recorded change id does not parse");
+            None
+        }
+    }
+}
+
 /// Recorded outside inverses which have not confirmed completion. This is
 /// descriptive history data; callers must verify the original action too.
 pub fn pending_compensations(doc: &AutoCommit) -> Vec<ChangeHash> {
     doc.keys(automerge::ROOT)
         .filter_map(|key| {
-            let hash = key.strip_prefix(UNDONE_KEY)?.parse().ok()?;
+            let hash = recorded_hash(key.strip_prefix(UNDONE_KEY)?)?;
             let (value, _) = doc.get(automerge::ROOT, &key).ok()??;
             value.as_i64().filter(|attempt| *attempt != 0).map(|_| hash)
         })
@@ -1245,7 +1257,7 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
             };
             let heads = joined
                 .split(',')
-                .map(|hash| hash.parse::<ChangeHash>().ok())
+                .map(recorded_hash)
                 .collect::<Option<Vec<_>>>()?;
             Some(Checkpoint { name, heads })
         })

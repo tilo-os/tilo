@@ -157,9 +157,23 @@ fn watch(dir: &Path, app: &str) {
 fn watch(_dir: &Path, _app: &str) {}
 
 fn current_generation(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(CURRENT_FILE)).ok()?;
+    let path = dir.join(CURRENT_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        // No build was published yet.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!("tilolang: {}: {error}", path.display());
+            return None;
+        }
+    };
     let name = text.trim();
-    (!name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit())).then(|| name.to_owned())
+    if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()) {
+        Some(name.to_owned())
+    } else {
+        eprintln!("tilolang: {} names no build: {name:?}", path.display());
+        None
+    }
 }
 
 /// Read generation `name` and hand it to the windows.
