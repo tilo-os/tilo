@@ -16,7 +16,7 @@
 
 use channel_crypto::ChannelContentKeys;
 #[cfg(feature = "agents")]
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{GovernedRoom, Rooms, SystemTime};
 use crate::room_access::{self, Decision, RelayTrust, RoomOperation};

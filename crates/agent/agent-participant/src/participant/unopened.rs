@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge_isolate::{Dependencies, Rejected};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The route of a room's shared browser desktop (`tilo-browser-runtime`'s
 /// replication): its `desktop` value names each tab's record.

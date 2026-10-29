@@ -35,7 +35,7 @@ use tilo_sort::CompactSort as _;
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame};
 
-use crate::document::{ContentCipher, DocumentRoute};
+use tilo_peer_state::document_frame::{ContentCipher, DocumentRoute, KeysCipher};
 
 /// First and longest wait before a waiting device asks again. An answer
 /// takes the request's turn in the host's order and then a participant's
@@ -61,38 +61,6 @@ const MAX_UNOPENED_CHANNELS: usize = 256;
 /// governance says now; `None` while this page holds no governance of the
 /// route's room.
 pub(crate) type Vouch<'a> = dyn Fn(&DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> + 'a;
-
-/// A route's content keys as the session's cipher.
-pub(crate) struct KeysCipher(pub(crate) ChannelContentKeys);
-
-impl ContentCipher for KeysCipher {
-    fn holds_epoch(&self, epoch: u64) -> bool {
-        self.0.holds_epoch(epoch)
-    }
-
-    fn seal(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        retention: collab_types::ContentRetention,
-        cleartext: &[u8],
-    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
-        self.0
-            .seal_content(artifact, retention, cleartext)
-            .map_err(|error| error.to_string())
-    }
-
-    fn open(
-        &mut self,
-        artifact: collab_types::ArtifactId,
-        metadata: &collab_types::EncryptionMetadata,
-        payload: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        self.0
-            .open_content(artifact, metadata, payload)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-}
 
 /// A governance message this device has to sign and send: the device key
 /// is in page custody, so signing happens in the session.

@@ -58,7 +58,7 @@ impl SealingMember {
         (app, record): (&str, &str),
         key: SigningKey,
     ) -> Self {
-        let route = tilo_browser_peer::DocumentRoute {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: app.into(),
             cluster_id: room.into(),
             record: record.into(),
@@ -93,7 +93,7 @@ impl SealingMember {
     /// the governor holds no copy of yet: a new part of a chained record,
     /// which a member starts sealed.
     pub async fn part(&self, rooms: &Rooms, room: &str, record: &str) -> Self {
-        let route = tilo_browser_peer::DocumentRoute {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: self.route.0.clone(),
             cluster_id: room.into(),
             record: record.into(),

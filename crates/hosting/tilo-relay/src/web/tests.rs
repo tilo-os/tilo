@@ -1111,6 +1111,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let online = online_sessions.online_users();
     assert_eq!(online.len(), 1, "{online:?}");
     assert_eq!(online.get(&owner.user_public_key), Some(&1));
+    drop(online_sessions);
     assert_eq!(
         post(addr, "/node", Some(background), Vec::new()).await.0,
         200,
@@ -1251,7 +1252,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     let record = "@tilo:package-primary";
     let node = rooms
         .own_endpoint_keys(
-            &tilo_browser_peer::DocumentRoute {
+            &tilo_peer_state::document_frame::DocumentRoute {
                 app_id: "so.tilo.chat".into(),
                 cluster_id: room.room.clone(),
                 record: record.into(),

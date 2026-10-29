@@ -39,12 +39,16 @@ tilo-workspace-join = { path = "../workspace-join" }
 tilo-automation = { path = "../automation" }
 # A bot installed from the directory names the listing it came from.
 registry-types = { path = "../../packaging/registry-types" }
+# Document frames are sealed and opened with a route's channel content keys.
+channel-crypto = { path = "../channel-crypto" }
+# The relay workspace of a room and the retained entry id of a frame.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+thiserror.workspace = true
 
 [dev-dependencies]
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
-# Real channel content keys for the sealed compaction tests.
-channel-crypto = { path = "../channel-crypto" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

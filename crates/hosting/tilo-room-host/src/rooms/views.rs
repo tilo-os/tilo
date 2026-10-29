@@ -2,7 +2,7 @@
 use super::{GovernedRoom, Rooms, StatePeer, SystemTime};
 use tilo_actions::remote::{Caller, CallerPrincipal};
 use tilo_agent_participant::room_actions::{ViewDocument, ViewReadPolicy};
-use tilo_browser_peer::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 const MAX_VIEW_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 
@@ -166,14 +166,14 @@ fn replay_source(
 ) -> Result<Vec<u8>, String> {
     let channel =
         collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-    let mut ciphers = tilo_browser_peer::document::Ciphers::new();
+    let mut ciphers = tilo_peer_state::document_frame::Ciphers::new();
     if let Some(keys) = keys {
         ciphers.insert(
             source.clone(),
-            tilo_browser_peer::document::content_key_reader(keys),
+            tilo_peer_state::document_frame::content_key_reader(keys),
         );
     }
-    let mut reassembly = tilo_browser_peer::document::Reassembly::default();
+    let mut reassembly = tilo_peer_state::document_frame::Reassembly::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
     let mut found = false;
@@ -204,10 +204,13 @@ fn replay_source(
         if bytes > MAX_VIEW_DOCUMENT_BYTES {
             return Err("source replay exceeds read budget".into());
         }
-        let frame =
-            tilo_browser_peer::document::open_frame(&retained.body, retained.author, &mut ciphers)
-                .map_err(|error| error.to_string())?
-                .ok_or("source frame missing")?;
+        let frame = tilo_peer_state::document_frame::open_frame(
+            &retained.body,
+            retained.author,
+            &mut ciphers,
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or("source frame missing")?;
         if let Some(frame) = reassembly
             .accept(frame)
             .map_err(|error| error.to_string())?

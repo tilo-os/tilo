@@ -481,7 +481,7 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 async fn assert_page_reads_the_chat(
     watcher: &tilo_browser_peer::PeerHandle,
     workspace_id: u64,
-    route: &tilo_browser_peer::DocumentRoute,
+    route: &tilo_peer_state::document_frame::DocumentRoute,
 ) {
     use collab_types::DocumentMutation;
     use tilo_automerge::ApplyIncoming;
@@ -539,7 +539,8 @@ async fn assert_page_reads_the_chat(
 #[test]
 fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothing() {
     use collab_types::DocumentMutation;
-    use tilo_browser_peer::{DocumentRoute, PeerEvent};
+    use tilo_browser_peer::PeerEvent;
+    use tilo_peer_state::document_frame::DocumentRoute;
 
     const CHAT: &str = "so.tilo.chat";
     let scratch = tempfile::tempdir().unwrap();
@@ -710,7 +711,7 @@ fn a_persistent_room_reopens_after_hard_stops() {
             .unwrap()
             .host_cert;
         let catalogue = tilo_agent_participant::AppCatalogue::native();
-        let route = tilo_browser_peer::DocumentRoute {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: CHAT.into(),
             cluster_id: id.clone(),
             record: tilo_relay::room_bots::room_record(&catalogue, CHAT),

@@ -39,7 +39,7 @@ pub struct OutboxEntry {
     /// Relay workspace the commit targets.
     pub workspace_id: u64,
     /// Document route the commit belongs to.
-    pub route: crate::document::DocumentRoute,
+    pub route: tilo_peer_state::document_frame::DocumentRoute,
     /// Retention channel ([`neighbour_wire::retention()`]) of the body.
     pub channel: [u8; 32],
     /// Whether the body is a retained checkpoint rather than a delta.

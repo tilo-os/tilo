@@ -15,6 +15,7 @@ mod shared_desktop_tests;
 tilo_automerge_isolate::test_worker!();
 mod cached_document;
 pub mod document;
+pub mod document_frame;
 pub mod installation;
 mod postcard_sink;
 pub mod room;

@@ -41,7 +41,7 @@ use web_time::SystemTime;
 
 use crate::channels::Channels;
 use crate::custody::PeerStore;
-use crate::document::DocumentRoute;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// The owner's record in the page's [`PeerStore`]. A record the store
 /// refused leaves the owner fenced for the rest of the session, as a

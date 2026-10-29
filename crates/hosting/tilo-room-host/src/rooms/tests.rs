@@ -223,7 +223,7 @@ async fn assert_view_reader_refused(
     rooms: &Rooms,
     workspace: u64,
     caller: &tilo_actions::remote::Caller,
-    source: &tilo_browser_peer::DocumentRoute,
+    source: &tilo_peer_state::document_frame::DocumentRoute,
 ) {
     assert!(
         rooms
@@ -267,7 +267,7 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         policy.standing.policy.role_of(&policy.standing.person),
         Some(collab_types::Role::Owner)
     );
-    let source = tilo_browser_peer::DocumentRoute {
+    let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.room.clone(),
         record: "@tilo:package-primary".into(),
@@ -401,7 +401,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat", "")
         .await
         .unwrap();
-    let source = tilo_browser_peer::DocumentRoute {
+    let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.room.clone(),
         record: String::new(),
@@ -829,7 +829,7 @@ async fn assert_canonical_chat_preparation(
     assert!(!prepared.is_empty());
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
-    let source = tilo_browser_peer::DocumentRoute {
+    let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.into(),
         record: String::new(),
@@ -971,7 +971,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
         .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat", "")
         .await
         .unwrap();
-    let source = tilo_browser_peer::DocumentRoute {
+    let source = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: created.room.clone(),
         record: String::new(),

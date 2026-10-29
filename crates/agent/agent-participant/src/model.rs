@@ -21,9 +21,9 @@ use std::fmt::Write as _;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_agent::surface::{self, Catalogue, Offer};
 use tilo_agent::tools::Answer;
-use tilo_browser_peer::DocumentRoute;
 /// Trusted-host CLI credential source; sandboxed agents use the gateway capability.
 pub use tilo_model_gateway::host_backend::ApiKey;
+use tilo_peer_state::document_frame::DocumentRoute;
 
 use crate::planner::{
     NoReads, Obligations, PlanContext, Planner, Reads, Role, Step, StepAction, Wait,

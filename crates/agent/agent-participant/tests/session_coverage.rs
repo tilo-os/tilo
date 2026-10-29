@@ -48,7 +48,8 @@ use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
     StepAction, record_provider,
 };
-use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
+use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
@@ -89,7 +90,7 @@ async fn ask(
     agent: &mut AgentParticipant,
     agent_key: [u8; 32],
     message: RemoteActionMessage,
-    documents: &mut Vec<tilo_browser_peer::OpenedDocument>,
+    documents: &mut Vec<tilo_peer_state::document_frame::OpenedDocument>,
 ) -> RemoteActionMessage {
     browser
         .send_remote_action(

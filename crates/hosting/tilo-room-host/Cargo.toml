@@ -16,7 +16,7 @@ path = "src/lib.rs"
 test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: rooms keep apps' confined replicas and hand their
 # records' channel keys to pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:ui", "dep:chat"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: the live plane's voice relay.
 web = ["tilo-relay-shell/web", "dep:tilo-moq"]
 
@@ -71,7 +71,6 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 tilo-automation = { path = "../../collab/automation" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
-tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
 
 [dev-dependencies]
 # The store's continuity tests count each thread's heap.

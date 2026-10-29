@@ -377,7 +377,7 @@ impl RoomRecordsLink for RelayRecordsLink {
         &self,
         workspace: u64,
         caller: &tilo_actions::remote::Caller,
-        source: &tilo_browser_peer::DocumentRoute,
+        source: &tilo_peer_state::document_frame::DocumentRoute,
     ) -> Result<tilo_agent_participant::room_actions::ViewDocument, String> {
         self.member.runtime.block_on(
             self.rooms
@@ -389,7 +389,7 @@ impl RoomRecordsLink for RelayRecordsLink {
 
     fn host_keys(
         &self,
-        route: &tilo_browser_peer::DocumentRoute,
+        route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
     ) -> Option<Result<tilo_browser_peer::ChannelContentKeys, String>> {
         self.member

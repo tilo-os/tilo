@@ -71,10 +71,9 @@ use tilo_actions::remote::{
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
 };
-use tilo_browser_peer::{
-    DocumentRoute, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
-};
+use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_user_identity::RevocationList;
 
 /// How long a comment the host files for someone may take to be saved
@@ -2200,8 +2199,8 @@ fn exact_view_query(
 mod tests {
     use super::{GaveUp, Needs, sealed_for};
     use std::collections::{BTreeMap, HashSet};
-    use tilo_browser_peer::DocumentRoute;
     use tilo_browser_peer::session::RouteStatus;
+    use tilo_peer_state::document_frame::DocumentRoute;
 
     const ROOM: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const OTHER_ROOM: &str = "0b7f1d2e-5a6c-4d3b-8e9f-a0b1c2d3e4f5";
