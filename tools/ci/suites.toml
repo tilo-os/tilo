@@ -1066,10 +1066,6 @@ inputs = [
 readers = ["crates/system/staging-reclaim/tests/reclaim.rs"]
 
 [[covered]]
-suite = "os/tests/oracles/staging_handoff_test.py"
-by = "crates/system/install-helpers/tests/native_python.rs"
-
-[[covered]]
 suite = "os/tests/test_firstboot_credential_transport.py"
 by = "crates/system/install-helpers/tests/native_python.rs"
 

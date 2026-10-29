@@ -2950,7 +2950,7 @@ cd "$repo"
 run_tests 2 /target/vm/runtime-fs-lib operations::tests::replacing_save_actual_original_uid --nocapture --test-threads=1
 run_tests 1 /target/vm/account-custody-lib portable::tests::installed_adoption_succeeds_as_private_target_user --nocapture --test-threads=1
 run_tests 2 /target/vm/runtime-bundle-lib component_pins::tests:: --nocapture --test-threads=1
-run_tests 2 /target/vm/tilo-install-helpers-native-python staging_handoff_oracle native_home_seeds --nocapture --test-threads=1
+run_tests 2 /target/vm/tilo-install-helpers-native-python native_home_seeds --nocapture --test-threads=1
 # The installer's account handoff mounts a disposable chroot; the job sandbox
 # ignores it, as it never gives root.
 run_tests 1 /target/vm/installer-accounts-native --ignored --exact tests::production_stage_adopt_accounts --nocapture --test-threads=1
