@@ -776,6 +776,7 @@ impl RichTextLine {
                     .bold(segment.bold || segment.mention.is_some())
                     .italic(segment.italic)
                     .color(color)
+                    .pill(mention_band.is_some())
                     .background(mention_band);
                 span.kind = mark_kind(&segment);
                 // Prose draws its workspace emoji; code keeps `:name:`.
@@ -927,6 +928,7 @@ impl RichTextLine {
                 if let Some(id) = segment.mention.as_deref() {
                     let (ink, band) = self.mention_rgb(id);
                     span.color = ink;
+                    span.pill = band.is_some();
                     span.background = band;
                 }
                 if segment.code {

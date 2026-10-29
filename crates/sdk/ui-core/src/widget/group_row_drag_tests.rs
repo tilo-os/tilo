@@ -6,8 +6,7 @@ use super::*;
 
 #[test]
 fn moving_a_whole_window_to_an_edge_pans_the_strip_and_keeps_it_under_the_pointer() {
-    let (mut row, taffy, root) =
-        make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+    let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
     row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
     row.set_content_w_for_test(row.content_width());
     let grab = group_grab_point(&row, 0);
