@@ -761,6 +761,36 @@ pub(crate) trait HostCore {
         })
     }
 
+    /// Perform `verb` on the semantic target `target` the widget laid out at
+    /// `owner` publishes: a `tilo.key-action:` target names the element by
+    /// its key path, any other is routed to the child it names. Whether the
+    /// widget took it.
+    fn perform_semantic_target(
+        &mut self,
+        owner: NodeId,
+        target: &str,
+        verb: &crate::a11y::Action,
+    ) -> Result<bool, String> {
+        let key_path = target
+            .strip_prefix("tilo.key-action:")
+            .and_then(|target| target.rsplit_once(':'))
+            .map(|(_, path)| {
+                path.split('/')
+                    .map(str::parse::<u64>)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
+        self.dispatch_node(owner, |widget, doc, root| {
+            let edits = &mut crate::widget::Edits::lend(doc);
+            match &key_path {
+                Some(key_path) => widget.perform_action(verb, key_path, edits, root),
+                None => crate::a11y_child_route::perform(widget, target, verb, edits, root),
+            }
+        })
+        .map_err(|error| format!("component dispatch refused: {error:?}"))
+    }
+
     /// Where an activation the widget left to the pointer presses: on the
     /// routed child where its painting ancestor stands it, else on the
     /// synthetic element `ordinal_path` names, else on the widget.

@@ -1769,36 +1769,7 @@ impl App {
             ) else {
                 return Ok(false);
             };
-            let keyed_path = semantic_target
-                .strip_prefix("tilo.key-action:")
-                .and_then(|target| target.rsplit_once(':'))
-                .map(|(_, path)| {
-                    path.split('/')
-                        .map(str::parse::<u64>)
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()
-                .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
-            let handled = self
-                .dispatch_node(taffy_id, |widget, doc, root| {
-                    if let Some(key_path) = keyed_path {
-                        widget.perform_action(
-                            &verb,
-                            &key_path,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
-                    } else {
-                        crate::a11y_child_route::perform(
-                            widget,
-                            &semantic_target,
-                            &verb,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
-                    }
-                })
-                .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+            let handled = self.perform_semantic_target(taffy_id, &semantic_target, &verb)?;
             if handled {
                 if matches!(verb, crate::a11y::Action::Focus) {
                     self.set_focused_node(Some(taffy_id));
