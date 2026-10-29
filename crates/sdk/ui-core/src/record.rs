@@ -2470,6 +2470,16 @@ impl RecordStore {
                 }
                 return set.wire_route(&checkout.id);
             }
+            // The room's record this device holds, still decoding off the
+            // frame (`begin_opening`): its route is the set's own. Nothing
+            // reads or writes it before it is taken in, and taking it in
+            // checks its identity, as opening it does.
+            if let Some(opening) = set.opening.get(&checkout.id) {
+                if opening.checkout != *checkout {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                return set.wire_route(&checkout.id);
+            }
             if set
                 .open
                 .get(&checkout.id)
@@ -3461,6 +3471,14 @@ impl RecordStore {
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        // The room's record may still be decoding off the frame when its
+        // route's committed history arrives: take it in first, as every open
+        // of it does, so the history lands on it.
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy.to_string())?
+            .take_in_opening(&checkout.id, true)
+            .map_err(|error| error.to_string())?;
         let identity = self.replica_identity_stamp(checkout)?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();

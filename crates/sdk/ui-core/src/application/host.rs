@@ -1470,6 +1470,86 @@ mod native_process_tests {
         assert!(prepared.context.record().id.is_package_primary());
     }
 
+    /// A window that shows before its room's record (a tilolang app) opens
+    /// again in a workspace it opened before, while the workspace joins: the
+    /// record this device holds opens off the frame, the component binds to
+    /// the room's route, and the record is taken in once it is decoded. Every
+    /// start after the first goes this way.
+    #[test]
+    #[cfg(all(unix, feature = "broker-transport"))]
+    fn a_window_shown_before_its_record_reopens_in_its_workspace_while_it_joins() {
+        use crate::application_test_support as probe;
+        use crate::collaboration::native_initial::NativeConstruction;
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-00000000000d";
+        let launch = || {
+            NativeProcessHost::open_with(
+                &definition(probe::APP),
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("53".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let joining = || {
+            let scope = crate::wake::WakeScope::new();
+            let (manager, broker) = {
+                let _entry = scope.enter();
+                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
+                    "probe",
+                    automerge::AutoCommit::new().save(),
+                    runtime_collab::RoomStatus::Ready,
+                )
+            };
+            (
+                NativeConstruction::enter_component(manager, scope).unwrap(),
+                broker,
+            )
+        };
+        let mut shows_first = definition(probe::APP);
+        shows_first.room_record = true;
+        shows_first.opens_before_record = true;
+
+        // The first start makes the room's record.
+        {
+            let mut host = launch();
+            let mut created = host
+                .prepare_launch(&shows_first, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(created.target, LaunchTarget::PrimaryNew));
+            created.context.initialize_new_record(|_| Ok(())).unwrap();
+        }
+        // Each later start, as the session restarts on the same state.
+        for start in 0..2 {
+            let mut host = launch();
+            let (construction, _broker) = joining();
+            let prepared = host
+                .prepare_launch(&shows_first, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
+            let opening = prepared
+                .context
+                .record_opening()
+                .expect("the record this device holds opens off the frame");
+            construction
+                .bind_component(&prepared.context.callback_binding())
+                .unwrap_or_else(|error| panic!("start {start}: {error}"));
+            assert!(opening.take_in(true).unwrap(), "start {start}");
+            assert!(
+                prepared
+                    .context
+                    .records()
+                    .route(prepared.context.record())
+                    .is_ok()
+            );
+        }
+    }
+
     #[test]
     fn room_record_windows_share_one_record_and_see_the_per_window_ones() {
         use crate::application_test_support as probe;

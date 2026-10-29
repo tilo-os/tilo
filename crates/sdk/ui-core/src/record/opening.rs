@@ -23,7 +23,7 @@ type Decoded = Result<app_state::DecodedBytes, app_state::StoreError>;
 
 /// A record whose bytes are being decoded on a thread of their own.
 pub(super) struct Opening {
-    checkout: RecordCheckout,
+    pub(super) checkout: RecordCheckout,
     owner: Rc<app_state::DocOwner>,
     decoded: mpsc::Receiver<Decoded>,
     /// The windows to wake when the decoding is done.
