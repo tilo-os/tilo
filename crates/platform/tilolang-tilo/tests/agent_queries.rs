@@ -66,7 +66,7 @@ fn world() -> World {
     ]);
     {
         let todo = apps.replica(TODO);
-        todo.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+        todo.host.set_clock(tilolang_tilo::host::system_time);
     }
     for app in [
         "so.tilo.lang.notes",
@@ -85,7 +85,8 @@ fn world() -> World {
     }
     let apps = Rc::new(apps);
     let task = apps.task();
-    task.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    // The task reads times as they are: what an app wrote just now was changed within any recent window.
+    task.set_clock(tilolang_tilo::host::system_time);
     World { task }
 }
 
