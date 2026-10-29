@@ -28,6 +28,9 @@ use vello::{FineDamageRect, Scene, wgpu};
 
 use crate::damage::{area, damage_union};
 
+mod present;
+pub use present::{LayerPresenter, LayerRaster, QueuedRaster};
+
 /// A strip drawn in canvas coordinates. The presenter shows the strips
 /// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

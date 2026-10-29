@@ -704,11 +704,9 @@ pub struct RetainedGpuTarget {
     /// available when that submission overflows and is followed by a dense recovery, so
     /// diagnostics describe the submitted sparse work rather than guessing from capability.
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
-    /// The layers strip pans are composited from, allocated by the first
-    /// frame that comes as layers ([`Self::render_layers_until`]).
-    strip_layers: Option<ui::strip_layers::StripLayers>,
-    /// The work the latest layered frame did.
-    last_layer_work: Option<ui::strip_layers::LayerWork>,
+    /// The layers strip pans are composited from
+    /// ([`Self::render_layers_until`]).
+    layers: ui::strip_layers::LayerPresenter,
     /// The scroll copies of the frame of the revision named, for the next
     /// render of it ([`Self::stage_scroll_copies`]).
     staged_copies: Option<(u64, crate::shell::frame::ScrollCopies)>,
