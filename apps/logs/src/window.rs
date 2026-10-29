@@ -1,15 +1,12 @@
-//! `LogsApp` — the root widget for the Logs viewer.
+//! The Logs window: one [`NavShell`] whose content is the journal table
+//! with its filters (`JournalPane`) and whose inspector shows every field of
+//! the selected entry. The window bar holds the journal's commands: refresh,
+//! live tail and export.
 //!
-//! A graphical systemd-journal viewer, composed from the toolkit: one
-//! [`NavShell`] whose content is the journal table with its filters
-//! (`JournalPane`) and whose inspector shows every field of the selected
-//! entry. The content header holds the journal's commands: refresh, live
-//! tail and export.
-//!
-//! `LogsApp` owns the journal (an external, read-only render cache) and the
-//! shared view state: filters and the selected entry sync as document
-//! actions on [`crate::resource::Logs`]. Live tail is a local Effect that
-//! controls this process's journal poller.
+//! The view owns the [`Journal`] (an external, read-only render cache read
+//! off the UI thread) and answers its effects; the [`LogsWindow`] lays it
+//! out. The filters sync as document edits on [`crate::resource::Logs`];
+//! the selected entry and live tail are this window's own.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,17 +23,17 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::Key;
 
 use ui::framework::{
-    Dispatcher, EffectCx, EffectStatus, Effected, LiveRow, RunMode, Submit, SurfaceCx,
+    Actions, Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, LiveRow, Publishes,
+    RunMode, Submit, ViewCx,
 };
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::ControlInvocation;
 use ui::tilo_resource::Atom;
 use ui::tokens::Spacing;
-use ui::widget::{InspectorPlacement, NavShell, TaffyTreeExt, Widget};
+use ui::widget::{Element, InspectorPlacement, NavShell, TaffyTreeExt, Widget};
 
 use crate::actions::{self, JournalEffect};
 use crate::journal::{JournalLoadError, Page};
@@ -100,12 +97,15 @@ enum Inspected {
     Entry(String),
 }
 
+/// The journal this window shows, shared by the window and the view's
+/// effect handler: what was read, the filter the document holds, and the
+/// selection and live tail that are this window's own.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent flag (live tail, loading, live access, \
-              inspector presence, a capture's reveal, layout dirtiness)"
+    reason = "each bool is an independent flag (live tail, loading, reading, \
+              exporting, a reveal asked for, dirtiness)"
 )]
-pub struct LogsApp {
+pub(crate) struct Journal {
     /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
     /// Distinct units present, sorted (for the unit filter).
@@ -141,57 +141,34 @@ pub struct LogsApp {
     /// live region. It never includes a chosen path or log contents.
     export_status: Option<String>,
 
-    rect: Rect,
-    shell: NavShell,
     shared: Shared,
-    /// The spacing the inspector was laid out with.
-    spacing: Spacing,
     /// The fingerprints of the state and the rows last handed to the views.
     published: Option<u64>,
     published_rows: Option<u64>,
-    inspected: Inspected,
-    has_inspector: bool,
+    /// The selection changed since the window last showed it.
+    republished: bool,
+    /// The entries changed: the inspector shows the selected one again.
+    inspector_stale: bool,
+    /// Show the selected entry where the inspector is a closed sheet: it
+    /// was chosen.
+    reveal: bool,
     /// Open the inspector drawer once laid out (`--detail` captures).
     reveal_detail: bool,
-    layout_dirty: bool,
-    /// Pointer/keyboard controls publish inert resource addresses; the host
-    /// re-resolves current availability and permissions before effects run.
-    pending_control_invocation: Option<ControlInvocation>,
 
-    /// Whether the journal controls are offered: everywhere but a past
-    /// version.
-    allow_live: bool,
     /// Whether this window reads the journal: a live window, never a
     /// capture or a past version.
     reads: bool,
     last_poll: Instant,
     /// Wakes the window when a read finishes.
     waker: Option<ui::WakeHandle>,
-
-    /// Where filter edits and journal effects go.
-    dispatcher: Option<Dispatcher<Logs>>,
-    chrome_actions: Option<ui::framework::Actions<Logs>>,
     dirty: bool,
 }
 
-impl Default for LogsApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub(crate) type JournalRef = Rc<RefCell<Journal>>;
 
-impl LogsApp {
-    /// `allow_live` is true only for a viewer that may read the journal;
-    /// it gates the refresh, live tail and export Effects.
-    pub fn with_entries(entries: Vec<LogEntry>, allow_live: bool) -> Self {
-        let shared: Shared = Rc::new(RefCell::new(Bridge::default()));
-        let shell = NavShell::new()
-            .content_kind(ui::widget::ContentKind::List)
-            .with_id("logs.shell")
-            .content(Box::new(JournalPane::new(Rc::clone(&shared))))
-            .with_window_toolbar()
-            .inspector(crate::view::entry_detail(None, &Spacing::default()));
-        let mut app = Self {
+impl Journal {
+    fn with_entries(entries: Vec<LogEntry>) -> Self {
+        let mut journal = Self {
             entries,
             units: Vec::new(),
             boots: Vec::new(),
@@ -206,36 +183,43 @@ impl LogsApp {
             tail_cursor: None,
             exporting: false,
             export_status: None,
-            rect: Rect::ZERO,
-            shell,
-            shared,
-            spacing: Spacing::default(),
+            shared: Rc::new(RefCell::new(Bridge::default())),
             published: None,
             published_rows: None,
-            inspected: Inspected::Stale,
-            has_inspector: true,
+            republished: false,
+            inspector_stale: false,
+            reveal: false,
             reveal_detail: false,
-            layout_dirty: true,
-            pending_control_invocation: None,
-            allow_live,
-            last_poll: ui::time::now(),
             reads: false,
+            last_poll: ui::time::now(),
             waker: None,
-            dispatcher: None,
-            chrome_actions: None,
             dirty: true,
         };
-        app.rebuild_facets();
-        app.recompute_filtered();
-        app.publish();
-        app
+        journal.rebuild_facets();
+        journal.recompute_filtered();
+        journal.publish();
+        journal
     }
 
-    /// Show the selected entry for a capture: on a narrow window the
-    /// inspector is a drawer, which this opens once the window is laid out.
-    pub fn shots_show_detail(&mut self) {
-        self.reveal_detail = true;
-        self.layout_dirty = true;
+    /// The journal a window in `mode` shows: a live window reads this
+    /// device's, a capture shows its fixture's, a past version none.
+    fn for_window(cx: &ViewCx<Logs>) -> Self {
+        let mut journal = Self::with_entries(Vec::new());
+        match cx.mode() {
+            RunMode::Live => {
+                journal.reads = true;
+                journal.waker = Some(cx.waker());
+                journal.start_read();
+            }
+            RunMode::Capture => match cx.fixture::<JournalFixture>().as_deref() {
+                Some(JournalFixture::Entries(entries)) => journal.show_entries(entries.clone()),
+                Some(JournalFixture::Failed(error)) => journal.source_error = Some(*error),
+                Some(JournalFixture::Loading) => journal.source_loading = true,
+                None => {}
+            },
+            RunMode::Past => {}
+        }
+        journal
     }
 
     /// Recompute the distinct-unit and distinct-boot lists from entries.
@@ -316,6 +300,12 @@ impl LogsApp {
         self.filtered.iter().position(|&i| i == abs)
     }
 
+    /// The selected entry, as the inspector shows it.
+    fn selected(&self) -> Option<&LogEntry> {
+        self.effective_selected()
+            .and_then(|abs| self.entries.get(abs))
+    }
+
     /// What the journal shows in place of rows, if anything.
     fn placeholder(&self) -> Option<Placeholder> {
         if self.entries.is_empty() {
@@ -392,155 +382,15 @@ impl LogsApp {
             bridge.total = self.entries.len();
             bridge.follow = self.live_tail;
         }
-        self.show_inspector(selected);
-        self.layout_dirty = true;
+        self.republished = true;
     }
 
-    /// The inspector follows the selection; when the journal lists nothing
-    /// it collapses, leaving the one empty state.
-    fn show_inspector(&mut self, selected: Option<usize>) {
-        let wanted = !self.filtered.is_empty();
-        if wanted != self.has_inspector {
-            self.has_inspector = wanted;
-            self.inspected = Inspected::Stale;
-            if !wanted {
-                self.shell.set_inspector(None);
-                return;
-            }
-        }
-        if !wanted {
-            return;
-        }
-        let entry = selected.and_then(|abs| self.entries.get(abs));
-        let shows = entry.map_or(Inspected::Nothing, |e| {
-            Inspected::Entry(actions::entry_resource_id(e))
-        });
-        if self.inspected == shows {
-            return;
-        }
-        self.inspected = shows;
-        self.shell
-            .set_inspector(Some(crate::view::entry_detail(entry, &self.spacing)));
-        let title = entry.map_or_else(String::new, |e| e.unit.clone());
-        self.shell.set_inspector_title(title);
-    }
-
-    /// Turn the views' requests into document actions.
-    fn apply_requests(&self) {
-        let requests = self.shared.borrow_mut().take_requests();
-        for request in requests {
-            match request {
-                Request::Search(value) => self.edit(Logs::paths().search.replace(value)),
-                Request::Unit(value) => self.edit(Logs::paths().unit.set(Atom(value))),
-                Request::Boot(value) => self.edit(Logs::paths().boot.set(Atom(value))),
-                Request::Priority(value) => {
-                    self.edit(Logs::paths().severity.set(Priority::from_level(value)));
-                }
-                Request::ClearFilters => self.edit(Logs::CLEAR_FILTERS.with(())),
-                Request::Select(entry_id) => self.request(&JournalEffect::SelectEntry { entry_id }),
-            }
-        }
-    }
-
-    /// Open the inspector where it is a closed sheet, so choosing an entry
-    /// on a narrow window shows it.
-    fn reveal_inspector(&mut self) {
-        if self.shell.geometry().inspector == InspectorPlacement::Sheet
-            && !self.shell.is_inspector_open()
-        {
-            self.shell.toggle_inspector();
-        }
-    }
-
-    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<Logs>) {
-        self.dispatcher = Some(cx.dispatcher());
-        self.chrome_actions = Some(cx.actions());
-        self.shared.borrow_mut().refresh = cx.actions().effect(&JournalEffect::Refresh);
-        match cx.mode() {
-            RunMode::Live => {
-                self.allow_live = true;
-                self.reads = true;
-                self.waker = Some(cx.waker());
-                self.start_read();
-            }
-            RunMode::Capture => {
-                self.allow_live = true;
-                match cx.fixture::<JournalFixture>().as_deref() {
-                    Some(JournalFixture::Entries(entries)) => self.show_entries(entries.clone()),
-                    Some(JournalFixture::Failed(error)) => self.source_error = Some(*error),
-                    Some(JournalFixture::Loading) => self.source_loading = true,
-                    None => {}
-                }
-            }
-            RunMode::Past => {}
-        }
-    }
-
-    /// Show the presented filter.
-    pub(crate) fn adopt_filter(&mut self, filter: Filter) {
+    /// Show the filter the document holds.
+    fn adopt_filter(&mut self, filter: Filter) {
         self.filter = filter;
         self.recompute_filtered();
         self.publish();
         self.dirty = true;
-    }
-
-    /// Submit a filter edit; the document presents its result.
-    fn edit(&self, edit: impl Submit<Logs>) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.submit(edit);
-        }
-    }
-
-    /// Invoke a journal effect through the same door as the palette and
-    /// agents, which checks its availability first.
-    /// Run what the person did in the window's bar: the shell's own slots,
-    /// then the journal's commands.
-    fn take_window_toolbar_events(&mut self) {
-        for event in ui::window_toolbar::take_events() {
-            if self.shell.window_toolbar_event(&event) {
-                continue;
-            }
-            if let ToolbarEvent::Action { id } = &event
-                && let Some(effect) = window_effect(id)
-                && self.can(&effect)
-            {
-                self.request(&effect);
-            }
-        }
-    }
-
-    /// Whether this window may run `effect` now.
-    fn can(&self, effect: &JournalEffect) -> bool {
-        self.chrome_actions
-            .as_ref()
-            .is_some_and(|actions| actions.effect(effect).is_some())
-    }
-
-    /// Declare the window bar's slots: the shell's own (the entry's
-    /// details) and the journal's commands.
-    fn declare_window_toolbar(&self) {
-        let mut toolbar = self.shell.window_toolbar();
-        let actions = WINDOW_ACTIONS.into_iter().map(|(id, icon, name)| {
-            let enabled = window_effect(id).is_some_and(|effect| self.can(&effect));
-            let action = ToolbarAction::new(id, icon.name(), name)
-                .enabled(enabled)
-                .on(id == "logs.live-tail" && self.live_tail);
-            // Exporting is occasional: the bar's menu, which leaves the
-            // row to Refresh, Live tail and the details' toggle.
-            if id == "logs.export" {
-                action.in_menu()
-            } else {
-                action
-            }
-        });
-        NavShell::push_window_actions(&mut toolbar, actions);
-        ui::window_toolbar::declare(Some(toolbar));
-    }
-
-    fn request(&self, effect: &JournalEffect) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect(effect);
-        }
     }
 
     /// Read the journal off the UI thread, unless a read is in flight or
@@ -595,67 +445,24 @@ impl LogsApp {
         }
     }
 
-    /// Answer a journal effect, from a control, the palette or an agent.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: JournalEffect,
-        cx: &mut EffectCx<Logs, Self>,
-    ) -> Result<Effected, String> {
-        self.dirty = true;
-        match effect {
-            JournalEffect::Refresh => {
-                self.source_loading = true;
-                Ok(cx.thread(
-                    |_| crate::journal::load_live(JOURNAL_LIMIT).map(Read::Whole),
-                    |app: &mut Self, read: JournalRead, _| {
-                        let failed = read.as_ref().err().copied();
-                        app.show_read(read);
-                        match failed {
-                            None => Ok(Effected::value(app.entries.len())),
-                            Some(error) => Err(error.message().to_owned()),
-                        }
-                    },
-                ))
-            }
-            JournalEffect::SetLiveTail { enabled } => {
-                self.live_tail = enabled.unwrap_or(!self.live_tail);
-                self.last_poll = force_immediate_poll_at();
-                Ok(Effected::done())
-            }
-            JournalEffect::ExportFilteredJsonl => {
-                let entries = self.export_snapshot()?;
-                let picked = export_request().send();
-                self.exporting = true;
-                Ok(cx.thread(
-                    move |_| export_picked(&picked, &entries),
-                    |app: &mut Self, status: Option<String>, _| {
-                        app.exporting = false;
-                        app.export_status.clone_from(&status);
-                        app.dirty = true;
-                        Ok(Effected::value(status))
-                    },
-                ))
-            }
-            JournalEffect::SelectEntry { entry_id } => {
-                let abs = self
-                    .entries
-                    .iter()
-                    .position(|entry| actions::entry_resource_id(entry) == entry_id)
-                    .ok_or_else(|| "this device's journal has no such entry".to_owned())?;
-                self.sel_raw = i64::try_from(abs).unwrap_or(i64::MAX);
-                self.selected_entry = Some(entry_id);
-                self.publish();
-                self.reveal_inspector();
-                // Showing an entry is navigation: reveal the detail slab on a
-                // narrow window, as a pointer selection does.
-
-                Ok(Effected::done())
-            }
+    /// Read again when live tail is due.
+    fn poll(&mut self) {
+        self.drain_read();
+        if self.reads && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
+            self.last_poll = ui::time::now();
+            self.start_read();
         }
     }
 
+    /// When live tail reads next: a deadline, not a frame pump.
+    fn next_poll(&self) -> Option<Instant> {
+        (self.reads && self.live_tail && self.reading.is_none())
+            .then(|| self.last_poll.checked_add(POLL_INTERVAL))
+            .flatten()
+    }
+
     /// How the journal effects differ from their declarations now.
-    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         if self.live_tail {
             statuses.push(EffectStatus::labelled(
@@ -680,12 +487,12 @@ impl LogsApp {
     }
 
     /// The entries the filter shows, as live rows.
-    pub(crate) fn entry_rows(&self) -> Vec<LiveRow> {
+    fn entry_rows(&self) -> Vec<LiveRow> {
         actions::entry_rows(&self.entries, &self.filter)
     }
 
     /// Any entry of this device's journal, by id.
-    pub(crate) fn entry_row(&self, id: &str) -> Option<LiveRow> {
+    fn entry_row(&self, id: &str) -> Option<LiveRow> {
         self.entries
             .iter()
             .find(|entry| actions::entry_resource_id(entry) == id)
@@ -710,213 +517,31 @@ impl LogsApp {
         Ok(entries)
     }
 
-    /// Queue a root effect through the published resource tree, so
-    /// accessibility, agents, history and policy see the same effect a
-    /// keyboard shortcut starts.
-    fn request_journal_operation(&self, action: &str) {
-        let effect = match action {
-            "refresh" => JournalEffect::Refresh,
-            "set-live-tail" => JournalEffect::SetLiveTail { enabled: None },
-            "export-filtered-jsonl" => JournalEffect::ExportFilteredJsonl,
-            _ => return,
-        };
-        self.request(&effect);
-    }
-}
-
-/// The shell's node: the one child of the app's node.
-fn shell_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
-    taffy.children(node).ok()?.first().copied()
-}
-
-fn export_request() -> PickRequest {
-    PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
-        .thread_name("logs-portal-export")
-        .filter(
-            FileFilter::new("JSON Lines")
-                .mimetype("application/x-ndjson")
-                .glob("*.jsonl"),
-        )
-}
-fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String> {
-    match picked.recv() {
-        Ok(PortalOutcome::Opened(path)) => {
-            let refs = entries.iter().collect::<Vec<_>>();
-            Some(match crate::journal::export_json_lines(&refs, &path) {
-                Ok(()) => format!("Exported {} log entries.", entries.len()),
-                Err(_) => "Export failed.".to_owned(),
-            })
-        }
-        Ok(PortalOutcome::Cancelled) | Err(_) => None,
-        Ok(PortalOutcome::Failed(_)) => Some("Export unavailable.".to_owned()),
-    }
-}
-impl Widget for LogsApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.drain_read();
-        self.take_window_toolbar_events();
-        if self.reads && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
-            self.last_poll = ui::time::now();
-            self.start_read();
-        }
+    /// Show the entry `entry_id` names, chosen in the table, by the palette
+    /// or by an agent.
+    fn select(&mut self, entry_id: String) -> Result<(), String> {
+        let abs = self
+            .entries
+            .iter()
+            .position(|entry| actions::entry_resource_id(entry) == entry_id)
+            .ok_or_else(|| "this device's journal has no such entry".to_owned())?;
+        self.sel_raw = i64::try_from(abs).unwrap_or(i64::MAX);
+        self.selected_entry = Some(entry_id);
         self.publish();
-        self.declare_window_toolbar();
-        self.shell.sync(state, path);
+        // Showing an entry is navigation: reveal the detail slab on a
+        // narrow window, as a pointer selection does.
+        self.reveal = true;
+        Ok(())
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.layout_dirty = false;
-        if self.spacing != theme.tokens.spacing {
-            // The inspector's content lines up with its property list in
-            // this theme's spacing.
-            self.spacing = theme.tokens.spacing;
-            self.inspected = Inspected::Stale;
-            self.show_inspector(self.effective_selected());
-        }
-        let shell = self.shell.build_layout(taffy, theme, node_map);
-        let node = taffy.fill_node(shell);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let Some(shell) = shell_node(taffy, node) {
-            self.shell
-                .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
-        }
-        if self.reveal_detail && self.shell.geometry().inspector != InspectorPlacement::None {
-            self.reveal_detail = false;
-            self.reveal_inspector();
-            self.shell.snap();
-            self.layout_dirty = true;
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
-        if let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == ElementState::Pressed
-            && ctx.modifiers.state().control_key()
-            && matches!(&key.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
-        {
-            if self.allow_live {
-                self.request_journal_operation("set-live-tail");
-            }
-            *ctx.handled = true;
-            return;
-        }
-        if let Some(shell) = shell_node(ctx.taffy, ctx.node_id) {
-            self.shell
-                .handle_event(event, &mut ctx.reborrow(ctx.path, shell));
-        }
-        self.apply_requests();
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.shell]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(&self.shell);
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.shell]
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.shell.wants_pointer_capture()
-    }
-
-    fn name(&self) -> &'static str {
-        "LogsApp"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("logs_app")
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let status = self.export_status.as_ref()?;
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
-                .with_name(status)
-                .with_live(ui::a11y::Politeness::Polite)
-                .with_hashed_key("logs.export-status"),
-        )
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty || self.shell.is_layout_dirty()
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        self.layout_dirty || self.shell.layout_needs_measure()
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        (self.reads && self.live_tail) || self.reading.is_some()
-    }
-
-    /// Live tail reads the journal once a `POLL_INTERVAL`: a deadline,
-    /// not a frame pump. A read and an export wake the app when they finish.
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        let poll = (self.reads && self.live_tail && self.reading.is_none())
-            .then(|| self.last_poll.checked_add(POLL_INTERVAL))
-            .flatten();
-        poll.into_iter()
-            .chain(self.shell.next_wake_deadline())
-            .min()
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.shell.needs_animation_frame()
-    }
-}
-
-impl ui::widget::controls::ActionControls for LogsApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.pending_control_invocation
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.shell))
-    }
-}
-
-impl LogsApp {
-    pub fn new() -> Self {
-        Self::with_entries(Vec::new(), false)
-    }
     fn show_entries(&mut self, entries: Vec<LogEntry>) {
         if self.entries != entries {
             // Equal counts and endpoints do not imply equal journal contents.
-            // Invalidate the inspector too: metadata can change without changing
-            // the entry's resource id.
+            // Show the inspector again too: metadata can change without
+            // changing the entry's resource id.
             self.published = None;
             self.published_rows = None;
-            self.inspected = Inspected::Stale;
+            self.inspector_stale = true;
         }
         self.entries = entries;
         if let Some(id) = &self.selected_entry {
@@ -981,11 +606,493 @@ impl LogsApp {
         entries.drain(..excess);
         self.show_entries(entries);
     }
+}
 
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        if scenario == Some("detail") {
-            self.shots_show_detail();
+/// The Logs window: the journal and its filters in a [`NavShell`], the
+/// selected entry in its inspector, the journal's commands in the window
+/// bar.
+pub(crate) fn window(cx: &ViewCx<Logs>) -> Element {
+    let journal: JournalRef = Rc::new(RefCell::new(Journal::for_window(cx)));
+    let actions = cx.actions();
+    journal.borrow().shared.borrow_mut().refresh = actions.effect(&JournalEffect::Refresh);
+    answer_effects(cx, &journal);
+    {
+        let journal = Rc::clone(&journal);
+        cx.on_stage(move |scenario| {
+            if scenario == Some("detail") {
+                journal.borrow_mut().reveal_detail = true;
+            }
+        });
+    }
+    let (rows, row) = (Rc::clone(&journal), Rc::clone(&journal));
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || rows.borrow().entry_rows())
+            .live_row(move |id| row.borrow().entry_row(id)),
+        Box::new(LogsWindow::new(
+            journal,
+            cx.live().clone(),
+            cx.dispatcher(),
+            actions,
+            cx.mode() != RunMode::Past,
+        )),
+    )
+}
+
+/// Answer the journal's effects, whoever asks: the window bar, the table,
+/// the palette, an agent.
+fn answer_effects(cx: &ViewCx<Logs>, journal: &JournalRef) {
+    let (answer, status) = (Rc::clone(journal), Rc::clone(journal));
+    cx.effects(move |effect: JournalEffect, cx| answer_effect(&answer, effect, cx))
+        .status(move || status.borrow().effect_statuses());
+}
+
+fn answer_effect(
+    journal: &JournalRef,
+    effect: JournalEffect,
+    cx: &mut EffectCx<Logs>,
+) -> EffectAnswer {
+    let mut shown = journal.borrow_mut();
+    shown.dirty = true;
+    match effect {
+        JournalEffect::Refresh => {
+            shown.source_loading = true;
+            let journal = Rc::clone(journal);
+            Ok(cx.thread(
+                |_| crate::journal::load_live(JOURNAL_LIMIT).map(Read::Whole),
+                move |(), read: JournalRead, _| {
+                    let failed = read.as_ref().err().copied();
+                    let mut shown = journal.borrow_mut();
+                    shown.show_read(read);
+                    match failed {
+                        None => Ok(Effected::value(shown.entries.len())),
+                        Some(error) => Err(error.message().to_owned()),
+                    }
+                },
+            ))
         }
+        JournalEffect::SetLiveTail { enabled } => {
+            shown.live_tail = enabled.unwrap_or(!shown.live_tail);
+            shown.last_poll = force_immediate_poll_at();
+            shown.publish();
+            Ok(Effected::done())
+        }
+        JournalEffect::ExportFilteredJsonl => {
+            let entries = shown.export_snapshot()?;
+            let picked = export_request().send();
+            shown.exporting = true;
+            let journal = Rc::clone(journal);
+            Ok(cx.thread(
+                move |_| export_picked(&picked, &entries),
+                move |(), status: Option<String>, _| {
+                    let mut shown = journal.borrow_mut();
+                    shown.exporting = false;
+                    shown.export_status.clone_from(&status);
+                    shown.dirty = true;
+                    Ok(Effected::value(status))
+                },
+            ))
+        }
+        JournalEffect::SelectEntry { entry_id } => {
+            shown.select(entry_id)?;
+            Ok(Effected::done())
+        }
+    }
+}
+
+/// The window's widget: lays the journal out and turns what the person
+/// does in it into filter edits and journal effects.
+pub(crate) struct LogsWindow {
+    journal: JournalRef,
+    shared: Shared,
+    /// The filter as the document holds it, shown as it changes.
+    live: Live<Logs>,
+    presented: Option<(u64, u64)>,
+    /// Where filter edits and journal effects go.
+    dispatcher: Dispatcher<Logs>,
+    actions: Actions<Logs>,
+    /// Whether the journal controls are offered: everywhere but a past
+    /// version.
+    allow_live: bool,
+
+    rect: Rect,
+    shell: NavShell,
+    /// The spacing the inspector was laid out with.
+    spacing: Spacing,
+    inspected: Inspected,
+    has_inspector: bool,
+    layout_dirty: bool,
+}
+
+impl LogsWindow {
+    fn new(
+        journal: JournalRef,
+        live: Live<Logs>,
+        dispatcher: Dispatcher<Logs>,
+        actions: Actions<Logs>,
+        allow_live: bool,
+    ) -> Self {
+        let shared = Rc::clone(&journal.borrow().shared);
+        let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
+            .with_id("logs.shell")
+            .content(Box::new(JournalPane::new(Rc::clone(&shared))))
+            .with_window_toolbar()
+            .inspector(crate::view::entry_detail(None, &Spacing::default()));
+        let mut window = Self {
+            journal,
+            shared,
+            live,
+            presented: None,
+            dispatcher,
+            actions,
+            allow_live,
+            rect: Rect::ZERO,
+            shell,
+            spacing: Spacing::default(),
+            inspected: Inspected::Stale,
+            has_inspector: true,
+            layout_dirty: true,
+        };
+        window.follow_document();
+        window.show_journal();
+        window
+    }
+
+    /// Show the filter the document holds when it changed.
+    fn follow_document(&mut self) {
+        let held = (self.live.revision(), self.live.loads());
+        if self.presented == Some(held) {
+            return;
+        }
+        self.presented = Some(held);
+        let filter = self.live.with(Logs::filter);
+        self.journal.borrow_mut().adopt_filter(filter);
+    }
+
+    /// Bring the inspector and the layout in step with what the journal
+    /// published since.
+    fn show_journal(&mut self) {
+        let (republished, stale, reveal, reveal_detail) = {
+            let mut journal = self.journal.borrow_mut();
+            journal.publish();
+            (
+                std::mem::take(&mut journal.republished),
+                std::mem::take(&mut journal.inspector_stale),
+                std::mem::take(&mut journal.reveal),
+                journal.reveal_detail,
+            )
+        };
+        if stale {
+            self.inspected = Inspected::Stale;
+        }
+        if republished || stale {
+            self.show_inspector();
+            self.layout_dirty = true;
+        }
+        if reveal {
+            self.reveal_inspector();
+        }
+        if reveal_detail {
+            self.layout_dirty = true;
+        }
+    }
+
+    /// The inspector follows the selection; when the journal lists nothing
+    /// it collapses, leaving the one empty state.
+    fn show_inspector(&mut self) {
+        let journal = Rc::clone(&self.journal);
+        let journal = journal.borrow();
+        let wanted = !journal.filtered.is_empty();
+        if wanted != self.has_inspector {
+            self.has_inspector = wanted;
+            self.inspected = Inspected::Stale;
+            if !wanted {
+                self.shell.set_inspector(None);
+                return;
+            }
+        }
+        if !wanted {
+            return;
+        }
+        let entry = journal.selected();
+        let shows = entry.map_or(Inspected::Nothing, |e| {
+            Inspected::Entry(actions::entry_resource_id(e))
+        });
+        if self.inspected == shows {
+            return;
+        }
+        self.inspected = shows;
+        self.shell
+            .set_inspector(Some(crate::view::entry_detail(entry, &self.spacing)));
+        let title = entry.map_or_else(String::new, |e| e.unit.clone());
+        self.shell.set_inspector_title(title);
+    }
+
+    /// Turn the views' requests into document edits and journal effects.
+    fn apply_requests(&self) {
+        let requests = self.shared.borrow_mut().take_requests();
+        for request in requests {
+            match request {
+                Request::Search(value) => self.edit(Logs::paths().search.replace(value)),
+                Request::Unit(value) => self.edit(Logs::paths().unit.set(Atom(value))),
+                Request::Boot(value) => self.edit(Logs::paths().boot.set(Atom(value))),
+                Request::Priority(value) => {
+                    self.edit(Logs::paths().severity.set(Priority::from_level(value)));
+                }
+                Request::ClearFilters => self.edit(Logs::CLEAR_FILTERS.with(())),
+                Request::Select(entry_id) => self.request(&JournalEffect::SelectEntry { entry_id }),
+            }
+        }
+    }
+
+    /// Open the inspector where it is a closed sheet, so choosing an entry
+    /// on a narrow window shows it.
+    fn reveal_inspector(&mut self) {
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
+            && !self.shell.is_inspector_open()
+        {
+            self.shell.toggle_inspector();
+        }
+    }
+
+    /// Submit a filter edit; the document presents its result.
+    fn edit(&self, edit: impl Submit<Logs>) {
+        self.dispatcher.submit(edit);
+    }
+
+    /// Invoke a journal effect through the same door as the palette and
+    /// agents, which checks its availability first.
+    fn request(&self, effect: &JournalEffect) {
+        self.dispatcher.effect(effect);
+    }
+
+    /// Run what the person did in the window's bar: the shell's own slots,
+    /// then the journal's commands.
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event
+                && let Some(effect) = window_effect(id)
+                && self.can(&effect)
+            {
+                self.request(&effect);
+            }
+        }
+    }
+
+    /// Whether this window may run `effect` now.
+    fn can(&self, effect: &JournalEffect) -> bool {
+        self.actions.effect(effect).is_some()
+    }
+
+    /// Declare the window bar's slots: the shell's own (the entry's
+    /// details) and the journal's commands.
+    fn declare_window_toolbar(&self) {
+        let live_tail = self.journal.borrow().live_tail;
+        let mut toolbar = self.shell.window_toolbar();
+        let actions = WINDOW_ACTIONS.into_iter().map(|(id, icon, name)| {
+            let enabled = window_effect(id).is_some_and(|effect| self.can(&effect));
+            let action = ToolbarAction::new(id, icon.name(), name)
+                .enabled(enabled)
+                .on(id == "logs.live-tail" && live_tail);
+            // Exporting is occasional: the bar's menu, which leaves the
+            // row to Refresh, Live tail and the details' toggle.
+            if id == "logs.export" {
+                action.in_menu()
+            } else {
+                action
+            }
+        });
+        NavShell::push_window_actions(&mut toolbar, actions);
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+}
+
+/// The shell's node: the one child of the app's node.
+fn shell_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
+    taffy.children(node).ok()?.first().copied()
+}
+
+fn export_request() -> PickRequest {
+    PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
+        .thread_name("logs-portal-export")
+        .filter(
+            FileFilter::new("JSON Lines")
+                .mimetype("application/x-ndjson")
+                .glob("*.jsonl"),
+        )
+}
+fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String> {
+    match picked.recv() {
+        Ok(PortalOutcome::Opened(path)) => {
+            let refs = entries.iter().collect::<Vec<_>>();
+            Some(match crate::journal::export_json_lines(&refs, &path) {
+                Ok(()) => format!("Exported {} log entries.", entries.len()),
+                Err(_) => "Export failed.".to_owned(),
+            })
+        }
+        Ok(PortalOutcome::Cancelled) | Err(_) => None,
+        Ok(PortalOutcome::Failed(_)) => Some("Export unavailable.".to_owned()),
+    }
+}
+impl Widget for LogsWindow {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.journal.borrow_mut().poll();
+        self.take_window_toolbar_events();
+        self.show_journal();
+        self.declare_window_toolbar();
+        self.shell.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.layout_dirty = false;
+        if self.spacing != theme.tokens.spacing {
+            // The inspector's content lines up with its property list in
+            // this theme's spacing.
+            self.spacing = theme.tokens.spacing;
+            self.inspected = Inspected::Stale;
+            self.show_inspector();
+        }
+        let shell = self.shell.build_layout(taffy, theme, node_map);
+        let node = taffy.fill_node(shell);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        if let Some(shell) = shell_node(taffy, node) {
+            self.shell
+                .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
+        }
+        if self.journal.borrow().reveal_detail
+            && self.shell.geometry().inspector != InspectorPlacement::None
+        {
+            self.journal.borrow_mut().reveal_detail = false;
+            self.reveal_inspector();
+            self.shell.snap();
+            self.layout_dirty = true;
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.shell.draw(scene, transform, tr, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // Ctrl+L follows or pauses the journal, like a terminal's `-f`.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && ctx.modifiers.state().control_key()
+            && matches!(&key.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("l"))
+        {
+            if self.allow_live {
+                self.request(&JournalEffect::SetLiveTail { enabled: None });
+            }
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(shell) = shell_node(ctx.taffy, ctx.node_id) {
+            self.shell
+                .handle_event(event, &mut ctx.reborrow(ctx.path, shell));
+        }
+        self.apply_requests();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.shell]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.shell);
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.shell]
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.shell.wants_pointer_capture()
+    }
+
+    fn name(&self) -> &'static str {
+        "LogsWindow"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("logs_app")
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let status = self.journal.borrow().export_status.clone()?;
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+                .with_name(&status)
+                .with_live(ui::a11y::Politeness::Polite)
+                .with_hashed_key("logs.export-status"),
+        )
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.shell.is_layout_dirty()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.layout_dirty || self.shell.layout_needs_measure()
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        let journal = self.journal.borrow();
+        (journal.reads && journal.live_tail) || journal.reading.is_some()
+    }
+
+    /// Live tail reads the journal once a `POLL_INTERVAL`: a deadline,
+    /// not a frame pump. A read and an export wake the app when they finish.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let poll = self.journal.borrow().next_poll();
+        poll.into_iter()
+            .chain(self.shell.next_wake_deadline())
+            .min()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shell.needs_animation_frame()
+    }
+}
+
+impl ui::widget::controls::ActionControls for LogsWindow {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        ui::widget::controls::take_control_invocation(&mut self.shell)
     }
 }
 
@@ -1004,6 +1111,7 @@ mod tests {
             viewer.source_loading = false;
             viewer.show_entries(sample_entries());
         });
+        app.settle();
         app.harness().resize(viewport).unwrap();
         app.settle();
         app
@@ -1015,14 +1123,18 @@ mod tests {
             cursor: None,
         })
     }
-    fn surface<T>(app: &mut TestApp<LogsShell>, visit: impl FnOnce(&mut LogsApp) -> T) -> T {
-        app.with_surface(visit)
-            .expect("the journal surface is mounted")
+    /// The journal the window shows.
+    fn surface<T>(app: &mut TestApp<LogsShell>, visit: impl FnOnce(&mut Journal) -> T) -> T {
+        window(app, |window| visit(&mut window.journal.borrow_mut()))
+    }
+    fn window<T>(app: &mut TestApp<LogsShell>, visit: impl FnOnce(&mut LogsWindow) -> T) -> T {
+        app.with_widget(visit)
+            .expect("the journal window is mounted")
     }
     fn request(app: &mut TestApp<LogsShell>, request: Request) {
-        surface(app, |viewer| {
-            viewer.shared.borrow_mut().push(request);
-            viewer.apply_requests();
+        window(app, |window| {
+            window.shared.borrow_mut().push(request);
+            window.apply_requests();
         });
         app.settle();
     }
@@ -1168,8 +1280,11 @@ mod tests {
         surface(&mut app, |viewer| {
             assert_eq!(viewer.effective_selected(), Some(0));
             assert_eq!(viewer.shared.borrow().selected, Some(0));
-            assert_eq!(viewer.inspected, Inspected::Entry(id.clone()));
         });
+        assert_eq!(
+            window(&mut app, |window| window.inspected.clone()),
+            Inspected::Entry(id.clone())
+        );
         entries.remove(0);
         surface(&mut app, |viewer| viewer.show_read(Ok(whole(entries))));
         app.settle();
@@ -1177,8 +1292,11 @@ mod tests {
             assert_eq!(viewer.selected_entry.as_deref(), Some(id.as_str()));
             assert_eq!(viewer.effective_selected(), None);
             assert_eq!(viewer.shared.borrow().selected, None);
-            assert_eq!(viewer.inspected, Inspected::Nothing);
         });
+        assert_eq!(
+            window(&mut app, |window| window.inspected.clone()),
+            Inspected::Nothing
+        );
     }
 
     #[test]
@@ -1322,8 +1440,11 @@ mod tests {
                 viewer.selected_entry.as_deref(),
                 Some(next.entry_id.as_str())
             );
-            assert_eq!(viewer.inspected, Inspected::Entry(next.entry_id));
         });
+        assert_eq!(
+            window(&mut app, |window| window.inspected.clone()),
+            Inspected::Entry(next.entry_id)
+        );
         assert_eq!(
             app.read_document(|doc| doc.clone().get_heads()),
             before,
@@ -1335,7 +1456,7 @@ mod tests {
     fn window_docks_the_inspector_on_desktop_and_draws_it_on_a_phone() {
         let mut desktop = captured((1280, 800));
         assert_eq!(
-            surface(&mut desktop, |viewer| viewer.shell.geometry().inspector),
+            window(&mut desktop, |window| window.shell.geometry().inspector),
             InspectorPlacement::Docked
         );
         assert!(
@@ -1355,15 +1476,15 @@ mod tests {
             );
         }
         let mut phone = captured((390, 844));
-        surface(&mut phone, |viewer| {
-            assert_eq!(viewer.shell.geometry().inspector, InspectorPlacement::Sheet);
-            assert!(!viewer.shell.is_inspector_open());
+        window(&mut phone, |window| {
+            assert_eq!(window.shell.geometry().inspector, InspectorPlacement::Sheet);
+            assert!(!window.shell.is_inspector_open());
         });
         let entry = surface(&mut phone, |viewer| {
             viewer.shared.borrow().rows[0].entry_id.clone()
         });
         request(&mut phone, Request::Select(entry));
-        assert!(surface(&mut phone, |viewer| viewer
+        assert!(window(&mut phone, |window| window
             .shell
             .is_inspector_open()));
     }
@@ -1415,8 +1536,8 @@ mod tests {
             surface(&mut app, |viewer| viewer.export_status.clone()).as_deref(),
             Some("Export failed.")
         );
-        let node = surface(&mut app, |viewer| {
-            viewer.accessibility().expect("the outcome is announced")
+        let node = window(&mut app, |window| {
+            window.accessibility().expect("the outcome is announced")
         });
         assert_eq!(node.name.as_deref(), Some("Export failed."));
         assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
@@ -1455,9 +1576,12 @@ mod tests {
                     crate::journal::JournalLoadError::AccessDenied
                 ))
             );
-            assert!(!viewer.has_inspector, "the detail pane collapses");
             assert!(!viewer.shared.borrow().has_entries, "no filters to offer");
         });
+        assert!(
+            !window(&mut unavailable, |window| window.has_inspector),
+            "the detail pane collapses"
+        );
         let before = app.agent_surface();
         assert_eq!(
             effect(&before, "set-live-tail").unwrap()["label"],
