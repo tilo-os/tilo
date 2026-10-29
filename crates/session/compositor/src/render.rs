@@ -16,9 +16,13 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
-use smithay::utils::{Physical, Point, Scale};
+use smithay::utils::{Physical, Point, Scale, Size};
 
 use crate::state::State;
+
+/// The colour behind every window: the desktop's background before a
+/// wallpaper surface covers it.
+pub const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
 
 smithay::backend::renderer::element::render_elements! {
     /// One drawable thing on an output.
@@ -54,7 +58,7 @@ where
                 &layer.buffer,
                 None,
                 None,
-                None,
+                Some(Size::from(layer.size)),
                 Kind::Unspecified,
             ) {
                 Ok(element) => elements.push(OutputRenderElement::Hosted(element)),

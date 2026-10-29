@@ -422,6 +422,7 @@ impl SurfaceHost for Square {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
+            size: (self.rect.2, self.rect.3),
             buffer: self.buffer.clone(),
         }]
     }

@@ -3,9 +3,9 @@
 //! It shows buffers and routes input; it draws no interface of its own.
 //! Client surfaces and the layers of hosted surface apps ([`SurfaceHost`])
 //! are composited per output ([`render`]); where windows go and who has focus
-//! is a [`WindowPolicy`]'s decision; backends supply outputs and input
-//! ([`headless`] here: CPU composition with no display, for tests and
-//! screenshots).
+//! is a [`WindowPolicy`]'s decision; a [`Backend`] supplies outputs and
+//! input ([`backend::headless`]: CPU composition with no display, for tests
+//! and screenshots).
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,7 +21,7 @@
 
 #![cfg(target_os = "linux")]
 
-pub mod headless;
+pub mod backend;
 pub mod host;
 pub mod input;
 pub mod output;
@@ -33,10 +33,10 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
 
-pub use headless::{RenderError, Screenshot};
+pub use backend::{Backend, BackendError, HeadlessBackend, Screenshot};
 pub use host::{HostLayer, SurfaceHost};
 pub use input::InputEvent;
 pub use output::OutputConfig;
@@ -48,15 +48,15 @@ pub use state::State;
 pub enum Error {
     /// The event loop or a client socket failed.
     Io(std::io::Error),
-    /// A frame could not be drawn or read back.
-    Render(RenderError),
+    /// The backend failed.
+    Backend(BackendError),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(f, "compositor I/O: {error}"),
-            Self::Render(error) => write!(f, "compositor render: {error}"),
+            Self::Backend(error) => write!(f, "compositor backend: {error}"),
         }
     }
 }
@@ -69,28 +69,44 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<RenderError> for Error {
-    fn from(error: RenderError) -> Self {
-        Self::Render(error)
+impl From<BackendError> for Error {
+    fn from(error: BackendError) -> Self {
+        Self::Backend(error)
     }
+}
+
+fn io(error: impl std::fmt::Display) -> Error {
+    Error::Io(std::io::Error::other(error.to_string()))
+}
+
+/// What the event loop's sources reach: the state and the backend.
+pub struct LoopData {
+    /// The Wayland state, windows and seat.
+    pub state: State,
+    /// The backend that created the sources.
+    pub backend: Box<dyn Backend>,
 }
 
 /// A running compositor: the Wayland display, its state and a backend.
 pub struct Compositor {
-    event_loop: EventLoop<'static, State>,
+    event_loop: EventLoop<'static, LoopData>,
     display: Display<State>,
-    state: State,
-    backend: headless::HeadlessBackend,
+    data: LoopData,
 }
 
 impl Compositor {
-    /// A compositor whose outputs have no display (see [`headless`]).
-    pub fn headless(policy: Box<dyn WindowPolicy>) -> Result<Self, Error> {
-        let event_loop =
-            EventLoop::try_new().map_err(|error| Error::Io(std::io::Error::other(error)))?;
-        let mut display =
-            Display::<State>::new().map_err(|error| Error::Io(std::io::Error::other(error)))?;
-        let state = State::new(&display.handle(), policy);
+    /// A compositor on the backend `make_backend` creates, which may
+    /// register its sources in the loop it is handed.
+    pub fn new(
+        policy: Box<dyn WindowPolicy>,
+        make_backend: impl FnOnce(
+            &LoopHandle<'static, LoopData>,
+            &mut State,
+        ) -> Result<Box<dyn Backend>, Error>,
+    ) -> Result<Self, Error> {
+        let event_loop = EventLoop::try_new().map_err(io)?;
+        let mut display = Display::<State>::new().map_err(io)?;
+        let mut state = State::new(&display.handle(), policy);
         // Client requests are read after the loop wakes, in `dispatch`; the
         // loop only needs to wake when the display's socket is readable.
         let poll_fd = display.backend().poll_fd().try_clone_to_owned()?;
@@ -100,24 +116,29 @@ impl Compositor {
                 Generic::new(poll_fd, Interest::READ, Mode::Level),
                 |_, _, _| Ok(PostAction::Continue),
             )
-            .map_err(|error| Error::Io(std::io::Error::other(error.to_string())))?;
+            .map_err(io)?;
+        let backend = make_backend(&event_loop.handle(), &mut state)?;
         Ok(Self {
             event_loop,
             display,
-            state,
-            backend: headless::HeadlessBackend::new()?,
+            data: LoopData { state, backend },
         })
     }
 
-    /// Add an output.
+    /// A compositor whose outputs have no display (see [`backend::headless`]).
+    pub fn headless(policy: Box<dyn WindowPolicy>) -> Result<Self, Error> {
+        Self::new(policy, |_, _| Ok(Box::new(HeadlessBackend::new()?)))
+    }
+
+    /// Add an output the backend simulates.
     pub fn add_output(&mut self, config: &OutputConfig) -> Result<(), Error> {
-        self.backend.add_output(&mut self.state, config)?;
+        self.data.backend.add_output(&mut self.data.state, config)?;
         Ok(())
     }
 
     /// Host a surface app above the windows (and above earlier hosts).
     pub fn add_host(&mut self, host: Box<dyn SurfaceHost>) {
-        self.state.hosts.push(host);
+        self.data.state.hosts.push(host);
     }
 
     /// Connect a client over a socket pair; the returned end is the
@@ -127,45 +148,50 @@ impl Compositor {
         self.display
             .handle()
             .insert_client(ours, state::client_data())
-            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+            .map_err(io)?;
         Ok(theirs)
     }
 
-    /// Wait up to `timeout` for client requests, handle them and flush the
-    /// answers.
+    /// Wait up to `timeout` for client requests or backend events, handle
+    /// them and flush the answers.
     pub fn dispatch(&mut self, timeout: Duration) -> Result<(), Error> {
         self.event_loop
-            .dispatch(Some(timeout), &mut self.state)
-            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
-        self.display.dispatch_clients(&mut self.state)?;
-        self.state.refresh();
+            .dispatch(Some(timeout), &mut self.data)
+            .map_err(io)?;
+        self.display.dispatch_clients(&mut self.data.state)?;
+        self.data.state.refresh();
         self.display.flush_clients()?;
         Ok(())
     }
 
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
-        self.state.handle_input(event);
+        self.data.state.handle_input(event);
         self.display.flush_clients()?;
         Ok(())
     }
 
-    /// Draw a frame on every output and tell clients it was shown.
+    /// Draw a frame on every output that can take one and tell clients it
+    /// was shown.
     pub fn render(&mut self) -> Result<(), Error> {
-        self.backend.render(&self.state)?;
+        for host in &mut self.data.state.hosts {
+            host.prepare_frame();
+        }
+        self.data.backend.render(&mut self.data.state)?;
         self.display.flush_clients()?;
         Ok(())
     }
 
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
-        Ok(self.backend.screenshot(name)?)
+        Ok(self.data.backend.screenshot(name)?)
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,
     /// bottom first.
     pub fn windows(&self) -> Vec<(WindowInfo, (i32, i32, i32, i32))> {
-        self.state
+        self.data
+            .state
             .windows()
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
@@ -174,7 +200,7 @@ impl Compositor {
 
     /// The window with keyboard focus.
     pub fn focused_window(&self) -> Option<WindowInfo> {
-        self.state.focused_window()
+        self.data.state.focused_window()
     }
 }
 
