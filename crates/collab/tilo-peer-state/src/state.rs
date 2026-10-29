@@ -30,6 +30,8 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
+mod member_records;
+use member_records::empty_genesis;
 mod facades;
 mod governance;
 pub use facades::{
@@ -2213,8 +2215,19 @@ impl StatePeer {
             collab_types::check_appearances(&changes, shows.as_deref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
+        // A member's empty record, made where the room lets its app author
+        // and its writer change it: nothing in it needs a checkpoint. Made
+        // once: a record the room holds is never started over, nor its
+        // retained checkpoint replaced by an empty one.
+        let member_genesis = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+            && !self.signed_by_owner(&source)
+            && self.may_create_record(&member, &route, authorization_time);
+        if member_genesis && route_existed {
+            return Err("the record exists already".into());
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
+            && !member_genesis
         {
             let entries =
                 crate::coverage::entries(self.core.room_doc.as_deref().ok_or("missing room")?)?;
@@ -2306,7 +2319,7 @@ impl StatePeer {
                     .or_default();
                 *floor = (*floor).max(*sequence);
             }
-        } else if !route_existed {
+        } else if !route_existed && !member_genesis {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -2384,7 +2397,7 @@ impl StatePeer {
         self.core.documents.insert(route.clone(), candidate);
         // Pending drains catch rejection and keep the outer candidate. Install
         // checkpoint freshness only after every fallible admission step succeeds.
-        if !local_app && matches!(mutation, DocumentMutation::Snapshot(_)) {
+        if !local_app && !member_genesis && matches!(mutation, DocumentMutation::Snapshot(_)) {
             self.core.checkpoint_times.insert(route, now);
         }
         Ok(AdmissionReport::new(
@@ -2631,7 +2644,8 @@ impl StatePeer {
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
             if !self.signed_by_owner(author.as_bytes()) {
-                return Err("only the owner's device may publish a retained checkpoint".into());
+                self.check_member_genesis(&route, bytes, *author.as_bytes(), now)?;
+                return Ok((message, None));
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
             let mut watermarks = self

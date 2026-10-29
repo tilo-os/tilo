@@ -1,115 +1,69 @@
-//! A member's own business as `tilo.member` actions: offered to every
-//! person the room admitted, and decided by the room methods the wire door
-//! ran.
+//! A member's share of one record or item with a room this host governs,
+//! as a page asks it (`crate::rooms::shares`): the same rule every receiver
+//! holds a device's own share to (`tilo_peer_state::room::share`).
 
 use serde_json::{Value, json};
-use tilo_actions::ActionAddress;
-use tilo_actions::remote::{
-    ActionHost as _, ActionHostError, Caller, CatalogueQuery, InvokeRequest, ReceiptStatus,
-    RemoteActionTarget,
-};
-use tilo_relay_session::rooms::{
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RESOURCE_PERMITS, SHARE_RESOURCE,
-    UNSHARE_RESOURCE, member_resource,
-};
 use tilo_user_identity::DeviceCert;
 
-use super::super::HostRoomActions;
-use super::super::tests::{admit, caller, governed, settled};
-use crate::rooms::tests::{governor, guest_device, test_host};
+use super::tests::{admit, governed};
+use crate::rooms::Rooms;
+use crate::rooms::tests::{governor, test_host};
 
-fn member_request(room: &str, action: &str, argument: Value) -> InvokeRequest {
-    let mut request = super::super::tests::request(room, action, argument);
-    request.target = RemoteActionTarget {
-        provider: MEMBER_ACTIONS_PROVIDER.into(),
-        address: ActionAddress::new(member_resource(room), action),
-    };
-    request
+const SHARE_RESOURCE: &str = "share";
+const UNSHARE_RESOURCE: &str = "unshare";
+const RESOURCE_PERMITS: &str = "permits";
+
+/// A member's ask of `room`: share, end a share, or what they may do at a
+/// node, with its arguments.
+struct Ask {
+    room: String,
+    action: &'static str,
+    argument: Value,
 }
 
-async fn offered(host: &HostRoomActions, workspace_id: u64, caller: &Caller) -> Vec<String> {
-    let query = CatalogueQuery {
-        provider: Some(MEMBER_ACTIONS_PROVIDER.into()),
-        max_results: 100,
-        ..CatalogueQuery::default()
-    };
-    settled(host.in_workspace(workspace_id).query(caller, query))
-        .await
-        .unwrap()
-        .rows
-        .into_iter()
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect()
-}
-
-async fn invoke(
-    host: &HostRoomActions,
-    workspace_id: u64,
-    device: &DeviceCert,
-    request: InvokeRequest,
-) -> Result<Value, ActionHostError> {
-    let receipt = settled(
-        host.in_workspace(workspace_id)
-            .invoke(&caller(device), request),
-    )
-    .await?;
-    match receipt.status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
-        other => panic!("a member's own business completes at once: {other:?}"),
+fn member_request(room: &str, action: &'static str, argument: Value) -> Ask {
+    Ask {
+        room: room.to_owned(),
+        action,
+        argument,
     }
 }
 
-#[tokio::test]
-async fn a_member_is_offered_their_own_business_as_actions() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
-    let ada = admit(rooms, &room, &owner, 1).await;
-
-    assert_eq!(
-        offered(&host, workspace, &caller(&ada)).await,
-        [
-            PREPARE_APPLICATION_RECORD,
-            SHARE_RESOURCE,
-            UNSHARE_RESOURCE,
-            RESOURCE_PERMITS
-        ]
-        .map(str::to_owned)
-    );
-
-    let permits = || {
-        member_request(
-            &room,
-            RESOURCE_PERMITS,
-            json!({ "node": tilo_action_policy::TreePath::room(&room).to_string() }),
-        )
+/// What the room answers `ask` from `device`.
+async fn invoke(rooms: &Rooms, device: &DeviceCert, ask: Ask) -> Result<Value, String> {
+    let text = |key: &str| ask.argument[key].as_str().unwrap_or_default().to_owned();
+    let node = || -> Result<tilo_action_policy::TreePath, String> {
+        text("node").parse().map_err(|_| "not a node".to_owned())
     };
-
-    // Someone the room never admitted is offered nothing and runs nothing,
-    // and an agent holds no business of its own.
-    let (_, stranger) = guest_device();
-    assert!(
-        offered(&host, workspace, &caller(&stranger))
+    match ask.action {
+        SHARE_RESOURCE => {
+            let access = text("access").parse().map_err(|_| "no access".to_owned())?;
+            rooms
+                .share_resource(&ask.room, device, &text("share"), &node()?, access)
+                .await
+                .map(|grants| json!({ "grants": grants }))
+        }
+        UNSHARE_RESOURCE => rooms
+            .unshare_resource(&ask.room, device, &text("share"))
             .await
-            .is_empty()
-    );
-    assert_eq!(
-        invoke(&host, workspace, &stranger, permits()).await,
-        Err(ActionHostError::UnknownAction)
-    );
-    let agent = Caller::delegated_agent("writer", ada.user_public_key, ada.device_public_key);
-    assert!(offered(&host, workspace, &agent).await.is_empty());
-
-    // The member's business is that room's only.
-    let mut elsewhere = permits();
-    elsewhere.target.address = ActionAddress::new(member_resource("another"), RESOURCE_PERMITS);
-    assert_eq!(
-        invoke(&host, workspace, &ada, elsewhere).await,
-        Err(ActionHostError::UnknownAction)
-    );
-    relay.shutdown().await;
+            .map(|revoked| json!({ "revoked": revoked })),
+        _ => {
+            let node = node()?;
+            let now = web_time::SystemTime::now();
+            let state = rooms
+                .room(&ask.room)
+                .await
+                .map_err(|error| error.to_string())?;
+            let held = state.lock().await;
+            let member = held.peer().permissions(device.device_public_key, now)?;
+            drop(held);
+            return Ok(json!({
+                "read": member.allows(&node, tilo_action_policy::ActionKind::Read, now),
+                "undoable": member.allows(&node, tilo_action_policy::ActionKind::Undoable, now),
+            }));
+        }
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// An item of Notes' own record of `room`, by its id.
@@ -134,7 +88,7 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
+    let (room, _, _) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
     rooms
@@ -161,39 +115,35 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
     let unshare = || member_request(&room, UNSHARE_RESOURCE, json!({ "share": "m1" }));
     let bo_writes = |node: &str| {
         let request = permits(node);
-        let host = &host;
         let bo = &bo;
         async move {
-            invoke(host, workspace, bo, request).await.unwrap()["undoable"]
+            invoke(rooms, bo, request).await.unwrap()["undoable"]
                 .as_bool()
                 .unwrap()
         }
     };
 
     // Bo, a Viewer, reads the note and writes nothing.
-    let before = invoke(&host, workspace, &bo, permits(&p1)).await.unwrap();
+    let before = invoke(rooms, &bo, permits(&p1)).await.unwrap();
     assert_eq!(before, json!({ "read": true, "undoable": false }));
 
     // Bo cannot hand out more than he holds.
-    assert!(matches!(
-        invoke(&host, workspace, &bo, share("edit")).await,
-        Err(ActionHostError::Refused { .. })
-    ));
+    assert!(matches!(invoke(rooms, &bo, share("edit")).await, Err(_)));
 
     // A view share gives no writes.
-    let viewed = invoke(&host, workspace, &ada, share("view")).await.unwrap();
+    let viewed = invoke(rooms, &ada, share("view")).await.unwrap();
     assert_eq!(viewed, json!({ "grants": 4 }));
     assert!(!bo_writes(&p1).await);
 
     // Ada, an Editor, shares it to edit: Bo writes that note, not its sibling.
-    invoke(&host, workspace, &ada, share("edit")).await.unwrap();
+    invoke(rooms, &ada, share("edit")).await.unwrap();
     assert!(bo_writes(&p1).await);
     assert!(
         !bo_writes(&p2).await,
         "a sibling note stays as Bo's role has it"
     );
     assert_eq!(
-        invoke(&host, workspace, &ada, share("edit")).await.unwrap(),
+        invoke(rooms, &ada, share("edit")).await.unwrap(),
         json!({ "grants": 4 }),
         "a repeat is the same share"
     );
@@ -213,12 +163,12 @@ async fn a_share_grants_the_room_one_item_until_its_sharer_ends_it() {
 
     // Only its sharer ends it.
     assert_eq!(
-        invoke(&host, workspace, &bo, unshare()).await.unwrap(),
+        invoke(rooms, &bo, unshare()).await.unwrap(),
         json!({ "revoked": 0 })
     );
     assert!(bo_writes(&p1).await);
     assert_eq!(
-        invoke(&host, workspace, &ada, unshare()).await.unwrap(),
+        invoke(rooms, &ada, unshare()).await.unwrap(),
         json!({ "revoked": 4 })
     );
     assert!(!bo_writes(&p1).await);
@@ -280,7 +230,7 @@ async fn a_share_to_edit_lifts_no_restriction() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
+    let (room, _, _) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
     rooms
@@ -297,18 +247,12 @@ async fn a_share_to_edit_lifts_no_restriction() {
         .unwrap();
     let p1 = note(&room, "p1");
     let shared = json!({ "share": "m1", "node": p1, "access": "edit" });
-    invoke(
-        &host,
-        workspace,
-        &ada,
-        member_request(&room, SHARE_RESOURCE, shared),
-    )
-    .await
-    .unwrap();
+    invoke(rooms, &ada, member_request(&room, SHARE_RESOURCE, shared))
+        .await
+        .unwrap();
     let permits = || {
         invoke(
-            &host,
-            workspace,
+            rooms,
             &bo,
             member_request(&room, RESOURCE_PERMITS, json!({ "node": p1 })),
         )
@@ -353,14 +297,8 @@ async fn a_share_to_edit_lifts_no_restriction() {
     // Nor may he hand out what his restriction keeps from him.
     let reshare = json!({ "share": "m2", "node": p1, "access": "view" });
     assert!(matches!(
-        invoke(
-            &host,
-            workspace,
-            &bo,
-            member_request(&room, SHARE_RESOURCE, reshare),
-        )
-        .await,
-        Err(ActionHostError::Refused { .. })
+        invoke(rooms, &bo, member_request(&room, SHARE_RESOURCE, reshare)).await,
+        Err(_)
     ));
 
     // Lifted, the share lets him write again.
@@ -395,7 +333,7 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
+    let (room, _, _) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
     // Ada's device mints its windows under the salt its key derives.
@@ -412,15 +350,13 @@ async fn only_the_device_a_window_runs_on_shares_it() {
             }),
         )
     };
-    let refused = |answer: Result<Value, ActionHostError>| {
-        matches!(answer, Err(ActionHostError::Refused { .. }))
-    };
+    let refused = |answer: Result<Value, String>| answer.is_err();
     assert!(
-        refused(invoke(&host, workspace, &bo, share(notes, &window_share_id(notes))).await),
+        refused(invoke(rooms, &bo, share(notes, &window_share_id(notes))).await),
         "Bo can't share a window of Ada's device"
     );
     assert!(
-        refused(invoke(&host, workspace, &ada, share(notes, "m1")).await),
+        refused(invoke(rooms, &ada, share(notes, "m1")).await),
         "a window is shared under its own share id"
     );
     let held_salts = {
@@ -438,27 +374,14 @@ async fn only_the_device_a_window_runs_on_shares_it() {
         .expect("a salt none of the room's devices mints under");
     let elsewhere = (u64::from(unheld) << 48) | 4;
     assert!(
-        refused(
-            invoke(
-                &host,
-                workspace,
-                &ada,
-                share(elsewhere, &window_share_id(elsewhere))
-            )
-            .await
-        ),
+        refused(invoke(rooms, &ada, share(elsewhere, &window_share_id(elsewhere))).await),
         "nor a window in a namespace no device holds"
     );
     assert!(shared_windows(rooms, &room).await.is_empty());
 
-    invoke(
-        &host,
-        workspace,
-        &ada,
-        share(notes, &window_share_id(notes)),
-    )
-    .await
-    .unwrap();
+    invoke(rooms, &ada, share(notes, &window_share_id(notes)))
+        .await
+        .unwrap();
     let now_shared = shared_windows(rooms, &room).await;
     let shared = now_shared.get(&notes).expect("Ada's Notes is shared");
     assert_eq!(shared.host, hex::encode(ada.device_public_key));
@@ -466,8 +389,7 @@ async fn only_the_device_a_window_runs_on_shares_it() {
     assert_eq!(shared.app_id, "so.tilo.notes");
 
     invoke(
-        &host,
-        workspace,
+        rooms,
         &ada,
         member_request(
             &room,
@@ -497,7 +419,7 @@ async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
+    let (room, _, _) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
     // Ada's device mints its windows under the salt its key derives.
@@ -512,9 +434,9 @@ async fn what_a_shared_window_shows_is_shared_by_its_device_and_ends_with_it() {
     let showing =
         |shown: &WindowShows| shows_node(&room, "so.tilo.notes", notes, "notes.notebook", shown);
     let shows = |shown: &WindowShows| request(window_shows_share_id(notes), showing(shown));
-    let by_ada = |request: InvokeRequest| invoke(&host, workspace, &ada, request);
+    let by_ada = |request: Ask| invoke(rooms, &ada, request);
     assert!(
-        refused(&invoke(&host, workspace, &bo, shows(&note)).await),
+        refused(&invoke(rooms, &bo, shows(&note)).await),
         "Bo can't say what a window of Ada's device shows"
     );
     assert!(
@@ -594,7 +516,7 @@ async fn grants_of_share(rooms: &crate::rooms::Rooms, room: &str, share: &str) -
 }
 
 /// Sharing `node` in `room`, viewable, under the share id `id`.
-fn share_request(room: &str, id: &str, node: &tilo_action_policy::TreePath) -> InvokeRequest {
+fn share_request(room: &str, id: &str, node: &tilo_action_policy::TreePath) -> Ask {
     member_request(
         room,
         SHARE_RESOURCE,
@@ -602,9 +524,9 @@ fn share_request(room: &str, id: &str, node: &tilo_action_policy::TreePath) -> I
     )
 }
 
-/// Whether the room's host refused `answer`.
-const fn refused(answer: &Result<Value, ActionHostError>) -> bool {
-    matches!(answer, Err(ActionHostError::Refused { .. }))
+/// Whether the room refused `answer`.
+const fn refused(answer: &Result<Value, String>) -> bool {
+    answer.is_err()
 }
 
 /// What the window `tab` shows, by `room`'s record of its shares.

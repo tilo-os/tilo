@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Change, GrantId, Subject, roles};
+use tilo_action_policy::{Change, GrantId, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -147,6 +147,63 @@ impl StatePeer {
         }
     }
 
+    /// Share `node` with the room as `access` gives, under `share`, as the
+    /// caller: the grants a receiver admits from them
+    /// ([`crate::room::share::share_grants`]). A share the room already
+    /// holds is no change.
+    fn apply_share(
+        &mut self,
+        caller: &DeviceCert,
+        share: &str,
+        node: &TreePath,
+        access: tilo_action_policy::share::ShareAccess,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let member = self.permissions(caller.device_public_key, now)?;
+        let bound = roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let cx = tilo_action_policy::Context::at_time(now);
+        let device = hex::encode(caller.device_public_key);
+        let grants = crate::room::share::share_grants(
+            (self.core.room_doc.as_deref(), &member.policy),
+            (&member.person, &device, &authority, &cx),
+            share,
+            node,
+            access,
+        )?;
+        if grants
+            .iter()
+            .all(|grant| member.policy.grants.contains(grant))
+        {
+            return Ok(false);
+        }
+        self.governance_mut().put_governed_grants(&grants, key, now)
+    }
+
+    /// End the share `share` as the caller
+    /// ([`crate::room::share::ended_by`]): no grant of it theirs to end is
+    /// no change.
+    fn apply_unshare(
+        &mut self,
+        caller: &DeviceCert,
+        share: &str,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let member = self.permissions(caller.device_public_key, now)?;
+        let bound = roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let cx = tilo_action_policy::Context::at_time(now);
+        let ended =
+            crate::room::share::ended_by(&member.policy, (&member.person, &authority, &cx), share);
+        if ended.is_empty() {
+            return Ok(false);
+        }
+        self.governance_mut()
+            .remove_governed_grants(&ended, key, now)
+    }
+
     /// Give or take back a grant in the room, as the caller: the room's
     /// policy decides, exactly as on a device that governs it here.
     fn apply_governance_grant_command(
@@ -260,6 +317,19 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Settings(change) = command {
             return self.peer.apply_settings_change(caller, change, key, now);
         }
+        if let WorkspaceMembershipCommand::Share {
+            share,
+            node,
+            access,
+        } = command
+        {
+            return self
+                .peer
+                .apply_share(caller, share, node, *access, key, now);
+        }
+        if let WorkspaceMembershipCommand::Unshare { share } = command {
+            return self.peer.apply_unshare(caller, share, key, now);
+        }
         self.peer
             .workspace()
             .check_workspace_administration(caller.device_public_key, now)?;
@@ -318,7 +388,9 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. }
             | WorkspaceMembershipCommand::Member { .. }
-            | WorkspaceMembershipCommand::Settings(_) => {
+            | WorkspaceMembershipCommand::Settings(_)
+            | WorkspaceMembershipCommand::Share { .. }
+            | WorkspaceMembershipCommand::Unshare { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

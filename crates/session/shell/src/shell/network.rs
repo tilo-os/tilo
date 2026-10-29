@@ -103,6 +103,7 @@ pub(crate) use session_host::Placement;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
+mod room_shares;
 mod room_signer;
 #[cfg(test)]
 mod same_person_room_tests;

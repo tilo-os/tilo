@@ -395,6 +395,125 @@ fn a_member_records_only_their_own_effect_receipts() {
     );
 }
 
+/// The grants of `person`'s share `m1` of a note, giving `access`.
+fn share_of_note(
+    person: [u8; 32],
+    access: tilo_action_policy::share::ShareAccess,
+) -> Vec<tilo_action_policy::Grant> {
+    let note = tilo_action_policy::TreePath::room(ROOM)
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .any(tilo_action_policy::Level::Resource)
+        .item("p1");
+    tilo_action_policy::share::share_grants(ROOM, &person_id(person), "m1", &note, access).unwrap()
+}
+
+/// The changes writing `grants` into the room, and taking `ended` out,
+/// make on `before`.
+fn regranting(
+    before: &AutoCommit,
+    grants: &[tilo_action_policy::Grant],
+    ended: &[tilo_action_policy::Grant],
+) -> Vec<Vec<u8>> {
+    changes_after(before, |doc| {
+        let (_, map) = doc.get(ROOT, "grants").unwrap().unwrap();
+        for grant in grants {
+            doc.put(
+                &map,
+                grant.id.as_str(),
+                ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
+            )
+            .unwrap();
+        }
+        for grant in ended {
+            doc.delete(&map, grant.id.as_str()).unwrap();
+        }
+    })
+}
+
+#[test]
+fn a_member_shares_only_what_they_hold_and_ends_only_their_own_shares() {
+    use tilo_action_policy::share::ShareAccess;
+    let before = governed();
+    let (editor, viewer) = (key(0x02), key(0x03));
+    let edit = share_of_note(EDITOR, ShareAccess::Edit);
+    assert!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &regranting(&before, &edit, &[])
+        )
+        .is_ok(),
+        "an Editor shares a note to edit as theirs"
+    );
+    assert!(
+        matches!(
+            admit(
+                Some(&before),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&before, &share_of_note(VIEWER, ShareAccess::Edit), &[]),
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "a Viewer hands out no edit"
+    );
+    assert!(
+        admit(
+            Some(&before),
+            member(&viewer, VIEWER),
+            &OWNER,
+            &regranting(&before, &share_of_note(VIEWER, ShareAccess::View), &[]),
+        )
+        .is_ok(),
+        "but shares what they see"
+    );
+    assert!(
+        matches!(
+            admit(
+                Some(&before),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&before, &edit, &[])
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "nobody shares as someone else"
+    );
+
+    let mut shared = before.clone();
+    shared
+        .apply_changes(
+            regranting(&before, &edit, &[])
+                .into_iter()
+                .map(|bytes| automerge::Change::from_bytes(bytes).unwrap()),
+        )
+        .unwrap();
+    assert!(
+        matches!(
+            admit(
+                Some(&shared),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&shared, &[], &edit)
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "only its sharer ends a share"
+    );
+    assert!(
+        admit(
+            Some(&shared),
+            member(&editor, EDITOR),
+            &OWNER,
+            &regranting(&shared, &[], &edit)
+        )
+        .is_ok(),
+        "its sharer ends it"
+    );
+}
+
 fn coverage(sequence: u64) -> crate::coverage::Coverage {
     crate::coverage::Coverage {
         room: ROOM.into(),

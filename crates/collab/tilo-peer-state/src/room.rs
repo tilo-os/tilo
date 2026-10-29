@@ -9,6 +9,7 @@ pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
 pub mod saved_shortcut;
+pub mod share;
 pub use admit::{
     AdmittedRoom, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes, check_candidate,
 };
@@ -448,10 +449,15 @@ pub fn effect_slices_kept(
         .all(|(slice, _)| own(slice))
 }
 
-/// Whether `after` differs from `before` only in the room's effect
-/// receipts and their history anchors.
+/// What one who only reads a room may still change in it: their own effect
+/// receipts and history anchors ([`effect_slices_kept`]), and its grants,
+/// as the shares they give ([`share`], decided as membership).
+const READER_WRITES: [&str; 3] = [EFFECT_RECEIPTS, EFFECT_HISTORY, "grants"];
+
+/// Whether `after` differs from `before` only in what one who only reads
+/// the room may change in it ([`READER_WRITES`]).
 #[must_use]
-pub fn only_effects_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+pub fn only_reader_writes_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     use automerge::{Prop, patches::PatchAction};
     let mut after = after.clone();
     let from = before
@@ -476,7 +482,7 @@ pub fn only_effects_differ(before: Option<&AutoCommit>, after: &AutoCommit) -> b
                 _ => None,
             },
         };
-        key.is_some_and(|key| key == EFFECT_RECEIPTS || key == EFFECT_HISTORY)
+        key.is_some_and(|key| READER_WRITES.contains(&key))
     })
 }
 

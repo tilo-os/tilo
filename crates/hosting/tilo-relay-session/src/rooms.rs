@@ -9,11 +9,11 @@
 //!   entering rooms, letting an app author a room), as provider
 //!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
 //!   only, over `Envelope::HostAction` on their session with it, naming no
-//!   workspace ([`ask_host`]), or on a room's workspace they hold there;
-//! - what a member does for themselves (claiming their topology namespace,
-//!   recording their own effect receipt, and having the host create the
-//!   empty record of an app they open there first) as provider
-//!   [`MEMBER_ACTIONS_PROVIDER`], on the room's workspace.
+//!   workspace ([`ask_host`]), or on a room's workspace they hold there.
+//!
+//! What a member does for themselves (their effect receipts, their shares,
+//! the empty record of an app they open first) their own device writes into
+//! the room; no relay is asked for it.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
@@ -113,39 +113,6 @@ pub const DETACH_HOST: &str = "room.detach-host";
 pub struct HostedRoom {
     /// The serving host's own signed address for the room, postcard in hex.
     pub host_hint: String,
-}
-
-/// The provider a relay answers a room member's own business under, on the
-/// room's workspace: what they do for themselves, never governance.
-pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
-pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
-/// Have the host governing the room create the record `record` (`""` for
-/// the app's primary) of `app`, empty and signed by the host: what opening
-/// an app there for the first time asks when the room does not hold its
-/// record. Only for an app the room lets author and a record the caller may
-/// change; no member-supplied bytes cross it, and the app's first state is
-/// then the member's own change. Answers `created` (false when the record
-/// was already there) and the room's `generation`.
-pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
-/// Share one record, or one item of it, with the room: `share` (the share's
-/// id, such as the message that shares it), `node` (the record's or item's
-/// node, in its text form) and `access` (`view` or `edit`). The room's
-/// members below the owner are granted what the access gives, never more
-/// than the caller holds (`tilo_action_policy::share`). Answers `grants`,
-/// how many it holds for the share.
-pub const SHARE_RESOURCE: &str = "resource.share";
-/// End the share `share`: revoke its grants the caller gave (or any, for a
-/// caller who may govern `revoke`). Answers `revoked`, how many; none is
-/// no error.
-pub const UNSHARE_RESOURCE: &str = "resource.unshare";
-/// What the caller may do at `node`, as the room decides their reads and
-/// writes there. Answers `read` and `undoable`.
-pub const RESOURCE_PERMITS: &str = "resource.permits";
-
-/// The resource a member's own business in `room` is published on.
-#[must_use]
-pub fn member_resource(room: &str) -> String {
-    format!("{MEMBER_RESOURCE_KIND}:{room}")
 }
 
 /// One room a relay governs, as its host actions answer it.

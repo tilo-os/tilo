@@ -24,9 +24,6 @@
 //!   invitation and entering answers the invitation the device redeems, so
 //!   a desktop shares a workspace without any governance before it holds
 //!   the room.
-//! - a member's own business in a room ([`MEMBER_ACTIONS_PROVIDER`],
-//!   `member`): claiming their topology namespace and recording their own
-//!   effect receipt, decided by the room methods the wire door called.
 //!
 //! Nothing here decides who may. Every invocation calls the [`Rooms`] method
 //! its wire door calls, and with it [`Rooms::authorize`]; the catalogue asks
@@ -64,12 +61,11 @@ use tilo_actions::{
 };
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::voice::{CallOperation, Directions};
-use tilo_relay_session::rooms::{HOST_ACTIONS_PROVIDER, MEMBER_ACTIONS_PROVIDER};
+use tilo_relay_session::rooms::HOST_ACTIONS_PROVIDER;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
 mod host;
-mod member;
 
 use super::authority::RoomOp;
 use super::{
@@ -932,30 +928,23 @@ impl Rooms {
                 .is_none_or(|wanted| wanted == provider)
         };
         let mut offer = Offer::default();
-        if (wants(ROOM_GOVERNANCE_PROVIDER) || wants(MEMBER_ACTIONS_PROVIDER))
+        if wants(ROOM_GOVERNANCE_PROVIDER)
             && let Some(workspace_id) = workspace_id
             && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
             let room = governed.lock().await;
             offer.generation = room.record.generation;
-            if wants(ROOM_GOVERNANCE_PROVIDER) {
-                let now = tilo_clock::unix_now_ns();
-                let resource = room_governance_resource(room.room());
-                let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-                let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-                let rows: Vec<CatalogueRow> = VERBS
-                    .iter()
-                    .chain(confirmed)
-                    .filter(|verb| {
-                        self.permits(&device, Some(&room), RoomOp::Govern(verb.gate), now)
-                    })
-                    .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
-                    .collect();
-                offer.add(GOVERNANCE, room.room(), rows);
-            }
-            if wants(MEMBER_ACTIONS_PROVIDER) {
-                offer.add(member::MEMBER, room.room(), member::rows(&room));
-            }
+            let now = tilo_clock::unix_now_ns();
+            let resource = room_governance_resource(room.room());
+            let owner = device.user_public_key == self.inner.host.cert.user_public_key;
+            let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
+            let rows: Vec<CatalogueRow> = VERBS
+                .iter()
+                .chain(confirmed)
+                .filter(|verb| self.permits(&device, Some(&room), RoomOp::Govern(verb.gate), now))
+                .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
+                .collect();
+            offer.add(GOVERNANCE, room.room(), rows);
         }
         if wants(HOST_ACTIONS_PROVIDER)
             && let Some(certificate) = certificate.filter(|_| speaks_for_themselves(caller))
@@ -979,9 +968,6 @@ impl Rooms {
         match (request.target.provider.as_str(), workspace_id) {
             (ROOM_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
                 self.governance_invoke(workspace_id, caller, request).await
-            }
-            (MEMBER_ACTIONS_PROVIDER, Some(workspace_id)) => {
-                self.member_invoke(workspace_id, caller, request).await
             }
             (HOST_ACTIONS_PROVIDER, _) => {
                 // Unknown and forbidden are the same answer.
@@ -1576,16 +1562,11 @@ impl ActionHost for InWorkspace {
 }
 
 /// The providers a relay that governs rooms answers itself.
-const PROVIDERS: [&str; 3] = [
-    ROOM_GOVERNANCE_PROVIDER,
-    MEMBER_ACTIONS_PROVIDER,
-    HOST_ACTIONS_PROVIDER,
-];
+const PROVIDERS: [&str; 2] = [ROOM_GOVERNANCE_PROVIDER, HOST_ACTIONS_PROVIDER];
 
 /// What a relay that governs rooms answers remote actions addressed to it
-/// with: the rooms' governance (provider [`ROOM_GOVERNANCE_PROVIDER`]), a
-/// member's own business in them ([`MEMBER_ACTIONS_PROVIDER`]), the host's
-/// own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
+/// with: the rooms' governance (provider [`ROOM_GOVERNANCE_PROVIDER`]), the
+/// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedPlane {
     pub(crate) governance: HostRoomActions,
@@ -1677,5 +1658,7 @@ impl AppServingPlane for GovernedPlane {
     }
 }
 
+#[cfg(test)]
+mod share_tests;
 #[cfg(test)]
 mod tests;

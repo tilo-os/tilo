@@ -194,9 +194,9 @@ impl ShellNetwork {
     }
 
     /// Stop sharing this device's window `tab` of `app_id` with `room`,
-    /// whose window it no longer shows, when the room's host can be reached
-    /// now. A room this device no longer holds has nothing more to ask: its
-    /// shares were stopped as it was let go.
+    /// whose window it no longer shows, written here as its sharer. A room
+    /// this device no longer holds has nothing more to end: its shares were
+    /// stopped as it was let go.
     fn stop_outlived_share(
         &self,
         room: RoomId,
@@ -207,15 +207,10 @@ impl ShellNetwork {
         if !self.tree.read().room_docs.contains_key(&room) {
             return HostAnswer::Accepted;
         }
-        // A member's own action: any member holding a session with the
-        // room's host may ask it.
-        if self.runtime.is_none() || self.hosted_room(room).is_none() {
-            return HostAnswer::Unreachable;
-        }
         match self.share_window(room, tab, app_id, false, None) {
             Ok(()) => HostAnswer::Accepted,
             Err(error) => {
-                tracing::info!(%room, tab, %error, "the workspace host did not stop sharing a closed window");
+                tracing::info!(%room, tab, %error, "the room did not stop sharing a closed window");
                 HostAnswer::Refused(error)
             }
         }

@@ -39,11 +39,9 @@ mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 pub(crate) use desktop_writes::writes_desktop;
-mod listing;
-mod member_records;
-pub use member_records::PreparedRecord;
 mod hosts;
 mod layout_scope;
+mod listing;
 mod pages;
 mod peer_parts;
 mod private;
@@ -69,6 +67,7 @@ mod unbuildable_windows;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+mod workspace_layout;
 pub(crate) use voice::carried_call_room;
 mod wait_list;
 
@@ -109,9 +108,8 @@ pub use tilo_relay_session::rooms::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, DETACH_HOST,
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
-    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, PendingInvitation, RemoveMemberRequest, RoomListing, RoomSummary,
-    SetMemberRoleRequest, UNHOST_ROOM, ask_host, member_resource,
+    IssuedInvitation, LIST_ROOMS, PendingInvitation, RemoveMemberRequest, RoomListing, RoomSummary,
+    SetMemberRoleRequest, UNHOST_ROOM, ask_host,
 };
 
 use crate::peer::WorkspaceRegistry;

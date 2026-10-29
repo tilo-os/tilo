@@ -163,8 +163,9 @@ pub fn admit_room_changes(
             let pruned = super::base::pruned(input.before, replaced);
             let candidate = super::candidate(pruned.as_ref().or(input.before), &changes)
                 .map_err(RoomRefusal::Malformed)?;
-            // One who only reads the room records only their own receipts.
-            if !writes && !super::only_effects_differ(input.before, &candidate) {
+            // One who only reads the room records only their own receipts
+            // and gives only their own shares.
+            if !writes && !super::only_reader_writes_differ(input.before, &candidate) {
                 return Err(RoomRefusal::WriteForbidden);
             }
             let membership = !governs
@@ -233,8 +234,14 @@ fn membership_authorized(
         return Err(RoomRefusal::GovernanceWriter);
     };
     let (at, after) = super::membership::position(before, changes).map_err(membership)?;
-    super::membership::authorize(input.room, &person, foreign, &at, &after, input.now_ns)
-        .map_err(membership)?;
+    super::membership::authorize(
+        input.room,
+        (&person, input.source.key, foreign),
+        &at,
+        &after,
+        input.now_ns,
+    )
+    .map_err(membership)?;
     Ok(true)
 }
 
@@ -333,8 +340,8 @@ fn saved_shortcuts_proven(
 
 /// Whether a sender that is not the governance writer may make undoable
 /// changes on the room (`true`), or only read it and so record its own
-/// effect receipts (`false`), decided against the policy already held —
-/// never the one the batch brings.
+/// effect receipts and give its own shares (`false`), decided against the
+/// policy already held — never the one the batch brings.
 fn may_write(
     before: Option<&AutoCommit>,
     room: &str,

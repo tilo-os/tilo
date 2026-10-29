@@ -300,9 +300,9 @@ impl ShellNetwork {
     }
 
     /// Whether another device governs `room` and it is a host (a home
-    /// relay), which creates the room's records on a member's request, as
-    /// `owner` holds the room.
-    pub(crate) fn host_creates_records(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
+    /// relay), whose members create its records themselves, as `owner`
+    /// holds the room.
+    pub(crate) fn governed_by_host(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
         self.governed_elsewhere(room)
             && owner
                 .with_current(room, |view| {

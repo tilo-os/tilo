@@ -188,11 +188,6 @@ fn workspace_join_wire_bytes_are_stable() {
 }
 
 #[test]
-fn the_member_resource_names_its_room() {
-    assert_eq!(super::member_resource("r"), "workspace.member:r");
-}
-
-#[test]
 fn an_actions_invitation_decodes_to_what_was_issued() {
     let issued = IssuedInvitation {
         invite_id: [4; 32],
