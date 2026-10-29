@@ -502,7 +502,7 @@ impl ShellOverlayHost {
             arrival_pulses: Vec::new(),
             banners: banners::BannerHost::default(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
-            osd_painted: std::cell::Cell::new(None),
+            osd_painted: std::cell::RefCell::new(Vec::new()),
             osd_pin: std::cell::Cell::new(None),
             motion: std::cell::Cell::new(ui::tokens::EffectiveMotion::new(
                 ui::tokens::Motion::default(),

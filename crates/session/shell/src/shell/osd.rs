@@ -111,21 +111,24 @@ pub enum OsdKind {
 /// A short caption carried inline so a readout stays `Copy`: the slab is
 /// raised from input handlers every keypress and must never allocate.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct OsdLabel {
-    bytes: [u8; Self::CAPACITY],
+pub struct OsdLabel<const N: usize = 48> {
+    bytes: [u8; N],
     len: u8,
 }
 
-impl OsdLabel {
-    const CAPACITY: usize = 48;
+impl<const N: usize> OsdLabel<N> {
+    const EMPTY: Self = Self {
+        bytes: [0; N],
+        len: 0,
+    };
 
     /// `text`, cut at the last whole character that fits.
     pub fn new(text: &str) -> Self {
-        let mut end = text.len().min(Self::CAPACITY);
+        let mut end = text.len().min(N);
         while !text.is_char_boundary(end) {
             end = end.saturating_sub(1);
         }
-        let mut bytes = [0; Self::CAPACITY];
+        let mut bytes = [0; N];
         if let (Some(dst), Some(src)) = (bytes.get_mut(..end), text.as_bytes().get(..end)) {
             dst.copy_from_slice(src);
         }
@@ -143,9 +146,72 @@ impl OsdLabel {
     }
 }
 
-impl std::fmt::Debug for OsdLabel {
+impl<const N: usize> std::fmt::Debug for OsdLabel<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("OsdLabel").field(&self.as_str()).finish()
+    }
+}
+
+/// The displays a readout is about, by the connector that drives each
+/// (`eDP-1`, `DP-2`) — what the brightness service names a monitor by.
+/// Carried inline like [`OsdLabel`]. Empty for a readout about no display
+/// in particular (volume, a backlight with no known connector): it shows on
+/// the display the person works on, and only there.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OsdDisplays {
+    connectors: [OsdLabel<OSD_CONNECTOR>; OSD_DISPLAYS],
+    len: u8,
+}
+
+/// More displays than a desk usually drives, kept small so a readout stays
+/// cheap to copy; Shift past this many dimmable displays still moves them
+/// all, the readout shows on the first ones.
+const OSD_DISPLAYS: usize = 6;
+/// Longer than any DRM connector name (`HDMI-A-1`, `Writeback-1`).
+const OSD_CONNECTOR: usize = 16;
+
+impl OsdDisplays {
+    /// About no display in particular.
+    pub const NONE: Self = Self {
+        connectors: [OsdLabel::EMPTY; OSD_DISPLAYS],
+        len: 0,
+    };
+
+    /// The displays driven by `connectors`.
+    pub fn of<'a>(connectors: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut displays = Self::NONE;
+        for connector in connectors {
+            if connector.is_empty() || displays.contains(connector) {
+                continue;
+            }
+            let Some(slot) = displays.connectors.get_mut(usize::from(displays.len)) else {
+                break;
+            };
+            *slot = OsdLabel::new(connector);
+            displays.len = displays.len.saturating_add(1);
+        }
+        displays
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.connectors
+            .iter()
+            .take(usize::from(self.len))
+            .map(OsdLabel::as_str)
+    }
+
+    pub fn contains(&self, connector: &str) -> bool {
+        self.iter().any(|known| known == connector)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl std::fmt::Debug for OsdDisplays {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -221,6 +287,9 @@ pub struct Osd {
     /// updates it in place and keeps this, so the fade-in is not replayed on
     /// every step of a volume burst.
     pub shown_since: Instant,
+    /// The displays whose state it reports, each of which shows it
+    /// ([`slab_displays`]); none for a readout about the machine as a whole.
+    pub displays: OsdDisplays,
 }
 
 impl Osd {
@@ -231,7 +300,15 @@ impl Osd {
             level,
             raised_at: now,
             shown_since: now,
+            displays: OsdDisplays::NONE,
         }
+    }
+
+    /// The same readout, about the displays in `displays`: it shows on each
+    /// of them as well as on the display the person works on.
+    #[must_use]
+    pub fn on_displays(self, displays: OsdDisplays) -> Self {
+        Self { displays, ..self }
     }
 
     pub fn volume(level: f32, muted: bool) -> Self {
@@ -878,6 +955,22 @@ pub fn pin_display(
     )
 }
 
+/// Every display `osd` paints on, the display it is pinned to first
+/// (`pinned`, see [`pin_display`]), each once. A readout about particular
+/// displays (a brightness change) shows on each of them — the screen that
+/// changed answers for itself — and also where the person works, when that
+/// is another display, so they see what their key or slider did. `outputs`
+/// pairs each display's connector with its rect in desktop coordinates.
+pub fn slab_displays(osd: &Osd, pinned: Rect, outputs: &[(&str, Rect)]) -> Vec<Rect> {
+    let mut rects = vec![pinned];
+    for (connector, rect) in outputs {
+        if !connector.is_empty() && osd.displays.contains(connector) && !rects.contains(rect) {
+            rects.push(*rect);
+        }
+    }
+    rects
+}
+
 /// Drop an expired slab. Returns `true` when something was cleared, so
 /// the caller knows to bump its repaint revision.
 pub fn expire(current: &mut Option<Osd>, now: Instant) -> bool {
@@ -1148,6 +1241,28 @@ mod tests {
         // Its display unplugged: the readout goes where the person works.
         let (pin, _) = pin_display(Some(pin), &again, panel, &[panel]);
         assert_eq!(pin.display, panel);
+    }
+
+    #[test]
+    fn a_readout_about_displays_shows_on_each_and_where_the_person_works() {
+        let panel = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let monitor = Rect::new(1472.0, 0.0, 3392.0, 1080.0);
+        let outputs = [("eDP-1", panel), ("DP-1", monitor)];
+        let volume = Osd::volume(0.4, false);
+        assert_eq!(slab_displays(&volume, panel, &outputs), [panel]);
+        let on_monitor =
+            Osd::display_brightness(0.4, Some("Monitor")).on_displays(OsdDisplays::of(["DP-1"]));
+        assert_eq!(slab_displays(&on_monitor, monitor, &outputs), [monitor]);
+        assert_eq!(
+            slab_displays(&on_monitor, panel, &outputs),
+            [panel, monitor]
+        );
+        let both = Osd::display_brightness(0.4, Some("All displays"))
+            .on_displays(OsdDisplays::of(["eDP-1", "DP-1", "DP-1"]));
+        assert_eq!(slab_displays(&both, monitor, &outputs), [monitor, panel]);
+        let unplugged =
+            Osd::display_brightness(0.4, None).on_displays(OsdDisplays::of(["HDMI-A-1"]));
+        assert_eq!(slab_displays(&unplugged, panel, &outputs), [panel]);
     }
 
     #[test]

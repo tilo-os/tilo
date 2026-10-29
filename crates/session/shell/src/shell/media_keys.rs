@@ -23,7 +23,7 @@ use xkeysym::key as keysyms;
 
 use media::audio::default_node::VolumeState;
 
-use crate::shell::osd::{Osd, Transport};
+use crate::shell::osd::{Osd, OsdDisplays, Transport};
 use crate::shell::status::StatusBridge;
 use tilo_quick_settings::actions::QsActions;
 
@@ -371,8 +371,9 @@ fn toggle_mic_mute(
 
 /// A brightness key: the display the person works on moves by `delta`, or,
 /// with Shift, every display together, each keeping its share of the
-/// brightest one's level. The readout names the display whenever more than
-/// one can be dimmed.
+/// brightest one's level. The readout shows on every display that changed
+/// and names the display whenever more than one can be dimmed, or when the
+/// one that changed is not the one the person works on.
 fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_>) -> Option<Osd> {
     // Cached levels: a DDC/CI read takes tens of milliseconds, and a held
     // key repeats faster than that.
@@ -380,16 +381,20 @@ fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_
         let levels: Vec<f32> = keys.displays.iter().map(|display| display.level).collect();
         let next = os_actions::step_together(&levels, delta);
         let mut moved = None::<f32>;
+        let mut changed = Vec::with_capacity(keys.displays.len());
         for (display, level) in keys.displays.iter().zip(&next) {
             if actions
                 .set_display_brightness(&display.connector, level * 100.0)
                 .is_ok()
             {
                 moved = Some(moved.map_or(*level, |brightest| brightest.max(*level)));
+                changed.push(display.connector.as_str());
             }
         }
         let all = crate::shell::i18n::t("osd-all-displays");
-        return moved.map(|brightest| Osd::display_brightness(brightest, Some(&all)));
+        return moved.map(|brightest| {
+            Osd::display_brightness(brightest, Some(&all)).on_displays(OsdDisplays::of(changed))
+        });
     }
     let target = keys
         .focused
@@ -400,8 +405,12 @@ fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_
         actions
             .set_display_brightness(&display.connector, next * 100.0)
             .ok()?;
-        let name = (keys.displays.len() > 1).then_some(display.name.as_str());
-        return Some(Osd::display_brightness(next, name));
+        let name = brightness_names_display(keys.displays.len(), keys.focused, &display.connector)
+            .then_some(display.name.as_str());
+        return Some(
+            Osd::display_brightness(next, name)
+                .on_displays(OsdDisplays::of([display.connector.as_str()])),
+        );
     }
     // No poller: reading sysfs is a file read, not a subprocess, so
     // asking every time is cheap. A machine with nothing to read — an
@@ -413,6 +422,18 @@ fn step_brightness(delta: f32, actions: &dyn QsActions, keys: &BrightnessKeys<'_
     let next = (now + delta).clamp(0.0, 1.0);
     actions.set_brightness(next * 100.0).ok()?;
     Some(Osd::brightness(next))
+}
+
+/// Whether a brightness readout about the display on `connector` names it:
+/// when more than one display can be dimmed, and when the person works on
+/// another display, where the readout also shows and must say which screen
+/// it is about.
+pub(crate) fn brightness_names_display(
+    dimmable: usize,
+    focused: Option<&str>,
+    connector: &str,
+) -> bool {
+    dimmable > 1 || focused.is_some_and(|focused| focused != connector)
 }
 
 fn step_keyboard_backlight(up: bool, actions: &dyn QsActions) -> Option<Osd> {
@@ -841,8 +862,13 @@ mod tests {
         )
         .expect("an OSD for the adjusted display");
         assert_eq!(osd.caption(), "Brightness 40%, Dell U2723");
+        assert_eq!(
+            osd.displays,
+            OsdDisplays::of(["DP-2"]),
+            "about that display"
+        );
         // Focus on a display without a control adjusts the first.
-        press_brightness(
+        let other = press_brightness(
             &rec,
             MediaKey::BrightnessDown,
             BrightnessKeys {
@@ -850,11 +876,26 @@ mod tests {
                 focused: Some("HDMI-A-1"),
                 all: false,
             },
-        );
+        )
+        .expect("an OSD for the first display");
         assert_eq!(
             *rec.calls.borrow(),
             ["brightness:DP-2=40.0", "brightness:eDP-1=40.0"]
         );
+        assert_eq!(other.displays, OsdDisplays::of(["eDP-1"]));
+        // The only dimmable display, changed from another one: the readout
+        // also shows where the person works, so it says which screen.
+        let elsewhere = press_brightness(
+            &rec,
+            MediaKey::BrightnessUp,
+            BrightnessKeys {
+                displays: &displays[..1],
+                focused: Some("HDMI-A-1"),
+                all: false,
+            },
+        )
+        .expect("an OSD");
+        assert_eq!(elsewhere.caption(), "Brightness 60%, Built-in display");
         // One dimmable display needs no name.
         let alone = press_brightness(
             &rec,
@@ -892,6 +933,11 @@ mod tests {
             "the dimmer display stays at half the brighter one"
         );
         assert_eq!(osd.caption(), "Brightness 70%, All displays");
+        assert_eq!(
+            osd.displays,
+            OsdDisplays::of(["eDP-1", "DP-2"]),
+            "it shows on every display that changed"
+        );
     }
 
     #[test]
@@ -901,6 +947,10 @@ mod tests {
         let osd = apply_local(MediaKey::BrightnessUp, &rec, None).expect("an OSD");
         assert_eq!(rec.calls.borrow().as_slice(), ["brightness=60.0"]);
         assert_eq!(osd.caption(), "Brightness 60%");
+        assert!(
+            osd.displays.is_empty(),
+            "no connector: where the person works"
+        );
     }
 
     #[test]

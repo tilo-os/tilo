@@ -233,9 +233,17 @@ impl ShellOverlayHost {
     }
 
     /// Where the hardware-key readout (volume, brightness) was last
-    /// painted; `None` while none is up.
+    /// painted on the display it is pinned to, the one the person works on;
+    /// `None` while none is up.
     pub fn osd_rect(&self) -> Option<Rect> {
-        self.osd_painted.get()
+        self.osd_painted.borrow().first().copied()
+    }
+
+    /// Every slab of the hardware-key readout the last paint drew, the one
+    /// on the display the person works on first: a brightness readout also
+    /// shows on each display that changed ([`crate::shell::osd::slab_displays`]).
+    pub fn osd_rects(&self) -> Vec<Rect> {
+        self.osd_painted.borrow().clone()
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -246,7 +254,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.osd_painted.set(None);
+        self.osd_painted.borrow_mut().clear();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -292,13 +300,24 @@ impl ShellOverlayHost {
         if alpha <= 0.0 {
             return;
         }
-        // Clear of the caret there.
-        let area = crate::shell::osd::OsdArea {
-            viewport: pin.display,
-            caret: self.text_caret,
-        };
-        self.osd_painted
-            .set(osd.draw(scene, transform, text_renderer, theme, area, alpha));
+        // A brightness readout also shows on each display that changed, with
+        // the same motion and expiry: one readout, several slabs.
+        let outputs: Vec<(&str, Rect)> = self
+            .outputs
+            .iter()
+            .map(|output| (output.connector.as_str(), output.rect()))
+            .collect();
+        let mut painted = self.osd_painted.borrow_mut();
+        for display in crate::shell::osd::slab_displays(&osd, pin.display, &outputs) {
+            // Clear of the caret there.
+            let area = crate::shell::osd::OsdArea {
+                viewport: display,
+                caret: self.text_caret,
+            };
+            if let Some(rect) = osd.draw(scene, transform, text_renderer, theme, area, alpha) {
+                painted.push(rect);
+            }
+        }
     }
 
     /// Paint the passing acknowledgement ("Enrollment token copied"), if one

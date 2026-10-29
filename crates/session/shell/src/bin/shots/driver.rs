@@ -231,6 +231,11 @@ impl ShellDriver {
     /// compositor would report — rather than one display the size of the
     /// viewport, so each window group's width is a fraction of its own
     /// monitor.
+    /// The displays the shell is laid out across, as last set.
+    pub fn outputs(&self) -> &[shell::compositor::backend::Output] {
+        &self.outputs
+    }
+
     pub fn set_outputs(&mut self, outputs: &[shell::compositor::backend::Output]) {
         self.outputs = outputs.to_vec();
         self.fb

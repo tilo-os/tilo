@@ -203,19 +203,24 @@ impl ShellOverlayHost {
             }
             QsLevelChange::Display(connector, level) => {
                 let value_pct = percent(level);
-                // The readout names the display whenever more than one can
-                // be dimmed.
+                // The readout shows on the display that changed as well as
+                // on the one the panel is open on, and names the display
+                // whenever more than one can be dimmed or it is not the one
+                // in use.
                 let target = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
+                    let focused = self.focused_connector_of(&state);
                     let displays = &state.quick_settings.displays;
                     displays
                         .iter()
                         .find(|display| display.connector == connector)
                         .map(|display| {
-                            (
-                                display.connector.clone(),
-                                (displays.len() > 1).then(|| display.name.clone()),
-                            )
+                            let named = crate::shell::media_keys::brightness_names_display(
+                                displays.len(),
+                                focused.as_deref(),
+                                &display.connector,
+                            );
+                            (display.connector.clone(), named.then(|| display.name.clone()))
                         })
                 });
                 let result = target.map_or_else(
@@ -223,16 +228,17 @@ impl ShellOverlayHost {
                     |(connector, name)| {
                         actions
                             .set_display_brightness(&connector, value_pct)
-                            .map(|()| name)
+                            .map(|()| (connector, name))
                     },
                 );
                 (
                     QsField::Brightness,
-                    result.map(|name| {
+                    result.map(|(connector, name)| {
                         crate::shell::osd::Osd::display_brightness(
                             value_pct / 100.0,
                             name.as_deref(),
                         )
+                        .on_displays(crate::shell::osd::OsdDisplays::of([connector.as_str()]))
                     }),
                 )
             }

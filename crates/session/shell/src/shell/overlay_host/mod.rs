@@ -824,8 +824,9 @@ pub struct ShellOverlayHost {
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
-    /// Where the hardware-key readout was last painted, `None` while none is.
-    osd_painted: std::cell::Cell<Option<Rect>>,
+    /// Where the hardware-key readout's slabs were last painted, the one on
+    /// the display it is pinned to first; empty while none is up.
+    osd_painted: std::cell::RefCell<Vec<Rect>>,
     /// The display the readout was raised on, kept while it is up
     /// ([`crate::shell::osd::pin_display`]).
     osd_pin: std::cell::Cell<Option<crate::shell::osd::OsdPin>>,
