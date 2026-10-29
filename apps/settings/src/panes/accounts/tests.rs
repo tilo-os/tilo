@@ -235,7 +235,7 @@ fn adding_an_account_opens_its_form_where_add_account_was() {
         .position(|line| *line == t("accounts-add"))
         .expect("Add account is on the page");
     change(&mut app, |pane| {
-        pane.form_kind = Some(AccountKind::Nextcloud)
+        pane.form_kind = Some(AccountKind::Nextcloud);
     });
     let after = announced(&mut app);
     let title = t_args(

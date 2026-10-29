@@ -108,11 +108,11 @@ pub struct PanelActions(Rc<std::cell::RefCell<Option<Actions<Settings>>>>);
 
 impl PanelActions {
     /// What `build` makes with the panel's controls bound through `actions`.
-    fn lent<T>(&self, actions: Actions<Settings>, make: impl FnOnce() -> T) -> T {
+    fn lent<T>(&self, actions: Actions<Settings>, build: impl FnOnce() -> T) -> T {
         *self.0.borrow_mut() = Some(actions);
-        let made = make();
+        let page = build();
         *self.0.borrow_mut() = None;
-        made
+        page
     }
 }
 

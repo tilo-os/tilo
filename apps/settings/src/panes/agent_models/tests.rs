@@ -889,7 +889,7 @@ fn providers_are_the_persons_settings() {
             .get()
             .config
             .default_profile,
-        Some(id.clone())
+        Some(id)
     );
     assert_eq!(
         app.settings::<HostedAgentProviders>().get().hosted.profiles,
