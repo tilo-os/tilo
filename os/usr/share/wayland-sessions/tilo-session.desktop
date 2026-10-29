@@ -1,0 +1,14 @@
+[Desktop Entry]
+# The native Tilo session, offered beside shell.desktop while it replaces the
+# shell. Its Name sorts after "Tilo", so the greeter keeps the shell as the
+# session it selects first (crates/session/greeter/src/sessions.rs).
+#
+# `Exec` runs the same Tilo session wrapper as shell.desktop, with the same
+# systemd targets, activation environment and flight record; `--native` makes
+# it run /usr/bin/tilo-session, and the rest is that binary's command line.
+Name=Tilo (native session)
+GenericName=Desktop
+Comment=Collaborative spatial desktop environment, native session
+Exec=/usr/libexec/tilo-session --native --backend drm
+Type=Application
+DesktopNames=tilo

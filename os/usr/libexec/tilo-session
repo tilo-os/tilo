@@ -5,7 +5,7 @@
 #
 # Restarting the desktop without logging out: SIGUSR1 asks this wrapper to
 # stop the compositor (SIGTERM, then it waits for it to exit) and to start
-# $SHELL_BIN again with the same arguments. The PAM session, the user manager
+# it again with the same arguments. The PAM session, the user manager
 # and tilo-graphical-session.target stay up across the restart; apps lose
 # their Wayland connection and reopen through continuity, as after any
 # compositor restart. Each compositor run gets its own flight record: the run
@@ -23,6 +23,7 @@ ulimit -c 0
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 readonly SHELL_BIN=/usr/bin/shell
+readonly NATIVE_SESSION_BIN=/usr/bin/tilo-session
 readonly MKDTEMP=/usr/bin/mktemp
 readonly RM=/usr/bin/rm
 readonly RMDIR=/usr/bin/rmdir
@@ -51,6 +52,16 @@ if [[ $(uname -m) == aarch64 ]]; then
       break
     fi
   done
+fi
+
+compositor_bin=$SHELL_BIN
+if [ "${1:-}" = --native ]; then
+  compositor_bin=$NATIVE_SESSION_BIN
+  shift
+fi
+if [ ! -x "$compositor_bin" ]; then
+  echo "tilo-session: $compositor_bin is missing or not executable" >&2
+  exit 1
 fi
 
 target_started=0
@@ -312,7 +323,7 @@ start_flight_record() {
   # dead recorder still gives writers EPIPE instead of a full pipe.
   exec 3<>"$flight_pipe"
   TILO_FLIGHT_RECORD_READY="$flight_ready" \
-    "$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" \
+    "$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$compositor_bin" \
     <"$flight_pipe" 3<&- &
   flight_relay_pid=$!
   exec 4>"$flight_pipe" 3<&-
@@ -371,7 +382,7 @@ while :; do
   restart_requested=0
   start_flight_record
   set +e
-  run_managed "$SHELL_BIN" "$@" >&4 2>&1 4>&-
+  run_managed "$compositor_bin" "$@" >&4 2>&1 4>&-
   status=$?
   end_flight_record "$status"
   set -e

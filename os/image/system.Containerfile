@@ -273,12 +273,14 @@ COPY os/usr/share/tilo/community.toml /usr/share/tilo/community.toml
 COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
 COPY os/etc/gitconfig /etc/gitconfig
 
-# The one Wayland session. tilo-greeter starts it directly and shows a session
-# picker only when the directory offers a real choice, so nothing else may land
-# in /usr/share/wayland-sessions or /usr/share/xsessions; the image contract
-# below enforces that. The separate text-mode tuigreet package is intentionally
-# absent from this image.
-COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
+# The Wayland sessions: the shell, which tilo-greeter selects first, and the
+# native session that replaces it, which the picker offers beside it. Nothing
+# else may land in /usr/share/wayland-sessions or /usr/share/xsessions; the
+# image contract enforces that. The separate text-mode tuigreet package is
+# intentionally absent from this image.
+COPY os/usr/share/wayland-sessions/shell.desktop \
+    os/usr/share/wayland-sessions/tilo-session.desktop \
+    /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-security-audit \
     os/usr/libexec/tilo-firstboot-user \

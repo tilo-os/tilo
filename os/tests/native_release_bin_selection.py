@@ -38,7 +38,7 @@ for library in libraries:
     assert len(owners) == 1, (library, owners)
     assert f"-p {owners[0]} --lib" in recipe, f"{library}.so is staged but never built"
 vm_bins = {"tilo-windows-vm-control", "tilo-windows-rail"}
-desktop_bins = {"shell", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
+desktop_bins = {"shell", "tilo-session", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
 excluded = set()
 for browser in ("0", "1"):
     for desktop in ("0", "1"):
