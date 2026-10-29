@@ -50,9 +50,9 @@ pub(super) struct LayoutRuntime {
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
-    /// (`app::retained_layout`).
+    /// ([`crate::host_core::HostCore::layout_maps_stale`]).
     pub(super) adopted: crate::retained_widgets::Adopted,
-    /// How many builds' maps were admitted (`App::admit_layout_maps`).
+    /// How many builds' maps were admitted ([`crate::host_core::HostCore::admit_layout_maps`]).
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).

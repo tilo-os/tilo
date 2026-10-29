@@ -65,7 +65,6 @@ mod retirement_lifecycle_tests;
 mod surface_route;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
-mod retained_layout;
 mod runtime;
 mod window_bar;
 use runtime::{

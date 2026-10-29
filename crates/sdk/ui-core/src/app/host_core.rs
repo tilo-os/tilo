@@ -63,6 +63,48 @@ impl crate::host_core::HostCore for App {
         self.layout.layout_dirty = true;
     }
 
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        visit(self.root_widget.as_ref());
+        if let Some(history) = self.history.as_deref() {
+            visit(history);
+        }
+        if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            visit(dialog);
+        }
+        if let Some(palette) = self.actions.action_palette.as_deref() {
+            visit(palette);
+        }
+        self.document_history.for_each_widget(visit);
+    }
+
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
+        &mut self.layout.adopted
+    }
+
+    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
+        crate::host_core::HostLayout {
+            taffy: &mut self.layout.taffy,
+            node_map: &mut self.layout.node_map,
+            bindings: &mut self.bindings,
+            focused: &mut self.focused_node,
+        }
+    }
+
+    fn discard_layout_maps(&mut self) {
+        self.bindings.clear();
+        self.layout.node_map.clear();
+        self.layout.adopted.clear();
+        self.layout.request_rebuild();
+    }
+
+    fn layout_admitted(&mut self) {
+        self.layout.admissions = self.layout.admissions.wrapping_add(1);
+    }
+
+    fn composition_replaced(&mut self) -> bool {
+        self.forget_replaced_widgets()
+    }
+
     fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
     }

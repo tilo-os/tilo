@@ -290,12 +290,105 @@ impl<'a> ResourceInvocation<'a> {
     }
 }
 
+/// A host's laid-out tree, writable: what letting go of nodes touches.
+pub(crate) struct HostLayout<'a> {
+    pub(crate) taffy: &'a mut TaffyTree<()>,
+    pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) focused: &'a mut Option<NodeId>,
+}
+
 pub(crate) trait HostCore {
     /// The host's document and laid-out tree.
     fn tree(&self) -> HostTree<'_>;
 
     /// The host's document, writable, beside its bindings.
     fn document(&mut self) -> HostDocument<'_>;
+
+    /// Every tree the layout maps can name: the app root and what the host
+    /// lays out around and over it.
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
+
+    /// The walk the layout maps were admitted against.
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted;
+
+    /// The laid-out tree, writable.
+    fn layout_mut(&mut self) -> HostLayout<'_>;
+
+    /// Forget the layout maps and build the layout again before anything
+    /// reads them.
+    fn discard_layout_maps(&mut self);
+
+    /// The maps were just admitted.
+    fn layout_admitted(&mut self) {}
+
+    /// Whether a widget replaced children since the maps were admitted, so
+    /// they no longer describe the live tree.
+    fn composition_replaced(&mut self) -> bool;
+
+    /// Right after a build registered widgets in the maps, before any
+    /// widget code runs: find each of them in the live tree.
+    fn admit_layout_maps(&mut self) {
+        self.layout_admitted();
+        let mut maps = std::mem::take(self.adopted_layout_mut());
+        let tree = self.tree();
+        // SAFETY: every pointer not yet adopted was registered by the build
+        // that just ran on these trees, and no widget code ran since.
+        unsafe {
+            maps.admit(
+                tree.node_map,
+                &|visit| self.visit_layout_roots(visit),
+                tree.taffy,
+            );
+        }
+        *self.adopted_layout_mut() = maps;
+    }
+
+    /// Whether the maps name a widget that is no longer in the tree: a
+    /// widget replaced children without reporting it. The maps are then
+    /// forgotten and the layout built again, so nothing reads them first.
+    fn layout_maps_stale(&mut self) -> bool {
+        if self.tree().node_map.is_empty() {
+            return false;
+        }
+        let maps = std::mem::take(self.adopted_layout_mut());
+        let mut relaid = Vec::new();
+        let live = maps.still_live(&|visit| self.visit_layout_roots(visit), &mut relaid);
+        *self.adopted_layout_mut() = maps;
+        if live {
+            let layout = self.layout_mut();
+            let removed =
+                crate::retained_widgets::let_go_under(&relaid, layout.taffy, layout.node_map);
+            layout.bindings.forget(&removed);
+            if layout.focused.is_some_and(|node| removed.contains(&node)) {
+                *layout.focused = None;
+            }
+            return false;
+        }
+        self.discard_layout_maps();
+        true
+    }
+
+    /// Where focus is, as an identity that survives a rebuild. The mapped
+    /// tree is read only while it still is the live composition; once a
+    /// widget replaced children since the maps were admitted, the focused
+    /// control is found in the live tree instead.
+    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+        let replaced = self.composition_replaced();
+        let tree = self.tree();
+        if replaced || tree.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(tree.root);
+        }
+        // SAFETY: no widget was replaced since the maps were admitted, so
+        // they describe this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                tree.focused,
+                tree.node_map,
+                tree.bindings,
+            )
+        }
+    }
 
     /// Something is about to reach a laid-out widget, which may change what
     /// the host presents next.

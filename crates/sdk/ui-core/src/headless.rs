@@ -1243,26 +1243,6 @@ impl FrameHarness {
         self.composition_replaced
     }
 
-    /// Where focus is, as an identity that survives a rebuild. The mapped
-    /// tree is read only while it still is the live composition: once a
-    /// widget replaced children since the maps were admitted, the focused
-    /// control is found in the live tree instead, and the change stays
-    /// pending for the next layout.
-    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
-        if self.composition_changed() || self.node_map.is_empty() {
-            return crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
-        }
-        // SAFETY: no composition change since these maps were admitted, so
-        // they describe this exclusively owned live tree.
-        unsafe {
-            crate::widget::layout::CompositionFocus::capture(
-                self.focused,
-                &self.node_map,
-                &self.bindings,
-            )
-        }
-    }
-
     /// Force the next frame to recompose from scratch. Inputs that shape
     /// every widget's style at build time (theme, platform conventions,
     /// interaction environment, an installed history host) go through here
@@ -9119,6 +9099,38 @@ impl crate::host_core::HostCore for FrameHarness {
         self.focused = None;
     }
 
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        visit(self.root.as_ref());
+        if let Some(history) = self.history.as_deref() {
+            visit(history);
+        }
+        if let Some(palette) = self.action_palette.as_deref() {
+            visit(palette);
+        }
+        self.document_history.for_each_widget(visit);
+    }
+
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
+        &mut self.layout_maps
+    }
+
+    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
+        crate::host_core::HostLayout {
+            taffy: &mut self.taffy,
+            node_map: &mut self.node_map,
+            bindings: &mut self.bindings,
+            focused: &mut self.focused,
+        }
+    }
+
+    fn discard_layout_maps(&mut self) {
+        self.discard_layout_tree();
+    }
+
+    fn composition_replaced(&mut self) -> bool {
+        self.composition_changed()
+    }
+
     fn history_changed_document(&mut self) {
         self.invalidate_layout_tree();
     }
@@ -9344,29 +9356,11 @@ impl crate::host_core::ControlHost for FrameHarness {
         Ok(started)
     }
 
-    fn ask_person(
-        &mut self,
-        target: crate::bound_dispatch::local_target::LocalResourceTarget,
-        address: tilo_actions::ActionAddress,
-        arguments: crate::bound_dispatch::ControlContinuationArguments,
-        confirming: bool,
-    ) -> bool {
-        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
-            self.root.as_ref(),
-            &self.state.doc,
-            target,
-            &self.control_domain,
-            address,
-            arguments,
-        );
-        let request = match request {
-            Ok(request) if confirming => request.confirming(),
-            Ok(request) => request.asking_first(),
-            Err(error) => {
-                self.refuse_visibly(&error);
-                return false;
-            }
-        };
+    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+        &self.control_domain
+    }
+
+    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
         if self.action_palette.is_none() {
             self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
