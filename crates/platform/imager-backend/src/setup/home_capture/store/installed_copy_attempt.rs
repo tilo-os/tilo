@@ -744,7 +744,9 @@ impl InstalledCopyAttempt {
             return Err(failure("Installed scratch checkpoint state differs"));
         }
         record.scratch = Some(facts);
-        record.phase.advance(Route::InstalledCopy, Phase::ScratchReady)?;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::ScratchReady)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)
@@ -768,7 +770,9 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed copy launch checkpoint differs"));
         }
-        record.phase.advance(Route::InstalledCopy, Phase::Launching)?;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Launching)?;
         record.read_claim = Some(digest);
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
@@ -875,7 +879,9 @@ impl InstalledCopyAttempt {
             return Err(failure("Installed copy export checkpoint differs"));
         }
         record.exported_response_sha256 = Some(hash);
-        record.phase.advance(Route::InstalledCopy, Phase::Exported)?;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Exported)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)
@@ -900,7 +906,9 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed copy verify checkpoint differs"));
         }
-        record.phase.advance(Route::InstalledCopy, Phase::Verifying)?;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Verifying)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)?;
