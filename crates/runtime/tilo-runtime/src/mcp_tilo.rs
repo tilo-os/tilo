@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Addressed, LsArgs, McpServer, OneCall, Reply, app_names};
+use super::{ActionHost, Addressed, Done, LsArgs, McpServer, OneCall, Reply, app_names};
 
 /// Where a door starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
@@ -511,13 +511,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (Some(app), Some(item)) = (read["app"].as_str(), read["item"].as_str()) else {
             return json!({"err": "a read names its app and item"});
         };
-        let provider = match self.provider_of(app, providers).await {
-            Ok(provider) => provider,
-            Err(why) => return json!({"err": why}),
-        };
+        if let Err(why) = self.provider_of(app, providers).await {
+            return json!({"err": why});
+        }
         let mut arguments = Map::new();
         arguments.insert("item".to_owned(), json!(item));
-        self.host_read(provider, READ_VALUES, arguments).await
+        self.host_read(app, READ_VALUES, arguments).await
     }
 
     /// The task's query `query` (`{app, request}`: a program's `grep`, `find`, `read` or
@@ -526,41 +525,28 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (Some(app), Some(request)) = (query["app"].as_str(), query.get("request")) else {
             return json!({"err": "a query names its app and request"});
         };
-        let provider = match self.provider_of(app, providers).await {
-            Ok(provider) => provider,
-            Err(why) => return json!({"err": why}),
-        };
+        if let Err(why) = self.provider_of(app, providers).await {
+            return json!({"err": why});
+        }
         let mut arguments = Map::new();
         arguments.insert("request".to_owned(), json!(request.to_string()));
-        self.host_read(provider, READ_FOR_PROGRAM, arguments).await
+        self.host_read(app, READ_FOR_PROGRAM, arguments).await
     }
 
     /// The read `action` of an app's tilolang host, as the task: `{"ok": answer}` or `{"err":
     /// why}`.
-    async fn host_read(
-        &self,
-        provider: Addressed,
-        action: &str,
-        arguments: Map<String, Value>,
-    ) -> Value {
-        let value = Box::pin(self.invoke_one(OneCall {
-            provider,
-            workspace: false,
-            revision: None,
-            resource: HOST_RESOURCE.to_owned(),
-            action: action.to_owned(),
-            arguments,
-            invocation_id: None,
-            wait_ms: None,
-        }))
-        .await;
-        match value {
-            Ok(value)
+    async fn host_read(&self, app: &str, action: &str, arguments: Map<String, Value>) -> Value {
+        // The app's tilolang host resource, as the app publishes it to this caller.
+        let name = app_names(&[app.to_owned()]).join("");
+        let path = format!("{name}/{HOST_NAME}#{action}");
+        match Box::pin(self.do_one_value(&path, arguments, None, None)).await {
+            Ok(Done::Invoked { value, .. })
                 if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") =>
             {
                 json!({"ok": value.pointer("/update/output/value").cloned().unwrap_or(Value::Null)})
             }
-            Ok(value) => json!({"err": super::outcome(&value).text}),
+            Ok(Done::Invoked { value, .. }) => json!({"err": super::outcome(&value).text}),
+            Ok(Done::Launched(_)) => json!({"err": format!("{name} was not open; it is opening")}),
             Err(why) => json!({"err": why}),
         }
     }
@@ -624,8 +610,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 /// The instance that answers for each app, by app id.
 type Providers = BTreeMap<String, Addressed>;
 
-/// The resource every tilolang app answers a task's reads on, and the read.
-const HOST_RESOURCE: &str = "tl:host";
+/// The resource every tilolang app answers a task's reads on, by its name, and the reads.
+const HOST_NAME: &str = "tilolang";
 const READ_VALUES: &str = "read-values";
 const READ_FOR_PROGRAM: &str = "read-for-program";
 

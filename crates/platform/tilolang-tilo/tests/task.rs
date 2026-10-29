@@ -203,6 +203,8 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
         "todo.tasks.items.len()",
         "print(todo.tasks.items.len())",
         "todo.tasks.items",
+        "todo.tasks.items.filter(t -> t.done)",
+        "todo.tasks.items.filter(t -> t.done).len()",
     ] {
         let answer = session.run(source, false);
         assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
