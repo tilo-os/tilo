@@ -758,7 +758,7 @@ impl Shown {
 }
 
 /// The person's formats, as Region & Formats keeps them.
-fn formats(locale: &Locale) -> ui::format::Formats {
+fn formats(locale: Locale) -> ui::format::Formats {
     ui::format::Formats::with(ui::format::RegionFormats {
         date: locale.date_format,
         time: locale.time_format,
@@ -890,12 +890,12 @@ fn page(
     cx: &ViewCx<ClockPrefs>,
     actions: &Actions<Settings>,
     area: &TimeDateArea,
-    formats: &ui::format::Formats,
+    formats: ui::format::Formats,
     automatic: bool,
 ) -> Element {
     let shown = area.reading.get().map(Shown::of);
     let shown = shown.as_ref();
-    let (now, today) = area.clock.now(formats);
+    let (now, today) = area.clock.now(&formats);
     let now = value_row(&t("time-current-time"), &now);
     let today = value_row(&t("time-current-date"), &today);
     let clock = section(
@@ -973,8 +973,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
             Rc::clone(&following),
             prefs.clone(),
         );
-        cx.switch(&cx.value(Locale::clone), move |cx, locale| {
-            let formats = formats(locale);
+        cx.switch(&cx.value(|locale: &Locale| *locale), move |cx, locale| {
+            let formats = formats(*locale);
             let (app, actions, shown, following) = (
                 Rc::clone(&app),
                 actions.clone(),
@@ -990,7 +990,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                     cx.switch(&shown, move |cx, _| {
                         let _followed = &following;
                         match area(&app) {
-                            Some(area) => page(cx, &actions, area, &formats, automatic),
+                            Some(area) => page(cx, &actions, area, formats, automatic),
                             None => crate::widgets::page(Vec::new()),
                         }
                     })
@@ -1008,6 +1008,7 @@ mod tests {
     use crate::resource::SettingsShell;
     use ui::clock::TimeStyle;
     use ui::prelude::TestApp;
+    use ui::widget::Widget;
 
     fn fixture_points() -> Vec<TimeZonePoint> {
         let zones = vec![

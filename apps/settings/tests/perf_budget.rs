@@ -227,13 +227,21 @@ fn drawn_pages_switch() {
 #[test]
 fn globe_drag_frame() {
     // Time & Date is view code over its sections, built only in the app's
-    // view.
-    let mut app = crate::support::window_on(Category::TimeDate, (W, H));
+    // view; a capture's clock is the sample one, whose zones the globe
+    // places.
+    let mut app =
+        crate::support::Window::capture_at(Some(Category::TimeDate.slug()), (W as u32, H as u32))
+            .expect("settings opens on Time & date");
     let h = app.harness();
     // The clock is read off the UI thread; the globe is drawn once it lands.
     let globe = tilo_test_env::wait_for("the globe is laid out", || {
         let _ = h.poll_frame();
-        h.targets().get("time.timezone-map").copied()
+        // The globe is the page's one canvas.
+        h.a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::Canvas)
+            .and_then(|(_, node)| node.bounds())
+            .map(|b| vello::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1))
     });
     let c = globe.center();
     let mut samples = Samples::default();

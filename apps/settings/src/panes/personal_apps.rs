@@ -592,7 +592,7 @@ mod tests {
         app.settle();
         let shown = |app: &mut TestApp<SettingsShell>| {
             ui::widget::find_test_id(app.harness().root_widget(), "personal-default.ext:pdf")
-                .and_then(|chooser| chooser.accessibility())
+                .and_then(ui::widget::Widget::accessibility)
                 .and_then(|node| node.value)
         };
         assert_eq!(shown(&mut app).as_deref(), Some("so.tilo.a"));
