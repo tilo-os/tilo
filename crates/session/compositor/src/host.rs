@@ -26,8 +26,16 @@ pub struct HostLayer {
 /// A hosted surface app, as the compositor sees it.
 pub trait SurfaceHost {
     /// The layers this surface shows now, bottom first. Hosts draw above
-    /// every window, later hosts above earlier ones.
+    /// every window ([`Self::below_windows`] aside), later hosts above
+    /// earlier ones.
     fn layers(&self) -> Vec<HostLayer>;
+
+    /// Whether this surface lies under every window rather than above
+    /// them: the desktop itself (its wallpaper, window bars and strips).
+    /// It takes the pointer only where no window is.
+    fn below_windows(&self) -> bool {
+        false
+    }
 
     /// Whether the pointer at this logical point belongs to this surface
     /// rather than to what lies beneath it.

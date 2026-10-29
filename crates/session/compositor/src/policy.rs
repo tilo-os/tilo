@@ -85,6 +85,20 @@ pub trait WindowPolicy {
     /// A switch changed state: the lid closed or opened, a convertible
     /// folded into or out of tablet shape.
     fn switch(&mut self, _switch: Switch, _on: bool) {}
+
+    /// The window the policy brought forward itself (a person switching
+    /// windows from the desktop's own controls), asked after every
+    /// arrangement: the compositor gives it the keyboard. `None` leaves
+    /// focus where it is.
+    fn focused(&mut self) -> Option<u64> {
+        None
+    }
+
+    /// The windows a person closed through the policy's own controls since
+    /// it was last asked: the compositor asks each client to close them.
+    fn take_close_requests(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
 }
 
 /// Floating windows centred on the first output, each focused as it maps

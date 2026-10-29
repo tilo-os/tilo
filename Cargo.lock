@@ -21352,6 +21352,7 @@ dependencies = [
  "smithay",
  "tilo-compositor",
  "tilo-cpu-raster",
+ "tilo-desktop-policy",
  "tilo-topbar",
  "tilo-ui",
  "tilo-vello",

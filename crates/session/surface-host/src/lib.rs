@@ -10,12 +10,17 @@
 #![cfg(target_os = "linux")]
 
 mod canvas;
+mod desktop;
+mod widget;
+
+pub use desktop::{DesktopHost, StripPolicy, desktop};
+pub use widget::WidgetHost;
 
 use std::cell::Cell;
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::{Buffer, Rectangle, Transform};
+use smithay::utils::Transform;
 use tilo_compositor::{HostKey, HostLayer, KeyModifiers, SurfaceHost};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
@@ -227,24 +232,7 @@ impl SurfaceHost for AppHost {
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        let button = match button {
-            BTN_LEFT => MouseButton::Left,
-            BTN_RIGHT => MouseButton::Right,
-            BTN_MIDDLE => MouseButton::Middle,
-            BTN_SIDE => MouseButton::Back,
-            BTN_EXTRA => MouseButton::Forward,
-            other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
-        };
-        let state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        self.input(WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button,
-        });
+        self.input(mouse_input(button, pressed));
     }
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
@@ -286,53 +274,14 @@ impl SurfaceHost for AppHost {
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);
         let changed = self.damage.take();
-        let regions = self.canvas.draw(&self.scene, changed.as_deref());
-        if regions.is_empty() {
-            return;
-        }
-        let pixels = self.canvas.pixels();
-        let mut context = self.buffer.render();
-        let drawn = context.draw(|memory: &mut [u8]| {
-            let width = self.canvas.size().0 as usize;
-            for region in &regions {
-                for row in region.y..region.y.saturating_add(region.height) {
-                    let start = (row as usize)
-                        .saturating_mul(width)
-                        .saturating_add(region.x as usize)
-                        .saturating_mul(4);
-                    let end = start.saturating_add((region.width as usize).saturating_mul(4));
-                    if let (Some(to), Some(from)) =
-                        (memory.get_mut(start..end), pixels.get(start..end))
-                    {
-                        to.copy_from_slice(from);
-                    }
-                }
-            }
-            Ok::<_, std::convert::Infallible>(
-                regions
-                    .iter()
-                    .filter_map(|region| {
-                        Some(Rectangle::<i32, Buffer>::new(
-                            (i32::try_from(region.x).ok()?, i32::try_from(region.y).ok()?).into(),
-                            (
-                                i32::try_from(region.width).ok()?,
-                                i32::try_from(region.height).ok()?,
-                            )
-                                .into(),
-                        ))
-                    })
-                    .collect(),
-            )
-        });
-        if let Err(never) = drawn {
-            match never {}
-        }
+        self.canvas
+            .present(&self.scene, changed.as_deref(), &mut self.buffer);
     }
 }
 
 /// An empty (transparent) buffer of `size` physical pixels; the layer's
 /// logical size scales it onto the output.
-fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
+pub(crate) fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
     let width = i32::try_from(size.0).unwrap_or(i32::MAX);
     let height = i32::try_from(size.1).unwrap_or(i32::MAX);
     // ABGR8888 is R, G, B, A in memory: the rasterizer's premultiplied RGBA.
@@ -343,6 +292,28 @@ fn buffer_for(size: (u32, u32)) -> MemoryRenderBuffer {
         Transform::Normal,
         None,
     )
+}
+
+/// The toolkit's event for a pointer button (evdev code) changing state.
+pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
+    let button = match button {
+        BTN_LEFT => MouseButton::Left,
+        BTN_RIGHT => MouseButton::Right,
+        BTN_MIDDLE => MouseButton::Middle,
+        BTN_SIDE => MouseButton::Back,
+        BTN_EXTRA => MouseButton::Forward,
+        other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
+    };
+    let state = if pressed {
+        ElementState::Pressed
+    } else {
+        ElementState::Released
+    };
+    WindowEvent::MouseInput {
+        device_id: DeviceId::dummy(),
+        state,
+        button,
+    }
 }
 
 fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
