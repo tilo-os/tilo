@@ -125,6 +125,23 @@ impl TiloAuthority {
     }
 }
 
+/// The prefix of the platform's migration principal: a package version updating its own
+/// records (`migration:<app>@<module hash>`).
+pub const MIGRATION_PREFIX: &str = "migration:";
+
+/// The principal a migration of `app`'s package version `module` (its module hash) runs as: the
+/// package updating what an earlier version of it wrote, which history names as such.
+#[must_use]
+pub fn migration_principal(app: &str, module: &str) -> Principal {
+    Principal::new(format!("{MIGRATION_PREFIX}{app}@{module}"))
+}
+
+/// The app and module hash a migration principal names, when `id` is one.
+#[must_use]
+pub fn migration_of(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix(MIGRATION_PREFIX)?.split_once('@')
+}
+
 /// The subject a principal is in the room's policy: an agent by its id, a person by theirs.
 fn principal_subject(id: &str) -> Subject {
     match id.strip_prefix("agent:") {
@@ -182,7 +199,11 @@ impl Authority for TiloAuthority {
             Some(standing) if person == self.viewer.0 => standing.person.as_str(),
             _ => person,
         });
+        // A migration is the platform running the package's own update of its records on the
+        // room's origin: no person's grants decide it, the package's code still bounds it.
+        let migration = migration_of(&invoker.0).is_some();
         let person_party = match (&standing, person, agent) {
+            _ if migration => Party::default().owning(TreePath::root()),
             (Some(standing), Some(person), _) => standing.policy.party(person),
             // An agent nobody delegated: only what the room grants it.
             (Some(standing), None, _) => standing

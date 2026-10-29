@@ -311,7 +311,7 @@ impl Hosted {
             wake,
             surface: Rc::clone(&surface),
         };
-        let instance = Instance::new(
+        let mut instance = Instance::new(
             Config {
                 app: spec.app.clone(),
                 me: spec.person.clone(),
@@ -332,6 +332,9 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
+        // The device that governs the room is its records' origin: the package's migrations
+        // run there, once.
+        instance.set_origin(record.governs());
         let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
         Self {
             spec,

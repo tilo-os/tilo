@@ -792,8 +792,9 @@ impl Host {
     /// Run each loaded package's migrations (`migration action`) on the resources an earlier
     /// version of it wrote: once on each resource of the migration's subject type that holds
     /// something in a field the type now keeps `(previously)` (or, for a type without such a
-    /// field, that the migration has not run on), as an ordinary action of the viewer's, which
-    /// records in the same change that it ran. Returns how many ran. A migration that is
+    /// field, that the migration has not run on), as an action of the package version
+    /// ([`crate::authority::migration_principal`]), which records in the same change that it
+    /// ran. Only the room's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
     /// refused or fails leaves its resource as it was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
         let mut ran: usize = 0;
@@ -826,10 +827,16 @@ impl Host {
                     self.inner
                         .store
                         .set_migrating(Some((migration.id.clone(), doc.clone())));
+                    // The package updating its own records, not the person at the window: the
+                    // change is the package version's, under the platform's migration principal.
+                    let by = crate::authority::migration_principal(
+                        &package.meta.app,
+                        &package.meta.module_hash,
+                    );
                     let outcome = self
                         .inner
                         .runtime
-                        .invoke_action(&self.inner.viewer, (migration.id.as_str(), vec![subject]));
+                        .invoke_action(&by, (migration.id.as_str(), vec![subject]));
                     self.inner.store.set_migrating(None);
                     match outcome {
                         Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
