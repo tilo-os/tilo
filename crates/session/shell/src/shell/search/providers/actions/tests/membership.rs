@@ -102,181 +102,176 @@ fn capabilities(
 }
 
 #[test]
-fn member_role_set_action_changes_role_through_workspace_caps() {
+fn the_owner_changes_a_members_role_in_the_cache_and_the_room_document() {
     use crate::shell::state::CapRole;
-    // Phase `the_owner_changes_a_members_role_in_the_cache_and_the_room_document`.
-    {
-        let chrome = chrome_with_member("bob");
-        assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Editor));
-        let disposition = invoke_shell_action(
-            &chrome,
-            MEMBER_ROLE_SET_ID,
-            &serde_json::json!({"participant_id": "bob", "role": "viewer", "confirm": true}),
-        )
-        .expect("the owner may change a member's role");
-        assert!(matches!(
-            disposition,
-            crate::shell::search::InvocationDisposition::Accepted(_)
-        ));
-        assert_eq!(
-            role_of(&chrome, "bob"),
-            Some(CapRole::Editor),
-            "nothing changes here before the room's governor takes it"
-        );
-        governed(&chrome, FIXTURE_USER);
-        assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Viewer));
-    }
-
-    // Phase `an_unconfirmed_or_unknown_change_changes_nothing`.
-    {
-        let chrome = chrome_with_member("bob");
-        let before = capabilities(&chrome);
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                MEMBER_ROLE_SET_ID,
-                &serde_json::json!({"participant_id": "bob", "role": "viewer"}),
-            )
-            .is_err(),
-            "a privileged change needs explicit confirmation"
-        );
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                MEMBER_ROLE_SET_ID,
-                &serde_json::json!({"participant_id": "bob", "role": "owner", "confirm": true}),
-            )
-            .is_err(),
-            "ownership is not a role this action can hand out"
-        );
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                MEMBER_ROLE_SET_ID,
-                &serde_json::json!({"participant_id": "carol", "role": "editor", "confirm": true}),
-            )
-            .is_err(),
-            "setting a role is not a way to admit someone who was never invited"
-        );
-        assert_eq!(capabilities(&chrome), before);
-    }
-
-    // Phase `a_delegated_administrator_passes_the_same_capability_check`.
-    {
-        let chrome = chrome_with_member("bob");
-        {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().unwrap();
-            ws.set_owner("foreign-owner");
-            let now = tilo_clock::unix_now();
-            ws.govern_as_at(
-                "foreign-owner",
-                tilo_action_policy::Change::AddMember {
-                    person: FIXTURE_USER.to_owned(),
-                    role: tilo_action_policy::Role::Editor,
-                },
-                now,
-            )
-            .expect("the owner admits the delegate");
-            let set_role = tilo_action_policy::roles::governance_action(
-                &ws.room().to_string(),
-                tilo_action_policy::roles::governance::SET_ROLE,
-            );
-            ws.govern_as_at(
-                "foreign-owner",
-                tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
-                    "delegate-set-role",
-                    tilo_action_policy::Subject::person(FIXTURE_USER),
-                    set_role,
-                    tilo_action_policy::KindSet::ALL,
-                    tilo_action_policy::Answer::Allow,
-                    tilo_action_policy::Subject::person("foreign-owner"),
-                )),
-                now,
-            )
-            .expect("the owner delegates administration");
-            drop(tree);
-        }
-        invoke_shell_action(
-            &chrome,
-            MEMBER_ROLE_SET_ID,
-            &serde_json::json!({"participant_id": "bob", "role": "commenter", "confirm": true}),
-        )
-        .expect("administration delegated as a capability is administration");
-        governed(&chrome, FIXTURE_USER);
-        assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Commenter));
-    }
+    let chrome = chrome_with_member("bob");
+    assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Editor));
+    let disposition = invoke_shell_action(
+        &chrome,
+        MEMBER_ROLE_SET_ID,
+        &serde_json::json!({"participant_id": "bob", "role": "viewer", "confirm": true}),
+    )
+    .expect("the owner may change a member's role");
+    assert!(matches!(
+        disposition,
+        crate::shell::search::InvocationDisposition::Accepted(_)
+    ));
+    assert_eq!(
+        role_of(&chrome, "bob"),
+        Some(CapRole::Editor),
+        "nothing changes here before the room's governor takes it"
+    );
+    governed(&chrome, FIXTURE_USER);
+    assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Viewer));
 }
 
 #[test]
-fn member_remove_action_refuses_non_admin_and_owner() {
-    // Phase `the_owner_removes_a_member`.
+fn an_unconfirmed_or_unknown_change_changes_nothing() {
+    let chrome = chrome_with_member("bob");
+    let before = capabilities(&chrome);
+    assert!(
+        invoke_shell_action(
+            &chrome,
+            MEMBER_ROLE_SET_ID,
+            &serde_json::json!({"participant_id": "bob", "role": "viewer"}),
+        )
+        .is_err(),
+        "a privileged change needs explicit confirmation"
+    );
+    assert!(
+        invoke_shell_action(
+            &chrome,
+            MEMBER_ROLE_SET_ID,
+            &serde_json::json!({"participant_id": "bob", "role": "owner", "confirm": true}),
+        )
+        .is_err(),
+        "ownership is not a role this action can hand out"
+    );
+    assert!(
+        invoke_shell_action(
+            &chrome,
+            MEMBER_ROLE_SET_ID,
+            &serde_json::json!({"participant_id": "carol", "role": "editor", "confirm": true}),
+        )
+        .is_err(),
+        "setting a role is not a way to admit someone who was never invited"
+    );
+    assert_eq!(capabilities(&chrome), before);
+}
+
+#[test]
+fn a_delegated_administrator_passes_the_same_capability_check() {
+    use crate::shell::state::CapRole;
+    let chrome = chrome_with_member("bob");
     {
-        let chrome = chrome_with_member("bob");
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        let ws = tree.desktop.active_workspace_mut().unwrap();
+        ws.set_owner("foreign-owner");
+        let now = tilo_clock::unix_now();
+        ws.govern_as_at(
+            "foreign-owner",
+            tilo_action_policy::Change::AddMember {
+                person: FIXTURE_USER.to_owned(),
+                role: tilo_action_policy::Role::Editor,
+            },
+            now,
+        )
+        .expect("the owner admits the delegate");
+        let set_role = tilo_action_policy::roles::governance_action(
+            &ws.room().to_string(),
+            tilo_action_policy::roles::governance::SET_ROLE,
+        );
+        ws.govern_as_at(
+            "foreign-owner",
+            tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                "delegate-set-role",
+                tilo_action_policy::Subject::person(FIXTURE_USER),
+                set_role,
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::person("foreign-owner"),
+            )),
+            now,
+        )
+        .expect("the owner delegates administration");
+        drop(tree);
+    }
+    invoke_shell_action(
+        &chrome,
+        MEMBER_ROLE_SET_ID,
+        &serde_json::json!({"participant_id": "bob", "role": "commenter", "confirm": true}),
+    )
+    .expect("administration delegated as a capability is administration");
+    governed(&chrome, FIXTURE_USER);
+    assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Commenter));
+}
+
+#[test]
+fn the_owner_removes_a_member() {
+    let chrome = chrome_with_member("bob");
+    invoke_shell_action(
+        &chrome,
+        MEMBER_REMOVE_ID,
+        &serde_json::json!({"participant_id": "bob", "confirm": true}),
+    )
+    .expect("the owner may remove a member");
+    governed(&chrome, FIXTURE_USER);
+    assert_eq!(role_of(&chrome, "bob"), None);
+}
+
+#[test]
+fn the_recorded_owner_cannot_be_removed() {
+    let chrome = chrome_with_member("bob");
+    let before = capabilities(&chrome);
+    assert!(
+        invoke_shell_action(
+            &chrome,
+            MEMBER_REMOVE_ID,
+            &serde_json::json!({"participant_id": FIXTURE_USER, "confirm": true}),
+        )
+        .is_err()
+    );
+    assert_eq!(capabilities(&chrome), before);
+}
+
+#[test]
+fn a_non_administrator_is_refused_by_the_action_and_by_membership() {
+    let chrome = chrome_with_member("bob");
+    chrome
+        .borrow_mut()
+        .tree_mut()
+        .desktop
+        .active_workspace_mut()
+        .unwrap()
+        .set_owner("foreign-owner");
+    let before = capabilities(&chrome);
+    assert!(matches!(
         invoke_shell_action(
             &chrome,
             MEMBER_REMOVE_ID,
             &serde_json::json!({"participant_id": "bob", "confirm": true}),
-        )
-        .expect("the owner may remove a member");
-        governed(&chrome, FIXTURE_USER);
-        assert_eq!(role_of(&chrome, "bob"), None);
-    }
-
-    // Phase `the_recorded_owner_cannot_be_removed`.
-    {
-        let chrome = chrome_with_member("bob");
-        let before = capabilities(&chrome);
-        assert!(
-            invoke_shell_action(
-                &chrome,
-                MEMBER_REMOVE_ID,
-                &serde_json::json!({"participant_id": FIXTURE_USER, "confirm": true}),
-            )
-            .is_err()
-        );
-        assert_eq!(capabilities(&chrome), before);
-    }
-
-    // Phase `a_non_administrator_is_refused_by_the_action_and_by_membership`.
-    {
-        let chrome = chrome_with_member("bob");
-        chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .active_workspace_mut()
-            .unwrap()
-            .set_owner("foreign-owner");
-        let before = capabilities(&chrome);
-        assert!(matches!(
-            invoke_shell_action(
-                &chrome,
-                MEMBER_REMOVE_ID,
-                &serde_json::json!({"participant_id": "bob", "confirm": true}),
-            ),
-            Err(ActionError::Refused(_))
-        ));
-        assert_eq!(
-            crate::shell::membership::remove_member(&mut chrome.borrow_mut(), &"bob".to_string()),
-            Err(crate::shell::membership::MembershipError::Unauthorized(
-                MEMBER_REMOVE_ID
-            )),
-            "the Members tab's own entry point refuses a non-administrator too"
-        );
-        assert_eq!(
-            crate::shell::membership::set_member_role(
-                &mut chrome.borrow_mut(),
-                &"bob".to_string(),
-                crate::shell::state::CapRole::Viewer,
-            ),
-            Err(crate::shell::membership::MembershipError::Unauthorized(
-                MEMBER_ROLE_SET_ID
-            ))
-        );
-        assert_eq!(capabilities(&chrome), before);
-    }
+        ),
+        Err(ActionError::Refused(_))
+    ));
+    assert_eq!(
+        crate::shell::membership::remove_member(&mut chrome.borrow_mut(), &"bob".to_string()),
+        Err(crate::shell::membership::MembershipError::Unauthorized(
+            MEMBER_REMOVE_ID
+        )),
+        "the Members tab's own entry point refuses a non-administrator too"
+    );
+    assert_eq!(
+        crate::shell::membership::set_member_role(
+            &mut chrome.borrow_mut(),
+            &"bob".to_string(),
+            crate::shell::state::CapRole::Viewer,
+        ),
+        Err(crate::shell::membership::MembershipError::Unauthorized(
+            MEMBER_ROLE_SET_ID
+        ))
+    );
+    assert_eq!(capabilities(&chrome), before);
 }
 
 /// The Agents tab's Remove is an action too: it revokes every grant

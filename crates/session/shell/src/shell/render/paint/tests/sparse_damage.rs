@@ -627,237 +627,230 @@ fn gpu_target_keeps_an_unchanged_frame_and_the_next_change_renders_sparse() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn gpu_target_refreshes_dense_whenever_retained_damage_cannot_be_trusted() {
-    // Phase `gpu_target_unchanged_clear_color_preserves_retained_damage`.
-    {
-        let mut bridge = required_bridge(128, 128);
-        let mut pixels = vec![0; 128 * 128 * 4];
-        let scene = Scene::new();
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 1,
-                    previous_revision: None,
-                    regions: None,
-                },
-                &mut pixels,
-                512,
-            )
-            .expect("seed");
-        let identity = bridge.xrgb_history_identity(512, 1);
-        bridge.set_base_color(bridge.target.base_color);
-        let rects = [vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        }];
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                SceneDamage {
-                    revision: 2,
-                    previous_revision: Some(1),
-                    regions: Some(&rects),
-                },
-                &mut pixels,
-                512,
-            )
-            .expect("retained repaint");
-        assert_eq!(bridge.last_sparse_render_attempts(), 1);
-        assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
-    }
+fn gpu_target_unchanged_clear_color_preserves_retained_damage() {
+    let mut bridge = required_bridge(128, 128);
+    let mut pixels = vec![0; 128 * 128 * 4];
+    let scene = Scene::new();
+    bridge
+        .paint_damage_into_xrgb8888(
+            &scene,
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            &mut pixels,
+            512,
+        )
+        .expect("seed");
+    let identity = bridge.xrgb_history_identity(512, 1);
+    bridge.set_base_color(bridge.target.base_color);
+    let rects = [vello::FineDamageRect {
+        x: 16,
+        y: 16,
+        width: 16,
+        height: 16,
+    }];
+    bridge
+        .paint_damage_into_xrgb8888(
+            &scene,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&rects),
+            },
+            &mut pixels,
+            512,
+        )
+        .expect("retained repaint");
+    assert_eq!(bridge.last_sparse_render_attempts(), 1);
+    assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
+}
 
-    // Phase `gpu_target_sparse_without_staging_matches_dense`.
-    {
-        let mut target = required_target(129, 128);
-        let stats = target
-            .render_until(
-                &Scene::new(),
-                version(1, None, None),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert_eq!(stats.framebuffer_staging_bytes, 0);
-        assert_eq!(stats.framebuffer_copy_bytes, 0);
-        let seed = target_pixels(&target);
-        let allocation = target.texture.clone();
-        let region = vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        };
-        let scene = region_scene(region, Color::WHITE);
-        let outcome = target
-            .render_until(
-                &scene,
-                version(2, Some(1), Some(&[region])),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert!(outcome.damage_admitted);
-        assert_eq!(outcome.framebuffer_staging_bytes, 0);
-        assert_eq!(outcome.framebuffer_copy_bytes, 0);
-        assert_eq!(
-            outcome.render_attempts,
-            outcome.sparse_attempts + outcome.full_attempts
-        );
-        assert_eq!(outcome.completion_markers, outcome.render_attempts);
-        assert_eq!(
-            target.texture, allocation,
-            "sparse render must reuse actual target allocation"
-        );
-        let actual = target_pixels(&target);
-        for y in 0..128 {
-            for x in 0..129 {
-                if !(16..32).contains(&x) || !(16..32).contains(&y) {
-                    let offset = (y * 129 + x) * 4;
-                    assert_eq!(
-                        &actual[offset..offset + 4],
-                        &seed[offset..offset + 4],
-                        "untouched pixel {x},{y}"
-                    );
-                }
+#[test]
+fn gpu_target_sparse_without_staging_matches_dense() {
+    let mut target = required_target(129, 128);
+    let stats = target
+        .render_until(
+            &Scene::new(),
+            version(1, None, None),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert_eq!(stats.framebuffer_staging_bytes, 0);
+    assert_eq!(stats.framebuffer_copy_bytes, 0);
+    let seed = target_pixels(&target);
+    let allocation = target.texture.clone();
+    let region = vello::FineDamageRect {
+        x: 16,
+        y: 16,
+        width: 16,
+        height: 16,
+    };
+    let scene = region_scene(region, Color::WHITE);
+    let outcome = target
+        .render_until(
+            &scene,
+            version(2, Some(1), Some(&[region])),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert!(outcome.damage_admitted);
+    assert_eq!(outcome.framebuffer_staging_bytes, 0);
+    assert_eq!(outcome.framebuffer_copy_bytes, 0);
+    assert_eq!(
+        outcome.render_attempts,
+        outcome.sparse_attempts + outcome.full_attempts
+    );
+    assert_eq!(outcome.completion_markers, outcome.render_attempts);
+    assert_eq!(
+        target.texture, allocation,
+        "sparse render must reuse actual target allocation"
+    );
+    let actual = target_pixels(&target);
+    for y in 0..128 {
+        for x in 0..129 {
+            if !(16..32).contains(&x) || !(16..32).contains(&y) {
+                let offset = (y * 129 + x) * 4;
+                assert_eq!(
+                    &actual[offset..offset + 4],
+                    &seed[offset..offset + 4],
+                    "untouched pixel {x},{y}"
+                );
             }
         }
-        let mut oracle = required_target(129, 128);
-        oracle
-            .render_until(
-                &scene,
-                version(2, None, None),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert_eq!(actual, target_pixels(&oracle));
     }
+    let mut oracle = required_target(129, 128);
+    oracle
+        .render_until(
+            &scene,
+            version(2, None, None),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert_eq!(actual, target_pixels(&oracle));
+}
 
-    // Phase `gpu_target_revision_gap_and_resize_force_dense`.
-    {
-        let mut target = required_target(128, 128);
-        let regions = [vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        }];
-        let scene = region_scene(regions[0], Color::WHITE);
-        target
-            .render_until(
-                &scene,
-                version(1, None, None),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        let outcome = target
-            .render_until(
-                &scene,
-                version(3, Some(2), Some(&regions)),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert!(!outcome.damage_admitted);
-        assert_eq!(outcome.sparse_attempts, 0);
-        target.resize(128, 128).unwrap();
-        assert!(target.completed_view().is_none());
-        let outcome = target
-            .render_until(
-                &scene,
-                version(4, Some(3), Some(&regions)),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert_eq!(outcome.sparse_attempts, 0);
-        assert!(matches!(
-            target.resize(0, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        assert!(target.completed_view().is_none());
-        let limit = target.device.limits().max_texture_dimension_2d;
-        assert!(matches!(
-            target.resize(limit + 1, 128),
-            Err(BridgeError::InvalidSize(_))
-        ));
-        let old = target.texture.clone();
-        target.resize(160, 128).unwrap();
-        assert_ne!(old, target.texture);
-        assert_eq!(target.size(), (160, 128));
-        let outcome = target
-            .render_until(
-                &scene,
-                version(5, Some(4), Some(&regions)),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        assert_eq!(outcome.sparse_attempts, 0);
-        target.set_base_color(Color::WHITE);
-        assert!(target.completed_view().is_none());
-    }
+#[test]
+fn gpu_target_revision_gap_and_resize_force_dense() {
+    let mut target = required_target(128, 128);
+    let regions = [vello::FineDamageRect {
+        x: 16,
+        y: 16,
+        width: 16,
+        height: 16,
+    }];
+    let scene = region_scene(regions[0], Color::WHITE);
+    target
+        .render_until(
+            &scene,
+            version(1, None, None),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    let outcome = target
+        .render_until(
+            &scene,
+            version(3, Some(2), Some(&regions)),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert!(!outcome.damage_admitted);
+    assert_eq!(outcome.sparse_attempts, 0);
+    target.resize(128, 128).unwrap();
+    assert!(target.completed_view().is_none());
+    let outcome = target
+        .render_until(
+            &scene,
+            version(4, Some(3), Some(&regions)),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert_eq!(outcome.sparse_attempts, 0);
+    assert!(matches!(
+        target.resize(0, 128),
+        Err(BridgeError::InvalidSize(_))
+    ));
+    assert!(target.completed_view().is_none());
+    let limit = target.device.limits().max_texture_dimension_2d;
+    assert!(matches!(
+        target.resize(limit + 1, 128),
+        Err(BridgeError::InvalidSize(_))
+    ));
+    let old = target.texture.clone();
+    target.resize(160, 128).unwrap();
+    assert_ne!(old, target.texture);
+    assert_eq!(target.size(), (160, 128));
+    let outcome = target
+        .render_until(
+            &scene,
+            version(5, Some(4), Some(&regions)),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    assert_eq!(outcome.sparse_attempts, 0);
+    target.set_base_color(Color::WHITE);
+    assert!(target.completed_view().is_none());
+}
 
-    // Phase `gpu_target_xrgb_staging_gap_gets_complete_refresh`.
-    {
-        let mut bridge = required_bridge(129, 128);
-        bridge.set_phase_timing_enabled(true);
-        let mut actual = vec![0; 129 * 128 * 4];
-        bridge
-            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 129 * 4)
-            .unwrap();
-        let first = vello::FineDamageRect {
-            x: 16,
-            y: 16,
-            width: 16,
-            height: 16,
-        };
-        let second = vello::FineDamageRect {
-            x: 64,
-            y: 64,
-            width: 16,
-            height: 16,
-        };
-        let mut scene = region_scene(first, Color::WHITE);
-        bridge
-            .target
-            .render_until(
-                &scene,
-                version(2, Some(1), Some(&[first])),
-                tilo_test_env::hang_deadline(),
-            )
-            .unwrap();
-        scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
-        bridge
-            .paint_damage_into_xrgb8888(
-                &scene,
-                version(3, Some(2), Some(&[second])),
-                &mut actual,
-                129 * 4,
-            )
-            .unwrap();
-        assert_eq!(
-            bridge.last_sparse_render_attempts(),
-            1,
-            "target continuity survives GPU-only middle frame"
-        );
-        assert_eq!(
-            bridge.last_phase_timing().unwrap().readback_bytes,
-            129 * 128 * 4,
-            "stale staging needs complete refresh in same submission"
-        );
-        let mut oracle = required_bridge(129, 128);
-        let mut expected = vec![0; actual.len()];
-        oracle
-            .paint_into_xrgb8888(&scene, &mut expected, 129 * 4)
-            .unwrap();
-        assert_eq!(actual, expected);
-        assert_eq!(
-            bridge.staging_content,
-            Some((bridge.target.geometry_generation, Some(3)))
-        );
-    }
+#[test]
+fn gpu_target_xrgb_staging_gap_gets_complete_refresh() {
+    let mut bridge = required_bridge(129, 128);
+    bridge.set_phase_timing_enabled(true);
+    let mut actual = vec![0; 129 * 128 * 4];
+    bridge
+        .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 129 * 4)
+        .unwrap();
+    let first = vello::FineDamageRect {
+        x: 16,
+        y: 16,
+        width: 16,
+        height: 16,
+    };
+    let second = vello::FineDamageRect {
+        x: 64,
+        y: 64,
+        width: 16,
+        height: 16,
+    };
+    let mut scene = region_scene(first, Color::WHITE);
+    bridge
+        .target
+        .render_until(
+            &scene,
+            version(2, Some(1), Some(&[first])),
+            tilo_test_env::hang_deadline(),
+        )
+        .unwrap();
+    scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
+    bridge
+        .paint_damage_into_xrgb8888(
+            &scene,
+            version(3, Some(2), Some(&[second])),
+            &mut actual,
+            129 * 4,
+        )
+        .unwrap();
+    assert_eq!(
+        bridge.last_sparse_render_attempts(),
+        1,
+        "target continuity survives GPU-only middle frame"
+    );
+    assert_eq!(
+        bridge.last_phase_timing().unwrap().readback_bytes,
+        129 * 128 * 4,
+        "stale staging needs complete refresh in same submission"
+    );
+    let mut oracle = required_bridge(129, 128);
+    let mut expected = vec![0; actual.len()];
+    oracle
+        .paint_into_xrgb8888(&scene, &mut expected, 129 * 4)
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        bridge.staging_content,
+        Some((bridge.target.geometry_generation, Some(3)))
+    );
 }
 
 #[test]

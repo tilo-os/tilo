@@ -2827,88 +2827,88 @@ mod tests {
         }
     }
 
+    // `remove_tab` takes the tab out of whichever group holds it and repairs the group's selection when it was the tab in front.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn remove_tab_takes_a_placed_tab_out_and_repairs_selection() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let tab_id = adopt_toplevel(&mut tree, 55, Some("io.example.pending".into()));
+        let owner = group_of(&tree, 55).id;
+        let before = group_of(&tree, 55).tabs.len();
+        assert_eq!(
+            group_of(&tree, 55).active_tab,
+            tab_id,
+            "fixture sanity: the newly adopted tab is the one in front",
+        );
+
+        assert!(
+            remove_tab(&mut tree, tab_id),
+            "the tab exists and is removed"
+        );
+
+        let group = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == owner)
+            .expect("the owning group still exists");
+        assert_eq!(
+            group.tabs.len(),
+            before - 1,
+            "tab count must drop by exactly one"
+        );
+        assert!(
+            group.tabs.iter().all(|t| t.id != tab_id),
+            "the removed tab must be gone",
+        );
+        assert_ne!(
+            group.active_tab, tab_id,
+            "the group must not point at the tab it no longer has",
+        );
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     fn remove_tab_repairs_selection_survives_rehydration_and_rejects_unknown_tabs() {
-        // Phase `remove_tab_takes_a_placed_tab_out_and_repairs_selection`.
-        // `remove_tab` takes the tab out of whichever group holds it and repairs the group's selection when it was the tab in front.
-        {
-            crate::shell::launcher::clear_pending_placements();
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            let tab_id = adopt_toplevel(&mut tree, 55, Some("io.example.pending".into()));
-            let owner = group_of(&tree, 55).id;
-            let before = group_of(&tree, 55).tabs.len();
-            assert_eq!(
-                group_of(&tree, 55).active_tab,
-                tab_id,
-                "fixture sanity: the newly adopted tab is the one in front",
-            );
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let group_id = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+        let tab_ids = tree.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
 
-            assert!(
-                remove_tab(&mut tree, tab_id),
-                "the tab exists and is removed"
-            );
+        for tab_id in tab_ids {
+            assert!(remove_tab(&mut tree, tab_id));
+        }
+        assert!(
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
+            "the cache drops the group when its last tab closes"
+        );
 
-            let group = tree
-                .desktop
-                .workspaces
+        tree.resync_cache_from_doc();
+        assert!(
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
                 .iter()
-                .flat_map(|w| w.strips.iter())
-                .flat_map(|s| s.window_groups.iter())
-                .find(|g| g.id == owner)
-                .expect("the owning group still exists");
-            assert_eq!(
-                group.tabs.len(),
-                before - 1,
-                "tab count must drop by exactly one"
-            );
-            assert!(
-                group.tabs.iter().all(|t| t.id != tab_id),
-                "the removed tab must be gone",
-            );
-            assert_ne!(
-                group.active_tab, tab_id,
-                "the group must not point at the tab it no longer has",
-            );
-        }
+                .all(|group| group.id != group_id),
+            "rehydrating from the durable document must not resurrect the closed group"
+        );
+    }
 
-        {
-            crate::shell::launcher::clear_pending_placements();
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            let group_id = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-            let tab_ids = tree.desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .iter()
-                .map(|tab| tab.id)
-                .collect::<Vec<_>>();
-
-            for tab_id in tab_ids {
-                assert!(remove_tab(&mut tree, tab_id));
-            }
-            assert!(
-                tree.desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .is_empty(),
-                "the cache drops the group when its last tab closes"
-            );
-
-            tree.resync_cache_from_doc();
-            assert!(
-                tree.desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .iter()
-                    .all(|group| group.id != group_id),
-                "rehydrating from the durable document must not resurrect the closed group"
-            );
-        }
-
-        // Phase `remove_tab_reports_false_for_an_unknown_tab`.
-        // A tab id nothing in the tree holds is reported as not removed, not silently accepted — a caller unwinding a launch has to know whether there was anything to unwind.
-        {
-            crate::shell::launcher::clear_pending_placements();
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            assert!(!remove_tab(&mut tree, 0xdead_beef));
-        }
+    // A tab id nothing in the tree holds is reported as not removed, not silently accepted — a caller unwinding a launch has to know whether there was anything to unwind.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn remove_tab_reports_false_for_an_unknown_tab() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        assert!(!remove_tab(&mut tree, 0xdead_beef));
     }
 
     #[test]

@@ -1,54 +1,144 @@
 use super::*;
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing() {
-    // Phase `gpu_target_failure_and_device_loss_hide_output_until_reconstruction`.
+fn gpu_target_failure_and_device_loss_hide_output_until_reconstruction() {
     {
-        {
-            let mut target = required_target(128, 128);
-            let scene = Scene::new();
-            let damage = SceneDamage {
-                revision: 1,
-                previous_revision: None,
-                regions: None,
-            };
-            target
-                .render_until(&scene, damage, tilo_test_env::hang_deadline())
-                .expect("seed");
-            assert!(target.completed_view().is_some());
-            let result = target.render_until(&scene, damage, Instant::now());
-            assert!(
-                matches!(result, Err(BridgeError::DeadlineExceeded)),
-                "expired call must fail: {result:?}"
-            );
-            assert!(target.completed_view().is_none());
-            assert_eq!(target.last_render_attempts, 0);
-        }
+        let mut target = required_target(128, 128);
+        let scene = Scene::new();
+        let damage = SceneDamage {
+            revision: 1,
+            previous_revision: None,
+            regions: None,
+        };
+        target
+            .render_until(&scene, damage, tilo_test_env::hang_deadline())
+            .expect("seed");
+        assert!(target.completed_view().is_some());
+        let result = target.render_until(&scene, damage, Instant::now());
+        assert!(
+            matches!(result, Err(BridgeError::DeadlineExceeded)),
+            "expired call must fail: {result:?}"
+        );
+        assert!(target.completed_view().is_none());
+        assert_eq!(target.last_render_attempts, 0);
+    }
 
-        {
-            for error in [
-                vello::BumpBudgetError::MapFailed,
-                vello::BumpBudgetError::MissingDownload,
-                vello::BumpBudgetError::InvalidDownload,
-                vello::BumpBudgetError::Poll("injected wrong submission index".to_owned()),
-            ] {
-                let mut target = required_target(128, 128);
-                let mut test = completion_clock();
-                test.counters.push_back(Err(error));
-                let deadline = test.start + Duration::from_secs(1);
-                target.completion_test = Some(test);
-                let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-                assert!(matches!(
-                    result,
-                    Err(BridgeError::BumpReadback(_) | BridgeError::DevicePoll(_))
-                ));
-                assert_eq!(target.last_render_attempts, 1);
-                assert!(target.completed_view().is_none() && target.poisoned);
-            }
+    {
+        for error in [
+            vello::BumpBudgetError::MapFailed,
+            vello::BumpBudgetError::MissingDownload,
+            vello::BumpBudgetError::InvalidDownload,
+            vello::BumpBudgetError::Poll("injected wrong submission index".to_owned()),
+        ] {
+            let mut target = required_target(128, 128);
+            let mut test = completion_clock();
+            test.counters.push_back(Err(error));
+            let deadline = test.start + Duration::from_secs(1);
+            target.completion_test = Some(test);
+            let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+            assert!(matches!(
+                result,
+                Err(BridgeError::BumpReadback(_) | BridgeError::DevicePoll(_))
+            ));
+            assert_eq!(target.last_render_attempts, 1);
+            assert!(target.completed_view().is_none() && target.poisoned);
+        }
+        let mut target = required_target(128, 128);
+        target
+            .render_until(
+                &Scene::new(),
+                version(1, None, None),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        target.device.destroy();
+        let _ = target.device.poll(wgpu::PollType::Poll);
+        assert!(target.completed_view().is_none());
+        assert!(matches!(
+            target.render_until(
+                &Scene::new(),
+                version(2, None, None),
+                tilo_test_env::hang_deadline()
+            ),
+            Err(BridgeError::DeviceLost(_))
+        ));
+        assert_eq!(target.last_render_attempts, 0);
+    }
+
+    {
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.destroy_at_marker = true;
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+        assert!(
+            matches!(result, Err(BridgeError::DeviceLost(_))),
+            "marker-time device loss must not publish: {result:?}"
+        );
+        assert!(target.completed_view().is_none());
+        assert_eq!(target.completion_markers, 1);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn gpu_target_aborted_or_poisoned_frames_submit_and_publish_nothing() {
+    {
+        for sparse in [false, true] {
+            let mut target = required_target(128, 128);
+            let params = RenderParams {
+                base_color: Color::BLACK,
+                width: 128,
+                height: 128,
+                antialiasing_method: AaConfig::Area,
+            };
+            let scene = Scene::new();
+            let mut encoded = false;
+            let result = if sparse {
+                let damage = [vello::FineDamageRect {
+                    x: 16,
+                    y: 16,
+                    width: 16,
+                    height: 16,
+                }];
+                target
+                    .renderer
+                    .render_to_texture_with_damage_and_post_render_checked(
+                        &target.device,
+                        &target.queue,
+                        &scene,
+                        &target.view,
+                        &params,
+                        &damage,
+                        |_| encoded = true,
+                        || false,
+                    )
+                    .map(|_| ())
+            } else {
+                target.renderer.render_to_texture_with_post_render_checked(
+                    &target.device,
+                    &target.queue,
+                    &scene,
+                    &target.view,
+                    &params,
+                    |_| encoded = true,
+                    || false,
+                )
+            };
+            assert!(
+                encoded,
+                "gate test must reach actual post-encoding boundary"
+            );
+            assert!(
+                matches!(result, Err(vello::Error::SubmissionAborted)),
+                "gate must cancel encoded render: {result:?}"
+            );
+        }
+    }
+
+    {
+        for sparse in [false, true] {
             let mut target = required_target(128, 128);
             target
                 .render_until(
@@ -57,247 +147,151 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
                     tilo_test_env::hang_deadline(),
                 )
                 .unwrap();
-            target.device.destroy();
-            let _ = target.device.poll(wgpu::PollType::Poll);
-            assert!(target.completed_view().is_none());
-            assert!(matches!(
-                target.render_until(
-                    &Scene::new(),
-                    version(2, None, None),
-                    tilo_test_env::hang_deadline()
-                ),
-                Err(BridgeError::DeviceLost(_))
-            ));
-            assert_eq!(target.last_render_attempts, 0);
-        }
-
-        {
-            let mut target = required_target(128, 128);
-            let mut test = completion_clock();
-            test.destroy_at_marker = true;
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-            assert!(
-                matches!(result, Err(BridgeError::DeviceLost(_))),
-                "marker-time device loss must not publish: {result:?}"
-            );
-            assert!(target.completed_view().is_none());
-            assert_eq!(target.completion_markers, 1);
-        }
-    }
-
-    // Phase `gpu_target_aborted_or_poisoned_frames_submit_and_publish_nothing`.
-    {
-        {
-            for sparse in [false, true] {
-                let mut target = required_target(128, 128);
-                let params = RenderParams {
-                    base_color: Color::BLACK,
-                    width: 128,
-                    height: 128,
-                    antialiasing_method: AaConfig::Area,
-                };
-                let scene = Scene::new();
-                let mut encoded = false;
-                let result = if sparse {
-                    let damage = [vello::FineDamageRect {
-                        x: 16,
-                        y: 16,
-                        width: 16,
-                        height: 16,
-                    }];
-                    target
-                        .renderer
-                        .render_to_texture_with_damage_and_post_render_checked(
-                            &target.device,
-                            &target.queue,
-                            &scene,
-                            &target.view,
-                            &params,
-                            &damage,
-                            |_| encoded = true,
-                            || false,
-                        )
-                        .map(|_| ())
-                } else {
-                    target.renderer.render_to_texture_with_post_render_checked(
-                        &target.device,
-                        &target.queue,
-                        &scene,
-                        &target.view,
-                        &params,
-                        |_| encoded = true,
-                        || false,
-                    )
-                };
-                assert!(
-                    encoded,
-                    "gate test must reach actual post-encoding boundary"
-                );
-                assert!(
-                    matches!(result, Err(vello::Error::SubmissionAborted)),
-                    "gate must cancel encoded render: {result:?}"
-                );
-            }
-        }
-
-        {
-            for sparse in [false, true] {
-                let mut target = required_target(128, 128);
-                target
-                    .render_until(
-                        &Scene::new(),
-                        version(1, None, None),
-                        tilo_test_env::hang_deadline(),
-                    )
-                    .unwrap();
-                let mut test = completion_clock();
-                test.encode_elapsed = Duration::from_secs(2);
-                let deadline = test.start + Duration::from_secs(1);
-                target.completion_test = Some(test);
-                let regions = [vello::FineDamageRect {
-                    x: 16,
-                    y: 16,
-                    width: 16,
-                    height: 16,
-                }];
-                let result = target.render_until(
-                    &Scene::new(),
-                    version(2, Some(1), sparse.then_some(&regions)),
-                    deadline,
-                );
-                assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
-                assert_eq!(target.last_render_attempts, 0);
-                assert_eq!(target.completion_markers, 0);
-                assert!(target.completed_view().is_none() && target.poisoned);
-            }
-        }
-
-        {
-            let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
             let mut test = completion_clock();
             test.encode_elapsed = Duration::from_secs(2);
             let deadline = test.start + Duration::from_secs(1);
             target.completion_test = Some(test);
-            assert!(matches!(
-                target.render_until(&Scene::new(), version(1, None, None), deadline),
-                Err(BridgeError::DeadlineExceeded)
-            ));
-            assert_eq!(
-                target.vello().gpu_timestamp_latest_submission_id(),
-                None,
-                "aborted recording must not advertise a submitted timestamp identity"
+            let regions = [vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            }];
+            let result = target.render_until(
+                &Scene::new(),
+                version(2, Some(1), sparse.then_some(&regions)),
+                deadline,
             );
-            assert!(target.vello_mut().take_gpu_timestamp_sample().is_none());
-            assert!(target.completed_view().is_none());
+            assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+            assert_eq!(target.last_render_attempts, 0);
+            assert_eq!(target.completion_markers, 0);
+            assert!(target.completed_view().is_none() && target.poisoned);
         }
+    }
 
-        {
-            let mut context = RenderContext::new();
-            let id = context.device(None).block_on().expect("real GPU adapter");
-            let gpu = &context.devices[id];
-            assert!(matches!(
-                RetainedGpuTarget::new(gpu, 0, 128),
-                Err(BridgeError::InvalidSize(_))
-            ));
-            assert!(matches!(
-                RetainedGpuTarget::new(gpu, gpu.device.limits().max_texture_dimension_2d + 1, 128),
-                Err(BridgeError::InvalidSize(_))
-            ));
-            let mut old = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
-            let mut test = completion_clock();
-            test.failure = Some(WaitPhase::Marker);
-            let deadline = test.start + Duration::from_secs(1);
-            old.completion_test = Some(test);
-            assert!(matches!(
-                old.render_until(&Scene::new(), version(1, None, None), deadline),
-                Err(BridgeError::DeadlineExceeded)
-            ));
-            let mut replacement = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
-            gpu.device
-                .poll(wgpu::PollType::Wait {
-                    submission_index: None,
-                    timeout: Some(tilo_test_env::hang_bound()),
-                })
-                .unwrap();
-            assert!(matches!(
-                old.renderer.poll_bump_budget(&gpu.device),
-                Ok(vello::BumpBudgetPoll::Complete { .. })
-            ));
-            assert!(
-                old.completed_view().is_none(),
-                "late callback cannot unpoison old target"
-            );
-            assert!(
-                replacement.completed_view().is_none(),
-                "late callback cannot validate fresh target"
-            );
-            replacement
-                .render_until(
-                    &Scene::new(),
-                    version(2, None, None),
-                    tilo_test_env::hang_deadline(),
+    {
+        let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
+        let mut test = completion_clock();
+        test.encode_elapsed = Duration::from_secs(2);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(
+            target.vello().gpu_timestamp_latest_submission_id(),
+            None,
+            "aborted recording must not advertise a submitted timestamp identity"
+        );
+        assert!(target.vello_mut().take_gpu_timestamp_sample().is_none());
+        assert!(target.completed_view().is_none());
+    }
+
+    {
+        let mut context = RenderContext::new();
+        let id = context.device(None).block_on().expect("real GPU adapter");
+        let gpu = &context.devices[id];
+        assert!(matches!(
+            RetainedGpuTarget::new(gpu, 0, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        assert!(matches!(
+            RetainedGpuTarget::new(gpu, gpu.device.limits().max_texture_dimension_2d + 1, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        let mut old = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        old.completion_test = Some(test);
+        assert!(matches!(
+            old.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        let mut replacement = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(tilo_test_env::hang_bound()),
+            })
+            .unwrap();
+        assert!(matches!(
+            old.renderer.poll_bump_budget(&gpu.device),
+            Ok(vello::BumpBudgetPoll::Complete { .. })
+        ));
+        assert!(
+            old.completed_view().is_none(),
+            "late callback cannot unpoison old target"
+        );
+        assert!(
+            replacement.completed_view().is_none(),
+            "late callback cannot validate fresh target"
+        );
+        replacement
+            .render_until(
+                &Scene::new(),
+                version(2, None, None),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        assert!(replacement.completed_view().is_some());
+        assert!(old.completed_view().is_none());
+    }
+
+    {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            bridge
+                .shared_coarse_fine_diagnostic_into_xrgb8888(
+                    scene,
+                    &[vello::FineDamageRect {
+                        x: 16,
+                        y: 16,
+                        width: 16,
+                        height: 16,
+                    }],
+                    left,
+                    right,
+                    512,
                 )
-                .unwrap();
-            assert!(replacement.completed_view().is_some());
-            assert!(old.completed_view().is_none());
-        }
+                .map(|_| ())
+        });
+    }
 
-        {
-            assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-                bridge
-                    .shared_coarse_fine_diagnostic_into_xrgb8888(
-                        scene,
-                        &[vello::FineDamageRect {
-                            x: 16,
-                            y: 16,
-                            width: 16,
-                            height: 16,
-                        }],
-                        left,
-                        right,
-                        512,
-                    )
-                    .map(|_| ())
-            });
-        }
+    {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            bridge
+                .shared_coarse_fine_geometry_diagnostic_into_xrgb8888(
+                    scene,
+                    &[vello::FineDamageRect {
+                        x: 16,
+                        y: 16,
+                        width: 16,
+                        height: 16,
+                    }],
+                    left,
+                    right,
+                    512,
+                )
+                .map(|_| ())
+        });
+    }
 
-        {
-            assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-                bridge
-                    .shared_coarse_fine_geometry_diagnostic_into_xrgb8888(
-                        scene,
-                        &[vello::FineDamageRect {
-                            x: 16,
-                            y: 16,
-                            width: 16,
-                            height: 16,
-                        }],
-                        left,
-                        right,
-                        512,
-                    )
-                    .map(|_| ())
-            });
-        }
-
-        {
-            assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
-                let input = vello::SegmentOrderReplayInput {
-                    tile: 0,
-                    logical_command: 0,
-                    size_and_rule: 98,
-                    backdrop: 0,
-                    expected: [[0; 5]; 49],
-                    left: [[0; 5]; 49],
-                    right: [[0; 5]; 49],
-                };
-                bridge
-                    .segment_order_replay_into_xrgb8888(scene, &input, left, right, 512)
-                    .map(|_| ())
-            });
-        }
+    {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            let input = vello::SegmentOrderReplayInput {
+                tile: 0,
+                logical_command: 0,
+                size_and_rule: 98,
+                backdrop: 0,
+                expected: [[0; 5]; 49],
+                left: [[0; 5]; 49],
+                right: [[0; 5]; 49],
+            };
+            bridge
+                .segment_order_replay_into_xrgb8888(scene, &input, left, right, 512)
+                .map(|_| ())
+        });
     }
 }
 
@@ -604,340 +598,332 @@ fn gpu_target_a_reset_gpu_is_reopened_and_a_dead_one_gives_way_to_software() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
-    // Phase `gpu_target_recovery_stays_within_attempt_phase_and_deadline_budgets`.
+#[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+fn gpu_target_recovery_stays_within_attempt_phase_and_deadline_budgets() {
     {
-        {
-            let mut target = required_target(384, 256);
-            let region = vello::FineDamageRect {
-                x: 144,
-                y: 80,
-                width: 96,
-                height: 96,
-            };
-            target
-                .render_until(
-                    &Scene::new(),
-                    version(1, None, None),
-                    tilo_test_env::hang_deadline(),
-                )
-                .unwrap();
-            let scene = opaque_rect_stack_in_rect_scene(region);
-            let outcome = target
-                .render_until(
-                    &scene,
-                    version(2, Some(1), Some(&[region])),
-                    tilo_test_env::hang_deadline(),
-                )
-                .unwrap();
-            assert_eq!(outcome.sparse_attempts, 1);
-            assert!(
-                outcome.full_attempts >= 1,
-                "real sparse overflow must recover densely"
-            );
-            assert_eq!(
-                outcome.render_attempts,
-                outcome.sparse_attempts + outcome.full_attempts
-            );
-            assert_eq!(outcome.completion_markers, outcome.render_attempts);
-            assert!(outcome.render_attempts <= 4);
-            let actual = target_pixels(&target);
-            let mut oracle = required_target(384, 256);
-            oracle
-                .render_until(
-                    &scene,
-                    version(2, None, None),
-                    tilo_test_env::hang_deadline(),
-                )
-                .unwrap();
-            assert_eq!(actual, target_pixels(&oracle));
-            let mut test = completion_clock();
-            test.counters = (0..4)
-                .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
-                .collect();
-            let deadline = test.start + Duration::from_secs(10);
-            target.completion_test = Some(test);
-            let result =
-                target.render_until(&scene, version(3, Some(2), Some(&[region])), deadline);
-            assert!(matches!(
-                result,
-                Err(BridgeError::RecoveryExhausted { attempts: 4 })
-            ));
-            assert_eq!(target.last_sparse_render_attempts, 1);
-            assert_eq!(target.last_full_render_attempts, 3);
-            assert_eq!(target.completion_markers, 4);
-            assert!(target.completed_view().is_none());
-            // Every exhausted attempt completed and settled, so the renderer and the budget
-            // those attempts grew are kept: rebuilding it would restart from the initial
-            // budget and overflow the same way on every frame.
-            assert!(!target.poisoned);
-            target
-                .render_until(&scene, version(4, None, None), deadline)
-                .expect("the next frame renders on the same target");
-            assert_eq!(target_pixels(&target), target_pixels(&oracle));
-        }
+        let mut target = required_target(384, 256);
+        let region = vello::FineDamageRect {
+            x: 144,
+            y: 80,
+            width: 96,
+            height: 96,
+        };
+        target
+            .render_until(
+                &Scene::new(),
+                version(1, None, None),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        let scene = opaque_rect_stack_in_rect_scene(region);
+        let outcome = target
+            .render_until(
+                &scene,
+                version(2, Some(1), Some(&[region])),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        assert_eq!(outcome.sparse_attempts, 1);
+        assert!(
+            outcome.full_attempts >= 1,
+            "real sparse overflow must recover densely"
+        );
+        assert_eq!(
+            outcome.render_attempts,
+            outcome.sparse_attempts + outcome.full_attempts
+        );
+        assert_eq!(outcome.completion_markers, outcome.render_attempts);
+        assert!(outcome.render_attempts <= 4);
+        let actual = target_pixels(&target);
+        let mut oracle = required_target(384, 256);
+        oracle
+            .render_until(
+                &scene,
+                version(2, None, None),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        assert_eq!(actual, target_pixels(&oracle));
+        let mut test = completion_clock();
+        test.counters = (0..4)
+            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+            .collect();
+        let deadline = test.start + Duration::from_secs(10);
+        target.completion_test = Some(test);
+        let result = target.render_until(&scene, version(3, Some(2), Some(&[region])), deadline);
+        assert!(matches!(
+            result,
+            Err(BridgeError::RecoveryExhausted { attempts: 4 })
+        ));
+        assert_eq!(target.last_sparse_render_attempts, 1);
+        assert_eq!(target.last_full_render_attempts, 3);
+        assert_eq!(target.completion_markers, 4);
+        assert!(target.completed_view().is_none());
+        // Every exhausted attempt completed and settled, so the renderer and the budget
+        // those attempts grew are kept: rebuilding it would restart from the initial
+        // budget and overflow the same way on every frame.
+        assert!(!target.poisoned);
+        target
+            .render_until(&scene, version(4, None, None), deadline)
+            .expect("the next frame renders on the same target");
+        assert_eq!(target_pixels(&target), target_pixels(&oracle));
+    }
 
-        {
+    {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.callback_elapsed = Duration::from_millis(750);
+        test.counters = [
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: false }),
+        ]
+        .into();
+        bridge.target.completion_test = Some(test);
+        let mut actual = vec![0; 128 * 128 * 4];
+        bridge
+            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 512)
+            .unwrap();
+        let test = bridge.target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.waits,
+            vec![
+                (WaitPhase::Fence, Duration::from_secs(1)),
+                (WaitPhase::MapCallback, Duration::from_secs(1)),
+                (WaitPhase::Fence, Duration::from_secs(1)),
+                (WaitPhase::MapCallback, Duration::from_secs(1))
+            ]
+        );
+        assert_eq!(
+            &test.counter_remaining[..4],
+            &[
+                Duration::from_millis(1000),
+                Duration::from_millis(800),
+                Duration::from_millis(600),
+                Duration::from_millis(1000)
+            ]
+        );
+        assert!(
+            test.elapsed > Duration::from_secs(1),
+            "Linux has separate phase allowances"
+        );
+        assert_eq!(bridge.last_render_attempts(), 2);
+        assert_eq!(bridge.target.completion_markers, 0);
+        assert!(bridge.retained_staging_valid && bridge.target.retained_target_valid);
+        let explicit_budget: Duration = test
+            .waits
+            .iter()
+            .map(|(_, duration)| *duration)
+            .sum::<Duration>()
+            + BUMP_SETTLEMENT_WAIT * 2;
+        assert!(explicit_budget <= Duration::from_secs(12));
+
+        let mut exhausted = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.callback_elapsed = Duration::from_millis(750);
+        test.counters = (0..4)
+            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+            .collect();
+        exhausted.target.completion_test = Some(test);
+        assert!(matches!(
+            exhausted.paint_damage_into_xrgb8888(
+                &Scene::new(),
+                version(1, None, None),
+                &mut actual,
+                512
+            ),
+            Err(BridgeError::RecoveryExhausted { attempts: 4 })
+        ));
+        let test = exhausted.target.completion_test.as_ref().unwrap();
+        let requested: Duration = test
+            .waits
+            .iter()
+            .map(|(_, duration)| *duration)
+            .sum::<Duration>()
+            + BUMP_SETTLEMENT_WAIT * 4;
+        assert_eq!(requested, Duration::from_secs(12));
+        assert_eq!(exhausted.last_render_attempts(), 4);
+        assert!(exhausted.target.completed_view().is_none());
+    }
+
+    {
+        // Every individual Linux phase failure aborts immediately; no completed overflow may
+        // turn a failed fence/callback/counter observation into another attempt.
+        for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
             let mut bridge = required_bridge(128, 128);
             let mut test = completion_clock();
-            test.fence_elapsed = Duration::from_millis(750);
-            test.callback_elapsed = Duration::from_millis(750);
-            test.counters = [
-                Ok(vello::BumpBudgetPoll::Pending),
-                Ok(vello::BumpBudgetPoll::Pending),
-                Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
-                Ok(vello::BumpBudgetPoll::Complete { overflowed: false }),
-            ]
-            .into();
+            test.failure = phase;
+            if phase.is_none() {
+                test.counters = (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
+            }
             bridge.target.completion_test = Some(test);
-            let mut actual = vec![0; 128 * 128 * 4];
-            bridge
-                .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 512)
-                .unwrap();
-            let test = bridge.target.completion_test.as_ref().unwrap();
-            assert_eq!(
-                test.waits,
-                vec![
-                    (WaitPhase::Fence, Duration::from_secs(1)),
-                    (WaitPhase::MapCallback, Duration::from_secs(1)),
-                    (WaitPhase::Fence, Duration::from_secs(1)),
-                    (WaitPhase::MapCallback, Duration::from_secs(1))
-                ]
+            let mut bytes = vec![0xAB; 128 * 128 * 4];
+            let result = bridge.paint_damage_into_xrgb8888(
+                &Scene::new(),
+                version(1, None, None),
+                &mut bytes,
+                512,
             );
-            assert_eq!(
-                &test.counter_remaining[..4],
-                &[
-                    Duration::from_millis(1000),
-                    Duration::from_millis(800),
-                    Duration::from_millis(600),
-                    Duration::from_millis(1000)
-                ]
-            );
-            assert!(
-                test.elapsed > Duration::from_secs(1),
-                "Linux has separate phase allowances"
-            );
-            assert_eq!(bridge.last_render_attempts(), 2);
-            assert_eq!(bridge.target.completion_markers, 0);
-            assert!(bridge.retained_staging_valid && bridge.target.retained_target_valid);
-            let explicit_budget: Duration = test
-                .waits
-                .iter()
-                .map(|(_, duration)| *duration)
-                .sum::<Duration>()
-                + BUMP_SETTLEMENT_WAIT * 2;
-            assert!(explicit_budget <= Duration::from_secs(12));
-
-            let mut exhausted = required_bridge(128, 128);
-            let mut test = completion_clock();
-            test.fence_elapsed = Duration::from_millis(750);
-            test.callback_elapsed = Duration::from_millis(750);
-            test.counters = (0..4)
-                .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
-                .collect();
-            exhausted.target.completion_test = Some(test);
+            assert!(result.is_err());
+            assert_eq!(bridge.last_render_attempts(), 1);
+            assert!(!bridge.retained_staging_valid && bridge.target.completed_view().is_none());
+            assert!(bytes.iter().all(|byte| *byte == 0xAB));
+            let identity = bridge.xrgb_history_identity(512, 1);
             assert!(matches!(
-                exhausted.paint_damage_into_xrgb8888(
+                bridge.paint_damage_into_xrgb8888(
                     &Scene::new(),
-                    version(1, None, None),
-                    &mut actual,
-                    512
-                ),
-                Err(BridgeError::RecoveryExhausted { attempts: 4 })
-            ));
-            let test = exhausted.target.completion_test.as_ref().unwrap();
-            let requested: Duration = test
-                .waits
-                .iter()
-                .map(|(_, duration)| *duration)
-                .sum::<Duration>()
-                + BUMP_SETTLEMENT_WAIT * 4;
-            assert_eq!(requested, Duration::from_secs(12));
-            assert_eq!(exhausted.last_render_attempts(), 4);
-            assert!(exhausted.target.completed_view().is_none());
-        }
-
-        {
-            // Every individual Linux phase failure aborts immediately; no completed overflow may
-            // turn a failed fence/callback/counter observation into another attempt.
-            for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
-                let mut bridge = required_bridge(128, 128);
-                let mut test = completion_clock();
-                test.failure = phase;
-                if phase.is_none() {
-                    test.counters = (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
-                }
-                bridge.target.completion_test = Some(test);
-                let mut bytes = vec![0xAB; 128 * 128 * 4];
-                let result = bridge.paint_damage_into_xrgb8888(
-                    &Scene::new(),
-                    version(1, None, None),
+                    version(2, Some(1), None),
                     &mut bytes,
                     512,
-                );
-                assert!(result.is_err());
-                assert_eq!(bridge.last_render_attempts(), 1);
-                assert!(!bridge.retained_staging_valid && bridge.target.completed_view().is_none());
-                assert!(bytes.iter().all(|byte| *byte == 0xAB));
-                let identity = bridge.xrgb_history_identity(512, 1);
-                assert!(matches!(
-                    bridge.paint_damage_into_xrgb8888(
-                        &Scene::new(),
-                        version(2, Some(1), None),
-                        &mut bytes,
-                        512,
-                    ),
-                    Err(BridgeError::RecoveryBackoff { .. })
-                ));
-                assert_eq!(bridge.last_render_attempts(), 1);
-                assert!(bytes.iter().all(|byte| *byte == 0xAB));
-                // Once the cool-down expires the poisoned target is reconstructed exactly once; the
-                // failure fixture belongs to the old target and cannot poison its replacement.
-                bridge.recovery_not_before = Some(
-                    Instant::now()
-                        .checked_sub(Duration::from_millis(1))
-                        .expect("monotonic clock is past its first millisecond"),
-                );
-                bridge
-                    .paint_damage_into_xrgb8888(
-                        &Scene::new(),
-                        version(3, Some(2), None),
-                        &mut bytes,
-                        512,
-                    )
-                    .expect("bridge reconstructs poisoned renderer after backoff");
-                assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
-                assert!(bridge.target.completed_view().is_some());
-            }
-        }
-
-        {
-            let mut target = required_target(128, 128);
-            let mut test = completion_clock();
-            test.fence_elapsed = Duration::from_millis(750);
-            test.counters = [
-                Ok(vello::BumpBudgetPoll::Pending),
-                Ok(vello::BumpBudgetPoll::Pending),
-                Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
-            ]
-            .into();
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
-            assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
-            assert_eq!(target.last_render_attempts, 1);
-            assert_eq!(target.completion_markers, 1);
-            assert!(target.completed_view().is_none());
-            let test = target.completion_test.as_ref().unwrap();
-            assert_eq!(
-                test.counter_remaining,
-                [Duration::from_millis(250), Duration::from_millis(50)]
-            );
-            assert_eq!(test.elapsed, Duration::from_secs(1));
-
-            // A completed overflow consumes the same caller deadline on the next attempt.
-            let mut target = required_target(128, 128);
-            let mut test = completion_clock();
-            test.fence_elapsed = Duration::from_millis(750);
-            test.counters
-                .push_back(Ok(vello::BumpBudgetPoll::Complete { overflowed: true }));
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            assert!(matches!(
-                target.render_until(&Scene::new(), version(1, None, None), deadline),
-                Err(BridgeError::DeadlineExceeded)
+                ),
+                Err(BridgeError::RecoveryBackoff { .. })
             ));
-            assert_eq!(target.last_render_attempts, 2);
-            assert_eq!(target.completion_markers, 2);
-            assert_eq!(
-                target.completion_test.as_ref().unwrap().waits,
-                [
-                    (WaitPhase::Marker, Duration::from_secs(1)),
-                    (WaitPhase::Marker, Duration::from_millis(250))
-                ]
+            assert_eq!(bridge.last_render_attempts(), 1);
+            assert!(bytes.iter().all(|byte| *byte == 0xAB));
+            // Once the cool-down expires the poisoned target is reconstructed exactly once; the
+            // failure fixture belongs to the old target and cannot poison its replacement.
+            bridge.recovery_not_before = Some(
+                Instant::now()
+                    .checked_sub(Duration::from_millis(1))
+                    .expect("monotonic clock is past its first millisecond"),
             );
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &Scene::new(),
+                    version(3, Some(2), None),
+                    &mut bytes,
+                    512,
+                )
+                .expect("bridge reconstructs poisoned renderer after backoff");
+            assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
+            assert!(bridge.target.completed_view().is_some());
         }
     }
 
-    // Phase `gpu_target_always_waits_on_a_completion_marker`.
     {
-        {
-            let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
-            assert_eq!(
-                target.renderer.poll_bump_budget(&target.device).unwrap(),
-                vello::BumpBudgetPoll::Complete { overflowed: false }
-            );
-            let mut test = completion_clock();
-            test.failure = Some(WaitPhase::Marker);
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-            assert!(matches!(
-                target.render_until(&Scene::new(), version(1, None, None), deadline),
-                Err(BridgeError::DeadlineExceeded)
-            ));
-            assert_eq!(target.completion_markers, 1);
-            assert_eq!(
-                target.renderer.poll_bump_budget(&target.device).unwrap(),
-                vello::BumpBudgetPoll::Complete { overflowed: false }
-            );
-            assert!(target.completed_view().is_none());
-            let mut replacement =
-                required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
-            let stats = replacement
-                .render_until(
-                    &Scene::new(),
-                    version(2, None, None),
-                    tilo_test_env::hang_deadline(),
-                )
-                .unwrap();
-            assert_eq!(stats.completion_markers, stats.render_attempts);
-            assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
-        }
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.counters = [
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+        ]
+        .into();
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+        assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+        assert_eq!(target.last_render_attempts, 1);
+        assert_eq!(target.completion_markers, 1);
+        assert!(target.completed_view().is_none());
+        let test = target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.counter_remaining,
+            [Duration::from_millis(250), Duration::from_millis(50)]
+        );
+        assert_eq!(test.elapsed, Duration::from_secs(1));
 
-        {
-            let mut target = required_target(8, 4);
-            let output = target.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("retained-bgra-test-output"),
-                size: wgpu::Extent3d {
-                    width: 8,
-                    height: 4,
-                    depth_or_array_layers: 1,
+        // A completed overflow consumes the same caller deadline on the next attempt.
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.counters
+            .push_back(Ok(vello::BumpBudgetPoll::Complete { overflowed: true }));
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.last_render_attempts, 2);
+        assert_eq!(target.completion_markers, 2);
+        assert_eq!(
+            target.completion_test.as_ref().unwrap().waits,
+            [
+                (WaitPhase::Marker, Duration::from_secs(1)),
+                (WaitPhase::Marker, Duration::from_millis(250))
+            ]
+        );
+    }
+}
+
+#[test]
+fn gpu_target_always_waits_on_a_completion_marker() {
+    {
+        let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
+        assert_eq!(
+            target.renderer.poll_bump_budget(&target.device).unwrap(),
+            vello::BumpBudgetPoll::Complete { overflowed: false }
+        );
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.completion_markers, 1);
+        assert_eq!(
+            target.renderer.poll_bump_budget(&target.device).unwrap(),
+            vello::BumpBudgetPoll::Complete { overflowed: false }
+        );
+        assert!(target.completed_view().is_none());
+        let mut replacement = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
+        let stats = replacement
+            .render_until(
+                &Scene::new(),
+                version(2, None, None),
+                tilo_test_env::hang_deadline(),
+            )
+            .unwrap();
+        assert_eq!(stats.completion_markers, stats.render_attempts);
+        assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
+    }
+
+    {
+        let mut target = required_target(8, 4);
+        let output = target.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("retained-bgra-test-output"),
+            size: wgpu::Extent3d {
+                width: 8,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+
+        assert!(matches!(
+            target.render(
+                &Scene::new(),
+                Some(version(1, None, None)),
+                FrameOutput::GpuOnly,
+                CompletionPolicy::Absolute(deadline),
+                None,
+                |device, encoder, source| {
+                    TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm)
+                        .copy(device, encoder, source, &view);
                 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Bgra8Unorm,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let view = output.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut test = completion_clock();
-            test.failure = Some(WaitPhase::Marker);
-            let deadline = test.start + Duration::from_secs(1);
-            target.completion_test = Some(test);
-
-            assert!(matches!(
-                target.render(
-                    &Scene::new(),
-                    Some(version(1, None, None)),
-                    FrameOutput::GpuOnly,
-                    CompletionPolicy::Absolute(deadline),
-                    None,
-                    |device, encoder, source| {
-                        TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm)
-                            .copy(device, encoder, source, &view);
-                    },
-                ),
-                Err(BridgeError::DeadlineExceeded)
-            ));
-            assert_eq!(target.last_render_attempts, 1);
-            assert_eq!(target.completion_markers, 1);
-            assert!(target.completed_view().is_none() && target.poisoned);
-        }
+            ),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.last_render_attempts, 1);
+        assert_eq!(target.completion_markers, 1);
+        assert!(target.completed_view().is_none() && target.poisoned);
     }
 }
 

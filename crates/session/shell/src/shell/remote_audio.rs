@@ -2148,89 +2148,86 @@ mod tests {
     }
 
     #[test]
-    fn audio_routes_advance_only_with_verified_capabilities_focus_and_bindings() {
-        // Phase `foreign_capabilities_cannot_feed_an_inbound_route`.
-        {
-            let source = DeviceId::new("source").unwrap();
-            let target = DeviceId::new("target").unwrap();
-            let authorization = [7; 16];
-            assert!(frame_matches(
-                &source,
-                &target,
-                authorization,
-                &source,
-                &target,
-                authorization,
-            ));
-            assert!(!frame_matches(
-                &source,
-                &target,
-                authorization,
-                &DeviceId::new("other").unwrap(),
-                &target,
-                authorization,
-            ));
-            assert!(!frame_matches(
-                &source,
-                &target,
-                authorization,
-                &source,
-                &DeviceId::new("other").unwrap(),
-                authorization,
-            ));
-            assert!(!frame_matches(
-                &source,
-                &target,
-                authorization,
-                &source,
-                &target,
-                [9; 16],
-            ));
-        }
+    fn foreign_capabilities_cannot_feed_an_inbound_route() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let authorization = [7; 16];
+        assert!(frame_matches(
+            &source,
+            &target,
+            authorization,
+            &source,
+            &target,
+            authorization,
+        ));
+        assert!(!frame_matches(
+            &source,
+            &target,
+            authorization,
+            &DeviceId::new("other").unwrap(),
+            &target,
+            authorization,
+        ));
+        assert!(!frame_matches(
+            &source,
+            &target,
+            authorization,
+            &source,
+            &DeviceId::new("other").unwrap(),
+            authorization,
+        ));
+        assert!(!frame_matches(
+            &source,
+            &target,
+            authorization,
+            &source,
+            &target,
+            [9; 16],
+        ));
+    }
 
-        // Phase `application_routes_are_bound_to_the_locally_verified_focus`.
-        {
-            let focus = binding("surface-1");
-            let selection = LocalAudioSelection::Application {
-                serial: 42,
-                label: "Music".into(),
-                focus: focus.clone(),
-            };
-            assert!(selection_focus_valid(&selection, Some(&focus)));
-            let other = PhysicalGamepadBinding {
-                session_id: "surface-2".into(),
-                ..focus
-            };
-            assert!(!selection_focus_valid(&selection, Some(&other)));
-            assert!(!selection_focus_valid(&selection, None));
-        }
+    #[test]
+    fn application_routes_are_bound_to_the_locally_verified_focus() {
+        let focus = binding("surface-1");
+        let selection = LocalAudioSelection::Application {
+            serial: 42,
+            label: "Music".into(),
+            focus: focus.clone(),
+        };
+        assert!(selection_focus_valid(&selection, Some(&focus)));
+        let other = PhysicalGamepadBinding {
+            session_id: "surface-2".into(),
+            ..focus
+        };
+        assert!(!selection_focus_valid(&selection, Some(&other)));
+        assert!(!selection_focus_valid(&selection, None));
+    }
 
-        // Phase `picker_tokens_survive_refresh_only_while_the_source_binding_exists`.
-        {
-            let focus = binding("surface-1");
-            let application = LocalAudioSelection::Application {
-                serial: 42,
-                label: "Music".into(),
-                focus,
-            };
-            let desired = vec![LocalAudioSelection::System, application.clone()];
-            let mut state = RemoteAudioState::default();
-            let first = reconcile_source_tokens(&mut state, desired.clone());
-            let refreshed = reconcile_source_tokens(&mut state, desired);
-            assert_eq!(first, refreshed);
-            assert_eq!(state.source_tokens.len(), 2);
+    #[test]
+    fn picker_tokens_survive_refresh_only_while_the_source_binding_exists() {
+        let focus = binding("surface-1");
+        let application = LocalAudioSelection::Application {
+            serial: 42,
+            label: "Music".into(),
+            focus,
+        };
+        let desired = vec![LocalAudioSelection::System, application.clone()];
+        let mut state = RemoteAudioState::default();
+        let first = reconcile_source_tokens(&mut state, desired.clone());
+        let refreshed = reconcile_source_tokens(&mut state, desired);
+        assert_eq!(first, refreshed);
+        assert_eq!(state.source_tokens.len(), 2);
 
-            let without_application =
-                reconcile_source_tokens(&mut state, vec![LocalAudioSelection::System]);
-            assert_eq!(without_application.len(), 1);
-            assert_eq!(state.source_tokens.len(), 1);
-            assert!(
-                !state
-                    .source_tokens
-                    .values()
-                    .any(|source| source == &application)
-            );
-        }
+        let without_application =
+            reconcile_source_tokens(&mut state, vec![LocalAudioSelection::System]);
+        assert_eq!(without_application.len(), 1);
+        assert_eq!(state.source_tokens.len(), 1);
+        assert!(
+            !state
+                .source_tokens
+                .values()
+                .any(|source| source == &application)
+        );
     }
 
     #[derive(Default)]
@@ -2912,215 +2909,207 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn audio_route_revocation_hits_only_the_exact_affected_routes() {
-        // Phase `policy_disable_revokes_pending_and_outbound_routes`.
-        {
-            let source = DeviceId::new("source").unwrap();
-            let target = DeviceId::new("target").unwrap();
-            let now = Instant::now();
-            let mut state = RemoteAudioState::default();
-            state.pending.insert(
+    fn policy_disable_revokes_pending_and_outbound_routes() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.pending.insert(
+            [1; 16],
+            PendingInbound {
+                source: source.clone(),
+                target: target.clone(),
+                label: "Music".into(),
+                received: now,
+            },
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
+        );
+        state
+            .inbound
+            .insert([4; 16], inbound(&source, &target, now));
+
+        let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
+        assert!(state.pending.is_empty());
+        assert!(state.outbound.is_empty());
+        assert!(state.inbound.is_empty());
+        assert_eq!(egress.len(), 3);
+        assert!(egress.iter().any(|message| {
+            message.target == source
+                && message.action
+                    == PersonalFabricAction::RemoteAudioDecision {
+                        session_id: [1; 16],
+                        accepted: false,
+                        authorization: None,
+                    }
+        }));
+        assert!(egress.iter().any(|message| {
+            message.target == target
+                && message.action
+                    == PersonalFabricAction::RemoteAudioStop {
+                        session_id: [2; 16],
+                        authorization: [3; 16],
+                    }
+        }));
+        assert!(egress.iter().any(|message| {
+            message.target == source
+                && message.action
+                    == PersonalFabricAction::RemoteAudioStop {
+                        session_id: [4; 16],
+                        authorization: [5; 16],
+                    }
+        }));
+    }
+
+    #[test]
+    fn peer_and_focus_loss_revoke_only_the_exact_routes() {
+        let gone = DeviceId::new("gone").unwrap();
+        let online_peer = DeviceId::new("online").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&gone, LocalAudioSelection::System, Some([7; 16]), now),
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(
+                &online_peer,
+                LocalAudioSelection::Application {
+                    serial: 42,
+                    label: "Music".into(),
+                    focus: binding("old-focus"),
+                },
+                None,
+                now,
+            ),
+        );
+        state.outbound.insert(
+            [3; 16],
+            outbound(&online_peer, LocalAudioSelection::System, None, now),
+        );
+        let online = BTreeSet::from([online_peer]);
+
+        let egress =
+            reconcile_lifecycle(&mut state, true, &online, Some(&binding("new-focus")), now);
+        assert_eq!(
+            state.outbound.keys().copied().collect::<Vec<_>>(),
+            vec![[3; 16]]
+        );
+        assert_eq!(egress.len(), 2);
+        assert!(
+            egress
+                .iter()
+                .any(|message| message.outbound_session == Some([1; 16]))
+        );
+        assert!(
+            egress
+                .iter()
+                .any(|message| message.outbound_session == Some([2; 16]))
+        );
+    }
+
+    #[test]
+    fn stale_consent_is_denied_and_fresh_consent_remains() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        for (id, received) in [
+            (
                 [1; 16],
+                now.checked_sub(PENDING_TTL)
+                    .and_then(|stale| stale.checked_sub(Duration::from_millis(1)))
+                    .unwrap(),
+            ),
+            ([2; 16], now),
+        ] {
+            state.pending.insert(
+                id,
                 PendingInbound {
                     source: source.clone(),
                     target: target.clone(),
                     label: "Music".into(),
-                    received: now,
+                    received,
                 },
             );
-            state.outbound.insert(
-                [2; 16],
-                outbound(&target, LocalAudioSelection::System, Some([3; 16]), now),
-            );
-            state
-                .inbound
-                .insert([4; 16], inbound(&source, &target, now));
-
-            let egress = reconcile_lifecycle(&mut state, false, &BTreeSet::new(), None, now);
-            assert!(state.pending.is_empty());
-            assert!(state.outbound.is_empty());
-            assert!(state.inbound.is_empty());
-            assert_eq!(egress.len(), 3);
-            assert!(egress.iter().any(|message| {
-                message.target == source
-                    && message.action
-                        == PersonalFabricAction::RemoteAudioDecision {
-                            session_id: [1; 16],
-                            accepted: false,
-                            authorization: None,
-                        }
-            }));
-            assert!(egress.iter().any(|message| {
-                message.target == target
-                    && message.action
-                        == PersonalFabricAction::RemoteAudioStop {
-                            session_id: [2; 16],
-                            authorization: [3; 16],
-                        }
-            }));
-            assert!(egress.iter().any(|message| {
-                message.target == source
-                    && message.action
-                        == PersonalFabricAction::RemoteAudioStop {
-                            session_id: [4; 16],
-                            authorization: [5; 16],
-                        }
-            }));
         }
-
-        // Phase `peer_and_focus_loss_revoke_only_the_exact_routes`.
-        {
-            let gone = DeviceId::new("gone").unwrap();
-            let online_peer = DeviceId::new("online").unwrap();
-            let now = Instant::now();
-            let mut state = RemoteAudioState::default();
-            state.outbound.insert(
-                [1; 16],
-                outbound(&gone, LocalAudioSelection::System, Some([7; 16]), now),
-            );
-            state.outbound.insert(
-                [2; 16],
-                outbound(
-                    &online_peer,
-                    LocalAudioSelection::Application {
-                        serial: 42,
-                        label: "Music".into(),
-                        focus: binding("old-focus"),
-                    },
-                    None,
-                    now,
-                ),
-            );
-            state.outbound.insert(
-                [3; 16],
-                outbound(&online_peer, LocalAudioSelection::System, None, now),
-            );
-            let online = BTreeSet::from([online_peer]);
-
-            let egress =
-                reconcile_lifecycle(&mut state, true, &online, Some(&binding("new-focus")), now);
-            assert_eq!(
-                state.outbound.keys().copied().collect::<Vec<_>>(),
-                vec![[3; 16]]
-            );
-            assert_eq!(egress.len(), 2);
-            assert!(
-                egress
-                    .iter()
-                    .any(|message| message.outbound_session == Some([1; 16]))
-            );
-            assert!(
-                egress
-                    .iter()
-                    .any(|message| message.outbound_session == Some([2; 16]))
-            );
-        }
-
-        // Phase `stale_consent_is_denied_and_fresh_consent_remains`.
-        {
-            let source = DeviceId::new("source").unwrap();
-            let target = DeviceId::new("target").unwrap();
-            let now = Instant::now();
-            let mut state = RemoteAudioState::default();
-            for (id, received) in [
-                (
-                    [1; 16],
-                    now.checked_sub(PENDING_TTL)
-                        .and_then(|stale| stale.checked_sub(Duration::from_millis(1)))
-                        .unwrap(),
-                ),
-                ([2; 16], now),
-            ] {
-                state.pending.insert(
-                    id,
-                    PendingInbound {
-                        source: source.clone(),
-                        target: target.clone(),
-                        label: "Music".into(),
-                        received,
-                    },
-                );
+        let egress = reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
+        assert_eq!(
+            state.pending.keys().copied().collect::<Vec<_>>(),
+            vec![[2; 16]]
+        );
+        assert_eq!(egress.len(), 1);
+        assert_eq!(
+            egress[0].action,
+            PersonalFabricAction::RemoteAudioDecision {
+                session_id: [1; 16],
+                accepted: false,
+                authorization: None,
             }
-            let egress =
-                reconcile_lifecycle(&mut state, true, &BTreeSet::from([source]), None, now);
-            assert_eq!(
-                state.pending.keys().copied().collect::<Vec<_>>(),
-                vec![[2; 16]]
-            );
-            assert_eq!(egress.len(), 1);
-            assert_eq!(
-                egress[0].action,
-                PersonalFabricAction::RemoteAudioDecision {
-                    session_id: [1; 16],
-                    accepted: false,
-                    authorization: None,
-                }
-            );
-        }
+        );
+    }
 
-        // Phase `transport_failure_interrupts_only_its_exact_route`.
-        {
-            let target = DeviceId::new("target").unwrap();
-            let now = Instant::now();
-            let mut state = RemoteAudioState::default();
-            state.outbound.insert(
-                [1; 16],
-                outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
-            );
-            state.outbound.insert(
-                [2; 16],
-                outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
-            );
+    #[test]
+    fn transport_failure_interrupts_only_its_exact_route() {
+        let target = DeviceId::new("target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(&target, LocalAudioSelection::System, Some([4; 16]), now),
+        );
+        state.outbound.insert(
+            [2; 16],
+            outbound(&target, LocalAudioSelection::System, Some([5; 16]), now),
+        );
 
-            apply_send_failure(
-                &mut state,
-                Some([1; 16]),
-                &PersonalFabricSendError::Rejected("personal fabric transport is closed".into()),
-                now,
-            );
-            assert!(!state.outbound.contains_key(&[1; 16]));
-            assert!(state.outbound.contains_key(&[2; 16]));
-            assert_eq!(
-                route_views(&state, true)
-                    .iter()
-                    .find(|route| route.session_id == [1; 16])
-                    .map(|route| route.phase),
-                Some(RemoteAudioPhase::Interrupted)
-            );
-        }
+        apply_send_failure(
+            &mut state,
+            Some([1; 16]),
+            &PersonalFabricSendError::Rejected("personal fabric transport is closed".into()),
+            now,
+        );
+        assert!(!state.outbound.contains_key(&[1; 16]));
+        assert!(state.outbound.contains_key(&[2; 16]));
+        assert_eq!(
+            route_views(&state, true)
+                .iter()
+                .find(|route| route.session_id == [1; 16])
+                .map(|route| route.phase),
+            Some(RemoteAudioPhase::Interrupted)
+        );
+    }
 
-        // Phase `capture_failure_stops_the_exact_authorized_peer_route`.
-        {
-            let target = DeviceId::new("target").unwrap();
-            let mut state = RemoteAudioState::default();
-            state.outbound.insert(
-                [1; 16],
-                outbound(
-                    &target,
-                    LocalAudioSelection::System,
-                    Some([9; 16]),
-                    Instant::now(),
-                ),
-            );
-            let mut egress = Vec::new();
+    #[test]
+    fn capture_failure_stops_the_exact_authorized_peer_route() {
+        let target = DeviceId::new("target").unwrap();
+        let mut state = RemoteAudioState::default();
+        state.outbound.insert(
+            [1; 16],
+            outbound(
+                &target,
+                LocalAudioSelection::System,
+                Some([9; 16]),
+                Instant::now(),
+            ),
+        );
+        let mut egress = Vec::new();
 
-            terminate_capture_failure(&mut state, [1; 16], &mut egress);
+        terminate_capture_failure(&mut state, [1; 16], &mut egress);
 
-            assert!(state.outbound.is_empty());
-            assert_eq!(egress.len(), 1);
-            assert_eq!(egress[0].target, target);
-            assert_eq!(egress[0].outbound_session, Some([1; 16]));
-            assert_eq!(
-                egress[0].action,
-                PersonalFabricAction::RemoteAudioStop {
-                    session_id: [1; 16],
-                    authorization: [9; 16],
-                }
-            );
-        }
+        assert!(state.outbound.is_empty());
+        assert_eq!(egress.len(), 1);
+        assert_eq!(egress[0].target, target);
+        assert_eq!(egress[0].outbound_session, Some([1; 16]));
+        assert_eq!(
+            egress[0].action,
+            PersonalFabricAction::RemoteAudioStop {
+                session_id: [1; 16],
+                authorization: [9; 16],
+            }
+        );
     }
 }

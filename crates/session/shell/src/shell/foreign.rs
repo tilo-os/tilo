@@ -5859,9 +5859,8 @@ mod tests {
     }
 
     #[test]
-    fn a_held_buffer_goes_back_once_after_its_last_frame() {
+    fn a_re_attached_buffer_is_held_by_each_frame() {
         let mut holds = BufferHolds::new();
-        // Phase `a_re_attached_buffer_is_held_by_each_frame`.
         holds.hold("a");
         holds.hold("a");
         holds.hold("b");
@@ -5870,7 +5869,16 @@ mod tests {
             holds.give_back().is_empty(),
             "the newer frame still draws it"
         );
-        // Phase `the_last_frame_gives_it_back_once`.
+    }
+
+    #[test]
+    fn the_last_frame_gives_it_back_once() {
+        let mut holds = BufferHolds::new();
+        holds.hold("a");
+        holds.hold("a");
+        holds.hold("b");
+        holds.returned.push("a");
+        assert!(holds.give_back().is_empty());
         holds.returned.extend(["a", "b"]);
         assert_eq!(holds.give_back(), vec!["a", "b"]);
         holds.returned.push("a");
@@ -6168,112 +6176,112 @@ mod tests {
     }
 
     #[test]
-    fn hdr_frames_keep_a_full_precision_plane() {
+    fn ten_bit_pq_rows_keep_their_codes_red_low() {
         use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
         let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
         let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        // XR30: blue in the low bits; blue 100, green 512, red 900.
+        let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
+        let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
+        let layout = CpuLayout::Rgb10 {
+            red_low: false,
+            opaque: true,
+        };
+        let mut rgba = Vec::new();
+        let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
+            .expect("a PQ description keeps its plane");
+        assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
+        assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
+        assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
+        let [r, g, b] = plane.signal_at(1, 0);
+        assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
+        assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
+        assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
+        let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
+        assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
+        let mut rgba = Vec::new();
+        assert!(
+            convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba).is_none(),
+            "an SDR description needs no plane"
+        );
+    }
 
-        // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
-        {
-            // XR30: blue in the low bits; blue 100, green 512, red 900.
-            let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
-            let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
-            let layout = CpuLayout::Rgb10 {
-                red_low: false,
-                opaque: true,
-            };
-            let mut rgba = Vec::new();
-            let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
-                .expect("a PQ description keeps its plane");
-            assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
-            assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
-            assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
-            let [r, g, b] = plane.signal_at(1, 0);
-            assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
-            assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
-            assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
-            let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
-            assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
-            let mut rgba = Vec::new();
-            assert!(
-                convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba)
-                    .is_none(),
-                "an SDR description needs no plane"
-            );
-        }
+    #[test]
+    fn half_float_rows_keep_their_values() {
+        use tilo_color_pipeline::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
+            .iter()
+            .flat_map(|h| h.to_le_bytes())
+            .collect();
+        let scrgb = scrgb();
+        let mut rgba = Vec::new();
+        let plane = convert_rows(
+            CpuLayout::Half { opaque: true },
+            [px.as_slice()].into_iter(),
+            (1, 1),
+            scrgb,
+            &mut rgba,
+        )
+        .expect("scRGB keeps its plane");
+        assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
+        assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
+        assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
+        assert_eq!(
+            &rgba[..3],
+            &[255, 255, 188],
+            "linear light clips at SDR white"
+        );
+    }
 
-        // Phase `half_float_rows_keep_their_values`.
-        {
-            let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
-                .iter()
-                .flat_map(|h| h.to_le_bytes())
-                .collect();
-            let scrgb = scrgb();
-            let mut rgba = Vec::new();
-            let plane = convert_rows(
-                CpuLayout::Half { opaque: true },
-                [px.as_slice()].into_iter(),
-                (1, 1),
-                scrgb,
-                &mut rgba,
-            )
-            .expect("scRGB keeps its plane");
-            assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
-            assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
-            assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
-            assert_eq!(
-                &rgba[..3],
-                &[255, 255, 188],
-                "linear light clips at SDR white"
-            );
-        }
+    #[test]
+    fn snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces() {
+        let pq = neighbour_wire::colorimetry::Colorimetry::hdr10();
+        let sdr = neighbour_wire::colorimetry::Colorimetry::sdr_bt709();
+        let frames = ForeignFrameStore::default();
+        let root = sid(80);
+        let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
+            pq,
+            tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
+        )
+        .expect("PQ");
+        let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
+            4,
+            4,
+            (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
+            signal,
+        )
+        .expect("plane");
+        frames.publish_hdr_frame(root, &[9; 64], plane);
+        let snapshot = frames.snapshot(root).expect("frame");
+        let hdr = snapshot.hdr.expect("the plane travels with the frame");
+        assert_eq!((hdr.width(), hdr.height()), (4, 4));
 
-        // Phase `snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces`.
-        {
-            let frames = ForeignFrameStore::default();
-            let root = sid(80);
-            let signal = tilo_color_pipeline::hdr_surface::SurfaceSignal::for_colorimetry(
-                pq,
-                tilo_color_pipeline::hdr_tonemap::HdrTonemapConfig::default(),
-            )
-            .expect("PQ");
-            let plane = tilo_color_pipeline::hdr_surface::HdrPlane::from_signal_rgb(
-                4,
-                4,
-                (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
-                signal,
-            )
-            .expect("plane");
-            frames.publish_hdr_frame(root, &[9; 64], plane);
-            let snapshot = frames.snapshot(root).expect("frame");
-            let hdr = snapshot.hdr.expect("the plane travels with the frame");
-            assert_eq!((hdr.width(), hdr.height()), (4, 4));
+        frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
+        let snapshot = frames.snapshot(root).expect("frame");
+        let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
+        assert_eq!((hdr.width(), hdr.height()), (2, 2));
+        assert_eq!((snapshot.width, snapshot.height), (2, 2));
+        assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
 
-            frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
-            let snapshot = frames.snapshot(root).expect("frame");
-            let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
-            assert_eq!((hdr.width(), hdr.height()), (2, 2));
-            assert_eq!((snapshot.width, snapshot.height), (2, 2));
-            assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
-
-            let child = sid(81);
-            frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
-            frames.set_children(
-                root,
-                vec![ChildFrame {
-                    surface: child,
-                    x: 0,
-                    y: 0,
-                }],
-            );
-            assert!(
-                frames.snapshot(root).expect("frame").hdr.is_none(),
-                "subsurfaces exist only in the SDR rendition"
-            );
-            frames.set_children(root, Vec::new());
-            frames.publish_rgba(root, &[9; 64], 4, 4);
-            assert!(frames.snapshot(root).expect("frame").hdr.is_none());
-        }
+        let child = sid(81);
+        frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: child,
+                x: 0,
+                y: 0,
+            }],
+        );
+        assert!(
+            frames.snapshot(root).expect("frame").hdr.is_none(),
+            "subsurfaces exist only in the SDR rendition"
+        );
+        frames.set_children(root, Vec::new());
+        frames.publish_rgba(root, &[9; 64], 4, 4);
+        assert!(frames.snapshot(root).expect("frame").hdr.is_none());
     }
 
     fn scrgb() -> neighbour_wire::colorimetry::Colorimetry {

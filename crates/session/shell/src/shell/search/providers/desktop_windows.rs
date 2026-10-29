@@ -609,120 +609,113 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn desktop_windows_are_exactly_addressed_and_closed() {
-        // Phase `enumerates_exact_duplicate_titled_tabs_and_groups`.
-        {
-            let (chrome, doc) = fixture();
+    fn enumerates_exact_duplicate_titled_tabs_and_groups() {
+        let (chrome, doc) = fixture();
+        let state = chrome.borrow();
+        let catalog = ActionCatalog::build(
+            &registry(),
+            "close Profilfehler",
+            SearchScope::All,
+            None,
+            &state,
+            &doc,
+            &ROOT,
+            &AllVisible,
+        );
+        let actions = catalog.enumerate();
+        let ids = actions
+            .iter()
+            .map(|action| action.resource.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            ["tab.close:100:1", "tab.close:200:3", "group.close:200"]
+        );
+        assert!(actions[..2].iter().all(|action| {
+            action.title.contains("Profilfehler")
+                && action.subtitle.as_deref() == Some("Workspace “Home” · strip “Main”")
+        }));
+        assert!(
+            actions.iter().all(|action| action
+                .subtitle
+                .as_deref()
+                .is_some_and(|text| !text.contains("100") && !text.contains("200"))),
+            "a subtitle names a group by its place, never its internal id: {:?}",
+            actions.iter().map(|a| &a.subtitle).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            actions[2].title,
+            "Close window group “Profilfehler aufgetreten”"
+        );
+    }
+
+    #[test]
+    fn exact_close_removes_only_target_and_queues_its_protocol_surface() {
+        let (chrome, mut doc) = fixture();
+        let catalog = {
             let state = chrome.borrow();
-            let catalog = ActionCatalog::build(
+            ActionCatalog::build_exact(
                 &registry(),
-                "close Profilfehler",
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"),
                 SearchScope::All,
                 None,
                 &state,
                 &doc,
                 &ROOT,
                 &AllVisible,
-            );
-            let actions = catalog.enumerate();
-            let ids = actions
-                .iter()
-                .map(|action| action.resource.id.as_str())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                ids,
-                ["tab.close:100:1", "tab.close:200:3", "group.close:200"]
-            );
-            assert!(actions[..2].iter().all(|action| {
-                action.title.contains("Profilfehler")
-                    && action.subtitle.as_deref() == Some("Workspace “Home” · strip “Main”")
-            }));
-            assert!(
-                actions.iter().all(|action| action
-                    .subtitle
-                    .as_deref()
-                    .is_some_and(|text| !text.contains("100") && !text.contains("200"))),
-                "a subtitle names a group by its place, never its internal id: {:?}",
-                actions.iter().map(|a| &a.subtitle).collect::<Vec<_>>()
-            );
-            assert_eq!(
-                actions[2].title,
-                "Close window group “Profilfehler aufgetreten”"
-            );
-        }
+            )
+        };
+        catalog
+            .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"))
+            .expect("exact live tab action")
+            .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+            .expect("close accepted");
 
-        // Phase `exact_close_removes_only_target_and_queues_its_protocol_surface`.
-        {
-            let (chrome, mut doc) = fixture();
-            let catalog = {
-                let state = chrome.borrow();
-                ActionCatalog::build_exact(
-                    &registry(),
-                    &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"),
-                    SearchScope::All,
-                    None,
-                    &state,
-                    &doc,
-                    &ROOT,
-                    &AllVisible,
-                )
-            };
+        crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut chrome.borrow_mut().tree_mut(),
+            503,
+        );
+        let mut state = chrome.borrow_mut();
+        let tree = state.tree();
+        let ids = tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [1, 2], "the same-title tab and ChatGPT stay open");
+        drop(tree);
+        assert_eq!(state.take_surface_close_requests(), [503]);
+    }
+
+    #[test]
+    fn stale_exact_address_refuses_without_closing_another_window() {
+        let (chrome, mut doc) = fixture();
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build_exact(
+                &registry(),
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"),
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &ROOT,
+                &AllVisible,
+            )
+        };
+        assert!(
             catalog
-                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"))
-                .expect("exact live tab action")
-                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
-                .expect("close accepted");
-
-            crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                &mut chrome.borrow_mut().tree_mut(),
-                503,
-            );
-            let mut state = chrome.borrow_mut();
-            let tree = state.tree();
-            let ids = tree.desktop.workspaces[0].strips[0]
+                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"))
+                .is_none()
+        );
+        assert_eq!(
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
                 .window_groups
-                .iter()
-                .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-                .collect::<Vec<_>>();
-            assert_eq!(ids, [1, 2], "the same-title tab and ChatGPT stay open");
-            drop(tree);
-            assert_eq!(state.take_surface_close_requests(), [503]);
-        }
-
-        // Phase `stale_exact_address_refuses_without_closing_another_window`.
-        {
-            let (chrome, mut doc) = fixture();
-            let catalog = {
-                let state = chrome.borrow();
-                ActionCatalog::build_exact(
-                    &registry(),
-                    &ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"),
-                    SearchScope::All,
-                    None,
-                    &state,
-                    &doc,
-                    &ROOT,
-                    &AllVisible,
-                )
-            };
-            assert!(
-                catalog
-                    .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:100:999"))
-                    .is_none()
-            );
-            assert_eq!(
-                chrome.borrow().tree().desktop.workspaces[0].strips[0]
-                    .window_groups
-                    .len(),
-                2
-            );
-            assert!(chrome.borrow_mut().take_surface_close_requests().is_empty());
-            let _ = &mut doc;
-        }
+                .len(),
+            2
+        );
+        assert!(chrome.borrow_mut().take_surface_close_requests().is_empty());
+        let _ = &mut doc;
     }
 
     fn palette(chrome: &Chrome, doc: &AutoCommit, needle: &str) -> Vec<SearchResult> {
