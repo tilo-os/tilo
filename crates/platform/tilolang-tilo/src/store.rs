@@ -119,6 +119,32 @@ type Ends = BTreeMap<String, (idx::reflect::Stamp, idx::reflect::Stamp)>;
 /// or moved. Each is moved in the collection's listing, which is not read again.
 pub(crate) type ItemTouches = BTreeMap<FieldKey, BTreeSet<String>>;
 
+/// The runtime's name for a bound control's edit (`ViewInstance::edit`).
+const RUNTIME_EDIT: &str = "$edit";
+
+/// The action a committed change is published as: what the runtime named it, except a bound
+/// control's edit, which the runtime names `$edit` with the arguments `[field, value]`. Every
+/// receiver, and the identity service that signs the change, decides it against the package's
+/// surface, which publishes such an edit as `edit-flag` (a checkbox) or `edit-text` (anything
+/// else) with the arguments `{field, value}`, as the door plans an edit of a field. Under that
+/// name the keystrokes of one field also coalesce into one undo step.
+fn published_name(note: &ChangeNote) -> (String, Json) {
+    if note.action != RUNTIME_EDIT {
+        return (note.action.clone(), note.args.clone());
+    }
+    let field = note.args.get(0).cloned().unwrap_or(Json::Null);
+    let value = note.args.get(1).cloned().unwrap_or(Json::Null);
+    let action = if value.is_boolean() {
+        crate::action::EDIT_FLAG_ACTION
+    } else {
+        crate::action::EDIT_TEXT_ACTION
+    };
+    (
+        action.to_owned(),
+        serde_json::json!({"field": field, "value": value}),
+    )
+}
+
 /// Add `splices` to the steps of the collection `key` in `out`: none at all says that it did
 /// not change after all.
 fn record_splices(out: &mut Vec<ListingChange>, key: &FieldKey, splices: Vec<Splice>) {
@@ -2461,11 +2487,12 @@ impl Store for TiloStore {
             return Ok(());
         }
         let versioned = app.clone();
+        let (action_id, args) = published_name(note);
         let action = DynAction {
             app,
             kind,
-            action_id: note.action.clone(),
-            args: note.args.clone(),
+            action_id,
+            args,
             authorship: Authorship {
                 invoker: note.invoker.clone(),
                 chain: note.chain.clone(),
