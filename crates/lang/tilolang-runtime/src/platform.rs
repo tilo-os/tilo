@@ -122,6 +122,24 @@ struct Offered<'m> {
 }
 
 impl Core {
+    /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
+    /// person's zone, as a `host.Dated` tuple of the rest of the text, the day and the moment.
+    fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let text = self.text(a.h(0)?)?;
+        let at = self.text(a.h(1)?)?;
+        let Some(now) = tilolang::calendar::instant(&at) else {
+            return trap(format!("dated: `{at}` is not a time"));
+        };
+        let offset = self.zone.borrow().as_ref().map_or(0, |zone| zone());
+        let read = tilolang::natural::dated(&text, now, offset);
+        let opt = |v: Option<String>| Value::Opt(v.map(|t| Box::new(Value::Text(t))));
+        self.ret_h(Value::Tuple(vec![
+            Value::Text(read.text),
+            opt(read.day),
+            opt(read.at),
+        ]))
+    }
+
     pub(crate) fn platform_import(
         &self,
         imp: crate::abi::Imp,

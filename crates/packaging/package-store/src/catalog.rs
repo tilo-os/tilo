@@ -221,6 +221,18 @@ impl Catalog {
         Ok(self.system_rows.get_or_init(|| rows).clone())
     }
 
+    /// The app of the user's store that took over the earlier id `id` when it was installed
+    /// (see [`crate::TakenOver`]): the store checked then that the same publisher signed both.
+    ///
+    /// # Errors
+    ///
+    /// See [`Catalog::list`].
+    pub fn taken_over_by(&self, id: &str) -> Result<Option<String>, CatalogError> {
+        Ok(Registry::load(&self.user.registry())?
+            .taken_over_by(id)
+            .map(str::to_owned))
+    }
+
     /// The package that runs for `app_id`.
     ///
     /// # Errors

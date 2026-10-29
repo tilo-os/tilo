@@ -36,6 +36,7 @@ use crate::shell::state::{
 use tilo_action_broker::collab_core::BrokerChannels;
 
 mod adopted_fields;
+mod agent_invite;
 mod channels;
 mod chat_seed;
 pub(crate) mod cold_reads;

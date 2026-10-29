@@ -458,6 +458,18 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 {
                     return receipt;
                 }
+                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    caller,
+                    command,
+                    ..
+                } = &request.operation
+                    && let Some(receipt) = self::host_membership::commit_at_own_host(
+                        network, &owner, room, &request, caller, command,
+                    )
+                    .await
+                {
+                    return receipt;
+                }
             }
             let key = match network.as_ref() {
                 Some(network) => network.native_signing_key_of(&owner, room)?,
@@ -1097,6 +1109,9 @@ impl LauncherServices for NativeLauncher {
     }
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
+    }
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        super::launcher::installed_earlier_ids()
     }
     fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
         launchable_applications_for(

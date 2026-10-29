@@ -121,6 +121,7 @@ imports! {
     (ReadText, "read_text", "i", "i"),
     (OfType, "of_type", "ii", "i"),
     (Keep, "keep", "ii", ""),
+    (EditField, "edit_field", "iii", ""),
     (Grep, "grep", "iii", "i"),
     (Describe, "describe", "i", "i"),
     (DescribeRef, "describe_ref", "i", "i"),

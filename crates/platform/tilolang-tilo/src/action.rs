@@ -417,23 +417,6 @@ fn apply_one(
                 doc.delete(&app, id.as_str())?;
             }
         }
-        DynEdit::OutboxPush { .. } | DynEdit::OutboxSettle { .. } => apply_outbox(doc, &app, edit)?,
-        DynEdit::Migrated { id, migration } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-            };
-            let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
-            doc.put(&done, migration.as_str(), true)?;
-        }
-        DynEdit::In { .. } => {}
-    }
-    Ok(())
-}
-
-/// An outbox edit: an entry queued on the resource for an outside capability, or what became
-/// of one.
-fn apply_outbox(doc: &mut Doc, app: &automerge::ObjId, edit: &DynEdit) -> Result<(), ActionError> {
-    match edit {
         DynEdit::OutboxPush {
             id,
             entry,
@@ -441,7 +424,7 @@ fn apply_outbox(doc: &mut Doc, app: &automerge::ObjId, edit: &DynEdit) -> Result
             payload,
             owner,
         } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id.as_str())? else {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
                 return Err(ActionError::Refused(format!("there is no resource `{id}`")));
             };
             let outbox = ensure_map(doc, &obj, OUTBOX_KEY)?;
@@ -454,7 +437,7 @@ fn apply_outbox(doc: &mut Doc, app: &automerge::ObjId, edit: &DynEdit) -> Result
             }
         }
         DynEdit::OutboxSettle { id, entry, outcome } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id.as_str())? else {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
                 return Ok(());
             };
             let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
@@ -464,8 +447,25 @@ fn apply_outbox(doc: &mut Doc, app: &automerge::ObjId, edit: &DynEdit) -> Result
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
-        _ => {}
+        DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
+        DynEdit::In { .. } => {}
     }
+    Ok(())
+}
+
+/// Record in the resource `id` (in the app's records map `app`) that the migration `migration`
+/// ran on it.
+fn mark_migrated(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    migration: &str,
+) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+    };
+    let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+    doc.put(&done, migration, true)?;
     Ok(())
 }
 

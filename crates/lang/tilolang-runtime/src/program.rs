@@ -32,6 +32,9 @@ const PRINT_ITEMS: usize = 50;
 /// Characters of one text a read shows before it says it was cut.
 const READ_TEXT_CHARS: usize = 4_000;
 
+/// What answers a program's read of an app while it runs ([`Runtime::set_reader`]).
+pub type ReadThrough = dyn Fn(&crate::reads::ReadRequest) -> Result<serde_json::Value, String>;
+
 /// What finds resources by text for `find`: the words, how many at most, the best first.
 pub type TextSearch = dyn Fn(&str, usize) -> Vec<ResourceRef>;
 
@@ -237,6 +240,30 @@ impl Runtime {
             Err(e) => ProgramOutcome::Failed(e.to_string()),
         };
         (io, outcome)
+    }
+
+    /// The fields of the type `ty` as a store reads them, or `None` for a type no loaded package
+    /// declares.
+    #[must_use]
+    pub fn field_specs(&self, ty: &str) -> Option<Vec<crate::store::FieldSpec>> {
+        let registry = self.core.registry.borrow();
+        registry.type_info(ty).map(|(_, info)| info.specs())
+    }
+
+    /// Send what programs change to `invoker` instead of running it here: the runtime of a
+    /// task's host, which holds no records and runs no app's code ([`crate::delegate`]).
+    pub fn set_invoker(&self, invoker: impl crate::delegate::Invoker + 'static) {
+        *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
+    }
+
+    /// Ask `reader` what programs read of each app (`grep`, `find`, `read`, `describe`) while
+    /// they run, instead of answering it here: the runtime of a task's host, which holds no
+    /// records.
+    pub fn set_reader(
+        &self,
+        reader: impl Fn(&crate::reads::ReadRequest) -> Result<serde_json::Value, String> + 'static,
+    ) {
+        *self.core.reader.borrow_mut() = Some(Box::new(reader));
     }
 
     /// Find resources by text for programs' `find`: the host's search, which answers words

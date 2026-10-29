@@ -115,6 +115,8 @@ pub struct HostedWindow {
     activation: std::cell::Cell<bool>,
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
+    /// What the window last told the instance it calls people (`ToApp::Names`).
+    told: Option<(String, Vec<(String, String)>)>,
 }
 
 impl HostedWindow {
@@ -131,6 +133,7 @@ impl HostedWindow {
             drawn: false,
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
+            told: None,
         };
         window.connect();
         window
@@ -147,14 +150,48 @@ impl HostedWindow {
         let Some(patch) = ui::window_door::take_patch(instance, ui::wake::WakeHandle::new()) else {
             return false;
         };
-        let connected = Channel::from_socket(patch).and_then(|channel| {
-            let watched = channel.as_fd().try_clone_to_owned()?;
-            let transport = ChannelTransport::new(channel)?;
-            Ok((transport, watched))
-        });
+        match Channel::from_socket(patch) {
+            Ok(channel) => {
+                tilo_startup_metrics::mark("tilolang-patch-connected");
+                self.take_channel(channel)
+            }
+            Err(error) => {
+                tracing::error!(%error, "a hosted tilolang window's patch connection is unusable");
+                false
+            }
+        }
+    }
+
+    /// The window over the patch connection `channel`, whose other end its instance's host
+    /// holds: what the session hands it on the window door.
+    #[must_use]
+    pub fn over(channel: Channel) -> Self {
+        let mut window = Self {
+            instance: None,
+            connected: None,
+            tree_drawn: false,
+            drawn: false,
+            activation: std::cell::Cell::new(false),
+            waiting: Box::new(ui::widget::Spinner::new()),
+            told: None,
+        };
+        window.take_channel(channel);
+        window
+    }
+
+    /// The window's half of the UI host, once its patch connection arrived.
+    #[must_use]
+    pub fn view(&self) -> Option<&AppWindow> {
+        self.connected.as_ref().map(|connected| &connected.view)
+    }
+
+    fn take_channel(&mut self, channel: Channel) -> bool {
+        let connected = channel
+            .as_fd()
+            .try_clone_to_owned()
+            .and_then(|watched| Ok((ChannelTransport::new(channel)?, watched)));
         match connected {
             Ok((transport, watched)) => {
-                tilo_startup_metrics::mark("tilolang-patch-connected");
                 let watch = Watch::start(watched, ui::wake::WakeHandle::new());
                 self.connected = Some(Connected {
                     view: AppWindow::new(Box::new(transport), Vec::new()),
@@ -208,6 +245,10 @@ impl Widget for HostedWindow {
 
     fn name(&self) -> &'static str {
         "TilolangHostedWindow"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -293,6 +334,19 @@ impl Widget for HostedWindow {
             tilo_startup_metrics::mark("tilolang-first-draw-before-tree");
         }
         self.drawn = true;
+        // The instance runs in the host, which knows people only by id: it names them as the
+        // window does, told whenever that changes.
+        if let Some(connected) = &mut self.connected {
+            let said = crate::names::said(presence);
+            if self.told.as_ref() != Some(&said) {
+                let (me, others) = said.clone();
+                connected
+                    .view
+                    .tell(tilo_render_protocol::patch::ToApp::Names { me, others });
+                connected.view.flush();
+                self.told = Some(said);
+            }
+        }
         self.content_mut()
             .draw(scene, transform, text, theme, presence);
     }

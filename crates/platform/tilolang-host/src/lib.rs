@@ -21,6 +21,7 @@
 
 pub mod hosted;
 pub mod phrases;
+pub mod task;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -150,6 +151,8 @@ pub struct TilolangHost {
     opening: Vec<Opening>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
+    /// The agent task whose programs this host runs, when its author is a task.
+    task: Option<task::Task>,
 }
 
 impl TilolangHost {
@@ -170,6 +173,33 @@ impl TilolangHost {
             running: Vec::new(),
             opening: Vec::new(),
             ended: Vec::new(),
+            task: None,
+        }
+    }
+
+    /// Run the programs of the task the session handed over, until the door closes it.
+    ///
+    /// # Errors
+    /// The task's modules cannot be read or loaded.
+    pub fn begin_task(
+        &mut self,
+        request: &runtime_portal::tilolang_host::TaskRequest,
+        fds: runtime_portal::tilolang_host::TaskFds,
+    ) -> Result<(), String> {
+        self.task = Some(task::Task::open(request, fds)?);
+        Ok(())
+    }
+
+    /// The task's program connection, to wait on.
+    pub fn task_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.task.as_ref().map(task::Task::fd)
+    }
+
+    /// Answer what the task's door sent; the task ends when the door closed it.
+    pub fn serve_task(&mut self) {
+        if self.task.as_ref().is_some_and(|task| !task.serve()) {
+            tracing::info!("task ended: the door closed it");
+            self.task = None;
         }
     }
 
@@ -578,7 +608,7 @@ impl TilolangHost {
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty() && self.opening.is_empty()
+        self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
     }
 }
 
