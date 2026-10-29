@@ -782,6 +782,9 @@ pub struct ShellOverlayHost {
     /// the indicators' resting point without showing them. The strip moving
     /// under the fingers is the feedback there.
     strip_pan_active: bool,
+    /// The display three fingers are moving between strips on: the one
+    /// focus was on when they landed. `None` on one display.
+    strip_deck_drag_display: Option<u32>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::quick_settings_refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,

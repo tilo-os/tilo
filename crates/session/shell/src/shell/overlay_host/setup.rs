@@ -485,6 +485,7 @@ impl ShellOverlayHost {
             fullscreen_hint: None,
             top_edge_swipe: None,
             strip_pan_active: false,
+            strip_deck_drag_display: None,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             ws_emoji: None,

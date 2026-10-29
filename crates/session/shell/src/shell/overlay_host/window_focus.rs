@@ -45,11 +45,21 @@ impl ShellOverlayHost {
         let row: &mut GroupRow = unsafe { &mut *ptr };
         // A strip showing a maximized window stays at home, as it does
         // under a wheel or a sideways pull: there is nothing beside the
-        // window to pan to, and sliding it away is not restoring it.
-        if row.groups.iter().any(|group| group.maximized) {
+        // window to pan to, and sliding it away is not restoring it. Across
+        // displays only the focused display's part of the strip pans, so
+        // only a window maximized there holds it.
+        let display = self.strip_gesture_display();
+        if row.groups.iter().any(|group| {
+            group.maximized
+                && display.is_none_or(|d| row.output_of_group(group.id).is_none_or(|o| o == d))
+        }) {
             return false;
         }
         if began {
+            // Even when the pointer took focus there since the last layout.
+            if let Some(display) = display {
+                row.set_focus_output(display);
+            }
             row.begin_strip_pan();
             self.strip_pan_active = true;
         }
@@ -84,11 +94,32 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Three fingers moving up or down: the strip deck follows them.
-    /// `travel` is their total travel since the gesture began (positive
-    /// toward the strips below), reported `at`; `began` on its first
-    /// report, which catches the deck where it is, mid-slide included.
+    /// The display a three-finger swipe or a strip chord acts on: the one
+    /// focus is on, which follows the pointer. `None` on one display.
+    fn strip_gesture_display(&self) -> Option<u32> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        self.chrome
+            .as_ref()?
+            .borrow()
+            .tree()
+            .desktop
+            .outputs
+            .focused_display()
+    }
+
+    /// Three fingers moving up or down: the strip deck follows them on the
+    /// display focus is on (the one Ctrl+Super+↑ / ↓ would move), and only
+    /// there. `travel` is their total travel since the gesture began
+    /// (positive toward the strips below), reported `at`; `began` on its
+    /// first report, which catches the display's strips where they are,
+    /// mid-slide included.
     pub fn update_strip_deck_drag(&mut self, travel: f64, began: bool, at: Instant) -> bool {
+        if began {
+            self.strip_deck_drag_display = self.strip_gesture_display();
+        }
+        let display = self.strip_deck_drag_display;
         let Some(deck) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
@@ -96,28 +127,45 @@ impl ShellOverlayHost {
             return false;
         };
         if began {
-            deck.begin_drag(at);
+            deck.begin_drag(display, at);
         }
-        deck.drag_to(travel, at)
+        deck.drag_to(display, travel, at)
     }
 
     /// The fingers on the strip deck lifted at `now` (or the gesture was
-    /// `cancelled`): the deck settles with their momentum on the strip the
-    /// swipe carried it to, and that strip takes focus, as Ctrl+Super+↑ / ↓
-    /// would have given it.
+    /// `cancelled`): the display they moved settles with their momentum on
+    /// the strip the swipe carried it to, and shows that strip from now on,
+    /// as Ctrl+Super+↑ / ↓ would have: on the focused display it takes
+    /// focus. The other displays stay where they are.
     pub fn end_strip_deck_drag(&mut self, now: Instant, cancelled: bool) -> bool {
-        let Some(release) = self
-            .desktop_surface_mut()
-            .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
-            .and_then(|deck| deck.end_drag(now, cancelled))
-        else {
+        let display = self.strip_deck_drag_display.take();
+        let Some((release, strip)) = self.desktop_surface_mut().and_then(|surface| {
+            let release = surface
+                .strip_deck_mut()?
+                .end_drag(display, now, cancelled)?;
+            Some((release, surface.strip_at(release.to)))
+        }) else {
             return false;
         };
         if release.to != release.from
             && let Some(chrome) = self.chrome.clone()
         {
             ui::motion::note_source(ui::tokens::MotionSource::Gesture);
-            let _ = chrome.borrow_mut().focus_strip_index(release.to);
+            let focused = self.strip_gesture_display();
+            if display.is_none() || display == focused {
+                let _ = chrome.borrow_mut().focus_strip_index(release.to);
+            } else if let (Some(display), Some(strip)) = (display, strip) {
+                // Focus moved to another display under the fingers: the
+                // display they moved keeps the strip they took it to.
+                let changed = chrome
+                    .borrow()
+                    .tree_mut()
+                    .desktop
+                    .show_strip_on(display, strip);
+                if changed {
+                    chrome.borrow_mut().bump();
+                }
+            }
         }
         true
     }
