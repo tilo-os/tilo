@@ -88,6 +88,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/current_source_metadata.py": "tools/tests/test_current_source_metadata.py",
     "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
@@ -1286,7 +1287,8 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.metadata is None and os.environ.get('GITHUB_ACTIONS') != 'true':
-        parser.error('local planning requires verified metadata; pass --metadata from a builder or CI export')
+        parser.error('local planning requires verified metadata: pass --metadata as tools/ci/local-affected.sh does '
+                     '(cargo metadata sealed to the clean source and validated by tools/ci/current_source_metadata.py)')
 
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)
