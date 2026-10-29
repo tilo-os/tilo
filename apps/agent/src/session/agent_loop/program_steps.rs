@@ -66,23 +66,22 @@ impl Session {
             let Some(operation) = app.catalogue.clone() else {
                 continue;
             };
-            match self.host_call(run, state, &operation, serde_json::Map::new())? {
-                Ok(Value::Array(signatures)) => {
-                    let declared = Value::Array(signatures.clone());
-                    state
-                        .programs
-                        .mounts
-                        .insert(app.app.clone(), programs::mounts_of(&declared));
-                    for (name, of) in programs::types_of(&declared) {
-                        state.programs.types.entry(name).or_insert(of);
-                    }
-                    for signature in signatures {
-                        if !state.programs.catalogue.contains(&signature) {
-                            state.programs.catalogue.push(signature);
-                        }
+            if let Ok(Value::Array(signatures)) =
+                self.host_call(run, state, &operation, &serde_json::Map::new())?
+            {
+                let declared = Value::Array(signatures.clone());
+                state
+                    .programs
+                    .mounts
+                    .insert(app.app.clone(), programs::mounts_of(&declared));
+                for (name, of) in programs::types_of(&declared) {
+                    state.programs.types.entry(name).or_insert(of);
+                }
+                for signature in signatures {
+                    if !state.programs.catalogue.contains(&signature) {
+                        state.programs.catalogue.push(signature);
                     }
                 }
-                Ok(_) | Err(_) => {}
             }
         }
         state.programs.mounted = mounted;
@@ -96,7 +95,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
         operation: &str,
-        parameters: serde_json::Map<String, Value>,
+        parameters: &serde_json::Map<String, Value>,
     ) -> Result<Result<Value, String>> {
         state.revealed.reveal(operation);
         let input = json!({ "operation": operation, "parameters": parameters });
@@ -159,7 +158,7 @@ impl Session {
         };
         let mut parameters = serde_json::Map::new();
         parameters.insert("source".into(), Value::String(program.source.clone()));
-        let answered = self.host_call(run, state, &host.run_block, parameters)?;
+        let answered = self.host_call(run, state, &host.run_block, &parameters)?;
         let types = state.programs.types.clone();
         let naming = Naming {
             host: &host,
@@ -218,7 +217,7 @@ impl Session {
         };
         let mut parameters = serde_json::Map::new();
         parameters.insert("source".into(), Value::String(view.source.clone()));
-        match self.host_call(run, state, &views.run_block, parameters)? {
+        match self.host_call(run, state, &views.run_block, &parameters)? {
             Ok(answer) if answer.get("kind").and_then(Value::as_str) == Some("view") => {}
             Ok(_) => {
                 return Ok(Err(
@@ -251,7 +250,7 @@ impl Session {
             Value::String(run.instruction().trim().to_owned()),
         );
         parameters.insert("source".into(), Value::String(view.source.clone()));
-        let kept = match self.host_call(run, state, &answer, parameters)? {
+        let kept = match self.host_call(run, state, &answer, &parameters)? {
             Ok(kept) => kept,
             Err(error) => {
                 return Ok(Err(format!(

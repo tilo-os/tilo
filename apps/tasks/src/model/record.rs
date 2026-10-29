@@ -1431,8 +1431,9 @@ impl Tracker {
         #[param("The step: its program and what it answered")] step: ProgramStep,
     ) -> Result<(), Refusal> {
         let step = step.bounded();
-        let program = message_text(&step.program)
-            .map_err(|_| Refusal::new("A step names the program it ran"))?;
+        let program = NonBlank::parse(&step.program)
+            .ok_or_else(|| Refusal::new("A step names the program it ran"))
+            .and_then(message_text)?;
         let recorded = serde_json::to_string(&step)
             .map_err(|_| Refusal::new("A step names the program it ran"))?;
         let at_ms = cx.now_ms();
@@ -1477,7 +1478,9 @@ impl Tracker {
         {
             return Err(Refusal::new("An answer names the resource that keeps it"));
         }
-        let title = message_text(&view.reference.label)?;
+        let title = NonBlank::parse(&view.reference.label)
+            .ok_or_else(|| Refusal::new("An answer names what it shows"))
+            .and_then(message_text)?;
         let reference = serde_json::to_string(&view)
             .map_err(|_| Refusal::new("An answer names the resource that keeps it"))?;
         let at_ms = cx.now_ms();

@@ -721,6 +721,10 @@ impl World {
 
     /// Apply one step; the committed result, and whether the
     /// catalogue changed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture world answers every published operation in one place"
+    )]
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
         let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
         self.steps.push((action.into(), arguments.clone()));

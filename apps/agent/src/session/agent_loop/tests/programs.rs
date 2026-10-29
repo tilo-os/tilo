@@ -162,6 +162,10 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one task end to end: its programs, their records, and the view it answers with"
+)]
 fn a_task_works_in_programs_and_answers_with_a_view() {
     let cards = serde_json::json!({"kind": "data", "value": {"count": 1, "items": [
         {"type": "Card", "id": "root/cards:c1", "label": "Write the release notes",
