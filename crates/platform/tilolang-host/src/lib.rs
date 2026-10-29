@@ -289,6 +289,7 @@ impl TilolangHost {
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
+                // Only an opening that already ended dropped the receiver: nobody waits on it.
                 let _ = sender.send(module_bundle(&module, len));
                 wake();
             })
@@ -366,8 +367,22 @@ impl TilolangHost {
                     bundle,
                     mut manager,
                 } => {
-                    // Nothing is delivered on a route before it is joined.
-                    let _ = manager.poll();
+                    // Nothing is delivered on a route before it is joined: what does come is
+                    // said, as nothing answers it.
+                    for early in manager.poll() {
+                        if matches!(
+                            early,
+                            collaboration::CollabEvent::Invocation { .. }
+                                | collaboration::CollabEvent::Handoff { .. }
+                                | collaboration::CollabEvent::DocumentSnapshotRequested { .. }
+                        ) {
+                            tracing::warn!(
+                                app = spec.app,
+                                event = ?early,
+                                "a request reached an instance before its route was joined"
+                            );
+                        }
+                    }
                     if let Some(refused) = manager.join_refusal() {
                         return Err(AdmitError::Join(refused.to_owned()));
                     }
@@ -392,6 +407,8 @@ impl TilolangHost {
                     std::thread::Builder::new()
                         .name("tilolang-read".into())
                         .spawn(move || {
+                            // Only an opening that already ended dropped the receiver:
+                            // nobody waits on it.
                             let _ = sender.send(reader.read().map(|read| (reader, read)));
                             wake();
                         })
@@ -497,14 +514,17 @@ impl TilolangHost {
     ) -> Result<Step, AdmitError> {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
-        collaboration::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        let surface = bundle
+            .surface()
+            .map_err(|error| AdmitError::Module(error.to_string()))?;
+        collaboration::app_surface::register_package(&bundle.meta.app, &surface);
         // The records the route names: the app's own, or those of the id it had before, kept
         // where that app kept them. The changes made there name the app's surface too.
         let records = manager
             .primary_route()
             .map_or_else(|| spec.app.clone(), |joined| joined.route().app_id.clone());
         if records != bundle.meta.app {
-            collaboration::app_surface::register_package(&records, &bundle.surface());
+            collaboration::app_surface::register_package(&records, &surface);
         }
         let kept = self
             .kept(&records)

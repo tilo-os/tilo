@@ -664,6 +664,8 @@ impl Runtime {
                     };
                     let mut store = self.core.store.borrow_mut();
                     match delivered {
+                        // Stays handed over: the sink settles it again once answered
+                        // (`Delivery::Pending`).
                         Delivery::Pending => {}
                         Delivery::Delivered => {
                             store.outbox_settle(
@@ -688,6 +690,8 @@ impl Runtime {
                         }
                     }
                 }
+                // Resolved by `retry_waiting`, which the origin calls when its service is
+                // reachable again.
                 OutboxState::Waiting { .. } if !retry => {}
                 OutboxState::Queued | OutboxState::Waiting { .. } => {
                     let sending = OutboxState::Sending {

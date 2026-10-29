@@ -38,6 +38,10 @@ pub enum BundleError {
     NotAModule(PathBuf),
     #[error("{0}: not a tilolang module (no tilolang.meta section)")]
     BadImport(PathBuf),
+    #[error("{app}: the package names types the platform cannot read: {types}")]
+    UnreadableTypes { app: String, types: String },
+    #[error("{app}: its surface could not be written: {reason}")]
+    Surface { app: String, reason: String },
     #[error("{MODULE_ENV} is not set: the tilolang runtime runs the package the launcher names")]
     Unset,
 }
@@ -122,12 +126,13 @@ impl Bundle {
                 })
             })
             .collect::<Result<Vec<Import>, _>>()?;
-        Ok(Self {
+        Self {
             wasm,
             meta,
             ids,
             imports,
-        })
+        }
+        .checked()
     }
 
     /// The bundle in the payload directory `dir`.
@@ -150,24 +155,56 @@ impl Bundle {
         };
         let mut imports = Vec::new();
         let imports_dir = dir.join(IMPORTS_DIR);
-        if let Ok(entries) = std::fs::read_dir(&imports_dir) {
-            let mut paths: Vec<PathBuf> = entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "wasm"))
-                .collect();
-            paths.sort();
-            for path in paths {
-                let bytes = read(&path)?;
-                imports.push(Import::from_wasm(bytes).ok_or(BundleError::BadImport(path))?);
+        let listed = |source| BundleError::Read {
+            path: imports_dir.clone(),
+            source,
+        };
+        match std::fs::read_dir(&imports_dir) {
+            // A package that uses no other has no imports directory.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(listed(source)),
+            Ok(entries) => {
+                let mut paths = Vec::new();
+                for entry in entries {
+                    let path = entry.map_err(listed)?.path();
+                    if path.extension().is_some_and(|ext| ext == "wasm") {
+                        paths.push(path);
+                    }
+                }
+                paths.sort();
+                for path in paths {
+                    let bytes = read(&path)?;
+                    imports.push(Import::from_wasm(bytes).ok_or(BundleError::BadImport(path))?);
+                }
             }
         }
-        Ok(Self {
+        Self {
             wasm,
             meta,
             ids,
             imports,
-        })
+        }
+        .checked()
+    }
+
+    /// The bundle, once every type its packages' metadata names parses
+    /// ([`crate::meta::unreadable_types`]): what is derived from it later reads them all.
+    fn checked(self) -> Result<Self, BundleError> {
+        for meta in self
+            .imports
+            .iter()
+            .map(|import| &import.meta)
+            .chain([&self.meta])
+        {
+            let unreadable = crate::meta::unreadable_types(meta);
+            if !unreadable.is_empty() {
+                return Err(BundleError::UnreadableTypes {
+                    app: meta.app.clone(),
+                    types: unreadable.join("; "),
+                });
+            }
+        }
+        Ok(self)
     }
 
     /// The bundle the launcher named in [`MODULE_ENV`].
@@ -183,14 +220,22 @@ impl Bundle {
 
     /// The `surface.toml` bytes generated from this package's metadata: its resources, and as
     /// `reads` those of the packages it uses.
-    #[must_use]
-    pub fn surface(&self) -> Vec<u8> {
+    ///
+    /// # Errors
+    /// The surface could not be written out: never an empty surface in its place, which would
+    /// have receivers decide the package's changes against nothing.
+    pub fn surface(&self) -> Result<Vec<u8>, BundleError> {
         let reads: Vec<Meta> = self
             .imports
             .iter()
             .map(|import| import.meta.clone())
             .collect();
-        crate::surface::surface_toml_reading(&[&self.meta], &reads).unwrap_or_default()
+        crate::surface::surface_toml_reading(&[&self.meta], &reads).map_err(|error| {
+            BundleError::Surface {
+                app: self.meta.app.clone(),
+                reason: error.to_string(),
+            }
+        })
     }
 
     /// Write the bundle into `dir` (created when missing): module, ids lock, imports and
@@ -210,7 +255,7 @@ impl Bundle {
         };
         write(dir.join(WASM_FILE), &self.wasm)?;
         write(dir.join(IDS_FILE), self.ids.as_bytes())?;
-        write(dir.join(SURFACE_FILE), &self.surface())?;
+        write(dir.join(SURFACE_FILE), &self.surface()?)?;
         for import in &self.imports {
             write(
                 dir.join(IMPORTS_DIR)
