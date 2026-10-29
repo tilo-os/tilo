@@ -319,29 +319,7 @@ impl AppWindow {
                     value,
                     acked,
                 } => self.take_bound(lane, &key, value, acked),
-                ToUi::Rows {
-                    lane,
-                    list,
-                    len,
-                    start,
-                    keys,
-                    rows,
-                } => {
-                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
-                        held.borrow_mut()
-                            .rows(len as usize, start as usize, keys, rows);
-                    }
-                }
-                ToUi::RowsChanged {
-                    lane,
-                    list,
-                    len,
-                    changes,
-                } => {
-                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
-                        held.borrow_mut().changed(len as usize, changes);
-                    }
-                }
+                rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => self.take_rows(rows),
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
                 ToUi::Form(form) => self.show_form(form.as_deref()),
@@ -368,6 +346,36 @@ impl AppWindow {
     }
 
     /// The window's trees within its budget: one window's nodes are its own to spend.
+    /// Rows of a virtual list, or what changed of them, into the list that shows them.
+    fn take_rows(&self, message: ToUi) {
+        match message {
+            ToUi::Rows {
+                lane,
+                list,
+                len,
+                start,
+                keys,
+                rows,
+            } => {
+                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                    held.borrow_mut()
+                        .rows(len as usize, start as usize, keys, rows);
+                }
+            }
+            ToUi::RowsChanged {
+                lane,
+                list,
+                len,
+                changes,
+            } => {
+                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                    held.borrow_mut().changed(len as usize, changes);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn check_budget(&self) -> Result<(), String> {
         let rows: usize = self
             .rows
@@ -683,7 +691,13 @@ impl AppWindow {
                 return;
             }
         }
-        let (shown, sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
+        let (shown, mut sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
+        // A form of a field or two stands beside the control that ran it, as a popover.
+        if crate::form::fits_a_popover(form)
+            && let Some((lane, key)) = &form.from
+        {
+            sheet.set_anchor(rect_of(self.body.as_ref(), &composed_key(*lane, key)));
+        }
         self.form = Some(shown);
         self.set_body_slot(Self::FORM_SLOT, Box::new(sheet), Fit::hug());
     }
@@ -1188,6 +1202,18 @@ fn composed_key(lane: Lane, key: &str) -> String {
         Lane::Root => key.to_owned(),
         Lane::Detail => format!("{DETAIL}{key}"),
     }
+}
+
+/// Where the widget for the node `key` of the composed tree is drawn, when it is on screen.
+fn rect_of(widget: &dyn Widget, key: &str) -> Option<ui::kurbo::Rect> {
+    if widget.test_id() == Some(key) {
+        let rect = widget.get_rect();
+        return (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| rect_of(child, key))
 }
 
 /// The view a key of the composed tree is of, and the key in that view.

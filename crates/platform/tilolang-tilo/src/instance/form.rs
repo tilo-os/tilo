@@ -208,7 +208,7 @@ impl Pending {
             let read = read(host, &self.meta, field, text);
             ready &= read.is_ok();
             short &= !matches!(inner(&field.field_type), FieldType::RichText);
-            children.push(self.field_node(host, names, field, text, read));
+            children.push(self.field_node(host, names, field, text, &read));
         }
         let title = crate::runtime::platform::label_of(&self.action);
         let title = if title.ends_with('…') {
@@ -243,7 +243,7 @@ impl Pending {
         names: &dyn NameHost,
         field: &Field,
         text: &str,
-        read: Result<Value, String>,
+        read: &Result<Value, String>,
     ) -> ui::Node {
         let label = crate::runtime::platform::sentence(&field.name);
         let optional = matches!(field.field_type, FieldType::Option(_));
@@ -307,7 +307,7 @@ impl Pending {
                 )
             }
         };
-        let note = match (&read, inner(&field.field_type)) {
+        let note = match (read, inner(&field.field_type)) {
             (Err(why), _) if !text.is_empty() => Some(why.clone()),
             (Ok(Value::Text(day)), FieldType::Date | FieldType::Time) if !text.is_empty() => {
                 Some(day.clone())
@@ -445,7 +445,6 @@ fn text_of(meta: &Meta, value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Int(number) => number.to_string(),
         Value::Float(number) => number.to_string(),
-        Value::Opt(None) => String::new(),
         Value::Opt(Some(held)) => text_of(meta, held),
         Value::Principal(who) => who.0.clone(),
         Value::Ref(r) => crate::publish::resource_id(&meta.app, &r.target.id_string()),

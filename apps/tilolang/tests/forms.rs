@@ -194,7 +194,7 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
         "the form is titled by its action: {:?}",
         all_names(&mut app)
     );
-    let Some((_, enabled)) = submit(&mut app, "Snooze until") else {
+    let Some(((), enabled)) = submit(&mut app, "Snooze until") else {
         let nodes: Vec<String> = accessible(&mut app)
             .into_iter()
             .map(|node| format!("{:?} {:?} {:?}", node.role, node.name, node.state.disabled))
@@ -206,7 +206,7 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
     field(&mut app, "Until");
     app.harness().type_text("not a day");
     settle(&mut app);
-    let (_, enabled) = submit(&mut app, "Snooze until").unwrap();
+    let ((), enabled) = submit(&mut app, "Snooze until").unwrap();
     assert!(
         !enabled,
         "what does not read as a day keeps submit disabled"
@@ -240,7 +240,7 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
     }
     app.harness().type_text("2026-07-20");
     settle(&mut app);
-    let (_, enabled) = submit(&mut app, "Snooze until").unwrap();
+    let ((), enabled) = submit(&mut app, "Snooze until").unwrap();
     assert!(enabled, "the day reads: {:?}", all_names(&mut app));
     // Enter is the form's submit.
     app.harness().key("Enter");

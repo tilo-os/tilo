@@ -69,6 +69,7 @@ impl Shown {
                 cancel.cancel.set(true);
             })
             .primary_enabled_if(move |_| gate.get())
+            .with_foot_sheet()
             .open(true);
         (
             Self {
@@ -116,12 +117,20 @@ impl Shown {
             UiEvent::Fire(key, event, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
             _ => return None,
         };
-        field.starts_with(KEY).then(|| ToApp::FormEdit {
+        let edit = ToApp::FormEdit {
             form: self.id,
             field,
             text,
-        })
+        };
+        matches!(&edit, ToApp::FormEdit { field, .. } if field.starts_with(KEY)).then_some(edit)
     }
+}
+
+/// Whether the form is one a popover holds: at most two short fields. Shown beside the
+/// control that ran its action, when that control is still on screen.
+#[must_use]
+pub fn fits_a_popover(form: &wire::Form) -> bool {
+    form.short && form.fields.len() <= 2
 }
 
 /// Whether `event` happened in a form's control.
