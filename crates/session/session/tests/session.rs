@@ -28,6 +28,7 @@ use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
 use tilo_session::{DeviceHost, Options, QuickSettings, Session};
+use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
@@ -579,6 +580,55 @@ fn a_portal_question_is_answered_through_the_sheets_actions() {
         asked.contains(&PortalEffect::Select { index: 1 }),
         "the service reads what was chosen: {asked:?}"
     );
+}
+
+#[test]
+fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
+    let mut session = session();
+    let seat = session.file_picker().expect("file chooser").clone();
+    seat.presentation().open(true);
+    seat.ask(Some(FileRequest {
+        handle: "request-1".to_owned(),
+        title: "Choose a picture".to_owned(),
+        mode: FileMode::Open,
+        initial_dir: home.path().to_path_buf(),
+        roots: vec![home.path().to_path_buf()],
+        ..FileRequest::default()
+    }));
+    pump(&mut session, &mut [], |_, _| {
+        seat.listing()
+            .entries
+            .iter()
+            .any(|entry| entry.name == "beach.png")
+    });
+    let beach = home.path().join("beach.png");
+    let select = FilePickerEffect::SELECT.id;
+    let sheet = publisher(&session, select).expect("the chooser publishes choosing");
+    session
+        .invoke(
+            &sheet,
+            select,
+            &arguments(serde_json::json!({ "path": beach.to_string_lossy() })),
+        )
+        .expect("select");
+    pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
+    session
+        .invoke(
+            &sheet,
+            FilePickerEffect::CONFIRM.id,
+            &serde_json::Map::new(),
+        )
+        .expect("confirm");
+    let mut answer = None;
+    pump(&mut session, &mut [], |_, _| {
+        answer = answer.take().or_else(|| seat.take_answer());
+        answer.is_some()
+    });
+    assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {

@@ -55,6 +55,7 @@ use panels::{Banners, Held, Popover, Served};
 use setup::Setup;
 use sheets::Sheet;
 use tilo_sheets::Seat as _;
+use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::portal::PortalSeat;
 use tilo_sheets::power::{PowerEffect, PowerSeat};
 use tilo_sheets::workspace_settings::{
@@ -201,6 +202,7 @@ struct Shared {
     power: Option<PowerSeat>,
     workspace_settings: Option<WorkspaceSettingsSeat>,
     portal: Option<PortalSeat>,
+    file_picker: Option<FilePickerSeat>,
     session_actions: fn(SessionAction) -> Result<(), String>,
     /// The power menu asked to lock the screen.
     lock: Cell<bool>,
@@ -592,6 +594,10 @@ impl Session {
             WorkspaceSettingsSeat::default(),
         );
         let portal = mount.sheet(tilo_sheets::portal::definition(), PortalSeat::default());
+        let file_picker = mount.sheet(
+            tilo_sheets::file_picker::definition(),
+            FilePickerSeat::default(),
+        );
 
         // Setup last: above everything, and first to the keyboard.
         setup::lend(mount.compositor.waker(), &options.person);
@@ -613,6 +619,7 @@ impl Session {
             power,
             workspace_settings,
             portal,
+            file_picker,
             session_actions: options.session_actions,
             lock: Cell::new(false),
         });
@@ -855,6 +862,13 @@ impl Session {
     #[must_use]
     pub fn portal(&self) -> Option<&PortalSeat> {
         self.shared.portal.as_ref()
+    }
+
+    /// The file chooser's seat: the portal service asks it for files and
+    /// reads the answer.
+    #[must_use]
+    pub fn file_picker(&self) -> Option<&FilePickerSeat> {
+        self.shared.file_picker.as_ref()
     }
 
     /// Lock the screen when the power menu asked to.
