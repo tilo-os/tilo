@@ -36,7 +36,9 @@ fn said(app: &mut TestApp<TlApp>) -> String {
             return;
         }
         if let Some(children) = value.get("children").and_then(serde_json::Value::as_array) {
-            children.iter().for_each(|child| rich(child, out));
+            for child in children {
+                rich(child, out);
+            }
         }
         if let Some(root) = value.get("root") {
             rich(root, out);
