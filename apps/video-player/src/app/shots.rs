@@ -2,10 +2,10 @@
 
 use super::{
     CaptureAwaits, DEMO_POSITION_MS, DEMO_QUEUE, DEMO_TITLE, DecoderMetadata, LibraryTab,
-    LocalMediaEntry, PlayerApp, demo_source, source_for_argument, source_title,
+    LocalMediaEntry, PlayerState, demo_source, source_for_argument, source_title,
 };
 
-impl PlayerApp {
+impl PlayerState {
     /// Stage a capture of `scenario` (`None` for a plain `--shots`): the
     /// video the launch named, else a synthesized demo clip, the scenario's
     /// view state, and what the capture waits for before it is taken.

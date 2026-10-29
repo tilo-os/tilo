@@ -745,7 +745,7 @@ mod switch_tests {
         let config = tempfile::tempdir().expect("isolated settings");
         let paths = config.path().to_path_buf();
         let records = settings_store::Store::open(&paths).expect("records");
-        let _settings = crate::shell::test_support::install_settings(records.clone());
+        let _settings = crate::shell::test_support::install_settings(records);
 
         let provider = SettingsPagesProvider::new();
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());

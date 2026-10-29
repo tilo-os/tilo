@@ -35,6 +35,7 @@ pub fn prim_component(prim: &str) -> Option<&'static str> {
         "rich_text" => "RichText",
         "button" => "Button",
         "input" => "TextInput",
+        "rich_input" => "RichInput",
         "section" => "Section",
         "card" => "Card",
         "facts" => "PropertyList",

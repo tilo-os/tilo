@@ -5,7 +5,7 @@ use ui::headless::Framed;
 #[test]
 fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         app.handle_media_event(media::MediaEvent::MissingDecoder {
             codec: "HEVC".into(),
         });
@@ -16,12 +16,13 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
         app.handle_media_event(media::MediaEvent::Error("decoder missing".into()));
         let mut framed = Framed::new(
             ui::State::new(),
-            app,
+            PlayerApp::over(app),
             ui::headless::viewport((960.0, 640.0)),
             theme,
         );
         assert!(
             framed
+                .state()
                 .window_toolbar()
                 .actions
                 .iter()
@@ -39,20 +40,20 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
             offers[0].name.as_deref(),
             Some("Play more video and audio formats")
         );
-        assert!(
-            framed.status_action_rect.width() > 0.0 && framed.status_action_rect.height() > 0.0
-        );
-        assert!(framed.effect_statuses().iter().all(|status| *status
+        let status_action = framed.state().status_action_rect;
+        assert!(status_action.width() > 0.0 && status_action.height() > 0.0);
+        assert!(framed.state().effect_statuses().iter().all(|status| *status
             != EffectStatus::unavailable(
                 VideoEffect::OPEN_FORMATS,
                 "no_missing_decoder",
                 crate::i18n::t("video-formats-unavailable")
             )));
         let index = framed
+            .state()
             .status_access_index()
             .expect("the formats control is addressable");
         assert!(framed.focus_synthetic_accessibility(&[index]));
-        assert!(framed.status_focused);
+        assert!(framed.state().status_focused);
         let tree = framed
             .accessibility()
             .expect("focused player accessibility");
@@ -64,16 +65,17 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
         assert!(tree.children[index].state.focused);
         assert_eq!(
             framed.synthetic_accessibility_rect(&[index]),
-            Some(framed.status_action_rect)
+            Some(status_action)
         );
         framed
+            .state()
             .open_named("/tilo-test-absent-video.mp4")
             .expect_err("a new failed file open");
         assert!(
-            !framed.formats_visible(),
+            !framed.state().formats_visible(),
             "the prior decoder does not describe the new file"
         );
-        assert!(framed.effect_statuses().iter().any(|status| *status
+        assert!(framed.state().effect_statuses().iter().any(|status| *status
             == EffectStatus::unavailable(
                 VideoEffect::OPEN_FORMATS,
                 "no_missing_decoder",
@@ -86,12 +88,13 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
 /// hover before it (Wayland may report only the drop).
 #[test]
 fn a_dropped_video_opens_without_a_hover() {
-    let mut app = PlayerApp::new(RunMode::Capture);
+    let mut window = PlayerApp::new(RunMode::Capture);
     let mut doc = automerge::AutoCommit::new();
     ui::testing::Dispatch::new().doc(&mut doc).send(
-        &mut app,
+        &mut window,
         &WindowEvent::DroppedFile("/tmp/Dropped.mp4".into()),
     );
+    let app = window.state();
     assert_eq!(app.title, "Dropped.mp4");
     assert_eq!(
         app.player.engine().unwrap().source(),
@@ -112,7 +115,7 @@ fn opening_sources_sets_identity_without_exposing_paths() {
         assert!(matches!(local, media::Source::LocalFile(_)));
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
             .expect("source identity available");
         assert_eq!(app.title, "Holiday.mp4");
@@ -158,7 +161,7 @@ fn opening_sources_sets_identity_without_exposing_paths() {
         assert!(!source_id.contains("launch-cut"));
     }
     {
-        let mut app = PlayerApp::for_shot(Some("metadata"));
+        let mut app = PlayerState::for_shot(Some("metadata"));
         let old_source = app.current_source_id.clone().unwrap();
         let source = media::Source::Remote {
             url: "https://demo.local/clip.mp4".into(),
@@ -180,7 +183,7 @@ fn opening_sources_sets_identity_without_exposing_paths() {
 #[test]
 fn portal_open_is_single_flight_generation_fenced_and_retained() {
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
         ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
@@ -193,7 +196,7 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
         );
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         app.trigger_open(None).expect("first picker starts");
         let first_generation = app.portal_open.as_ref().map(|open| open.generation);
         assert!(
@@ -213,7 +216,7 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
         );
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         app.portal_generation = u64::MAX;
         let error = app
             .trigger_open(None)
@@ -223,7 +226,7 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
         assert_eq!(app.portal_generation, u64::MAX);
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
         ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
@@ -234,7 +237,7 @@ fn portal_open_is_single_flight_generation_fenced_and_retained() {
         assert!(app.portal_open.is_none());
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Failed("permission denied".into()));
         ui::host::scoped(&services, || app.trigger_open(None)).expect("picker starts");
@@ -311,7 +314,7 @@ fn markers_and_metadata_targets_stay_fresh_and_canonical() {
         assert_eq!(app.player.position_ms(), 12_500);
     }
     {
-        let mut app = PlayerApp::for_shot(Some("metadata"));
+        let mut app = PlayerState::for_shot(Some("metadata"));
         let audio = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
         let chapter = app.shot_metadata.as_ref().unwrap().chapters[0].clone();
         let stale_source = "https://old.example/clip.mkv";
@@ -349,7 +352,7 @@ fn markers_and_metadata_targets_stay_fresh_and_canonical() {
 )]
 fn library_controls_emit_canonical_host_actions_and_are_accessible() {
     {
-        let mut app = PlayerApp::for_shot(Some("library"));
+        let mut app = PlayerState::for_shot(Some("library"));
         let focused_id = app.queue[1].id.clone();
         app.library_row_hits = vec![
             LibraryRowHit {
@@ -365,20 +368,20 @@ fn library_controls_emit_canonical_host_actions_and_are_accessible() {
                 remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
             },
         ];
-        assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
+        assert!(app.focus_synthetic_accessibility(&[4]));
         assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
         assert_eq!(
-            Widget::synthetic_accessibility_rect(&app, &[4]),
+            app.synthetic_accessibility_rect(&[4]),
             Some(Rect::new(0.0, 44.0, 44.0, 88.0))
         );
     }
     {
-        let mut app = PlayerApp::for_shot(Some("library"));
+        let mut app = PlayerState::for_shot(Some("library"));
         app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
         app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
         app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
 
-        let tree = Widget::accessibility(&app).expect("application accessibility tree");
+        let tree = app.accessibility();
         assert_eq!(tree.children[0].name.as_deref(), Some("Queue"));
         assert!(tree.children[0].state.selected);
         assert_eq!(tree.children[1].name.as_deref(), Some("Recent"));
@@ -396,7 +399,7 @@ fn library_controls_emit_canonical_host_actions_and_are_accessible() {
             "the sheet has no title or close of its own: {names:?}"
         );
 
-        assert!(Widget::focus_synthetic_accessibility(&mut app, &[1]));
+        assert!(app.focus_synthetic_accessibility(&[1]));
         assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
 
         app.perform(VideoEffect::ShowLibrary {
@@ -418,12 +421,12 @@ fn library_controls_emit_canonical_host_actions_and_are_accessible() {
     // pressing it (or its accessible node) returns to the picture.
     {
         let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+            PlayerState::for_shot_open(None, Some("library")),
             (420.0, 800.0),
             1.0,
         );
         Framed::harness_mut(&mut app).relayout();
-        let back = app.library_back_rect;
+        let back = app.state().library_back_rect;
         assert!(back.width() > 0.0, "the way back leads the library screen");
         let tree = Widget::accessibility(&*app).expect("application accessibility tree");
         let node = tree
@@ -442,12 +445,12 @@ fn library_controls_emit_canonical_host_actions_and_are_accessible() {
             &(),
         ));
         assert!(
-            app.library_visible,
+            app.state().library_visible,
             "the library is one action away again, not lost"
         );
     }
     {
-        let app = PlayerApp::for_shot(Some("shared"));
+        let app = PlayerState::for_shot(Some("shared"));
         assert!(
             app.handle_app_shortcut_input(
                 &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
@@ -470,7 +473,7 @@ fn player_resources_and_transport_guards_are_published_honestly() {
         app.open_path(Path::new("/tmp/Clip.mp4"))
             .expect("source identity available");
         let mut app = lay_out(app, (1280.0, 720.0), 1.0);
-        app.perform(VideoEffect::PictureInPicture).unwrap();
+        app.state().perform(VideoEffect::PictureInPicture).unwrap();
         let request =
             ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut *app)
                 .expect("PiP request");
@@ -485,7 +488,7 @@ fn player_resources_and_transport_guards_are_published_honestly() {
         );
     }
     {
-        let app = PlayerApp::for_shot(Some("metadata"));
+        let app = PlayerState::for_shot(Some("metadata"));
         let rows: Vec<_> = crate::actions::live_rows(&app.player_rows(), 32)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
@@ -523,7 +526,7 @@ fn player_resources_and_transport_guards_are_published_honestly() {
         );
     }
     {
-        let empty = PlayerApp::new(RunMode::Capture);
+        let empty = PlayerState::new(RunMode::Capture);
         assert!(empty.effect_statuses().iter().any(|status| {
             format!("{status:?}").contains("toggle-playback")
                 && format!("{status:?}").contains("no_media")
@@ -544,16 +547,20 @@ fn library_sheet_rows_tabs_and_scrim_answer_the_pointer() {
     use ui::framework::testing::TestApp;
     fn surface<T>(
         app: &mut TestApp<crate::resource::VideoPlayerShell>,
-        f: impl FnOnce(&mut PlayerApp) -> T,
+        f: impl FnOnce(&mut PlayerState) -> T,
     ) -> T {
-        app.with_surface::<PlayerApp, T>(f).expect("mounted player")
+        app.with_surface::<PlayerApp, T>(|window| f(&mut window.state()))
+            .expect("mounted player")
     }
     let mut app = TestApp::<crate::resource::VideoPlayerShell>::new().unwrap();
+    // Staging decodes the demo clip with the system's engine; the rows then
+    // play on the synthesized one, so what they open never reaches out of
+    // the process and a decode failure cannot drop the row being clicked.
     surface(&mut app, |player| {
+        player.stage_capture(None, Some("library"));
         player
             .player
             .set_engine(media::MediaEngine::new_synthesized());
-        player.stage_capture(None, Some("library"));
     });
     app.harness()
         .relayout_themed(
@@ -645,10 +652,10 @@ fn library_sheet_rows_tabs_and_scrim_answer_the_pointer() {
 /// Run the production layout passes (sync → build → compute → apply) for
 /// `app` at `viewport`, with the accessibility text scale applied the way
 /// the live host applies it.
-fn lay_out(app: PlayerApp, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
+fn lay_out(app: PlayerState, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
     Framed::new(
         ui::State::new(),
-        app,
+        PlayerApp::over(app),
         ui::headless::viewport(viewport),
         Theme::dark().with_text_scale(text_scale),
     )
@@ -656,10 +663,10 @@ fn lay_out(app: PlayerApp, viewport: (f32, f32), text_scale: f32) -> Framed<Play
 
 /// [`lay_out`] with reduced motion, so a sheet that opens is open in the
 /// first frame instead of sliding in.
-fn lay_out_still(app: PlayerApp, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
+fn lay_out_still(app: PlayerState, viewport: (f32, f32), text_scale: f32) -> Framed<PlayerApp> {
     Framed::new(
         ui::State::new(),
-        app,
+        PlayerApp::over(app),
         ui::headless::viewport(viewport),
         Theme::dark()
             .with_text_scale(text_scale)
@@ -678,11 +685,12 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
     // text, with the actions clear of one another.
     for scale in [1.0_f32, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
-        let app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+        let window = lay_out_still(
+            PlayerState::for_shot_open(None, Some("library")),
             (1200.0, 800.0),
             scale,
         );
+        let app = window.state();
         let sheet = app.drawer.sidebar_rect();
         assert!(sheet.width() > 0.0, "{scale}×: the sheet is open");
         assert!(
@@ -734,11 +742,12 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
     // content area as a screen of its own and leads with the way back.
     {
         let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+            PlayerState::for_shot_open(None, Some("library")),
             (1200.0, 800.0),
             1.0,
         );
         Framed::harness_mut(&mut app).relayout();
+        let app = app.state();
         let sheet = app.drawer.sidebar_rect();
         assert!(app.drawer.is_docked(), "wide, the library docks");
         assert!(
@@ -747,11 +756,12 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
             app.player.get_rect()
         );
         let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+            PlayerState::for_shot_open(None, Some("library")),
             (420.0, 800.0),
             1.0,
         );
         Framed::harness_mut(&mut app).relayout();
+        let app = app.state();
         let sheet = app.drawer.sidebar_rect();
         assert!(
             app.drawer.is_push(),
@@ -768,13 +778,14 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
             "it stands above the tabs it shares the sheet with"
         );
         let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+            PlayerState::for_shot_open(None, Some("library")),
             (420.0, 800.0),
             1.0,
         );
         Framed::harness_mut(&mut app).relayout();
-        app.perform(VideoEffect::HideLibrary).unwrap();
+        app.state().perform(VideoEffect::HideLibrary).unwrap();
         Framed::harness_mut(&mut app).relayout();
+        let app = app.state();
         assert!(
             !app.library_visible,
             "the same toggle puts the picture back"
@@ -784,11 +795,12 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
     // Case `library_sheet_follows_its_drawer`: closing the library moves
     // no hit rect into the video.
     {
-        let mut app = lay_out_still(
-            PlayerApp::for_shot_open(None, Some("library")),
+        let window = lay_out_still(
+            PlayerState::for_shot_open(None, Some("library")),
             (1200.0, 800.0),
             1.0,
         );
+        let mut app = window.state();
         app.perform(VideoEffect::HideLibrary).unwrap();
         let theme = Theme::dark().with_reduce_motion(true);
         let mut text = TextRenderer::new();
@@ -800,7 +812,7 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
         assert!(app.library_row_hits.is_empty());
     }
     {
-        let mut app = PlayerApp::new(RunMode::Capture);
+        let mut app = PlayerState::new(RunMode::Capture);
         let doc = automerge::AutoCommit::new();
         // Pumping the app before any file is opened must not fabricate a frame.
         app.sync(&doc, &automerge::ROOT);
@@ -818,8 +830,8 @@ fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
 /// open/transport wiring is exercised hermetically regardless of build
 /// features (real `GStreamer` decode is proven separately by the
 /// `--features decode` integration test with a real generated file).
-fn synth_app() -> PlayerApp {
-    let mut app = PlayerApp::new(RunMode::Capture);
+fn synth_app() -> PlayerState {
+    let mut app = PlayerState::new(RunMode::Capture);
     app.player.set_engine(media::MediaEngine::new_synthesized());
     app
 }
@@ -851,18 +863,18 @@ fn decoder_lifecycle_confirms_opens_only_on_a_real_frame() {
 #[test]
 fn capture_waits_for_the_requested_file_in_the_shared_visual_lifecycle() {
     let requested = "/a-missing-tilo-capture-fixture.mp4";
-    let app = PlayerApp::for_shot_open(Some(requested), None);
+    let app = PlayerState::for_shot_open(Some(requested), None);
     assert!(
-        Widget::has_pending_visual_work(&app),
+        app.has_pending_visual_work(),
         "a real-file capture cannot settle without its actual decoded picture"
     );
     assert!(
         !app.has_media_frame(),
         "no synthesized demo substitutes for the file"
     );
-    let loading = PlayerApp::for_shot_open(None, Some("loading"));
+    let loading = PlayerState::for_shot_open(None, Some("loading"));
     assert!(
-        !Widget::has_pending_visual_work(&loading),
+        !loading.has_pending_visual_work(),
         "an explicitly requested loading capture need not await decoding"
     );
 }
@@ -871,10 +883,10 @@ fn capture_waits_for_the_requested_file_in_the_shared_visual_lifecycle() {
 fn capture_scenarios_stage_the_two_failure_states() {
     // A failed open leaves nothing open; a decoder that gives up on an
     // opened video keeps its title. Both tell the person the same thing.
-    let failed_open = PlayerApp::for_shot_open(None, Some("error"));
+    let failed_open = PlayerState::for_shot_open(None, Some("error"));
     assert_eq!(failed_open.open_error.as_deref(), Some(DECODER_FAILURE));
     assert!(!failed_open.player.has_media());
-    let gave_up = PlayerApp::for_shot_open(None, Some("native-error"));
+    let gave_up = PlayerState::for_shot_open(None, Some("native-error"));
     assert_eq!(gave_up.open_error.as_deref(), Some(DECODER_FAILURE));
     assert!(gave_up.player.has_media());
     assert_eq!(gave_up.title, "Demo clip");
@@ -1151,7 +1163,7 @@ fn a_playback_put_back_after_the_end_does_not_swallow_a_replay() {
 
 #[test]
 fn a_video_that_cannot_be_decoded_leaves_the_queue() {
-    let mut app = PlayerApp::for_shot(None);
+    let mut app = PlayerState::for_shot(None);
     let good = app.ensure_queued(
         source_for_path(Path::new("/videos/good.mp4")),
         "good.mp4".into(),
@@ -1176,7 +1188,7 @@ fn the_current_row_says_whether_the_video_plays_or_is_paused() {
     let mut app = synth_app();
     app.open_path(Path::new("/tmp/Clip.mp4"))
         .expect("source identity available");
-    let current_label = |app: &PlayerApp| {
+    let current_label = |app: &PlayerState| {
         crate::actions::live_rows(&app.player_rows(), 32)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
@@ -1199,7 +1211,7 @@ fn the_current_row_says_whether_the_video_plays_or_is_paused() {
 
 #[test]
 fn revealing_the_controls_never_changes_transport() {
-    let mut app = PlayerApp::for_shot(None);
+    let mut app = PlayerState::for_shot(None);
     app.player.pause();
     let position = app.player.position_ms();
     app.perform(VideoEffect::Reveal).unwrap();
@@ -1230,7 +1242,7 @@ fn the_volume_and_speed_this_device_chose_are_kept_and_restored() {
     let mut app = TestApp::<crate::resource::VideoPlayerShell>::new()
         .expect("a live window opens on a private profile");
     let stored = |app: &mut TestApp<crate::resource::VideoPlayerShell>| {
-        app.with_surface::<PlayerApp, _>(|player| player.stored_settings())
+        app.with_surface::<PlayerApp, _>(|player| player.state().stored_settings())
             .flatten()
     };
     let fresh = stored(&mut app).expect("the window keeps its settings");
@@ -1240,6 +1252,7 @@ fn the_volume_and_speed_this_device_chose_are_kept_and_restored() {
     // The person drags the volume to a third and picks 1.5×. (The
     // production path, past the effect door's open-video guard.)
     app.with_surface::<PlayerApp, _>(|player| {
+        let mut player = player.state();
         player
             .perform(VideoEffect::SetVolume { volume: 0.35 })
             .expect("the volume follows");

@@ -113,8 +113,14 @@ pub struct GuestPlan {
     pub session_dir: PathBuf,
     /// The environment's `/var` state; holds [`ENVIRONMENT_VAR_DIRS`].
     pub var_dir: PathBuf,
-    /// The environment's home, mounted at [`GuestUser::home`].
+    /// Where `~` is in the guest: `$HOME`, and the user's home in `passwd`.
+    pub home: PathBuf,
+    /// The home's directory on the host, bound at [`Self::home`] unless
+    /// [`Self::home_by_grants`].
     pub guest_home: PathBuf,
+    /// The home is the workspace's folder, which the guest sees through its
+    /// grants like any other, at its own path: nothing binds it besides.
+    pub home_by_grants: bool,
     pub user: GuestUser,
     /// The environment's name, for the prompt.
     pub environment: String,
@@ -231,7 +237,9 @@ impl GuestPlan {
         if let Some(helper) = &self.helper_runtime {
             helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
         }
-        std::fs::create_dir_all(&self.guest_home)?;
+        if !self.home_by_grants {
+            std::fs::create_dir_all(&self.guest_home)?;
+        }
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;
         }
@@ -247,7 +255,7 @@ impl GuestPlan {
         };
         std::fs::write(
             etc.join("passwd"),
-            passwd_with_user(&image_file("passwd"), &self.user, &self.shell),
+            passwd_with_user(&image_file("passwd"), &self.user, &self.home, &self.shell),
         )?;
         std::fs::write(
             etc.join("group"),
@@ -266,7 +274,7 @@ impl GuestPlan {
 
 /// The images' `passwd` with the real user added, replacing any entry that
 /// claims the same name or uid.
-pub fn passwd_with_user(image: &str, user: &GuestUser, shell: &Path) -> String {
+pub fn passwd_with_user(image: &str, user: &GuestUser, home: &Path, shell: &Path) -> String {
     let mut out = without_claims(image, &user.name, user.uid);
     out.push_str(&user.name);
     out.push_str(":x:");
@@ -274,7 +282,7 @@ pub fn passwd_with_user(image: &str, user: &GuestUser, shell: &Path) -> String {
     out.push(':');
     out.push_str(&user.gid.to_string());
     out.push_str("::");
-    out.push_str(&user.home().to_string_lossy());
+    out.push_str(&home.to_string_lossy());
     out.push(':');
     out.push_str(&shell.to_string_lossy());
     out.push('\n');
@@ -582,12 +590,14 @@ fn push_shell_rc(a: &mut Vec<OsString>, plan: &GuestPlan) {
 /// The environment's home, then the grants at their host paths, then the
 /// masks over anything a grant would otherwise reveal of the runtime.
 fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
-    let home = plan.user.home().into_os_string();
-    a.push("--dir".into());
-    a.push(home.clone());
-    a.push("--bind".into());
-    a.push(plan.guest_home.clone().into_os_string());
-    a.push(home);
+    if !plan.home_by_grants {
+        let home = plan.home.clone().into_os_string();
+        a.push("--dir".into());
+        a.push(home.clone());
+        a.push("--bind".into());
+        a.push(plan.guest_home.clone().into_os_string());
+        a.push(home);
+    }
 
     for dir in &plan.readable_dirs {
         a.push("--ro-bind-try".into());
@@ -638,7 +648,7 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
         a.push(v.into());
     };
     setenv("PATH", GUEST_PATH, a);
-    setenv("HOME", &plan.user.home().to_string_lossy(), a);
+    setenv("HOME", &plan.home.to_string_lossy(), a);
     setenv("TERM", &plan.term, a);
     setenv("USER", &plan.user.name, a);
     setenv("LOGNAME", &plan.user.name, a);
@@ -943,7 +953,9 @@ mod tests {
             host_root: dir.join("host"),
             session_dir: dir.join("store/sessions/s1"),
             var_dir: dir.join("store/environments/default/var"),
+            home: PathBuf::from("/home/you"),
             guest_home: dir.join("store/environments/default/home"),
+            home_by_grants: false,
             user: GuestUser {
                 name: "you".into(),
                 uid: 1000,

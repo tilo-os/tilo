@@ -214,14 +214,14 @@ impl PdfApp {
             SidebarHit::Comment(id) => {
                 if let Some(c) = self.comments.iter().find(|c| c.id == id) {
                     let page = c.page;
-                    self.selected_anno = c.anno_id.clone();
+                    self.selected_anno = c.pinned().map(str::to_owned);
                     self.go_to_page(page);
                 }
             }
             SidebarHit::EditComment(id) => {
                 if let Some(c) = self.comments.iter().find(|c| c.id == id) {
-                    let body = c.body.clone();
-                    self.selected_anno = c.anno_id.clone();
+                    let body = c.comment.text.clone();
+                    self.selected_anno = c.pinned().map(str::to_owned);
                     self.begin_edit(EditTarget::CommentBody(id), &body);
                 }
             }
@@ -237,7 +237,7 @@ impl PdfApp {
                     .comments
                     .iter()
                     .find(|c| c.id == id)
-                    .is_some_and(|c| c.resolved);
+                    .is_some_and(|c| c.comment.resolved);
                 self.perform_action(
                     state,
                     crate::actions::set_comment_resolved_action(&id, !cur),
@@ -879,7 +879,7 @@ impl PdfApp {
                 if let Some(c) = self
                     .comments
                     .iter()
-                    .find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str()))
+                    .find(|c| c.pinned() == Some(mdrag.id.as_str()))
                 {
                     let cid = c.id.clone();
                     self.focus_sidebar(SidebarTab::Comments, cid);

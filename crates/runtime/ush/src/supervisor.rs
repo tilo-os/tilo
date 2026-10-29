@@ -36,9 +36,10 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) use crate::home::seed_guest_home;
 use tilo_clock::unix_now;
 use tilo_egress::{Egress, EgressOptions, Netns, spawn_egress};
-use tilo_environment::{Environment, HomePolicy, Target, ToolBuilder, is_record_key};
+use tilo_environment::{Environment, Target, ToolBuilder, is_record_key};
 
 use crate::audit::AuditLog;
 use crate::broker::{Broker, BrokerState, EnvironmentHandle};
@@ -182,7 +183,7 @@ impl Session {
         }
     }
 
-    fn records(&self) -> Records {
+    pub(crate) fn records(&self) -> Records {
         Records::at(self.store.records_root())
     }
 
@@ -194,9 +195,7 @@ impl Session {
     /// Returns an error when the record cannot be resolved (see
     /// [`Records::resolve`]) or an image is not available.
     pub fn resolve(&self) -> anyhow::Result<Resolved> {
-        let (key, environment) = self
-            .records()
-            .resolve(self.opts.environment.as_deref(), &*self.images)?;
+        let (key, environment) = self.resolve_record()?;
         let arch = tilo_environment::host_arch();
         let runtime = environment
             .runtime_image(arch)
@@ -280,10 +279,9 @@ impl Session {
         let policy = Policy::new(resolved.environment.grants.clone());
         let now = Some(unix_now());
         let session_dir = self.store.session_dir(&self.session_id);
-        let guest_home = match resolved.environment.home {
-            HomePolicy::Persistent => self.store.environment_home(&resolved.key),
-            HomePolicy::Ephemeral => session_dir.join("home"),
-        };
+        let user = GuestUser::current();
+        let (home, guest_home, home_by_grants) =
+            crate::home::guest_home(resolved, &self.store, &session_dir, &user);
         let images: Vec<PathBuf> = resolved.images.iter().map(|(_, p)| p.clone()).collect();
         // Resolved, as a grant names its directory: `bwrap` mounts through
         // the real path, and a grant of the home must still find the store
@@ -307,8 +305,10 @@ impl Session {
             host_root: self.opts.host_root.clone(),
             session_dir,
             var_dir: self.store.environment_var(&resolved.key),
+            home,
             guest_home,
-            user: GuestUser::current(),
+            home_by_grants,
+            user,
             environment: resolved.environment.name.clone(),
             masked: vec![
                 canonical(self.store.root()),
@@ -433,7 +433,9 @@ impl Session {
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
         plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
-        seed_guest_home(&plan.guest_home)?;
+        if !plan.home_by_grants {
+            seed_guest_home(&plan.guest_home)?;
+        }
         let editor = if self.opts.editor.is_some() && self.opts.command.is_empty() {
             crate::editor::Prepared::prepare(&plan).unwrap_or(None)
         } else {
@@ -527,27 +529,6 @@ fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
         }
         p @ tilo_egress::EgressPolicy::Hosts(_) => format!("only {}", p.describe().join(", ")),
     }
-}
-
-/// Give a fresh guest home the dotfiles that make a shell usable. Never
-/// seeded from the user's own home: an environment's home is its own.
-#[allow(
-    clippy::literal_string_with_formatting_args,
-    reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
-)]
-pub(crate) fn seed_guest_home(home: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(home)?;
-    let bashrc = home.join(".bashrc");
-    if bashrc.exists() {
-        return Ok(());
-    }
-    std::fs::write(
-        &bashrc,
-        "# ush guest shell\n\
-         [ -f /etc/bashrc ] && . /etc/bashrc\n\
-         PS1='[\\[\\e[36m\\]${TILO_USH_ENVIRONMENT:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
-         alias ls='ls --color=auto'\n",
-    )
 }
 
 // serve — handing a guest to an app
@@ -1923,6 +1904,10 @@ fn spawn_attached(
     if let Some(root) = launch.store.grant_root() {
         cmd.env(crate::store::GRANT_ROOT_ENV, root);
     }
+    match launch.store.workspace() {
+        Some(workspace) => cmd.env(crate::store::WORKSPACE_ENV, workspace),
+        None => cmd.env_remove(crate::store::WORKSPACE_ENV),
+    };
     cmd.env("TERM", launch.term);
     match launch.runs {
         Some(key) => cmd.env(crate::runs::KEY_ENV, key),

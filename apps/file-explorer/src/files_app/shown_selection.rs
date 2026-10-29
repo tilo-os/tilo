@@ -1,6 +1,6 @@
 //! Retain what this window selected, rather than resolving its names at Copy.
 
-use super::FileExplorerWidget;
+use super::FilesState;
 use crate::resource::MAX_MOVE_ENTRIES;
 use host_fs::{ObservedObject, RetainedObject};
 use std::collections::{HashMap, HashSet};
@@ -32,7 +32,7 @@ pub(super) fn folder(path: &Path) -> Option<Arc<RetainedObject>> {
         .map(Arc::new)
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Called at every selection mutation, including semantic and input paths.
     /// Refusals are remembered for that observation: a later Copy must never
     /// silently retry a pathname and adopt its replacement.

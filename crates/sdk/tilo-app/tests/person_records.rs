@@ -64,6 +64,11 @@ fn ada() -> String {
 /// The workspace the tests open the app in.
 const ROOM: &str = "00000000-0000-4000-8000-00000000000a";
 
+/// The id of `person`'s own watch history in a workspace.
+fn watched_record_of(person: &str) -> String {
+    format!("member:{person}:test.watched")
+}
+
 fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
     let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
     videos.sort();
@@ -84,6 +89,11 @@ fn a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace() {
         route.cluster_id.to_string(),
         ROOM,
         "the record lives in the workspace the app is open in"
+    );
+    assert_eq!(
+        route.record.as_deref(),
+        Some(watched_record_of(&ada()).as_str()),
+        "it is Ada's own record there: no other member reads or writes it"
     );
 
     // Each device watches something before they meet; the record's genesis

@@ -13,8 +13,10 @@ use vello::kurbo::Rect;
 use crate::action::{self, Action};
 use crate::model::{Route, TubeModel};
 
+#[cfg(feature = "samples")]
+use super::ShellAsk;
 use super::playback::pump_player;
-use super::{ShellAsk, Tube, TubeApp};
+use super::{Tube, TubeApp};
 
 impl Tube {
     #[cfg(feature = "samples")]

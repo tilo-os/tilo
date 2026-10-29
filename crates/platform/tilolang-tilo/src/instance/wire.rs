@@ -137,7 +137,8 @@ impl Convert<'_> {
             | Value::Node(_)
             | Value::Rec(_)
             | Value::Event
-            | Value::State { .. } => wire::Value::Unit,
+            | Value::State { .. }
+            | Value::AtEvent { .. } => wire::Value::Unit,
         }
     }
 }
@@ -200,6 +201,52 @@ impl Convert<'_> {
             })
             .collect();
         rich_wire::RichText { blocks, embeds }
+    }
+}
+
+/// The runtime's rich text of what a rich field in the window now holds: its paragraphs with
+/// their marks and attributes. How the window read its references is the window's; the text
+/// keeps only what each refers to.
+#[must_use]
+pub fn runtime_rich(rich: &rich_wire::RichText) -> RichValue {
+    let attr = |value: &rich_wire::Attr| match value {
+        rich_wire::Attr::Int(number) => tilo_doc::AttrVal::Int(*number),
+        rich_wire::Attr::Bool(flag) => tilo_doc::AttrVal::Bool(*flag),
+        rich_wire::Attr::Text(text) => tilo_doc::AttrVal::Str(text.clone()),
+        rich_wire::Attr::Float(number) => tilo_doc::AttrVal::Float(*number),
+    };
+    let mark = |value: &rich_wire::Attr| match value {
+        rich_wire::Attr::Bool(flag) => tilo_doc::document::MarkValue::Bool(*flag),
+        rich_wire::Attr::Int(number) => tilo_doc::document::MarkValue::Int(*number),
+        rich_wire::Attr::Text(text) => tilo_doc::document::MarkValue::Str(text.clone()),
+        rich_wire::Attr::Float(number) => tilo_doc::document::MarkValue::Str(number.to_string()),
+    };
+    RichValue {
+        blocks: rich
+            .blocks
+            .iter()
+            .map(|block| tilo_doc::snapshot::BlockView {
+                id: String::new(),
+                kind: block.kind.clone(),
+                text: block.text.clone(),
+                marks: block
+                    .marks
+                    .iter()
+                    .map(|m| tilo_doc::document::MarkSpan {
+                        start: m.start,
+                        end: m.end,
+                        name: m.name.clone(),
+                        value: mark(&m.value),
+                    })
+                    .collect(),
+                attrs: block
+                    .attrs
+                    .iter()
+                    .map(|(key, value)| (key.clone(), attr(value)))
+                    .collect(),
+                children: Vec::new(),
+            })
+            .collect(),
     }
 }
 

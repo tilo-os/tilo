@@ -123,7 +123,7 @@ pub trait ResourceApp: 'static {
     /// file selected in a file manager), a History scope beside the
     /// resource's own: its versions are read, previewed and restored through
     /// the filesystem's projection, not the app's document. The app's
-    /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
+    /// view names the file with [`RecordEnv::file_history`](super::RecordEnv::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
     /// What of the machine it runs on the app shows (its journal, its
     /// processes, its drives, the person's real files). A headless drive
@@ -804,9 +804,12 @@ pub(crate) fn build_root<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
+    let mut root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
+    if A::BEHAVIOUR.window == ui_core::application::WindowRole::Sheet {
+        root = root.without_ground();
+    }
     if !app.document_history {
         return root.without_history();
     }

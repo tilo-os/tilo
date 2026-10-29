@@ -63,7 +63,7 @@ pub struct ScanStats {
 }
 
 /// The result of one scan: the launchable entries, sorted by name, plus the accounting.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scan {
     pub entries: Vec<DesktopEntry>,
     pub stats: ScanStats,

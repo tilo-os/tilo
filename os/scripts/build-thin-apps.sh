@@ -21,6 +21,12 @@ if [ "$BUILD_RUNTIME_ONLY" = 1 ] && { [ "$BUILD_PACKAGES" != "  " ] || [ "${BUIL
 fi
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
+# The thin-dev profile is a developer session's build, never published: it
+# compiles for build speed, so the app crates keep the profile's settings
+# rather than being optimised for size in one unit (here and in
+# rustc-thin-app-wrapper.sh). Every other profile builds apps as they ship.
+optimize=size
+[ "$PROFILE" = thin-dev ] && optimize=speed
 BUILD_ROLE="${BUILD_ROLE:-apps}"
 BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
@@ -73,9 +79,11 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; d
     # Package overrides reach both the executable and app-owned libraries.
     # They are visible to Cargo and compiler caches before the wrapper runs;
     # matching only the binary crate name misses differently named libraries.
-    app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
-                   --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
-                   --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
+    if [ "$optimize" = size ]; then
+        app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
+                       --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
+                       --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
+    fi
     features+=("$package/thin")
     if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then
         binary=tilo-home-export
@@ -214,7 +222,8 @@ if [ "$BUILD_PHASE" != verify ]; then
 "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     --config "build.rustc-workspace-wrapper=\"$THIN_APP_WRAPPER\"" \
     --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
-    "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
+    --config "env.TILO_THIN_OPTIMIZE=\"$optimize\"" \
+    ${app_profiles[@]+"${app_profiles[@]}"} ${keep_symbols[@]+"${keep_symbols[@]}"} \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 fi
 if [ "$BUILD_PHASE" = build ]; then

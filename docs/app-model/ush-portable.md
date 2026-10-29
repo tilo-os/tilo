@@ -155,7 +155,8 @@ agents and History see one model whichever tier ran a command.
    file commands as the environment's actions), on the device, as the default
    for new Terminal sessions. Built: it runs on the Tilo side, outside every
    guest, its reads asked of the record's grants and every write (a redirect
-   too) an action of the record's, with a Linux guest started only for the
+   too, of any size, by reference to the environment's content store) an
+   action of the record's, with `~` the workspace's folder, with a Linux guest started only for the
    first program a session runs, which then serves the session's programs
    one command at a time ([`ush.md`](ush.md), "The session's shell").
 2. Tier 2: a WASI runner over Tilo's mount, with a few signed tool packages,

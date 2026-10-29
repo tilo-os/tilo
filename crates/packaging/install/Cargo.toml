@@ -16,6 +16,12 @@ path = "src/main.rs"
 name = "install"
 path = "src/lib.rs"
 
+[features]
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build: the session's system store and publisher list, by which
+# a developer session installs its own builds. Shipped images never enable it.
+dev-overrides = ["package-store/dev-overrides"]
+
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 fnv.workspace = true

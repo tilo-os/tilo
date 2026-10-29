@@ -81,7 +81,9 @@ rm -rf "$timings"
 # No line tables: release strips debug information from the binaries anyway.
 # `dev-overrides` lets the shell mint a throwaway identity and serve the
 # control socket, and lets the launcher and installer take the runtime and
-# trust inputs from the session's state directory. Never ship it.
+# trust inputs from the session's state directory (the installer installs the
+# session's own builds, signed with its key, under the local-build size
+# ceiling: package_store::size_limit). Never ship it.
 profile_args() {
     printf '%s\n' --profile "$1" \
         --config "profile.$1.inherits=\"release\"" --config "profile.$1.lto=false" \
@@ -99,13 +101,21 @@ build_host() {
     cargo build --locked --timings "${args[@]}" \
         -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
-        -p install --bin tilo-install \
+        -p install --bin tilo-install --features install/dev-overrides \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
-        -p tilo-control --bin tilo-control \
-        -p tilolang-host --bin tilolang-host
+        -p tilo-control --bin tilo-control
+}
+# The tilolang host, in a build of its own: built with the shell, the features the shell
+# turns on in the crates both use (media, the toolkit's services) would unify into it, and its
+# binary would link libraries its sandbox, the tilolang runtime on the app runtime alone, does
+# not hold.
+build_tilolang_host() {
+    local args
+    mapfile -t args < <(profile_args "$host_profile")
+    cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
 }
 # The workspace host and the room service in front of it, as the room
 # service's image builds them (tilo-relay with its agents): the local site
@@ -126,6 +136,12 @@ build_site() {
 # --- Thin apps and the shared runtime -----------------------------------------
 # Resolved against the default collection's runtime, so the runtime is the one
 # every app of the collection links, whichever of them the session installs.
+# In the profile the apps ship in. The session installs its apps, signed with
+# its own key, under the local-build size ceiling, so it can build them in the
+# thin-dev profile (for build speed) once a session built so is proven;
+# dist/dev/tilolang-runtime-build.sh must then build in the same profile, so
+# its tilolang runtime links the library this session runs.
+thin_profile=thin-app
 selected=()
 for app in $apps; do selected+=("$app"); done
 packages=tilolang-app
@@ -137,7 +153,7 @@ build_thin() {
     INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
         BUILD_PACKAGES=$packages \
         APP_FEATURES=$(jq -r '.features | join(",")' <<<"$runtime_plan") \
-        TARGET_DIR=$target \
+        TARGET_DIR=$target PROFILE=$thin_profile \
         EXTRA_CARGO_ARGS="${EXTRA_CARGO_ARGS:+$EXTRA_CARGO_ARGS }--timings" \
         os/scripts/build-thin-apps.sh
 }
@@ -162,6 +178,7 @@ build_host_then_site() {
     local seal
     seal_env_runtime 2>&1 | label seal & seal=$!
     build_site 2>&1 | label site || { wait "$seal"; return 1; }
+    build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
     wait "$seal"
 }
 
@@ -182,10 +199,10 @@ for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$host_profile
 cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
-cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" "$out/thin-app/"
+cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"
 while IFS= read -r file; do
-    cp -p "$target/thin-app/$file" "$out/thin-app/"
-done < <(cat "$target/thin-app/runtime-engines"
+    cp -p "$target/$thin_profile/$file" "$out/thin-app/"
+done < <(cat "$target/$thin_profile/runtime-engines"
          echo tilolang-app
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"

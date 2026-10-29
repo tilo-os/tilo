@@ -695,14 +695,13 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         );
         assert!(h.host.open_thing_menu(seed, Point::new(200.0, 200.0)));
         assert!(h.host.tab_context_menu_is_open());
-        let labels: Vec<_> = h
+        let labelled = h
             .menu_node()
             .expect("open")
             .children
             .iter()
-            .filter_map(|c| c.name.clone())
-            .collect();
-        assert!(labels.is_empty(), "no rows: typing is the way in");
+            .any(|c| c.name.is_some());
+        assert!(!labelled, "no rows: typing is the way in");
         assert!(!h.host.perform_semantic_action(
             "tabmenu:close",
             &ui::a11y::Action::Activate,

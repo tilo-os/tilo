@@ -79,6 +79,8 @@ impl PeerTransport for Broker {
 struct Window {
     transport: ChannelTransport,
     root: Option<patch::Node>,
+    /// The instance asked the window to come forward.
+    activated: bool,
 }
 
 impl Window {
@@ -101,6 +103,7 @@ impl Window {
                             change.apply(root).expect("the patch applies");
                         }
                     }
+                    ToUi::Activate => self.activated = true,
                     _ => {}
                 }
             }
@@ -189,6 +192,7 @@ fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let window = Window {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
+        activated: false,
     };
     (host, window, sent, inbox, route)
 }
@@ -277,6 +281,10 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         documents_sent(&sent) > before,
         "the undo went out on the connection"
     );
+    assert!(
+        hosted.record().can_undo().1,
+        "the window's Undo is ada's history undo: she can redo it"
+    );
 }
 
 #[test]
@@ -336,6 +344,164 @@ fn what_the_broker_delivers_runs_as_its_invokers_step() {
         ada_could,
         "it gives ada nothing more to undo"
     );
+}
+
+/// The answer the broker was told for invocation `id`.
+fn answered(sent: &Sent, id: u64) -> Option<tilo_actions::InvocationUpdate> {
+    sent.borrow()
+        .iter()
+        .rev()
+        .find_map(|request| match request {
+            CollabRequest::UpdateInvocation {
+                id: answered,
+                update,
+            } if *answered == id => Some(update.clone()),
+            _ => None,
+        })
+}
+
+fn deliver(inbox: &Inbox, id: u64, address: &tilo_actions::ActionAddress, actor: &str) {
+    inbox.borrow_mut().push_back(CollabEvent::Invocation {
+        id,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: address.resource.clone(),
+        action: address.action.clone(),
+        argument: None,
+        actor: actor.to_owned(),
+        context: None,
+    });
+}
+
+#[test]
+fn the_instance_publishes_and_answers_the_history_verbs_every_app_does() {
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let find = |label: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| {
+                action.address.resource == format!("tl:{APP}") && action.action_label == label
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label} is published on the app's resource: {:?}",
+                    hosted
+                        .published()
+                        .iter()
+                        .map(|a| (&a.address, &a.action_label))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .address
+            .clone()
+    };
+    let (undo, redo, history) = (find("Undo"), find("Redo"), find("History"));
+    let increment = hosted
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .unwrap()
+        .address
+        .clone();
+
+    // Grace increments through the broker, then undoes through the broker: her own step.
+    deliver(&inbox, 1, &increment, "grace");
+    settle(&mut host, &mut window);
+    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+    deliver(&inbox, 2, &undo, "grace");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    assert_eq!(value_of(hosted), 0, "grace's undo took her step back");
+    match answered(&sent, 2) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("undo says what it took back");
+            assert_eq!(value["undone"].as_array().map(Vec::len), Some(1), "{value}");
+        }
+        other => panic!("undo was answered {other:?}"),
+    }
+    assert_eq!(hosted.record().can_undo_as("grace"), (false, true));
+
+    // Ada has nothing of hers to undo: her Undo is refused, saying so.
+    deliver(&inbox, 3, &undo, "ada");
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 3),
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
+        ),
+        "ada's undo is refused: {:?}",
+        answered(&sent, 3)
+    );
+    assert_eq!(value_of(host.instances().next().unwrap()), 0);
+
+    // Grace's redo brings it back, and History lists all three steps as hers.
+    deliver(&inbox, 4, &redo, "grace");
+    settle(&mut host, &mut window);
+    assert_eq!(
+        value_of(host.instances().next().unwrap()),
+        1,
+        "redo brought it back"
+    );
+    deliver(&inbox, 5, &history, "grace");
+    settle(&mut host, &mut window);
+    match answered(&sent, 5) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("history lists the versions");
+            let hers = value["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|version| version["actor"]["id"] == "grace")
+                .count();
+            assert_eq!(hers, 3, "{value}");
+        }
+        other => panic!("history was answered {other:?}"),
+    }
+}
+
+#[test]
+fn the_instance_answers_read_and_show_this_window_as_every_app_does() {
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let find = |id: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| {
+                action.address.resource == format!("tl:{APP}") && action.address.action == id
+            })
+            .unwrap_or_else(|| panic!("{id} is published on the app's resource"))
+            .address
+            .clone()
+    };
+    let (read, activate) = (
+        find("read"),
+        find(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION),
+    );
+
+    deliver(&inbox, 1, &read, "grace");
+    settle(&mut host, &mut window);
+    match answered(&sent, 1) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("read answers what the record holds");
+            assert!(value.get("records").is_some(), "{value}");
+        }
+        other => panic!("read was answered {other:?}"),
+    }
+
+    deliver(&inbox, 2, &activate, "grace");
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 2),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "Show this window is answered"
+    );
+    assert!(window.activated, "the window was asked to come forward");
 }
 
 #[test]
@@ -431,6 +597,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     let mut second = Window {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
+        activated: false,
     };
 
     // The first instance's window presses +: its next frame comes at once, while the second

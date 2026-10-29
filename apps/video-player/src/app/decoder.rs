@@ -1,8 +1,8 @@
 //! The decoder's own settings and the events it reports: the metadata a stream carries, the settings a rebuild applies, and what a decoded frame or a media event becomes.
 
-use super::{DecoderMetadata, Icon, PlayerApp, PlayerSetting};
+use super::{DecoderMetadata, Icon, PlayerSetting, PlayerState};
 
-impl PlayerApp {
+impl PlayerState {
     pub(super) fn decoder_metadata(
         &self,
     ) -> (

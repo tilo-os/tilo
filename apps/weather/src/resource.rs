@@ -3,8 +3,6 @@
 //! saving, making a place the default, moving it to the top and removing it
 //! are verbs, the last three offered on each place.
 
-use std::rc::Rc;
-
 use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 use ui::tilo_resource::{Atom, JsonSchema, Refusal, SearchEntry};
@@ -157,7 +155,7 @@ impl Weather {
 /// What a capture shows in place of the network: the bundled forecasts of
 /// the sample places, and the units they are shown in.
 #[cfg(feature = "samples")]
-pub struct SampleForecasts(pub Rc<WeatherModel>);
+pub struct SampleForecasts(pub std::rc::Rc<WeatherModel>);
 
 /// Framework app: the weather window is the view of [`Weather`].
 pub struct WeatherShell;
@@ -203,7 +201,9 @@ impl ResourceApp for WeatherShell {
 
     #[cfg(feature = "samples")]
     fn fixture(fixture: &mut Fixture<Weather>) {
-        fixture.provide(SampleForecasts(Rc::new(crate::sample::sample_model())));
+        fixture.provide(SampleForecasts(std::rc::Rc::new(
+            crate::sample::sample_model(),
+        )));
     }
 
     /// Every scenario but the first-run onboarding shows the sample places,

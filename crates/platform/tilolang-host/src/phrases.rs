@@ -15,6 +15,7 @@ const TRANSLATIONS: &[(&str, &str)] = &[(
 
 /// The phrases of one language.
 pub struct Phrases {
+    locale: &'static str,
     catalogue: Catalogue,
 }
 
@@ -41,8 +42,15 @@ impl Phrases {
             sources.push(SOURCE.1);
         }
         Self {
+            locale: chosen.0,
             catalogue: Catalogue::new(chosen.0, &sources),
         }
+    }
+
+    /// The language the phrases are in (`en-US`).
+    #[must_use]
+    pub fn locale(&self) -> &'static str {
+        self.locale
     }
 
     /// The phrases of the language the process's environment names.

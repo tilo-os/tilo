@@ -714,8 +714,8 @@ impl PackageStore {
 
     fn check_budget(content: &Content<'_>, meta: &PackageMeta) -> Result<(), StoreError> {
         let mut failed = None;
-        let result = tilo_app_package::validate_materialized_payload(
-            &meta.manifest,
+        let result = tilo_app_package::validate_materialized_payload_within(
+            crate::size_limit::app_size_limit(meta),
             &meta.collection,
             |hash| match content.len(hash) {
                 Ok(len) => len,

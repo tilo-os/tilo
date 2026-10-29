@@ -1614,20 +1614,52 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
 }
 
 #[test]
-fn pointing_at_or_choosing_a_display_flashes_its_number_on_it() {
+fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
     pane.normalize_selection();
-    assert_eq!(
-        pane.last_flash, None,
-        "nothing flashes for the page opening"
+    // Point at the monitor, press it and drag it on the mounted canvas.
+    let connected = pane.connected_outputs();
+    let canvas = pane.arrangement_canvas(&connected);
+    drop(connected);
+    let mut host = ui::headless::FrameHarness::for_root(
+        ui::State::new(),
+        canvas,
+        (800, 400),
+        ui::theme::Theme::dark(),
     );
-    pane.pointed.set(Some("HDMI-A-1".into()));
-    pane.poll();
-    assert_eq!(pane.last_flash.as_deref(), Some("HDMI-A-1"));
-    pane.selected.set("eDP-1".into());
-    pane.poll();
-    assert_eq!(pane.last_flash.as_deref(), Some("eDP-1"));
+    host.profile_frame();
+    let monitor = tile(&host, "Desk monitor");
+    host.send(&ui::synthetic_input::cursor_moved(
+        monitor.center().x,
+        monitor.center().y,
+    ));
+    host.send(&ui::synthetic_input::mouse_press());
+    assert!(pane.poll(), "the press chose the monitor");
+    for step in 1..=10 {
+        host.send(&ui::synthetic_input::cursor_moved(
+            monitor.center().x - 8.0 * f64::from(step),
+            monitor.center().y + 4.0 * f64::from(step),
+        ));
+        assert!(
+            !pane.poll(),
+            "move {step} recomposes nothing: the canvas alone repaints the held display"
+        );
+    }
+    host.send(&ui::synthetic_input::mouse_release());
+    assert_eq!(
+        pane.selected_output()
+            .map(|output| output.connector.as_str()),
+        Some("HDMI-A-1")
+    );
+    assert!(
+        settings_store::display_identify::IdentifyRequest::load().is_none(),
+        "touching the arrangement asks for no cards on the displays"
+    );
+    assert!(pane.identify_window.is_none(), "nor accents the tiles");
+    // Only Identify does.
+    pane.apply(&DisplayEffect::IdentifyDisplays).unwrap();
+    assert!(settings_store::display_identify::IdentifyRequest::load().is_some());
 }
 
 #[test]

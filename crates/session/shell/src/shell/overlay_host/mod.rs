@@ -84,6 +84,7 @@ mod parked_workspaces;
 mod peer_sync_dispatch;
 mod shared_window_follow;
 mod sheet_accessibility;
+pub(crate) mod sheet_apps;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -164,9 +165,6 @@ pub use crate::shell::peer_sync_overlay::{
 };
 use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::power_menu::PowerMenu;
-#[cfg(test)]
-use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
@@ -271,6 +269,7 @@ use palette_search::LaunchpadMark;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
+mod power_sheet;
 mod projection;
 mod qs_device_input;
 mod qs_device_rows;
@@ -1101,6 +1100,9 @@ pub struct ShellOverlayHost {
     bar_popovers: Box<bar_popovers::BarPopovers>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Controls a development session's test control asked to activate in
+    /// the focused window, by their test ids, not yet sent to its app.
+    test_activations: Vec<String>,
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,

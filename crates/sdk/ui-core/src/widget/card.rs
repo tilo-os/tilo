@@ -531,7 +531,11 @@ impl Widget for Card {
         Some(self)
     }
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let before = self.parts.rect;
@@ -765,6 +769,33 @@ impl Widget for Card {
 }
 
 activation_controls!(Card, activation);
+
+/// A card whose press is a view intent of its owner (a described card that opens what it stands
+/// for) publishes that press as its own control, and answers it: the control its press is bound
+/// to is one the window publishes, as a list row's is.
+impl crate::widget::ResourceOperations for Card {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        self.activation.native_handler()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.activation.start_native(op)? {
+            return Ok(Some(started));
+        }
+        crate::widget::start_in_children(self, op, doc, path)
+    }
+}
+
+impl crate::resources::PublishesResources for Card {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.activation.native_resources()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Actions — a card's or a form's small action group.

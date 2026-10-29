@@ -2,11 +2,11 @@
 
 use super::{
     EffectAnswer, EffectCx, EffectReply, Effected, OPEN_FRAME_TIMEOUT, PendingMediaOpen,
-    PendingPortalOpen, PickerChannel, PlayerApp, PlayerResource, VideoEffect, source_for_argument,
-    source_title, video_open_request,
+    PendingPortalOpen, PickerChannel, PlayerResource, PlayerState, VideoEffect,
+    source_for_argument, source_title, video_open_request,
 };
 
-impl PlayerApp {
+impl PlayerState {
     /// Kick off a file-picker open, answering `reply` once a picture of the
     /// chosen video decodes. A second request is refused rather than
     /// replacing the first, which would make its answer race.
@@ -107,7 +107,7 @@ impl PlayerApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: VideoEffect,
-        cx: &mut EffectCx<PlayerResource, Self>,
+        cx: &mut EffectCx<PlayerResource>,
     ) -> EffectAnswer {
         if effect.requires_media() && !self.player.has_media() {
             return Err("open a video before using this playback control".into());

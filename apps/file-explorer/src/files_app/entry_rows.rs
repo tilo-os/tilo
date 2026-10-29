@@ -17,7 +17,7 @@ use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::{AbsolutePath, Effect as _};
 
 use super::open_with_recent::{OpenWithFacts, append_open_with_actions};
-use super::{FileExplorerWidget, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
+use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 
@@ -85,7 +85,7 @@ pub(super) fn in_native_trash(path: &Path, trash: Option<&Path>) -> bool {
     trash.is_some_and(|root| path.parent() == Some(root))
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// What every row of the listing shares, now.
     pub(super) fn row_context(&self) -> RowContext {
         RowContext {
@@ -204,7 +204,7 @@ fn app_row(
 )]
 fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> ResourceSpec {
     use crate::effects::{FilesEffect, row_action};
-    let resource_id = FileExplorerWidget::entry_resource_id(entry);
+    let resource_id = FilesState::entry_resource_id(entry);
     let id = || resource_id.clone();
     let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
     let mut resource = ResourceSpec::new(

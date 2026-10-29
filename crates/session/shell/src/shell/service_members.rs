@@ -206,7 +206,7 @@ mod tests {
 
         const OWNER: u8 = 40;
         const SERVICE: u8 = 41;
-        let owner = hex::encode(public(OWNER).as_bytes());
+        let owner_id = hex::encode(public(OWNER).as_bytes());
         let mut tree = WorkspaceTree::default();
         let workspace = tree.create_hosted_workspace("Brief").0;
         let room = tree.room_of(workspace).unwrap();
@@ -215,7 +215,7 @@ mod tests {
             .iter_mut()
             .find(|ws| ws.id == workspace)
             .unwrap()
-            .set_owner(owner.clone());
+            .set_owner(owner_id.clone());
         let tree = tree.shared();
         let channel =
             collab_types::document_channel_id("so.tilo.writer", &room.to_string(), "brief");
@@ -302,14 +302,14 @@ mod tests {
             grant_service_member(
                 &mut tree,
                 workspace,
-                &owner,
+                &owner_id,
                 &public(SERVICE),
                 "Cloud agent: summarise the brief",
                 KindSet::READ_UNDOABLE,
                 Some(2_000),
             )
             .unwrap();
-            tree.govern_requests_here_for_test(&owner);
+            tree.govern_requests_here_for_test(&owner_id);
         }
         run(&mut owner, &mut service, &mut now, 1_000, 5);
         let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {

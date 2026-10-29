@@ -18,7 +18,7 @@ use ui::window_toolbar::{
     ToolbarNavigation, WindowToolbar,
 };
 
-use super::FileExplorerWidget;
+use super::{Chrome, FilesState};
 use crate::command::FileCommand;
 use crate::i18n::t;
 use crate::model::ViewMode;
@@ -59,11 +59,11 @@ pub(super) struct BarKey {
     cloud: Option<(String, Option<String>)>,
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Move the content header into the window's bar while the bar hosts
     /// the slots, and back into the window when it no longer does. Returns
     /// whether the window's layout changed.
-    pub(super) fn place_header(&mut self) -> bool {
+    pub(super) fn place_header(&mut self, chrome: &mut Chrome) -> bool {
         let hosted = ui::window_toolbar::is_hosted();
         if hosted == self.header_in_bar {
             if hosted {
@@ -72,10 +72,10 @@ impl FileExplorerWidget {
             return false;
         }
         self.header_in_bar = hosted;
-        self.nav.set_sidebar_toggle_in_window_bar(hosted);
+        chrome.nav.set_sidebar_toggle_in_window_bar(hosted);
         if hosted {
-            self.nav.set_content_header_leading(None);
-            self.nav.set_content_header("", Vec::new());
+            chrome.nav.set_content_header_leading(None);
+            chrome.nav.set_content_header("", Vec::new());
             self.toolbar.set_bar_anchor(self.bar_menu_anchor());
         } else {
             // The controls come back into the window, built afresh.
@@ -83,10 +83,12 @@ impl FileExplorerWidget {
                 crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             // window-bar: fallback, the bar holds the folder's actions while it hosts the window
-            self.nav
+            chrome
+                .nav
                 .set_content_header("", vec![Box::new(actions_widget)]);
             // window-bar: fallback, the bar shows the path while it hosts the window
-            self.nav
+            chrome
+                .nav
                 .set_content_header_leading(Some(Box::new(path_widget)));
             ui::window_toolbar::declare(None);
         }
@@ -101,9 +103,9 @@ impl FileExplorerWidget {
     }
 
     /// The slots this window shows in its bar.
-    pub(super) fn window_toolbar(&self) -> WindowToolbar {
+    pub(super) fn window_toolbar(&self, chrome: &Chrome) -> WindowToolbar {
         if let Some((account, folder)) = self.cloud_title() {
-            return self.cloud_window_toolbar(account, folder);
+            return Self::cloud_window_toolbar(chrome, account, folder);
         }
         let recent = self.is_recent_view();
         let home = self.home_path.as_deref();
@@ -125,7 +127,7 @@ impl FileExplorerWidget {
             .collect();
         let actions = self.bar_actions(recent);
         WindowToolbar {
-            sidebar: Some(self.nav.is_sidebar_open()),
+            sidebar: Some(chrome.nav.is_sidebar_open()),
             navigation: Some(ToolbarNavigation {
                 back: !self.history.is_empty(),
                 forward: !self.forward.is_empty(),
@@ -155,7 +157,11 @@ impl FileExplorerWidget {
     /// The slots while the window browses a cloud account: the account and
     /// the folder open in it as the location's levels. The folder actions
     /// act on folders on this device, so the bar offers none of them here.
-    fn cloud_window_toolbar(&self, account: String, folder: Option<String>) -> WindowToolbar {
+    fn cloud_window_toolbar(
+        chrome: &Chrome,
+        account: String,
+        folder: Option<String>,
+    ) -> WindowToolbar {
         let mut segments = vec![LocationSegment {
             label: account.clone(),
             value: CLOUD_ROOT.to_owned(),
@@ -167,7 +173,7 @@ impl FileExplorerWidget {
             });
         }
         WindowToolbar {
-            sidebar: Some(self.nav.is_sidebar_open()),
+            sidebar: Some(chrome.nav.is_sidebar_open()),
             location: Some(ToolbarLocation {
                 label: folder.unwrap_or(account),
                 name: t("files-location"),
@@ -280,7 +286,7 @@ impl FileExplorerWidget {
             .collect()
     }
 
-    fn bar_key(&self) -> BarKey {
+    fn bar_key(&self, chrome: &Chrome) -> BarKey {
         BarKey {
             folder: self.current_path.clone(),
             back: !self.history.is_empty(),
@@ -288,16 +294,16 @@ impl FileExplorerWidget {
             view: self.view_mode,
             hidden: self.show_hidden,
             query: self.bar_query.clone(),
-            sidebar: self.nav.is_sidebar_open(),
+            sidebar: chrome.nav.is_sidebar_open(),
             cloud: self.cloud_title(),
         }
     }
 
     /// Tell the bar the slots, when what they are made from changed.
-    fn declare_window_toolbar(&mut self) {
-        let key = self.bar_key();
+    fn declare_window_toolbar(&mut self, chrome: &Chrome) {
+        let key = self.bar_key(chrome);
         if self.declared_bar.as_ref() != Some(&key) {
-            ui::window_toolbar::declare(Some(self.window_toolbar()));
+            ui::window_toolbar::declare(Some(self.window_toolbar(chrome)));
             self.declared_bar = Some(key);
         }
     }
@@ -305,28 +311,28 @@ impl FileExplorerWidget {
     /// Tell the bar the slots as they are now and run what the person did
     /// with them: the same commands the header's controls run. Returns
     /// whether anything ran.
-    pub(super) fn sync_window_toolbar(&mut self) -> bool {
-        let moved = self.place_header();
+    pub(super) fn sync_window_toolbar(&mut self, chrome: &mut Chrome) -> bool {
+        let moved = self.place_header(chrome);
         if !self.header_in_bar {
             self.declared_bar = None;
             return moved;
         }
-        self.declare_window_toolbar();
+        self.declare_window_toolbar(chrome);
         let events = ui::window_toolbar::take_events();
         let ran = !events.is_empty();
         for event in events {
-            self.run_window_toolbar_event(event);
+            self.run_window_toolbar_event(chrome, event);
         }
         // A changed query or folder changes the slots.
-        self.declare_window_toolbar();
+        self.declare_window_toolbar(chrome);
         moved || ran
     }
 
     /// Run one thing the person did in the bar.
-    fn run_window_toolbar_event(&mut self, event: ToolbarEvent) {
+    fn run_window_toolbar_event(&mut self, chrome: &mut Chrome, event: ToolbarEvent) {
         let command = match event {
             ToolbarEvent::ToggleSidebar => {
-                self.nav.toggle_sidebar();
+                chrome.nav.toggle_sidebar();
                 None
             }
             ToolbarEvent::Back => Some(FileCommand::Back),

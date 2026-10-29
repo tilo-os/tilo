@@ -305,8 +305,15 @@ impl Widget for ReactionStripWidget {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
+        // A strip described without saying who "you" are is the window's own participant's.
+        if self.me.is_empty()
+            && let Some(own) = presence.self_id()
+        {
+            self.me.clone_from(&own.0);
+            self.layout_dirty = true;
+        }
         self.relayout(text, theme);
         let focus = self.focused_hit();
         self.strip.paint(
