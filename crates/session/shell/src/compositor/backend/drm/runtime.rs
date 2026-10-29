@@ -6353,9 +6353,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn xkb_shift_state_tracks_modifier_events_and_character_input() {
-        // Phase `xkb_left_shift_toggles_modifier_mask`.
-        // End-to-end through a real keymap: pressing/releasing Left Shift flips the modifier mask — layout-independent; soft-skips if no xkb data installed.
+    fn xkb_left_shift_toggles_modifier_mask() {
         fn xkb_left_shift_toggles_modifier_mask() {
             let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
                 eprintln!("xkb keymap unavailable (no xkeyboard-config?); skipping");
@@ -6381,7 +6379,10 @@ pub(super) mod tests {
                 .expect("shift release should flip the modifier mask");
             assert!(!m.state().shift_key(), "left shift up -> shift cleared");
         }
-        // Phase `xkb_shift_event_itself_is_named_and_following_text_is_shifted`.
+    }
+
+    #[test]
+    fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
         fn xkb_shift_event_itself_is_named_and_following_text_is_shifted() {
             let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
                 eprintln!("xkb keymap unavailable; skipping");
@@ -6401,8 +6402,10 @@ pub(super) mod tests {
             assert_eq!(event.logical_key, Key::Character("A".into()));
             assert_eq!(event.text.as_deref(), Some("A"));
         }
-        // Phase `xkb_alpha_key_produces_character_input`.
-        // End-to-end: an alpha-row keycode yields a `Character` `KeyboardInput` carrying text — QWERTY 'a' is a letter on every Latin layout, so layout-independent; soft-skips without xkb data.
+    }
+
+    #[test]
+    fn xkb_alpha_key_produces_character_input() {
         fn xkb_alpha_key_produces_character_input() {
             let Some(mut kbd) = KeyboardXkb::from_settings(&test_keyboard_settings()) else {
                 eprintln!("xkb keymap unavailable; skipping");
@@ -8496,12 +8499,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn key_repeat_and_held_keys_follow_the_winit_contract() {
-        // Phase `drm_repeat_event_matches_winit_contract_without_repressing_xkb`.
+    fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
         fn drm_repeat_event_matches_winit_contract_without_repressing_xkb() {
             let Some(mut keyboard) = KeyboardXkb::from_settings(&KeyboardSettings::default())
             else {
@@ -8521,79 +8519,85 @@ pub(super) mod tests {
             );
             let _ = keyboard.process(key, false);
         }
-        // Phase `key_repeat_waits_for_delay_ticks_at_rate_and_stops_on_release`.
-        {
-            let start = std::time::Instant::now();
-            let key = xkb::Keycode::new(38); // evdev KEY_A + 8
-            let mut repeat = KeyRepeat::default();
-            assert_eq!(repeat.next_deadline(), None);
-            repeat.press(key, start, std::time::Duration::from_millis(300), 20);
-            assert_eq!(
-                repeat.next_deadline(),
-                Some(start + std::time::Duration::from_millis(300))
-            );
-            assert!(
-                repeat
-                    .due(start + std::time::Duration::from_millis(299))
-                    .is_none()
-            );
-            assert_eq!(
-                repeat.due(start + std::time::Duration::from_millis(300)),
-                Some(key)
-            );
-            assert_eq!(
-                repeat.next_deadline(),
-                Some(start + std::time::Duration::from_millis(350))
-            );
-            assert_eq!(
-                repeat.due(start + std::time::Duration::from_millis(351)),
-                Some(key)
-            );
-            assert_eq!(
-                repeat.next_deadline(),
-                Some(start + std::time::Duration::from_millis(400)),
-                "on time, the rate keeps its own grid"
-            );
-            repeat.release(key);
-            assert_eq!(repeat.next_deadline(), None);
-            assert!(
-                repeat
-                    .due(start + std::time::Duration::from_secs(1))
-                    .is_none()
-            );
-        }
-        // Phase `a_stalled_loop_gets_one_repeat_not_a_burst`.
-        {
-            let start = std::time::Instant::now();
-            let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
-            let mut repeat = KeyRepeat::default();
-            repeat.press(key, start, std::time::Duration::from_millis(300), 20);
-            // The loop stalls for half a second past the delay: ten repeats
-            // fell due meanwhile. One is delivered, the rest are dropped, and
-            // the next comes one interval after the loop is back.
-            let back = start + std::time::Duration::from_millis(800);
-            assert_eq!(repeat.due(back), Some(key));
-            assert_eq!(repeat.due(back), None, "no burst of missed repeats");
-            assert_eq!(
-                repeat.next_deadline(),
-                Some(back + std::time::Duration::from_millis(50))
-            );
-        }
-        // Phase `a_key_read_late_repeats_from_when_it_went_down`.
-        {
-            let now = std::time::Instant::now();
-            let read_ns = 10_000_000_000_u64;
-            let went_down_ns = read_ns - 200_000_000;
-            let at = key_down_at_input_time(Some(went_down_ns), now, read_ns);
-            assert_eq!(
-                now.saturating_duration_since(at),
-                std::time::Duration::from_millis(200),
-                "a key read 200 ms late counts its delay from the press, not the read"
-            );
-            assert_eq!(key_down_at_input_time(None, now, read_ns), now);
-            assert_eq!(key_down_at(None, now), now);
-        }
-        // Phase `key_repeat_rate_zero_is_disabled_and_transient_loss_cancels`.
+    }
+
+    #[test]
+    fn key_repeat_waits_for_delay_ticks_at_rate_and_stops_on_release() {
+        let start = std::time::Instant::now();
+        let key = xkb::Keycode::new(38); // evdev KEY_A + 8
+        let mut repeat = KeyRepeat::default();
+        assert_eq!(repeat.next_deadline(), None);
+        repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(300))
+        );
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_millis(299))
+                .is_none()
+        );
+        assert_eq!(
+            repeat.due(start + std::time::Duration::from_millis(300)),
+            Some(key)
+        );
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(350))
+        );
+        assert_eq!(
+            repeat.due(start + std::time::Duration::from_millis(351)),
+            Some(key)
+        );
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(400)),
+            "on time, the rate keeps its own grid"
+        );
+        repeat.release(key);
+        assert_eq!(repeat.next_deadline(), None);
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_secs(1))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_stalled_loop_gets_one_repeat_not_a_burst() {
+        let start = std::time::Instant::now();
+        let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
+        let mut repeat = KeyRepeat::default();
+        repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+        // The loop stalls for half a second past the delay: ten repeats
+        // fell due meanwhile. One is delivered, the rest are dropped, and
+        // the next comes one interval after the loop is back.
+        let back = start + std::time::Duration::from_millis(800);
+        assert_eq!(repeat.due(back), Some(key));
+        assert_eq!(repeat.due(back), None, "no burst of missed repeats");
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(back + std::time::Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn a_key_read_late_repeats_from_when_it_went_down() {
+        let now = std::time::Instant::now();
+        let read_ns = 10_000_000_000_u64;
+        let went_down_ns = read_ns - 200_000_000;
+        let at = key_down_at_input_time(Some(went_down_ns), now, read_ns);
+        assert_eq!(
+            now.saturating_duration_since(at),
+            std::time::Duration::from_millis(200),
+            "a key read 200 ms late counts its delay from the press, not the read"
+        );
+        assert_eq!(key_down_at_input_time(None, now, read_ns), now);
+        assert_eq!(key_down_at(None, now), now);
+    }
+
+    #[test]
+    fn key_repeat_rate_zero_is_disabled_and_transient_loss_cancels() {
         {
             let start = std::time::Instant::now();
             let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
@@ -8619,68 +8623,69 @@ pub(super) mod tests {
         }
         // Phase `drm_repeat_event_matches_winit_contract_without_repressing_xkb` (defined above).
         drm_repeat_event_matches_winit_contract_without_repressing_xkb();
-        // Phase `resume_retires_held_shift_and_backspace_before_the_next_key`.
-        {
-            // Model the failure mode exactly: both keys go down, then the machine
-            // sleeps before libinput can report either release.  The first input
-            // after resume must be a clean `a`, not Shift+A, and the pending
-            // Backspace repeat must be gone.
-            let (mut state, _rx) = dispatch_with_channel();
-            state.session = Some(SessionState::new_active());
-            state.keyboard = Some(
-                KeyboardXkb::from_settings(&KeyboardSettings::default())
-                    .expect("the default test keymap must compile"),
-            );
+    }
 
-            state.handle_keyboard_key(xkb::Keycode::new(50), true, None); // KEY_LEFTSHIFT + 8
-            state.handle_keyboard_key(xkb::Keycode::new(22), true, None); // KEY_BACKSPACE + 8
-            assert!(
-                state
-                    .keyboard
-                    .as_ref()
-                    .is_some_and(|keyboard| keyboard.current_mods().shift_key()),
-                "the adapter's XKB state must see the held Shift before sleep"
-            );
-            assert!(
-                state.key_repeat.held.is_some(),
-                "Backspace must be repeating before sleep"
-            );
-            state.events.clear(); // The pre-sleep input was already dispatched.
+    #[test]
+    fn resume_retires_held_shift_and_backspace_before_the_next_key() {
+        // Model the failure mode exactly: both keys go down, then the machine
+        // sleeps before libinput can report either release.  The first input
+        // after resume must be a clean `a`, not Shift+A, and the pending
+        // Backspace repeat must be gone.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.session = Some(SessionState::new_active());
+        state.keyboard = Some(
+            KeyboardXkb::from_settings(&KeyboardSettings::default())
+                .expect("the default test keymap must compile"),
+        );
 
-            state.resume_from_sleep();
+        state.handle_keyboard_key(xkb::Keycode::new(50), true, None); // KEY_LEFTSHIFT + 8
+        state.handle_keyboard_key(xkb::Keycode::new(22), true, None); // KEY_BACKSPACE + 8
+        assert!(
+            state
+                .keyboard
+                .as_ref()
+                .is_some_and(|keyboard| keyboard.current_mods().shift_key()),
+            "the adapter's XKB state must see the held Shift before sleep"
+        );
+        assert!(
+            state.key_repeat.held.is_some(),
+            "Backspace must be repeating before sleep"
+        );
+        state.events.clear(); // The pre-sleep input was already dispatched.
 
-            assert!(
-                matches!(state.events.first(), Some(BackendEvent::InputStateReset)),
-                "the compositor's canonical seat reset must precede resumed input"
-            );
-            assert!(state.physical_modifiers.is_empty());
-            assert!(state.sticky_latched.is_empty());
-            assert!(
-                state
-                    .key_repeat
-                    .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
-                    .is_none(),
-                "a Backspace held across sleep must not repeat after resume"
-            );
+        state.resume_from_sleep();
 
-            state.events.clear();
-            state.handle_keyboard_key(xkb::Keycode::new(38), true, None); // KEY_A + 8
-            assert!(
-                !state
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, BackendEvent::ModifiersChanged(_))),
-                "the first post-resume key must not inherit Shift"
-            );
-            let Some(BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })) =
-                state.events.first()
-            else {
-                panic!("the first post-resume key must be dispatched")
-            };
-            assert_eq!(event.logical_key, Key::Character("a".into()));
-            assert_eq!(event.text.as_deref(), Some("a"));
-            assert!(!event.repeat, "the first post-resume key is a fresh press");
-        }
+        assert!(
+            matches!(state.events.first(), Some(BackendEvent::InputStateReset)),
+            "the compositor's canonical seat reset must precede resumed input"
+        );
+        assert!(state.physical_modifiers.is_empty());
+        assert!(state.sticky_latched.is_empty());
+        assert!(
+            state
+                .key_repeat
+                .due(std::time::Instant::now() + std::time::Duration::from_secs(2))
+                .is_none(),
+            "a Backspace held across sleep must not repeat after resume"
+        );
+
+        state.events.clear();
+        state.handle_keyboard_key(xkb::Keycode::new(38), true, None); // KEY_A + 8
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::ModifiersChanged(_))),
+            "the first post-resume key must not inherit Shift"
+        );
+        let Some(BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })) =
+            state.events.first()
+        else {
+            panic!("the first post-resume key must be dispatched")
+        };
+        assert_eq!(event.logical_key, Key::Character("a".into()));
+        assert_eq!(event.text.as_deref(), Some("a"));
+        assert!(!event.repeat, "the first post-resume key is a fresh press");
     }
 
     // Gesture routing, on the production `handle_gesture`

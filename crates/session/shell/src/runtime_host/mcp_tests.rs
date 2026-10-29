@@ -52,30 +52,26 @@ fn call(name: &str, args: &Value) -> Value {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-async fn protocol_errors_and_request_metadata_are_validated() {
-    // Phase `unknown_tool_is_an_invalid_params_error_with_the_request_id`.
-    {
-        let (fixture, room, actor) = fixture();
-        let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
-        let reply = server
-            .handle(json!({
-                "jsonrpc": "2.0",
-                "id": "unknown-tool-request",
-                "method": "tools/call",
-                "params": {"name": "tilo_not_a_tool", "arguments": {}}
-            }))
-            .await
-            .unwrap();
+async fn unknown_tool_is_an_invalid_params_error_with_the_request_id() {
+    let (fixture, room, actor) = fixture();
+    let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
+    let reply = server
+        .handle(json!({
+            "jsonrpc": "2.0",
+            "id": "unknown-tool-request",
+            "method": "tools/call",
+            "params": {"name": "tilo_not_a_tool", "arguments": {}}
+        }))
+        .await
+        .unwrap();
 
-        assert_eq!(reply["id"], "unknown-tool-request");
-        assert_eq!(reply["error"]["code"], -32602);
-        assert!(reply.get("result").is_none(), "{reply}");
-    }
-    // Phase `null_id_is_rejected_before_mutating_dispatch_and_valid_id_boundaries_hold`.
+    assert_eq!(reply["id"], "unknown-tool-request");
+    assert_eq!(reply["error"]["code"], -32602);
+    assert!(reply.get("result").is_none(), "{reply}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn null_id_is_rejected_before_mutating_dispatch_and_valid_id_boundaries_hold() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (fixture, room, actor) = fixture();
@@ -122,76 +118,80 @@ async fn protocol_errors_and_request_metadata_are_validated() {
             }
         }))
         .await;
-    // Phase `protocol_and_argument_boundaries`.
-    {
-        let (fixture, room, actor) = fixture();
-        let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
-        let init = server.handle(request("initialize",&json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}))).await.unwrap();
-        assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
-        assert!(
-            init["result"]["capabilities"]["tools"]
-                .get("listChanged")
-                .is_none()
-        );
-        assert!(
-            server
-                .handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-                .await
-                .is_none()
-        );
-        assert_eq!(
-            server.handle(request("ping", &json!({}))).await.unwrap()["result"],
-            json!({})
-        );
-        assert_eq!(
-            server
-                .handle(json!({"id":1,"method":"ping"}))
-                .await
-                .unwrap()["error"]["code"],
-            -32600
-        );
-        assert_eq!(
-            server.handle(request("missing", &json!({}))).await.unwrap()["error"]["code"],
-            -32601
-        );
-        let tools = server
-            .handle(request("tools/list", &json!({})))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_and_argument_boundaries() {
+    let (fixture, room, actor) = fixture();
+    let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
+    let init = server.handle(request("initialize",&json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}))).await.unwrap();
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    assert!(
+        init["result"]["capabilities"]["tools"]
+            .get("listChanged")
+            .is_none()
+    );
+    assert!(
+        server
+            .handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await
-            .unwrap();
-        assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
-        for args in [
-            json!({"actor":"other"}),
-            json!({"workspace":"other"}),
-            json!({"confirmed":true}),
-            json!([]),
-        ] {
-            assert_eq!(
-                server.handle(call("tilo_list_apps", &args)).await.unwrap()["result"]["isError"],
-                true
-            );
-        }
+            .is_none()
+    );
+    assert_eq!(
+        server.handle(request("ping", &json!({}))).await.unwrap()["result"],
+        json!({})
+    );
+    assert_eq!(
+        server
+            .handle(json!({"id":1,"method":"ping"}))
+            .await
+            .unwrap()["error"]["code"],
+        -32600
+    );
+    assert_eq!(
+        server.handle(request("missing", &json!({}))).await.unwrap()["error"]["code"],
+        -32601
+    );
+    let tools = server
+        .handle(request("tools/list", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
+    for args in [
+        json!({"actor":"other"}),
+        json!({"workspace":"other"}),
+        json!({"confirmed":true}),
+        json!([]),
+    ] {
         assert_eq!(
-            server
-                .handle(call(
-                    "tilo_status",
-                    &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
-                ))
-                .await
-                .unwrap()["result"]["isError"],
-            true
-        );
-        assert_eq!(
-            server
-                .handle(call(
-                    "tilo_cancel",
-                    &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
-                ))
-                .await
-                .unwrap()["result"]["isError"],
+            server.handle(call("tilo_list_apps", &args)).await.unwrap()["result"]["isError"],
             true
         );
     }
-    // Phase `request_metadata_is_accepted_without_becoming_broker_authority`.
+    assert_eq!(
+        server
+            .handle(call(
+                "tilo_status",
+                &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
+            ))
+            .await
+            .unwrap()["result"]["isError"],
+        true
+    );
+    assert_eq!(
+        server
+            .handle(call(
+                "tilo_cancel",
+                &json!({"invocation_id":"00000000-0000-0000-0000-0000000003e7"})
+            ))
+            .await
+            .unwrap()["result"]["isError"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_metadata_is_accepted_without_becoming_broker_authority() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture, room, actor) = fixture();
         let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor.clone());
@@ -211,51 +211,47 @@ async fn protocol_errors_and_request_metadata_are_validated() {
         spoof["params"]["_meta"] = metadata;
         assert_eq!(server.handle(spoof).await.unwrap()["result"]["isError"], true);
     })).await;
-    // Phase `request_metadata_must_be_an_object_with_a_valid_progress_token`.
-    {
-        let (fixture, room, actor) = fixture();
-        let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
-        for metadata in [
-            json!(null),
-            json!(false),
-            json!([]),
-            json!({"progressToken":{}}),
-            json!({"progressToken":1.5}),
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
+    let (fixture, room, actor) = fixture();
+    let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
+    for metadata in [
+        json!(null),
+        json!(false),
+        json!([]),
+        json!({"progressToken":{}}),
+        json!({"progressToken":1.5}),
+    ] {
+        for mut input in [
+            call("tilo_list_apps", &json!({})),
+            request("initialize", &json!({"protocolVersion":"2025-06-18"})),
+            request("ping", &json!({})),
+            request("tools/list", &json!({})),
+            request("resources/list", &json!({})),
+            request("resources/read", &json!({"uri":"tilo://apps/71"})),
         ] {
-            for mut input in [
-                call("tilo_list_apps", &json!({})),
-                request("initialize", &json!({"protocolVersion":"2025-06-18"})),
-                request("ping", &json!({})),
-                request("tools/list", &json!({})),
-                request("resources/list", &json!({})),
-                request("resources/read", &json!({"uri":"tilo://apps/71"})),
-            ] {
-                input["params"]["_meta"] = metadata.clone();
-                assert_eq!(server.handle(input).await.unwrap()["error"]["code"], -32602);
-            }
+            input["params"]["_meta"] = metadata.clone();
+            assert_eq!(server.handle(input).await.unwrap()["error"]["code"], -32602);
         }
-        for metadata in [
-            json!({}),
-            json!({"progressToken":1}),
-            json!({"progressToken":"token"}),
-        ] {
-            let mut input = call("tilo_list_apps", &json!({}));
-            input["params"]["_meta"] = metadata;
-            assert_eq!(
-                server.handle(input).await.unwrap()["result"]["isError"],
-                false
-            );
-        }
+    }
+    for metadata in [
+        json!({}),
+        json!({"progressToken":1}),
+        json!({"progressToken":"token"}),
+    ] {
+        let mut input = call("tilo_list_apps", &json!({}));
+        input["params"]["_meta"] = metadata;
+        assert_eq!(
+            server.handle(input).await.unwrap()["result"]["isError"],
+            false
+        );
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-async fn broker_queries_and_resources_are_live_and_authority_scoped() {
-    // Phase `actual_broker_query_resolve_and_stale_invocation`.
+async fn actual_broker_query_resolve_and_stale_invocation() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
         let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,actor);
@@ -271,7 +267,10 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let (reply,())=tokio::join!(invoke, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     })).await;
-    // Phase `resources_are_live_room_scoped_and_reads_use_authority`.
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resources_are_live_room_scoped_and_reads_use_authority() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (fixture, room, actor) = fixture();
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
@@ -302,58 +301,61 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
     })).await;
-    // Phase `root_identity_pagination_and_disconnect_are_exact`.
-    {
-        use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
-        let (fixture, room, actor) = fixture();
-        fixture.broker.replace_action_directory_roots_for_test(
-            (1..=130)
-                .map(|peer_id| ActionDirectoryRoot {
-                    peer_id,
-                    app_id: "same.app".into(),
-                    cluster_id: room.clone(),
-                    record_id: format!("auxiliary/{peer_id}"),
-                })
-                .collect(),
-        );
-        let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
-        let first = server
-            .handle(call("tilo_list_apps", &json!({"max_results":500})))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn root_identity_pagination_and_disconnect_are_exact() {
+    use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+    let (fixture, room, actor) = fixture();
+    fixture.broker.replace_action_directory_roots_for_test(
+        (1..=130)
+            .map(|peer_id| ActionDirectoryRoot {
+                peer_id,
+                app_id: "same.app".into(),
+                cluster_id: room.clone(),
+                record_id: format!("auxiliary/{peer_id}"),
+            })
+            .collect(),
+    );
+    let server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()), room, actor);
+    let first = server
+        .handle(call("tilo_list_apps", &json!({"max_results":500})))
+        .await
+        .unwrap();
+    assert_eq!(
+        first["result"]["structuredContent"]["apps"]
+            .as_array()
+            .unwrap()
+            .len(),
+        128
+    );
+    assert_eq!(first["result"]["structuredContent"]["next_after_peer"], 128);
+    let last = server
+        .handle(call("tilo_list_apps", &json!({"after_peer":128})))
+        .await
+        .unwrap();
+    assert_eq!(
+        last["result"]["structuredContent"]["apps"][0]["record_id"],
+        "auxiliary/129"
+    );
+    assert_eq!(
+        last["result"]["structuredContent"]["apps"][1]["uri"],
+        "tilo://apps/130"
+    );
+    fixture
+        .broker
+        .replace_action_directory_roots_for_test(vec![]);
+    assert_eq!(
+        server
+            .handle(call("tilo_query", &json!({"peer_id":129})))
             .await
-            .unwrap();
-        assert_eq!(
-            first["result"]["structuredContent"]["apps"]
-                .as_array()
-                .unwrap()
-                .len(),
-            128
-        );
-        assert_eq!(first["result"]["structuredContent"]["next_after_peer"], 128);
-        let last = server
-            .handle(call("tilo_list_apps", &json!({"after_peer":128})))
-            .await
-            .unwrap();
-        assert_eq!(
-            last["result"]["structuredContent"]["apps"][0]["record_id"],
-            "auxiliary/129"
-        );
-        assert_eq!(
-            last["result"]["structuredContent"]["apps"][1]["uri"],
-            "tilo://apps/130"
-        );
-        fixture
-            .broker
-            .replace_action_directory_roots_for_test(vec![]);
-        assert_eq!(
-            server
-                .handle(call("tilo_query", &json!({"peer_id":129})))
-                .await
-                .unwrap()["result"]["isError"],
-            true
-        );
-    }
-    // Phase `first_allocated_application_peer_supports_query_resolve_and_invoke`.
-    // Boxed: the query, resolve and invoke turns keep a large future alive.
+            .unwrap()["result"]["isError"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "First connection");

@@ -5882,240 +5882,228 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn capture_commits_publish_only_their_own_latest_frame() {
-        fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
-            let mut pending = LatestJobs::default();
-            assert_eq!(pending.push(10, "old"), None);
-            assert_eq!(pending.push(20, "other surface"), None);
-            assert_eq!(pending.push(10, "new"), Some("old"));
+    fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
+        let mut pending = LatestJobs::default();
+        assert_eq!(pending.push(10, "old"), None);
+        assert_eq!(pending.push(20, "other surface"), None);
+        assert_eq!(pending.push(10, "new"), Some("old"));
 
-            assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
-            assert_eq!(pending.jobs.get(&10), Some(&"new"));
-            assert_eq!(pending.remove(10), Some("new"));
-            assert_eq!(pending.jobs.len(), 1);
-            let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
-            assert_eq!(drained.len(), 1);
-            assert!(drained.contains(&"other surface"));
-        }
+        assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
+        assert_eq!(pending.jobs.get(&10), Some(&"new"));
+        assert_eq!(pending.remove(10), Some("new"));
+        assert_eq!(pending.jobs.len(), 1);
+        let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
+        assert_eq!(drained.len(), 1);
+        assert!(drained.contains(&"other surface"));
+    }
 
-        #[cfg(target_os = "linux")]
-        fn capture_barrier_release_is_visible_across_clones() {
-            let barrier = Barrier::new(false);
-            signal_capture_barrier(&barrier);
-            assert!(barrier.is_signaled());
-        }
-
-        fn worker_result_is_published_only_when_its_blocked_commit_applies() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(100);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.push_back(2);
-            });
-
-            let mut stale = vec![1, 2, 3, 4];
-            frames.stage_dmabuf_capture(
-                id,
-                1,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut stale,
-                None,
-            );
-            assert!(frames.snapshot(id).is_none());
-
-            let mut latest = vec![5, 6, 7, 8];
-            frames.stage_dmabuf_capture(
-                id,
-                2,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut latest,
-                None,
-            );
-            assert!(
-                frames.snapshot(id).is_none(),
-                "pending pixels must not become current before commit application"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture(id),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-            assert_eq!(
-                frames.snapshot(id).expect("latest frame").rgba,
-                vec![5, 6, 7, 8]
-            );
-            assert_eq!(
-                frames.import_count(),
-                1,
-                "only published work counts as an import"
-            );
-        }
-
-        fn superseded_commit_applies_without_stealing_the_newer_capture() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(102);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.extend([3, 4]);
-            });
-            let mut newest = vec![9, 8, 7, 6];
-            frames.stage_dmabuf_capture(
-                id,
-                4,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut newest,
-                None,
-            );
-
-            assert!(
-                frames.activate_dmabuf_capture(id).is_none(),
-                "the superseded earlier commit has no pixels"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture(id),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-            assert_eq!(
-                frames.snapshot(id).expect("newest frame").rgba,
-                vec![9, 8, 7, 6]
-            );
-        }
-
-        fn commit_token_mismatch_cannot_consume_a_later_capture() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(103);
-            frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
-            let mut pixels = vec![7, 7, 7, 7];
-            assert!(frames.stage_dmabuf_capture(
-                id,
-                42,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut pixels,
-                None,
-            ));
-
-            assert!(
-                frames.activate_dmabuf_capture_token(id, 41).is_none(),
-                "an unrelated commit must not pop the next buffer's token"
-            );
-            assert!(matches!(
-                frames.activate_dmabuf_capture_token(id, 42),
-                Some(CaptureOutcome::Dmabuf { .. })
-            ));
-        }
-
-        fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
-            let frames = ForeignFrameStore::default();
-            let id = sid(101);
-            frames.with_entry(id, |entry| {
-                entry.capture_tokens.push_back(7);
-            });
-            frames.forget(id);
-
-            let mut pixels = vec![1, 2, 3, 4];
-            frames.stage_dmabuf_capture(
-                id,
-                7,
-                Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
-                &mut pixels,
-                None,
-            );
-            assert!(frames.snapshot(id).is_none());
-            assert_eq!(frames.frame_seq(id), 0);
-        }
-
-        pending_capture_queue_keeps_only_the_latest_frame_per_surface();
-        #[cfg(target_os = "linux")]
-        capture_barrier_release_is_visible_across_clones();
-        worker_result_is_published_only_when_its_blocked_commit_applies();
-        superseded_commit_applies_without_stealing_the_newer_capture();
-        commit_token_mismatch_cannot_consume_a_later_capture();
-        late_worker_completion_cannot_resurrect_a_destroyed_surface();
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn capture_barrier_release_is_visible_across_clones() {
+        let barrier = Barrier::new(false);
+        signal_capture_barrier(&barrier);
+        assert!(barrier.is_signaled());
     }
 
     #[test]
-    fn snapshots_composite_children_and_convert_pixel_orders() {
-        fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
-            let frames = ForeignFrameStore::default();
-            let root = sid(70);
-            let child = sid(71);
-            frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
-            frames.publish_rgba(
-                child,
-                &[
-                    250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
-                ],
-                2,
-                2,
-            );
-            frames.set_children(
-                root,
-                vec![ChildFrame {
-                    surface: child,
-                    x: 2,
-                    y: 1,
-                }],
-            );
+    fn worker_result_is_published_only_when_its_blocked_commit_applies() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(100);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(2);
+        });
 
-            let snapshot = frames.snapshot(root).expect("composited root frame");
-            let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
-            assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
-            assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
-            assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
-            assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
-            let first_seq = frames.frame_seq(root);
-            frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
-            assert_ne!(
-                frames.frame_seq(root),
-                first_seq,
-                "child damage repaints root"
-            );
-            assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
-            assert_eq!(frames.child_at(root, 0.5, 0.5), None);
-        }
+        let mut stale = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(
+            id,
+            1,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut stale,
+            None,
+        );
+        assert!(frames.snapshot(id).is_none());
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_bgra_swaps_red_and_blue() {
-            // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
-            let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
-            assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
-        }
+        let mut latest = vec![5, 6, 7, 8];
+        frames.stage_dmabuf_capture(
+            id,
+            2,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut latest,
+            None,
+        );
+        assert!(
+            frames.snapshot(id).is_none(),
+            "pending pixels must not become current before commit application"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("latest frame").rgba,
+            vec![5, 6, 7, 8]
+        );
+        assert_eq!(
+            frames.import_count(),
+            1,
+            "only published work counts as an import"
+        );
+    }
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_opaque_variant_forces_alpha() {
-            let src = [10u8, 20, 30, 0x00];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
-            assert_eq!(out, vec![30, 20, 10, 0xFF]);
-        }
+    #[test]
+    fn superseded_commit_applies_without_stealing_the_newer_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(102);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.extend([3, 4]);
+        });
+        let mut newest = vec![9, 8, 7, 6];
+        frames.stage_dmabuf_capture(
+            id,
+            4,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut newest,
+            None,
+        );
 
-        #[cfg(any(test, target_os = "linux"))]
-        fn swizzle_row_rgba_passes_channels_through() {
-            // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
-            let src = [10u8, 20, 30, 40];
-            let mut out = Vec::new();
-            swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
-            assert_eq!(out, vec![10, 20, 30, 40]);
-        }
+        assert!(
+            frames.activate_dmabuf_capture(id).is_none(),
+            "the superseded earlier commit has no pixels"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("newest frame").rgba,
+            vec![9, 8, 7, 6]
+        );
+    }
 
-        #[cfg(target_os = "linux")]
-        fn pixel_order_rejects_non_rgba_fourcc() {
-            assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
-            assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
-        }
+    #[test]
+    fn commit_token_mismatch_cannot_consume_a_later_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(103);
+        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+        let mut pixels = vec![7, 7, 7, 7];
+        assert!(frames.stage_dmabuf_capture(
+            id,
+            42,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+            None,
+        ));
 
-        snapshot_composites_positioned_children_with_alpha_and_clipping();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_bgra_swaps_red_and_blue();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_opaque_variant_forces_alpha();
-        #[cfg(any(test, target_os = "linux"))]
-        swizzle_row_rgba_passes_channels_through();
-        #[cfg(target_os = "linux")]
-        pixel_order_rejects_non_rgba_fourcc();
+        assert!(
+            frames.activate_dmabuf_capture_token(id, 41).is_none(),
+            "an unrelated commit must not pop the next buffer's token"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture_token(id, 42),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+    }
+
+    #[test]
+    fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(101);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(7);
+        });
+        frames.forget(id);
+
+        let mut pixels = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(
+            id,
+            7,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+            None,
+        );
+        assert!(frames.snapshot(id).is_none());
+        assert_eq!(frames.frame_seq(id), 0);
+    }
+
+    #[test]
+    fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
+        let frames = ForeignFrameStore::default();
+        let root = sid(70);
+        let child = sid(71);
+        frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
+        frames.publish_rgba(
+            child,
+            &[
+                250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
+            ],
+            2,
+            2,
+        );
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: child,
+                x: 2,
+                y: 1,
+            }],
+        );
+
+        let snapshot = frames.snapshot(root).expect("composited root frame");
+        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
+        assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
+        assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
+        assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
+        assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
+        let first_seq = frames.frame_seq(root);
+        frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
+        assert_ne!(
+            frames.frame_seq(root),
+            first_seq,
+            "child damage repaints root"
+        );
+        assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
+        assert_eq!(frames.child_at(root, 0.5, 0.5), None);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_bgra_swaps_red_and_blue() {
+        // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
+        let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_opaque_variant_forces_alpha() {
+        let src = [10u8, 20, 30, 0x00];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 0xFF]);
+    }
+
+    #[cfg(any(test, target_os = "linux"))]
+    #[test]
+    #[cfg(any(test, target_os = "linux"))]
+    fn swizzle_row_rgba_passes_channels_through() {
+        // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
+        let src = [10u8, 20, 30, 40];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pixel_order_rejects_non_rgba_fourcc() {
+        assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
+        assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
     }
 
     #[test]

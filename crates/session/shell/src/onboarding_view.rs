@@ -6397,12 +6397,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one walk through every choice screen, its cards, and the flows they open"
-    )]
-    fn choices_open_separate_flows_from_pinned_focusable_cards() {
-        // Phase `each_choice_screen_offers_cards_that_stay_in_view`.
+    fn each_choice_screen_offers_cards_that_stay_in_view() {
         for (keys, cards) in [
             (
                 &[][..],
@@ -6476,81 +6471,78 @@ mod tests {
                 }
             }
         }
-        // Phase `use_existing_opens_a_choice_and_each_choice_its_own_screen`.
-        {
-            let (mut view, _) = view();
-            let mut document = AutoCommit::new();
-            press(&view, &mut document, KEY_EXISTING);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Existing);
-            let theme = Theme::dark();
-            let composition = laid_out_themed(&mut view, &theme);
-            assert!(
-                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
-                "the choice screen is not the restore form"
-            );
+    }
 
-            press(&view, &mut document, KEY_CHOOSE_RESTORE);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Restore);
-            let composition = laid_out_themed(&mut view, &theme);
-            assert!(accessibility_for_id(composition, "onboarding.connect.path.field").is_some());
-            assert!(
-                accessibility_for_id(composition, "onboarding.nearby.status").is_none(),
-                "restore does not carry the nearby flow"
-            );
-            press(&view, &mut document, KEY_BACK);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Existing);
+    #[test]
+    fn use_existing_opens_a_choice_and_each_choice_its_own_screen() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+        press(&view, &mut document, KEY_EXISTING);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Existing);
+        let theme = Theme::dark();
+        let composition = laid_out_themed(&mut view, &theme);
+        assert!(
+            accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
+            "the choice screen is not the restore form"
+        );
 
-            // Without an identity directory the helper cannot start; the
-            // nearby screen still opens and reports why, with a retry.
-            press(&view, &mut document, KEY_CHOOSE_NEARBY);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Nearby);
-            assert_eq!(
-                view.error(),
-                Some(t("onboarding-nearby-unavailable").as_str()),
-                "choosing nearby is the request to pair"
-            );
-            let composition = laid_out_themed(&mut view, &theme);
-            assert!(
-                accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
-                "nearby does not carry the restore form"
-            );
-            assert!(
-                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
-                "a failed start offers Try again"
-            );
-            press(&view, &mut document, KEY_BACK);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Existing);
-            assert!(
-                view.error().is_none(),
-                "back leaves the flow's error behind"
-            );
-            press(&view, &mut document, KEY_BACK);
-            view.sync(&document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Intro);
-        }
-        // Phase `nearby_shows_cancel_while_pairing_runs`.
-        {
-            let (mut view, _) = view();
-            view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
-            let theme = Theme::dark();
-            let composition = laid_out_themed(&mut view, &theme);
-            assert!(
-                accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some()
-            );
-            assert!(
-                accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none()
-            );
-            assert_eq!(
-                accessibility_for_id(composition, "onboarding.nearby.code")
-                    .and_then(|node| node.name),
-                Some("482 913".to_string())
-            );
-        }
+        press(&view, &mut document, KEY_CHOOSE_RESTORE);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Restore);
+        let composition = laid_out_themed(&mut view, &theme);
+        assert!(accessibility_for_id(composition, "onboarding.connect.path.field").is_some());
+        assert!(
+            accessibility_for_id(composition, "onboarding.nearby.status").is_none(),
+            "restore does not carry the nearby flow"
+        );
+        press(&view, &mut document, KEY_BACK);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Existing);
+
+        // Without an identity directory the helper cannot start; the
+        // nearby screen still opens and reports why, with a retry.
+        press(&view, &mut document, KEY_CHOOSE_NEARBY);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Nearby);
+        assert_eq!(
+            view.error(),
+            Some(t("onboarding-nearby-unavailable").as_str()),
+            "choosing nearby is the request to pair"
+        );
+        let composition = laid_out_themed(&mut view, &theme);
+        assert!(
+            accessibility_for_id(composition, "onboarding.connect.path.field").is_none(),
+            "nearby does not carry the restore form"
+        );
+        assert!(
+            accessibility_for_id(composition, "onboarding.connect.nearby.button").is_some(),
+            "a failed start offers Try again"
+        );
+        press(&view, &mut document, KEY_BACK);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Existing);
+        assert!(
+            view.error().is_none(),
+            "back leaves the flow's error behind"
+        );
+        press(&view, &mut document, KEY_BACK);
+        view.sync(&document, &automerge::ROOT);
+        assert_eq!(view.flow.screen(), Screen::Intro);
+    }
+
+    #[test]
+    fn nearby_shows_cancel_while_pairing_runs() {
+        let (mut view, _) = view();
+        view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
+        let theme = Theme::dark();
+        let composition = laid_out_themed(&mut view, &theme);
+        assert!(accessibility_for_id(composition, "onboarding.connect.cancel.button").is_some());
+        assert!(accessibility_for_id(composition, "onboarding.connect.nearby.button").is_none());
+        assert_eq!(
+            accessibility_for_id(composition, "onboarding.nearby.code").and_then(|node| node.name),
+            Some("482 913".to_string())
+        );
     }
 
     #[test]
