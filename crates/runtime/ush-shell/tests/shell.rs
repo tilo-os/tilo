@@ -120,7 +120,6 @@ fn a_command_that_is_not_tier_one_says_which_tier_it_needs() {
 #[test]
 fn unsupported_features_are_refused_by_name() {
     for (script, name) in [
-        ("sleep 1 &", "background"),
         ("cat <(echo hi)", "process substitution"),
         ("coproc cat", "coproc"),
         ("time true", "time"),
@@ -205,7 +204,8 @@ fn an_interactive_session_marks_each_run_for_terminal() {
         b64.encode("/home/me")
     );
     let ended = format!("\x1b]133;D;0;k={key};t=1\x07");
-    let prompt = format!("\x1b]133;A;k={key}\x07");
+    // `in=1`: the shell reads Terminal's marks on its input.
+    let prompt = format!("\x1b]133;A;k={key};in=1\x07");
     let at_start = out.find(&started).expect("the run's start is marked");
     let at_end = out.find(&ended).expect("the run's end is marked");
     let printed = out.get(at_start + started.len()..at_end).unwrap();

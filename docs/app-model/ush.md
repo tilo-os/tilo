@@ -275,9 +275,9 @@ with this device as its host in
 [`ush::shell_host`](../../crates/runtime/ush/src/shell_host.rs)). It is a
 shell interpreter in Rust: POSIX sh, and the bash features people use
 (arrays, `[[ ]]`, `local`, `$'…'`, `${x//a/b}`, brace expansion, `mapfile`).
-A feature it does not have (background jobs with `&`, process substitution,
-`coproc`, `time`, `trap … ERR`, extended globs) is refused by name and stops
-the script, so nothing that relied on it goes on without it. See
+A feature it does not have (process substitution, `coproc`, `time`,
+`trap … ERR`, extended globs, `set -o vi`) is refused by name and stops the
+script, so nothing that relied on it goes on without it. See
 [`ush-portable.md`](ush-portable.md) for where it is going.
 
 Each command resolves to a function, one of the shell's built-ins, one of
@@ -296,9 +296,72 @@ Tilo's own commands, or a program:
 
 The shell marks its runs itself, with the marks below, so the run records
 are the same whichever shell a session runs. It reads `~/.ushrc` when it
-starts interactively; it does not read bash's files. Lines are read as the
-terminal's line discipline hands them over: there is no line editor or
-history recall in it yet.
+starts interactively; it does not read bash's files.
+
+**The prompt** is a line editor of the shell's own
+([`editor`](../../crates/runtime/ush-shell/src/editor/mod.rs)), with
+readline's emacs keys, so a person moving between ush and bash finds the
+same ones: Left, Right, Home, End, `Ctrl+A/E/B/F`, `Alt+B/F` and
+`Ctrl+Left/Right` move; Backspace, Delete and `Ctrl+D` delete; `Ctrl+K`,
+`Ctrl+U`, `Ctrl+W`, `Alt+D` and `Alt+Backspace` kill into a kill ring that
+`Ctrl+Y` and `Alt+Y` yank from; `Ctrl+T` transposes, `Alt+U/L/C` change case,
+`Ctrl+_` undoes, `Ctrl+L` clears, `Ctrl+C` drops the line and `Ctrl+D` on an
+empty line ends the session. An open quote, a trailing `\` or an open block
+asks for more lines with `$PS2`. A paste (bracketed) goes in as it is,
+newlines included, and runs only on Enter. The editor reads keys through the
+shell's host (`Host::edit_mode` switches the terminal), so it is the same on
+a device, on a host and in a browser.
+
+**History** is the person's own record, `terminal.history` (see [Search and
+history](#search-and-history)): Up and Down recall it, newest first, after
+the lines this shell ran; `Ctrl+R` searches it; `history` lists it, numbered,
+oldest first. It follows the person across sessions and devices, and the
+shell keeps no history file. A host that holds the record answers the shell
+itself; in a guest the editor asks Terminal on the session's terminal, under
+the session's key, and Terminal answers on the input, a page at a time:
+
+```text
+shell → ESC ] 133 ; H ; k=<key> ; s=<skip> ; n=<limit> ; q=<b64> BEL
+input ← ESC ] 133 ; H ; k=<key> ; s=<skip> ; q=<b64> ; e=<b64>,<b64>… [; end=1] BEL
+```
+
+The answer holds the newest distinct command lines past the `skip` newest
+that contain `q`; `end` says there are no older ones. Enter pressed while an
+answer is on its way waits for it, so no command reads it. `history` is the
+shell's built-in, as in bash; the recoverable store's own listing (below) is
+`tilo-ush history`.
+
+**Tab** completes the word before the cursor: in a command's place, a
+built-in, one of Tilo's own commands, a function, an alias or one of the
+environment's tools on `PATH`; after `$`, a variable; a word starting with
+`-`, one of the options of the shell's own command it follows; anything else,
+a path, read through the host, so only what the environment's grants show.
+A second Tab lists what it could become.
+
+**Jobs.** `cmd &` runs as a job beside the shell, on a copy of it: the
+shell's own commands run concurrently in the shell's process, and a program
+runs in the guest in a process group of the job's. `jobs`, `fg`, `bg`,
+`wait` and `kill %n` (or the number `$!` gives) move them. Each line the
+person runs is the foreground job: Ctrl+C interrupts it, and Ctrl+Z stops it
+and gives the prompt back (a program gets the terminal's signals itself; the
+shell's own commands stop at their next write or step). What a stopped line
+had changed in the shell before it stopped stays with the job, as in a
+subshell. A background job reads nothing from the terminal, and its output
+reaches the screen through the shell, so it keeps a run of its own: its file
+actions are one run in History, and Terminal records it apart from the line
+that started it (below).
+
+**A run asked for.** At its prompt the shell says it reads marks on its
+input (`in=1` on the prompt mark), and Terminal hands it a line `run` asked
+for whole, in place of whatever was typed, saying when an agent asked:
+
+```text
+input ← ESC ] 133 ; R ; k=<key> ; cmd=<b64> [; agent=1] BEL
+```
+
+The line shows as if typed and runs; an agent's run takes the agent
+rendering of Tilo's own commands without asking for it. A bash session gets
+the line typed, as before.
 
 **A full Linux session** is still there: Terminal's target picker has
 "Shell: Linux (bash)" for the current environment, and `linux` or
@@ -344,6 +407,14 @@ ESC ] 133 ; A ; k=<key> BEL                                     the prompt is sh
 ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> ; t=<n> BEL     a command line starts
 ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                  it ended with <status>
 ```
+
+ush's shell adds marks for its background jobs: a job's start is a `C`
+mark with `j=<job>`, its end a `D` mark with `j=<job>`, and each write of
+its output is bracketed by `ESC ] 133 ; J ; k=<key> ; t=<n> BEL` and
+`ESC ] 133 ; E ; k=<key> ; t=<n> BEL`, so Terminal keeps the job's output
+with the job's run and out of the line running meanwhile. A job's run is
+recorded in the session but not added to the person's history: the line
+that started it is there.
 
 `cmd` and `cwd` are base64 of the command line as the shell's history holds
 it and of the working directory, and `t` is that command's place in the

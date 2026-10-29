@@ -34,6 +34,7 @@ mod files;
 mod find;
 mod grep;
 mod ls;
+pub mod options;
 mod run;
 mod sort;
 mod stat;

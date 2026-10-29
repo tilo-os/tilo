@@ -166,6 +166,8 @@ pub struct RunRequest {
     /// The pane of the process asked to run it: only that process does, so
     /// a request outlives no restart to run unseen in a later one.
     pub pane: Atom,
+    /// An agent asked: its run gets the shell's agent rendering.
+    pub agent: bool,
 }
 
 /// How a requested run went: the run it became.
@@ -429,6 +431,7 @@ impl Terminal {
             requested_by: Atom(cx.author().unwrap_or_default().to_owned()),
             for_person: cx.for_person().map(Atom),
             pane,
+            agent: cx.actor_kind() == Some(ui::tilo_actions::ActorKind::Agent),
         };
         requests.push(cx.id(), request);
         Ok(())
@@ -717,6 +720,7 @@ impl ResourceApp for TerminalShell {
                     request: id.clone(),
                     command: request.command.0,
                     requested_by: request.requested_by.0,
+                    agent: request.agent,
                     reply: cx.reply(),
                 });
                 Ok(Effected::Pending)

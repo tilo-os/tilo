@@ -207,6 +207,9 @@ impl Host for Deadline {
     fn clear_interrupt(&self) {
         self.inner.clear_interrupt();
     }
+    fn take_suspend(&self) -> bool {
+        self.inner.take_suspend()
+    }
     fn now(&self) -> i64 {
         self.inner.now()
     }
@@ -236,5 +239,17 @@ impl Host for Deadline {
     }
     fn hostname(&self) -> String {
         self.inner.hostname()
+    }
+    fn edit_mode(&self, on: bool) -> bool {
+        self.inner.edit_mode(on)
+    }
+    fn columns(&self) -> usize {
+        self.inner.columns()
+    }
+    fn history(&self, query: &crate::host::HistoryQuery) -> Option<Vec<String>> {
+        self.inner.history(query)
+    }
+    fn programs(&self, path: &str) -> Vec<String> {
+        self.inner.programs(path)
     }
 }

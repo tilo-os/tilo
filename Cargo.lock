@@ -23497,6 +23497,7 @@ dependencies = [
  "base64 0.22.1",
  "brush-parser",
  "regex",
+ "unicode-width",
  "workspace-hack",
 ]
 
