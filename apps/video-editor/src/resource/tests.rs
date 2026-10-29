@@ -3,12 +3,11 @@
     reason = "test assertions over exact values written and read back"
 )]
 
-use ui::framework::ResourceSurface;
 use ui::tilo_actions::OperationKind;
 use ui::tilo_resource::{Replica, Resource};
 
 use super::*;
-use crate::actions::{VideoEditorEffect, VideoResourceCtx, surface_declarations};
+use crate::actions::{VideoResourceCtx, surface_declarations};
 use crate::app::VideoEditorApp;
 use crate::model::{
     ChromaKey, Clip, ClipEffect, MAX_GAIN_DB, Mask, MaskShape, Speed, TextAlign, Transform,
@@ -93,9 +92,9 @@ fn the_project_publishes_its_verbs_and_the_editor_binds_the_playhead_edits() {
     let sample = crate::seed::sample_project();
     let clip = sample.clips.first().unwrap().clone();
     let at = clip.start + clip.duration() * 0.5;
-    app.seed_unpublished_project_for_test(sample.clone());
     app.set_playhead_for_test(at);
-    let bound = ResourceSurface::<Project, VideoEditorEffect>::bound_declarations(&app);
+    app.publish_shown();
+    let bound = app.published().borrow().declarations(&sample);
     let ids: Vec<&str> = bound.iter().map(|decl| decl.id).collect();
     for expected in [
         "mark-in-here",

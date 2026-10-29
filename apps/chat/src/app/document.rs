@@ -10,6 +10,13 @@ use crate::model::{self, Id, Message, User};
 
 use super::{ChatApp, unread_mentions};
 
+/// The chat record `doc` holds, or nothing when it does not read. A record
+/// that does not read is not an empty chat: the framework says why in place
+/// of the view, and nothing is shown, introduced or marked read from it.
+fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
+    <crate::record::Chat as ui::tilo_resource::Resource>::read(doc).ok()
+}
+
 impl ChatApp {
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
@@ -39,9 +46,11 @@ impl ChatApp {
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         self.read_kept_messages(doc);
-        let chat = ui::tilo_resource::profiling::measure("chat.reload.read", || {
-            crate::projection::read(doc)
-        });
+        let Some(chat) =
+            ui::tilo_resource::profiling::measure("chat.reload.read", || read_record(doc))
+        else {
+            return;
+        };
         #[cfg(test)]
         {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
@@ -268,10 +277,16 @@ impl ChatApp {
     /// name this device knows them by: what every member shows for them
     /// until the room names them. A repeat writes nothing.
     pub(super) fn announce_me(&mut self, doc: &AutoCommit) {
+        if self.announce.is_none() {
+            return;
+        }
+        // The introduction waits for a record that reads.
+        let Some(chat) = read_record(doc) else {
+            return;
+        };
         let Some(me) = self.announce.take() else {
             return;
         };
-        let chat = crate::projection::read(doc);
         let color = u32::try_from(me.color_idx).unwrap_or_default();
         if (chat.channels.is_empty() && chat.people.is_empty())
             || chat.people.iter().any(|person| {
@@ -301,7 +316,9 @@ impl ChatApp {
         if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
-        let chat = crate::projection::read(doc);
+        let Some(chat) = read_record(doc) else {
+            return;
+        };
         let read = self
             .held_messages()
             .read_to_end(&ui::tilo_resource::Id::from_raw(

@@ -19,7 +19,8 @@
 //! exactly the membership the batch wrote. Grants a saved grant set expands
 //! to are its assigner's when they may assign that set ([`assignments`]).
 //! The room's settings are checked each by the action that governs it
-//! ([`settings`], [`sandbox`]). Anything else the batch changes in
+//! ([`settings`], [`sandbox`]). A share's grants are its sharer's, given
+//! and ended as [`super::share`] decides. Anything else the batch changes in
 //! governance is the owner's.
 //!
 //! An admission through an invitation is the inviter's: any participant that
@@ -100,15 +101,15 @@ pub fn position(
     Ok((at, after))
 }
 
-/// Whether `person`, from a device of theirs (`foreign` when it is not),
-/// may make the governance change from `at` to `after` in `room`.
+/// Whether `person`, from their device `device` (hex; `foreign` when it is
+/// not one of theirs), may make the governance change from `at` to `after`
+/// in `room`.
 ///
 /// # Errors
 /// The first refusal that applies.
 pub fn authorize(
     room: &str,
-    person: &[u8; 32],
-    foreign: bool,
+    (person, device, foreign): (&[u8; 32], &str, bool),
     at: &AutoCommit,
     after: &AutoCommit,
     now_ns: u64,
@@ -137,13 +138,22 @@ pub fn authorize(
             .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
     }
     let assigned = assignments(room, at, &held, &wanted, writer)?;
-    // What the invitations admit is the inviters', and a set's grants its
-    // assigner's; the rest is the writer's.
+    let (shared, unshared) = super::share::changed(
+        (at, &held, &wanted),
+        (actor.as_str(), device, &authority, &cx),
+    )
+    .map_err(MembershipRefusal::Refused)?;
+    // What the invitations admit is the inviters', a set's grants its
+    // assigner's and a share's its sharer's; the rest is the writer's.
     let mut replay = held.clone();
     for (person, (role, _)) in &invited {
         replay.members.insert(person.clone(), *role);
     }
+    replay.grants.retain(|grant| {
+        !unshared.contains(&grant.id) && !shared.iter().any(|given| given.id == grant.id)
+    });
     replay.grants.extend(assigned);
+    replay.grants.extend(shared);
     let base = replay.clone();
     for change in changes(&base, &wanted) {
         replay

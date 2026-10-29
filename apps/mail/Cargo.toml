@@ -133,6 +133,9 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 # Cross-app acceptance: drive the real Settings sign-in and consume its store.
 settings = { path = "../settings" }
+# Cross-app acceptance: an attachment handed over as content opens in the
+# PDF viewer and reads.
+pdf-viewer = { path = "../pdf-viewer" }
 test-http = { path = "../../crates/dev/test-http" }
 tilo-seal = { path = "../../crates/system/tilo-seal" }
 

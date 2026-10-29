@@ -11,7 +11,6 @@ use settings_store::device_vpn::{
 
 use super::super::NetworkService;
 use super::{FakeNetwork, hosted_model, mount_network, rendered_enabled, settle_until};
-use crate::settings_app::SettingsApp;
 
 const DESK: &str = "desk-id";
 const PHONE: &str = "phone-id";
@@ -35,11 +34,11 @@ fn status() -> DeviceVpnStatus {
 fn document(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
 ) -> ui::storage::SettingsDocument {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
-            .cx
-            .storage()
+            .reach
+            .storage
             .settings_document()
             .clone()
     })
@@ -93,7 +92,7 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
         Some(Through::device(DESK))
     );
     let state = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             let model = super::super::area(settings).unwrap().model();
             let model = model.borrow();
             model.vpn.devices.status.as_ref().unwrap().rows()[0]
@@ -293,7 +292,7 @@ fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
             ..device_vpn::ClientStatus::default()
         });
     }
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .model()

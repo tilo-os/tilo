@@ -13,7 +13,7 @@ use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> DisplayPrefs {
-    follows.get::<DisplayPrefs>(app.host())
+    follows.get::<DisplayPrefs>(app.storage())
 }
 
 /// `read` of the selected display and how it is set, once the displays
@@ -37,7 +37,7 @@ fn selected<V>(
 pub(crate) fn night_light_warmth(app: &SettingsApp, follows: &Follows) -> String {
     temperature_label(
         follows
-            .get::<NightLightPrefs>(app.host())
+            .get::<NightLightPrefs>(app.storage())
             .night_light_temperature,
     )
 }

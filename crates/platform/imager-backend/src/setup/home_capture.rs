@@ -158,10 +158,14 @@ impl TryFrom<GrantWire> for Grant {
             preparation_namespace: wire.preparation_namespace,
         };
         operation(&value.operation)?;
-        if value.schema != 1
+        if value.schema != 2
             || value.caller != value.owner
             || value.inode == 0
-            || value.custody.is_some() != value.preparation_namespace.is_some()
+            || value
+                .custody
+                .as_ref()
+                .is_some_and(super::migration_review::CaptureCustody::has_preparation)
+                != value.preparation_namespace.is_some()
             || !value.home.decode().map_err(io::Error::other)?.is_absolute()
         {
             return Err(failure("invalid capture grant shape"));
@@ -187,7 +191,10 @@ impl Grant {
         }
         let identity = btrfs::subvolume_identity(readable_directory(&pin.file)?.as_fd())?;
         let custody = super::migration_review::CaptureCustody::review(home)?;
-        let preparation_namespace = if custody.is_some() {
+        let preparation_namespace = if custody
+            .as_ref()
+            .is_some_and(super::migration_review::CaptureCustody::has_preparation)
+        {
             Some(NativePath::encode(
                 &crate::session::preparation_namespace()
                     .ok_or_else(|| failure("original preparation namespace unavailable"))?,
@@ -197,7 +204,7 @@ impl Grant {
         };
         pin.validate()?;
         Ok(Self {
-            schema: 1,
+            schema: 2,
             operation: operation_id.into(),
             caller,
             home: NativePath::encode(home),
@@ -212,7 +219,7 @@ impl Grant {
 
     fn resolve(&self, caller: u32) -> io::Result<Resolved> {
         operation(&self.operation)?;
-        if self.schema != 1 || self.caller != caller || self.owner != caller {
+        if self.schema != 2 || self.caller != caller || self.owner != caller {
             return Err(failure(
                 "capture grant does not belong to the authenticated caller",
             ));
@@ -223,14 +230,17 @@ impl Grant {
             let namespace = self
                 .preparation_namespace
                 .as_ref()
-                .ok_or_else(|| failure("capture custody namespace missing"))?
-                .decode()
-                .map_err(io::Error::other)?;
-            let namespace = PinnedDirectory::open_absolute(&namespace)?;
-            if namespace.file.metadata()?.uid() != caller {
-                return Err(failure("preparation namespace caller changed"));
-            }
-            custody.validate_original(&home, &namespace)?;
+                .map(|namespace| -> io::Result<_> {
+                    let namespace = PinnedDirectory::open_absolute(
+                        &namespace.decode().map_err(io::Error::other)?,
+                    )?;
+                    if namespace.file.metadata()?.uid() != caller {
+                        return Err(failure("preparation namespace caller changed"));
+                    }
+                    Ok(namespace)
+                })
+                .transpose()?;
+            custody.validate_original(&home, namespace.as_ref())?;
         } else if self.preparation_namespace.is_some() {
             return Err(failure("unattested preparation namespace"));
         }

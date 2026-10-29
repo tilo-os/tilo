@@ -1,0 +1,6 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "notifications.banners"
+label = "Notifications"
+version = 1

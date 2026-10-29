@@ -40,53 +40,15 @@ workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem 
 workspace-kept-before-joining = { $name } vor dem Beitritt
 
 # Anzeigeanordnung (Super+P)
-display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint.
-display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
-display-mode-extend = Erweitern
-display-mode-extend-detail = Ein Desktop über alle Bildschirme
-display-mode-mirror = Spiegeln
-display-mode-mirror-detail = Dasselbe Bild auf jedem Bildschirm
-display-mode-builtin-only = Nur dieser Bildschirm
-display-mode-builtin-only-detail = Externe Bildschirme werden ausgeschaltet
-display-mode-external-only = Nur extern
-display-mode-external-only-detail = Der eingebaute Bildschirm wird ausgeschaltet
-display-sheet-one-display = Kein weiterer Bildschirm angeschlossen
-display-sheet-one-display-detail = Schließe einen per Kabel an oder wähle einen drahtlosen Bildschirm.
-display-mode-current = Aktuell
-display-confirm-title = Diese Anzeigeeinstellungen behalten?
 display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
 display-confirm-applying = Wird angewendet …
-display-confirm-keep = Behalten
-display-confirm-revert = Zurücksetzen
-display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
 # Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
 # zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
-display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
-display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
-display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
 display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
-wireless-heading = Drahtlose Bildschirme
-wireless-share-audio = Audio teilen
-wireless-stream = Stream
-wireless-stream-auto = Automatisch
-wireless-stream-fixed = Fest
-wireless-stream-fps = { $fps } fps
-wireless-credential-label = PIN oder Passwort des Empfängers
-wireless-credential-placeholder = PIN oder Empfängerpasswort
-wireless-credential-hint = Leer lassen, außer der Empfänger fragt danach. Eingabe verbindet.
-wireless-scanning = Bildschirme werden gesucht …
-wireless-scanning-detail = Halte den Empfänger wach und im selben Netzwerk.
-wireless-none = Keine Bildschirme gefunden
-wireless-none-detail = Prüfe, ob WLAN an ist und der Bildschirm zum Übertragen bereit ist.
-wireless-search-again = Erneut suchen
-wireless-try-again = Erneut versuchen
-wireless-device-detail = { $protocol }, { $detail }
 wireless-unavailable = Drahtlose Bildschirme sind gerade nicht verfügbar
 wireless-unavailable-detail = Versuche es gleich noch einmal.
 wireless-search-failed = Drahtlose Bildschirme konnten nicht gesucht werden
@@ -97,25 +59,13 @@ wireless-lost = Die Verbindung zum Bildschirm wurde getrennt
 wireless-lost-detail = Verbinde dich erneut, sobald er wieder da ist.
 wireless-stop-failed = Übertragung konnte nicht beendet werden
 wireless-stop-failed-detail = Versuche es erneut.
-wireless-connected = Verbunden
-wireless-connecting = Wird verbunden …
-wireless-connect = Verbinden
-wireless-stop = Beenden
-wireless-wait = Warten
-wireless-protocols = Miracast, Google Cast, AirPlay und FCast
 
 # Bildschirme identifizieren: die Karte auf jedem Bildschirm
 display-identify-builtin = Eingebauter Bildschirm
 display-identify-unnamed = Bildschirm { $number }
 
-# Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
-overview-windows-title = Fenster in diesem Arbeitsbereich
-overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
+# Was die Übersicht verlangte und nicht getan werden konnte.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
-overview-strips-title = Leisten in diesem Arbeitsbereich
-overview-strip-rename = Umbenennen
-overview-strip-move-up = Nach oben
-overview-strip-move-down = Nach unten
 overview-strip-move-failed = Diese Leiste lässt sich nicht verschieben
 overview-strip-rename-failed = Diese Leiste lässt sich nicht umbenennen
 
@@ -247,7 +197,6 @@ guide-vim-mode = Vim-Tasten: h j k l
 # Geräte und Medien, die Detailansicht der Schnelleinstellungen
 
 # Schnelleinstellungen
-qs-connecting = Wird verbunden …
 qs-not-connected = Nicht verbunden
 qs-devices = Geräte
 qs-clipboard = Zwischenablage
@@ -260,7 +209,6 @@ qs-wifi-off = WLAN ist aus
 qs-wifi-scanning = Netzwerke werden gesucht …
 qs-power-mode = Energiemodus
 qs-battery = Akku
-qs-wifi-password-for = Gib das Passwort des Netzwerks ein
 qs-clipboard-copied = { $age }, von { $source }
 
 # Schnelleinstellungen: Bluetooth
@@ -532,7 +480,6 @@ host-qs-change-failed-wifi = WLAN konnte nicht geändert werden
 host-qs-change-failed-bluetooth = Bluetooth konnte nicht geändert werden
 host-qs-change-failed-wired = Kabelnetzwerk konnte nicht geändert werden
 host-qs-change-failed-airplane = Flugmodus konnte nicht geändert werden
-host-qs-change-failed-hotspot = Persönlicher Hotspot konnte nicht geändert werden
 host-qs-change-failed-mobile = Mobilfunk konnte nicht geändert werden
 host-qs-change-failed-power = Energiemodus konnte nicht geändert werden
 host-qs-change-failed-state-restored = Das Bedienelement zeigt wieder den aktuellen Zustand des Geräts.
@@ -562,8 +509,6 @@ host-fabric-control-granted = { $device } darf dieses Gerät 15 Minuten lang ste
 a11y-workspace = Tilo-Arbeitsbereich
 a11y-member-sheet = Berechtigungsentscheidung für den Arbeitsbereich
 a11y-member-sheet-description = Wähle mit Pfeil nach oben oder unten eine klar beschriftete Berechtigung, bestätige mit Eingabe oder brich mit Escape ab. Folgenreiche Änderungen verlangen eine eigene ausdrückliche Bestätigung und bieten die Aktivität des Arbeitsbereichs zur Prüfung an.
-a11y-overview = Arbeitsbereichsübersicht
-a11y-new-workspace = Neuer Arbeitsbereich
 a11y-workspace-settings = Arbeitsbereichseinstellungen
 a11y-workspace-settings-description = Identität, Personen, Berechtigungen, Apps und Dateien des Arbeitsbereichs sowie signierte Eigentümerverwaltung.
 a11y-manage-ownership = Eigentum am Arbeitsbereich verwalten
@@ -576,17 +521,6 @@ a11y-at-a-glance = Auf einen Blick
 a11y-clipboard-data = Daten der Zwischenablage
 a11y-clipboard-unpin = Eintrag lösen
 a11y-clipboard-pin = Eintrag anheften
-
-# Barrierefreiheitsbaum: Bluetooth-Zubehör verschieben
-a11y-bluetooth-accessory = Bluetooth-Zubehör
-a11y-bluetooth-disconnect = { $accessory } von diesem Gerät trennen
-a11y-bluetooth-move-to = Zu { $device } verschieben
-a11y-bluetooth-destination-local = Dieses Gerät
-a11y-bluetooth-destination-online = Das Ziel bestätigt seine eigene lokale Kopplung, bevor dieses Gerät die Verbindung trennt
-a11y-bluetooth-destination-offline = Gerät offline
-a11y-bluetooth-move = { $accessory } verschieben
-a11y-bluetooth-move-description = Wähle eines deiner Geräte, das bereits mit diesem Zubehör gekoppelt ist. Kopplungsschlüssel verlassen keines der Geräte. Mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende erreichst du jedes Ziel.
-a11y-bluetooth-destinations = Bluetooth-Ziele
 
 # Barrierefreiheitsbaum: Zeilen für Geräte und Medien
 a11y-certified-display = Dein anderer Bildschirm
@@ -674,21 +608,6 @@ agent-door-declined = Die Person an diesem Desktop hat diese Verbindung abgelehn
 # Die Hilfe-Pille in der Bildschirmecke
 help-pill = Hilfe
 
-# Arbeitsbereichsübersicht
-overview-go-to = Wechseln zu
-overview-no-room = Kein Raum ausgewählt
-overview-you-are-here = Du bist hier
-overview-shared-out = Von hier aus geteilt
-overview-more-shares = und { $count } weitere
-overview-share-with-two = { $first } und { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } und { $count } weitere Person
-       *[other] { $first } und { $count } weitere Personen
-    }
-overview-share-can-edit = { $with } darf bearbeiten
-overview-new-workspace = Neuer Arbeitsbereich
-overview-join-workspace = Einem Arbeitsbereich beitreten…
-overview-leave-workspace = Verlassen
 # Der Arbeitsbereich einer Website im Umschalter: die Community dieses Computers
 # oder die Website, von der er kommt.
 overview-site-community = Community { $site }
@@ -698,7 +617,6 @@ overview-site-here = { $count ->
     [one] 1 Person hier
    *[other] { $count } Personen hier
 }
-a11y-leave-workspace = { $name } verlassen
 
 # Filterchips der Suche
 search-filter-all = Alle
@@ -726,15 +644,6 @@ qs-devices-health = { $power }
 qs-devices-external-power = Netzbetrieb
 qs-devices-charging = lädt { $percent } %
 qs-devices-battery = Akku { $percent } %
-
-# Schnelleinstellungen: Bluetooth-Zubehör verschieben
-qs-bluetooth-move-note = Das andere Gerät muss bereits damit gekoppelt sein
-qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügbar
-qs-bluetooth-this-device = Dieses Gerät
-qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
-qs-bluetooth-this-certified = Dieses Gerät
-qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestätigt ist
-qs-devices-showing = { $first }–{ $last } von { $total }
 
 # Schnelleinstellungen: Bereich Geräte und Medien
 qs-devices-place = { $display } { $side ->
@@ -833,21 +742,8 @@ qs-devices-play-audio-here = Audio hier abspielen
 qs-devices-no-audio = Dieses Gerät hat keinen Audioausgang
 
 # Schnelleinstellungen: Verlauf der Zwischenablage
-qs-clipboard-search-matches = { $count ->
-        [one] Ein Eintrag passt zu „{ $query }“
-       *[other] { $count } Einträge passen zu „{ $query }“
-    }
-qs-clipboard-no-matches = Nichts passt zu „{ $query }“
-qs-clipboard-search-range = { $first } bis { $last } von { $total } Einträgen. Zum Suchen tippen.
-qs-clipboard-search-count = { $count ->
-        [one] Ein Eintrag. Zum Suchen tippen.
-       *[other] { $count } Einträge. Zum Suchen tippen.
-    }
 qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
 qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
-
-# Schnelleinstellungen: einem geschützten WLAN beitreten
-qs-wifi-protected = Dieses Netzwerk ist geschützt
 
 # Aufbewahrter Verlauf: Quellen und Schweregrade
 history-this-device = Dieses Gerät
@@ -970,6 +866,7 @@ launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerele
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-app-not-in-workspace = Dieser Arbeitsbereich enthält { $app } nicht. Eine verwaltende Person kann sie hinzufügen.
 launch-error-device-not-admitted = Dieses Gerät ist nicht mehr in diesem Arbeitsbereich. Tritt ihm mit einer Einladung erneut bei.
+launch-error-room-not-enrolled = Dieses Gerät ist im Raum des Arbeitsbereichs nicht eingetragen und platziert, betritt oder trägt sich dort auch nicht ein.
 launch-error-app-authorship-refused = Der Host dieses Arbeitsbereichs hat dir nicht erlaubt, { $app } hinzuzufügen.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
@@ -1581,22 +1478,6 @@ search-action-agent-remove = Agenten entfernen
 search-action-agent-remove-subtitle = Einen Agenten aus diesem Arbeitsbereich nehmen und sofort alles widerrufen, was er hier tun durfte
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
-search-action-quick-settings-brightness-set = Helligkeit
-search-action-quick-settings-brightness-set-subtitle = Helligkeit eines Bildschirms festlegen
-search-brightness-display = Helligkeit, { $display }
-search-brightness-display-subtitle = Helligkeit dieses Bildschirms festlegen
-search-action-quick-settings-volume-set = Lautstärke
-search-action-quick-settings-volume-set-subtitle = Lautstärke der Tonausgabe festlegen
-search-action-quick-settings-wifi-set-enabled = WLAN ein- oder ausschalten
-search-action-quick-settings-wifi-set-enabled-subtitle = Das WLAN-Funkmodul dieses Geräts ein- oder ausschalten
-search-action-quick-settings-power-profile-set = Energiemodus
-search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung
-search-action-quick-settings-vpn-set-enabled = VPN ein- oder ausschalten
-search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbindung auf diesem Gerät ein- oder ausschalten
-search-action-quick-settings-bluetooth-set-enabled = Bluetooth ein- oder ausschalten
-search-action-quick-settings-bluetooth-set-enabled-subtitle = Das Bluetooth-Funkmodul dieses Geräts ein- oder ausschalten
-search-action-quick-settings-airplane-mode-set-enabled = Flugmodus ein- oder ausschalten
-search-action-quick-settings-airplane-mode-set-enabled-subtitle = Alle Funkverbindungen dieses Geräts aus- oder wieder einschalten
 
 # Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
@@ -1609,7 +1490,6 @@ search-action-archived-delete-subtitle = Diesen archivierten Arbeitsbereich von 
 search-action-activity-catch-up-subtitle = Was andere seit deinem letzten Blick geändert haben
 search-action-activity-explore-subtitle = Jede Änderung hier, nach Person, App und Zeit
 search-action-activity-replay-subtitle = Schritt für Schritt sehen, wie sich dieser Arbeitsbereich verändert hat
-search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
 # Zusätzliche Suchbegriffe für Arbeitsbereichswechsel und Aktivitätsansichten; nicht angezeigt.
 search-action-workspace-switch-keywords = wechseln arbeitsbereich gehe switch workspace
 search-action-activity-keywords = aktivität verlauf änderungen zeitleiste wer activity history
@@ -1771,122 +1651,28 @@ search-continuity-call-decline = Übergabe für { $room } ablehnen
 search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe beantworten
 
 # Identitätseinrichtung bei der ersten Anmeldung: was die Identität ist
-onboarding-intro-title = Deine Tilo-Identität einrichten
-onboarding-intro-body = Du bekommst eine kryptografische Identität, die dir gehört, und dieses Gerät bekommt einen eigenen Schlüssel. Zusammenarbeit und Einladungen beruhen darauf. Noch sind nicht alle Bearbeitungen in Apps signiert.
-onboarding-intro-point-collaboration = Wer mit dir zusammenarbeitet, sieht eine beständige Identität, und sie bürgt für jedes deiner Geräte.
-onboarding-intro-point-local = Sie wird auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
-onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort. Es gibt nichts, bei dem du dich anmelden müsstest.
-onboarding-choice-create = Neue Identität erstellen
-onboarding-choice-create-detail = Auf diesem Rechner neu beginnen
-onboarding-choice-existing = Meine vorhandene Tilo-Identität verwenden
-onboarding-choice-existing-detail = Von einem anderen Gerät oder einer Sicherung übernehmen
-onboarding-host-intro-title = Deine Tilo-Identität einrichten
-onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale kryptografische Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
 
 # Identitätseinrichtung: kein Wiederherstellungsdienst
-onboarding-no-recovery-title = Verlierst du dieses Gerät ohne Sicherung, ist diese Identität verloren
-onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Niemand, auch nicht Tilo, kann diese Identität für dich zurücksetzen oder neu erstellen.
-onboarding-no-recovery-point-backup = Schreib als Nächstes einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung. Beides holt diese Identität zurück. Ohne eines davon braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
-onboarding-acknowledgement = Mir ist klar, dass ich diese Identität verliere, wenn ich dieses Gerät ohne Sicherung verliere.
-onboarding-protect-title = Deine Tilo-Identität schützen
-onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Schreib nach diesem Schritt einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung.
-onboarding-create-failed = Deine Identität wurde nicht erstellt
-onboarding-create-failed-title = Deine Identität konnte nicht erstellt werden
-onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop ist weiterhin geschützt. Geh zurück und versuche es erneut, nachdem du Speicherplatz und Berechtigungen geprüft hast.
 
 # Identitätseinrichtung: Fortschrittsanzeige
-onboarding-progress-eyebrow = Einrichtung der Tilo-Identität
-onboarding-progress-stage = Schritt { $step } von { $total }
-onboarding-progress-a11y = Identitätseinrichtung, Schritt { $step } von { $total }: { $stage }
-onboarding-stage-choose = Auswählen
-onboarding-stage-restore = Wiederherstellen
-onboarding-stage-connect = Verbinden
-onboarding-stage-protect = Schützen
-onboarding-stage-media = Medien
-onboarding-stage-ready = Fertig
-onboarding-stage-backup = Sicherung
 
 # Identitätseinrichtung: Fortsetzen nach einem Neustart
-onboarding-progress-attention = Der Einrichtungsfortschritt braucht deine Aufmerksamkeit
 onboarding-progress-unreadable = Die gespeicherte Einrichtungsposition konnte nicht gelesen werden ({ $error }). Deine Identität ist sicher; die Einrichtung wurde beim Abschlussschritt fortgesetzt.
 onboarding-progress-invalid-identity = Die Einrichtung hat unvollständigen Fortschritt gefunden, konnte die vorhandene Identität aber nicht prüfen: { $error }
 onboarding-progress-save-failed = Die Einrichtung konnte ihre Neustartposition nicht speichern: { $error }. Es wurde keine Identitätsaktion wiederholt.
 onboarding-progress-clear-failed = Die Einrichtung ist abgeschlossen, aber ihre Neustartmarkierung konnte nicht entfernt werden: { $error }. Wähle erneut „Fertigstellen“, damit dieser Bildschirm bei der nächsten Anmeldung nicht wieder erscheint.
 
 # Identitätseinrichtung: gemeinsame Schaltflächen
-onboarding-back = Zurück
-onboarding-cancel = Abbrechen
-onboarding-continue = Weiter
-onboarding-done = Fertig
-onboarding-create-local-identity = Lokale Identität erstellen
-onboarding-restore-backup = Identität wiederherstellen
-onboarding-existing-title = Deine vorhandene Identität verwenden
-onboarding-existing-body = Wähle, wie die Identität, die du bereits nutzt, auf diesen Rechner kommt.
-onboarding-choice-nearby = Mit einem Gerät in der Nähe verbinden
-onboarding-choice-nearby-detail = Diesen Rechner auf einem Gerät mit deiner Identität freigeben
-onboarding-choice-restore = Aus einer Sicherung wiederherstellen
-onboarding-choice-recovery-key = Wiederherstellungsschlüssel eingeben
-onboarding-choice-recovery-key-detail = Die 24 Wörter eintippen, die du aufgeschrieben hast
-onboarding-recovery-title = Hol deine Identität auf diesen Computer zurück
-onboarding-recovery-eyebrow = Identitätswiederherstellung
-onboarding-recovery-body = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht öffnen und hat nichts geändert. Deine Arbeitsbereiche und anderen Geräte sind in Ordnung. Wenn dein Schlüsselbund gesperrt ist, entsperre ihn und wähle Erneut versuchen.
-onboarding-recovery-body-keyring = Tilo konnte den Schlüsselbund mit dem Schlüssel deiner Identität nicht erreichen und hat nichts geändert. Entsperre den Schlüsselbund und wähle Erneut versuchen.
-onboarding-recovery-body-missing = Die Kopie deiner Identität auf diesem Computer fehlt. Tilo hat nichts geändert, und deine Arbeitsbereiche und anderen Geräte sind in Ordnung.
-onboarding-recovery-body-invalid = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht prüfen und hat nichts geändert. Wenn Datum oder Uhrzeit falsch sind, korrigiere sie und wähle Erneut versuchen.
-onboarding-recovery-identity = Identität dieses Computers: { $fingerprint }
-onboarding-backup-recovery-key = Wiederherstellungsschlüssel aufschreiben
-onboarding-backup-recovery-key-detail = 24 Wörter auf Papier holen diese Identität zurück. Ohne Datei oder Passphrase.
-onboarding-recovery-key-copy-title = Schreib deinen Wiederherstellungsschlüssel auf
-onboarding-recovery-key-copy-body = Schreib sie der Reihe nach auf Papier. Wer sie hat, kann sich als du ausgeben, also fotografiere sie nicht.
-onboarding-recovery-key-confirm = Zur Kontrolle tippe die Wörter { $first }, { $second } und { $third } ein.
-onboarding-recovery-key-word = Wort { $position }
-onboarding-recovery-key-confirm-button = Ich habe ihn aufgeschrieben
-onboarding-recovery-key-written = Wiederherstellungsschlüssel aufgeschrieben
-onboarding-recovery-key-written-detail = Mit diesen 24 Wörtern holst du diese Identität auf jedem Computer zurück.
-onboarding-recovery-key-title = Wiederherstellungsschlüssel eingeben
-onboarding-recovery-key-body = Tippe oder füge die 24 Wörter in der richtigen Reihenfolge ein. Großbuchstaben, Zeilenumbrüche und Nummerierung spielen keine Rolle.
-onboarding-recovery-key-field = Wiederherstellungsschlüssel
-onboarding-recovery-key-placeholder = wort1 wort2 wort3 …
-onboarding-recovery-key-progress = { $count } von { $total } Wörtern
 onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
 onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
 onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
 onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
 onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
-onboarding-recovery-key-ready = Wiederherstellungsschlüssel für Identität { $fingerprint }
-onboarding-recovery-key-ready-detail = Wähle Identität wiederherstellen, um ihn auf diesem Computer zu verwenden.
-onboarding-recovery-key-matches = Er passt zur Identität dieses Computers. Wähle Identität wiederherstellen, um sie zurückzuholen.
-onboarding-recovery-key-different = Diese Wörter gehören zu einer anderen Identität
-onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }, also prüfe, ob du den Wiederherstellungsschlüssel dieses Computers verwendest.
-onboarding-recovery-key-restoring = Deine Identität wird wiederhergestellt …
-onboarding-recovery-key-failed = Wiederherstellung mit diesem Schlüssel fehlgeschlagen
-onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
-onboarding-restore-title = Aus einer Sicherung wiederherstellen
-onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
-onboarding-restore-file-label = Sicherungsdatei
 
 # Identitätseinrichtung: vorhandene Identität verbinden
-onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
 onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht geprüft werden. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Bis dahin bleibt deine Identität, wie sie ist.
-onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
-onboarding-connect-retry-keyring = Erneut versuchen
-onboarding-connect-browse = Durchsuchen
-onboarding-connect-file = Sicherungsdatei der Identität
-onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
-onboarding-connect-passphrase = Passphrase der Sicherung
-onboarding-connect-passphrase-placeholder = Passphrase (bei älterer JSON leer lassen)
 onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
 onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
-onboarding-picker-import-title = Eine Tilo-Identität auswählen
-onboarding-picker-import-filter = Tilo-Identität
-onboarding-nearby-title = Mit einem Gerät in der Nähe verbinden
-onboarding-nearby-body = Dieser Rechner wartet darauf, dass dein anderes Gerät ihn freigibt. Halte beide Geräte nah beieinander.
-onboarding-nearby-step-open = Öffne auf deinem anderen Gerät die Einstellungen und dort Geräte & Synchronisierung.
-onboarding-nearby-step-add = Wähle unter „Persönliches Gerät hinzufügen“ die Option „Gerät hinzufügen“.
-onboarding-nearby-step-compare = Vergleiche den sechsstelligen Code auf beiden Bildschirmen und gib ihn auf deinem anderen Gerät frei.
-onboarding-nearby-waiting = Wartet auf dein anderes Gerät.
-onboarding-nearby-code-label = Bestätigungscode
-onboarding-nearby-try-again = Erneut versuchen
 
 # Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
 onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
@@ -1909,126 +1695,23 @@ onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der N�
 onboarding-nearby-not-started = Wähle „Erneut versuchen“.
 onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
 onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
-onboarding-nearby-code = Prüfe, ob dein anderes Gerät denselben Code zeigt, und gib es dort frei.
 onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
-onboarding-backup-title = Deine Tilo-Identität sichern
-onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
-onboarding-backup-explanation = Oder speichere eine verschlüsselte Sicherungsdatei und bewahre sie getrennt von ihrer Passphrase auf.
-onboarding-backup-passphrase = Neue Passphrase für die Sicherung
-onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
-onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
-onboarding-backup-confirmation-placeholder = Passphrase bestätigen
-onboarding-backup-save = Speicherort wählen und Sicherung speichern …
-onboarding-backup-save-another = Weitere Kopie speichern
-onboarding-backup-save-action = Verschlüsselte Sicherung speichern
-onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne Wiederherstellungsschlüssel oder Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
-onboarding-backup-continue-without = Ohne Sicherung fortfahren
-onboarding-backup-failed = Die Sicherung wurde nicht gespeichert
-onboarding-backup-verified = Verschlüsselte Sicherung geprüft
-onboarding-backup-verified-earlier = Die geprüfte Sicherung wurde vor dem Neustart der Einrichtung gespeichert.
 onboarding-passphrase-too-short = Verwende mindestens 12 Zeichen. Mach sie lang und einzigartig; Länge allein macht eine gängige Passphrase nicht sicher.
 onboarding-passphrase-mismatch = Die beiden Passphrasen stimmen nicht überein.
 onboarding-passphrase-unavailable = Die Passphrasefelder sind vorübergehend nicht verfügbar.
-onboarding-picker-backup-title = Verschlüsselte Identitätssicherung speichern
-onboarding-picker-backup-filter = Verschlüsselte Tilo-Identität
 
 # Identitätseinrichtung: Beispielzustände für die Vorschau
 onboarding-snapshot-restore-error = Diese Sicherung konnte nicht geöffnet werden. Prüfe Datei und Passphrase und versuche es dann erneut.
 onboarding-snapshot-create-error = Die Identität konnte nicht gespeichert werden. Es wurde nichts erstellt; prüfe den verfügbaren Speicherplatz und versuche es erneut.
 
 # Identitätseinrichtung: Identität bereit
-onboarding-done-title = Deine Identität ist bereit
-onboarding-done-body = Dieser Fingerabdruck kennzeichnet deinen lokalen kryptografischen Stamm. Tilo kann ihn in Abläufen der Zusammenarbeit anzeigen, die eine Überprüfung unterstützen; du musst ihn nicht eintippen.
-onboarding-done-ready = Identität auf diesem Gerät gespeichert
-onboarding-host-done-title = Deine Tilo-Identität ist bereit
-onboarding-host-done-body = Du verwendest diese lokale Identität, wenn du zusammenarbeitest oder andere einlädst. Sie ist von deiner Linux-Anmeldung getrennt und kein Online-Konto.
-onboarding-host-done-ready = Bereit für die Zusammenarbeit mit Tilo
-onboarding-done-next-title = Wie es weitergeht
-onboarding-done-next-body = Der Desktop ist bereit. Teilen bleibt ausgeschaltet, bis du es bewusst in den Einstellungen aktivierst.
-onboarding-done-backup-verified = Sicherung geprüft
-onboarding-done-backup-verified-body = Bewahre die verschlüsselte Sicherungsdatei und ihre Passphrase an getrennten Orten auf.
-onboarding-done-backup-recommended = Sicherung weiterhin empfohlen
-onboarding-done-backup-recommended-body = Erstelle in den Einstellungen eine verschlüsselte, übertragbare Sicherung, bevor du dich auf diese Identität verlässt.
-onboarding-done-joined-key-elsewhere = Hier gibt es nichts zu sichern
-onboarding-done-joined-key-elsewhere-body = Dieses Gerät ist deiner Identität über ein anderes Gerät beigetreten, das ihren Schlüssel behält. Geht dieses Gerät verloren, geht keine Identität verloren; bewahre die Sicherung des Geräts auf, das den Beitritt bestätigt hat.
-onboarding-done-system-care-title = Systempflege
-onboarding-done-system-care-body = Signierte Systemupdates werden automatisch gesucht, wenn der Computer online ist. In den Einstellungen kannst du Versionen prüfen, vormerken und zurücksetzen.
-onboarding-tour-take = Kurze Tour starten
-onboarding-finish = Weiter zum Desktop
 
 # Einrichtung: mehr Video- und Audioformate
-onboarding-codecs-title = Mehr Video- und Audioformate abspielen
-onboarding-codecs-note = Wird von den Herausgebern der Formate auf dieses Gerät geladen. Du kannst es in den Einstellungen wieder ausschalten.
-onboarding-codecs-background = Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
-onboarding-codecs-progress = Fortschritt: { $percent } %
-onboarding-codecs-starting = Wird gestartet …
-onboarding-codecs-installing-title = Weitere Formate werden installiert
-onboarding-codecs-installing-message = { $status } Die Einrichtung kann weiterlaufen, während der Download läuft. Du erhältst eine Benachrichtigung, sobald alles bereit ist.
-onboarding-codecs-offline-title = Wird installiert, sobald du online bist
-onboarding-codecs-offline-message = Dieses Gerät ist nicht mit dem Internet verbunden. Deine Wahl ist gespeichert: Der Download startet von selbst, sobald es online ist, und du erhältst eine Benachrichtigung.
-onboarding-codecs-installed-title = Mehr Video- und Audioformate sind eingeschaltet
-onboarding-codecs-failed-title = Weitere Formate konnten nicht installiert werden
-onboarding-codecs-failed-message = Versuche es erneut oder später unter Einstellungen, Updates.
-onboarding-codecs-failed-message-detail = { $error } Versuche es erneut oder später unter Einstellungen, Updates.
 onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
-onboarding-codecs-skip = Überspringen
-onboarding-codecs-not-now = Nicht jetzt
-onboarding-codecs-retry = Erneut versuchen
-onboarding-codecs-install = Installieren
 
 # Desktop-Tour
-onboarding-tour-eyebrow = Desktop-Tour
-onboarding-tour-stage = Schritt { $step } von 4
-onboarding-tour-progress-a11y = Desktop-Tour, Schritt { $step } von 4: { $stage }
-onboarding-tour-stage-move = Bewegen
-onboarding-tour-stage-arrange = Anordnen
-onboarding-tour-stage-share = Teilen
-onboarding-tour-stage-begin = Loslegen
-onboarding-tour-skip = Tour überspringen
-onboarding-tour-enter = Tilo betreten
-onboarding-tour-navigate-title = Alles in Reichweite
-onboarding-tour-navigate-intro = Der Desktop bleibt ruhig, bis du nach etwas fragst. Jede Geste hier hat auch einen Weg über die Tastatur.
-onboarding-tour-search-title = Suche
-onboarding-tour-search-title-mac = Suche
-onboarding-tour-search-keys = Super+Leertaste
-onboarding-tour-search-keys-mac = Befehl+K oder Wahl+Leertaste
-onboarding-tour-search-body = Öffne sie ohne Eingabe, um deine Tabs, Apps und Aktionen zu sehen; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht
-onboarding-tour-overview-keys = Super+Tab oder Finger zusammenziehen
-onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
-onboarding-tour-move-title = Bewegen
-onboarding-tour-move-keys = Super+Pfeiltasten oder Wischen mit drei Fingern
-onboarding-tour-move-body = Links und Rechts springen zwischen gekachelten Fenstern entlang der aktuellen Leiste; Auf maximiert das Fenster, Ab stellt es wieder her. Strg+Super+Auf und Ab oder Wischen mit drei Fingern nach oben oder unten wechseln zur Leiste darüber oder darunter, Super+1 bis 9 direkt zu einer Leiste; Super+Bild auf und Bild ab oder Wischen mit vier Fingern wechseln den Arbeitsbereich.
-onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
-onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
-onboarding-tour-workspace-title = Arbeitsbereich
-onboarding-tour-workspace-body = Ein dauerhafter Ort für ein Projekt, seine Personen, Berechtigungen, Apps und seinen Verlauf.
-onboarding-tour-strip-title = Streifen
-onboarding-tour-strip-body = Eine waagerechte Reihe von Fenstergruppen in einem Arbeitsbereich. Füge einen weiteren Streifen hinzu, wenn die Arbeit eine zweite Spur braucht.
-onboarding-tour-window-group-title = Fenstergruppe
-onboarding-tour-window-group-body = Ein gekachelter Rahmen für Tabs, die zusammengehören. Wechsle mit Super+Links oder Super+Rechts zwischen Gruppen.
-onboarding-tour-tab-title = Tab
-onboarding-tour-tab-body = Eine App oder ein Dokument in einer Fenstergruppe. Ziehe Tabs, um sie ohne überlappende Fenster anzuordnen.
-onboarding-tour-collaborate-title = Teilen bleibt bewusst
-onboarding-tour-collaborate-intro = Zusammenarbeit ist in den Arbeitsbereich eingebaut, nicht an einzelne Apps angeflanscht. Nichts wird geteilt, nur weil es geöffnet ist.
-onboarding-tour-invite-settings-title = Aus den Arbeitsbereich-Einstellungen einladen
-onboarding-tour-invite-settings-body = Wähle eine Rolle und prüfe genau, welchen Arbeitsbereich die Einladung öffnet.
-onboarding-tour-follow-title = Folgen nur, wenn du es willst
-onboarding-tour-follow-body = Alle behalten ihren eigenen Fokus und ihre eigene Ansicht. Folgen ist eine ausdrückliche, umkehrbare Aktion.
-onboarding-tour-system-features-title = Rückgängig und Berechtigungen sind Systemfunktionen
-onboarding-tour-system-features-body = Der Verlauf folgt der Urheberschaft, und Apps fragen Tilo nach Fähigkeiten, statt stillschweigend Zugriff zu erhalten.
-onboarding-tour-start-title = Deine ersten fünf Minuten
-onboarding-tour-start-intro = Beginne mit einem Ziel und lass den Arbeitsbereich dann mit dem Projekt wachsen. Du findest dies über die Suche unter „Desktop-Tour“ wieder.
-onboarding-tour-name-title = Arbeitsbereich benennen
-onboarding-tour-name-body = Öffne die Arbeitsbereich-Einstellungen über den Titel und wähle einen gut erkennbaren Projektnamen.
-onboarding-tour-open-title = Einen gemeinsamen Ausgangspunkt öffnen
-onboarding-tour-open-body = Wähle Notizen, Kalender oder Chat und füge dann weitere Apps daneben hinzu.
-onboarding-tour-invite-title = Die richtigen Personen einladen
-onboarding-tour-invite-body = Wähle „Personen einladen“ in den Arbeitsbereich-Einstellungen und prüfe jede Rolle, bevor du teilst.
-onboarding-tour-check-title = Arbeit prüfen und Fehler beheben
-onboarding-tour-check-body = Öffne die Aktivität, um auf den neuesten Stand zu kommen, Versionen zu vergleichen oder nur die fehlerhafte Änderung rückgängig zu machen.
 
 # Einladungskarte für Arbeitsbereiche: jemanden einladen, mit einer Einladung beitreten, ausstehende Einladungen
 peer-sync-title-invite = Jemanden einladen
@@ -2703,7 +2386,6 @@ search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter S
 display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
 
-display-sheet-saving-layout = Anordnung wird gespeichert…
 
 session-diagnostics-title = Zeitdiagnose der Sitzung
 session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
@@ -2763,15 +2445,6 @@ setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
 setting-confirm-weaker = Weniger sicher machen
 setting-suspend-plugged-in = Am Netzteil
 setting-suspend-on-battery = Im Akkubetrieb
-display-remote-heading = Deine anderen Bildschirme
-display-remote-title = Bildschirm { $number }: { $name } auf { $device }
-display-remote-row = { $title }, { $status }
-display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, nicht in der Anordnung
-display-remote-switched-off = Auf dem Gerät ausgeschaltet
-display-remote-in-layout = Im Layout
-display-remote-out-of-layout = Nicht im Layout
 display-remote-unavailable = Dieser gemeinsame Bildschirm ist nicht mehr verfügbar.
 display-remote-permission = Deine Workspace-Rolle erlaubt keine Änderung des gemeinsamen Display-Layouts.
 display-remote-stale = Die Display-Anordnung hat sich geändert. Aktualisiere sie vor der Änderung.
@@ -2817,56 +2490,12 @@ palette-open-containing-folder = Enthaltenden Ordner öffnen
 palette-copy-path = Pfad kopieren
 
 # Vorbereitete Einrichtung auf dem installierten System und Übernahme der Originaldateien.
-onboarding-prepared-title = Willkommen zu Hause
-onboarding-prepared-body = Gib das Passwort ein, das du beim Vorbereiten von Tilo gewählt hast, um deine Identität und deine Konten hierher zu holen.
-onboarding-prepared-password = Dein Passwort
-onboarding-prepared-peer-waiting = Es wird darauf gewartet, dass dein anderer Computer die Übertragung anbietet.
-onboarding-prepared-peer-code = Dein anderer Computer zeigt { $code }. Prüfe, ob beide Bildschirme denselben Code zeigen, und bestätige diesen Computer dann dort.
-onboarding-prepared-working = Deine Einrichtung wird hierher geholt …
-onboarding-prepared-failed = Deine vorbereitete Einrichtung konnte nicht hierher geholt werden. Versuche es erneut.
 onboarding-prepared-other-person = Auf diesem Computer ist bereits die Identität einer anderen Person, deshalb wurde die vorbereitete Einrichtung nicht angetastet. Stelle die eigene Sicherung dieser Person wieder her oder verbinde stattdessen ihr Konto.
-onboarding-migration-title = Hol deine Sachen in Tilo
-onboarding-migration-body = Hol die Dokumente und Apps herüber, die du bei der Einrichtung ausgewählt hast. Deine Originale bleiben, wo sie sind.
-onboarding-migration-reviewed = Deine Übernahme ist bereit. Kopiere deine Sachen zuerst in einen separaten Import.
-onboarding-migration-adopt-body = Dein Import ist geprüft. Füge ihn deinem Zuhause hinzu; vorhandene Dateien und deine Tilo-Identität bleiben unverändert.
-onboarding-migration-working = Deine Sachen werden herübergeholt …
-onboarding-migration-complete = Deine Sachen sind in Tilo bereit.
-onboarding-migration-incomplete = Einige Dinge brauchen noch deine Aufmerksamkeit. Vorhandene Dateien wurden behalten; die importierten Kopien bleiben separat verfügbar.
-onboarding-migration-failed = Deine Übernahme konnte nicht fortgesetzt werden. Deine Originale und der aufbewahrte Import wurden behalten.
-onboarding-migration-cancelled = Übernahme angehalten. Deine importierten Dateien bleiben erhalten, damit du später weitermachen kannst.
-onboarding-migration-review = Meine Übernahme prüfen
-onboarding-migration-start = Meine Sachen kopieren
-onboarding-migration-adopt = Zu meinem Zuhause hinzufügen
-onboarding-migration-retry = Erneut versuchen
-onboarding-migration-cancel = Anhalten
-onboarding-migration-later = Meine Sachen später holen
-onboarding-migration-progress = { $files } Dateien kopiert
-onboarding-portable-home-title = Hol deine Dateien in Tilo
-onboarding-portable-home-body = Gib das Passwort ein, das du bei der Einrichtung gewählt hast, um deine Dateien zu prüfen, bevor du sie diesem Computer hinzufügst.
 onboarding-portable-home-unavailable = Deine Übertragung ist auf diesem Computer noch nicht verfügbar. Versuche es erneut oder mach weiter, ohne deine Dateien herüberzuholen.
-onboarding-migration-resume-busy = Schließe die aktuelle Einrichtung ab, bevor du die Übernahme deiner Dateien öffnest.
 onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es keine aufgeschobene Dateiübernahme.
-onboarding-existing-files-available = Deine vorhandenen Dateien sind in Tilo verfügbar. Änderungen, die du hier machst, erscheinen auch in deinem bisherigen System.
-onboarding-existing-files-prepare-apps = Meine Apps vorbereiten
-onboarding-existing-files-use = Meine vorhandenen Dateien verwenden
-onboarding-existing-files-body = Verwende deine vorhandenen Dateien direkt. Änderungen, die du in Tilo machst, erscheinen auch in deinem bisherigen System.
-onboarding-existing-files-apps-reviewed = Bereite deine ausgewählten Apps und ihre Daten für Tilo vor. Deine vorhandenen Apps bleiben in deinem bisherigen System.
-onboarding-existing-files-apps-adopt = Deine Apps sind vorbereitet. Füge sie und ihre Daten Tilo hinzu.
-onboarding-portable-applications-title = Nimm deine Apps mit
-onboarding-portable-applications-body = Stelle die ausgewählten Apps und ihre Daten aus deinem Installationsmedium wieder her. Deine ursprünglichen Apps und Dateien bleiben unverändert.
-onboarding-portable-applications-start = Meine Apps wiederherstellen
 onboarding-portable-applications-unavailable = Deine Apps konnten nicht wiederhergestellt werden. Du kannst es erneut versuchen, ohne deine vorhandenen Dateien zu ersetzen.
-onboarding-browser-title = Nimm deinen Browser mit
-onboarding-browser-body = Deine ausgewählten Lesezeichen und dein Verlauf können in Tilo übernommen werden.
-onboarding-browser-start = Meine Browserdaten verwenden
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
 onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
-onboarding-ready-welcome = Willkommen bei Tilo
-onboarding-ready-next = Der Desktop ist bereit. Beginne mit irgendetwas: Öffne eine App, suche, was du brauchst, oder lade jemanden in einen Arbeitsbereich ein.
-onboarding-migration-cleanup-pending = Deine Sachen sind in Tilo bereit. Einige temporäre Dateien müssen noch entfernt werden.
-onboarding-migration-cleanup-unavailable = Deine Sachen sind in Tilo bereit. Das Entfernen der temporären Dateien konnte nicht bestätigt werden.
-onboarding-migration-cleanup-resume = Aufräumen erneut versuchen
-onboarding-migration-cleanup-running = Deine Sachen sind in Tilo bereit. Temporäre Dateien werden entfernt …
 
 # Warum die erste Kopie angehalten hat, mit ihrem Status gemeldet.
 onboarding-copy-cleanup-unavailable = Das Aufräumen temporärer Dateien ist nicht verfügbar.
@@ -2997,12 +2626,6 @@ agent-quick-stop-refused = Konnte nicht gestoppt werden. Versuch es noch einmal.
 ## die Listen aller Sprachen, gleich welche Sprache der Desktop spricht.
 search-kind-settings-pages = Einstellungen
 search-settings-page-subtitle = Einstellungen
-search-toggle-wifi = WLAN
-search-toggle-wifi-subtitle = WLAN ein- oder ausschalten
-search-toggle-bluetooth = Bluetooth
-search-toggle-bluetooth-subtitle = Bluetooth ein- oder ausschalten
-search-toggle-airplane-mode = Flugmodus
-search-toggle-airplane-mode-subtitle = Alle Funkverbindungen ausschalten
 search-badge-state-current = Aktuell
 search-provider-settings-pages = Einstellungsseiten
 search-kw-dictation-toggle = diktieren, diktat, sprache zu text, spracheingabe, mikrofon
@@ -3100,13 +2723,6 @@ search-kw-appearance-language = sprache, sprache wechseln, lokalisierung, deutsc
 search-kw-record-bring = hinzufügen, importieren, dokument hinzufügen, anhängen
 search-kw-shortcut-help-toggle = hilfe, tastenkürzel, tastaturkürzel, tastenkombinationen, anleitung, spickzettel
 search-kw-desktop-tour-open = tour, einführung, rundgang, erste schritte, willkommen, anleitung
-search-kw-quick-settings-brightness-set = helligkeit, bildschirmhelligkeit, hintergrundbeleuchtung
-search-kw-quick-settings-volume-set = lautstärke, lautstaerke, ton, audio
-search-kw-quick-settings-power-profile-set = energieprofil, energiesparmodus, akkusparmodus, leistungsmodus, energiesparen
-search-kw-quick-settings-vpn-set-enabled = vpn, tunnel, verbindung
-search-kw-quick-settings-wifi-toggle = wlan, wifi, wi-fi, drahtlos, internet, netzwerk, funknetz
-search-kw-quick-settings-bluetooth-toggle = bluetooth, kopfhörer, koppeln, drahtlos
-search-kw-quick-settings-airplane-mode-toggle = flugmodus, flugzeugmodus, funk aus, offline
 search-kw-session-lock = sperren, bildschirm sperren, sperrbildschirm, sperre, bildschirmschoner
 search-kw-emoji-picker = emoji, emojis, smiley, emoticon, gesicht, :
 search-kw-session-switch-user = benutzer wechseln, konto wechseln, anderer benutzer
@@ -3160,9 +2776,6 @@ search-kw-workspace-move-later = arbeitsbereich nach unten, arbeitsbereiche sort
 search-kw-group-move-to-strip = fenster in zeile verschieben, fenster in streifen
 search-kw-group-close = fenster schließen, beenden, app schließen
 search-kw-tab-move-to-workspace = in arbeitsbereich verschieben, tab verschieben, auf anderen desktop
-search-kw-quick-settings-wifi-set-enabled = wlan an, wlan aus, wlan einschalten, wlan ausschalten
-search-kw-quick-settings-bluetooth-set-enabled = bluetooth an, bluetooth aus, bluetooth einschalten, bluetooth ausschalten
-search-kw-quick-settings-airplane-mode-set-enabled = flugmodus an, flugmodus aus
 search-kw-workspace-archived-restore = arbeitsbereich wiederherstellen, aus archiv holen
 search-kw-workspace-archived-delete = endgültig löschen, archivierten arbeitsbereich löschen
 
@@ -3249,8 +2862,6 @@ profile-action-identities = Deine Identitäten
 profile-action-backup = Identität sichern…
 profile-action-pair-device = Gerät koppeln…
 
-
-
 ## Pairing a new device of the person.
 pairing-title = Neues Gerät koppeln
 pairing-making = Link wird erstellt…
@@ -3276,17 +2887,6 @@ pairing-approve = { $code } bestätigen
 pairing-decline = Ablehnen
 pairing-answer-failed = Das Gerät wurde nicht beantwortet: { $error }
 
-search-step-volume-up = Lauter
-search-step-volume-down = Leiser
-search-step-brightness-up = Heller
-search-step-brightness-down = Dunkler
-search-step-volume-mute = Stumm oder laut schalten
-search-level-percent = { $percent } %
-search-kw-quick-settings-volume-up = lauter, lauter machen, louder, volume up
-search-kw-quick-settings-volume-down = leiser, leiser machen, quieter, volume down
-search-kw-quick-settings-volume-mute = stumm, stummschalten, ton aus, mute, unmute
-search-kw-quick-settings-brightness-up = heller, brighter
-search-kw-quick-settings-brightness-down = dunkler, dimmer
 desk-monitor-title = Dieses Gerät
 desk-monitor-cpu = Prozessor
 desk-monitor-memory = Arbeitsspeicher
@@ -3294,24 +2894,11 @@ desk-monitor-temperature = Temperatur
 desk-monitor-cpu-short = CPU
 desk-monitor-memory-short = RAM
 
-
 ## „Einem Arbeitsbereich beitreten…“: das Verzeichnis öffentlicher Arbeitsbereiche.
-directory-title = Einem Arbeitsbereich beitreten
-directory-search = Öffentliche Arbeitsbereiche suchen oder Link oder Code einfügen
-directory-link-or-code = Mit Link oder Code beitreten
-directory-close = Schließen
-directory-loading = Öffentliche Arbeitsbereiche werden gesucht…
-directory-empty = Hier gibt es noch keine öffentlichen Arbeitsbereiche. Gib eine Website wie tilo.coffee ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
-directory-no-match = Nichts passt zu „{ $query }“. Drücke die Eingabetaste, um es als Website nachzuschlagen.
 directory-failed = Das Verzeichnis konnte nicht gelesen werden: { $error }
 directory-join-failed = { $name } konnte nicht beigetreten werden: { $error }
-directory-join = Beitreten
-directory-open = Öffnen
 directory-joining = Wird beigetreten…
-directory-join-named = { $name } beitreten
-directory-open-named = { $name } öffnen
 directory-community-tag = von { $host }
-directory-try-again = Erneut versuchen
 directory-already-joining = Du trittst { $name } bereits bei. Es öffnet sich, sobald es bereit ist.
 directory-join-failed-line = Nicht beigetreten: { $error }
 directory-here-now = { $count } gerade hier

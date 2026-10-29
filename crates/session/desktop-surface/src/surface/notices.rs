@@ -20,8 +20,9 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    CenterLayout, CenterMetrics, CenterOutcome, CentreApi, HistoryActivation, NOTIFICATION_CENTRE,
-    Notification, NotificationHost, NotificationLog, NotificationSeverity, NotificationStack,
+    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, HistoryActivation,
+    NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog, NotificationSeverity,
+    NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -555,6 +556,25 @@ impl NotificationLayer {
         &self.notifications
     }
 
+    /// Hand the stack the banners shown now.
+    fn feed_stack(&mut self) {
+        let feed = BannerFeed::of(self.notifications.host());
+        self.stack.set_feed(feed);
+    }
+
+    /// Carry out what the person did with the banners.
+    fn answer_stack(&mut self) {
+        let asks = self.stack.take_asks();
+        if asks.is_empty() {
+            return;
+        }
+        let host = self.notifications.host();
+        for ask in asks {
+            ask.answer(host);
+        }
+        self.feed_stack();
+    }
+
     /// Banners begin below `y`, where the shown windows' content starts.
     pub fn set_clear_top(&mut self, y: f64) {
         self.stack.set_clear_top(y);
@@ -655,9 +675,9 @@ impl NotificationLayer {
         let host = notifications.host();
         if self.center.is_none() {
             let mut handled = false;
-            self.dirty |= self
-                .stack
-                .handle_pointer_event(host, event, scale, &mut handled);
+            self.feed_stack();
+            self.dirty |= self.stack.handle_pointer_event(event, scale, &mut handled);
+            self.answer_stack();
             if notifications.log.centre_requested.take() {
                 self.set_center_open(true);
             }
@@ -675,9 +695,9 @@ impl NotificationLayer {
             )
         {
             let mut handled = false;
-            self.dirty |= self
-                .stack
-                .handle_pointer_event(host, event, scale, &mut handled);
+            self.feed_stack();
+            self.dirty |= self.stack.handle_pointer_event(event, scale, &mut handled);
+            self.answer_stack();
             if handled {
                 return true;
             }
@@ -755,12 +775,13 @@ impl Widget for NotificationLayer {
         false
     }
     fn needs_animation_frame(&self) -> bool {
-        self.stack.needs_animation_frame(self.notifications.host())
+        self.stack.needs_animation_frame()
             || self.centre().is_some_and(CentreApi::reading_needs_frame)
     }
     /// The reading page glides on after a flick, repainted as a wheel's
     /// scroll is; that changes no model.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.feed_stack();
         self.adopt_centre();
         if let Some(center) = self.centre_mut() {
             self.dirty |= center.advance_reading();
@@ -768,7 +789,7 @@ impl Widget for NotificationLayer {
         false
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let banner = self.stack.next_wake_deadline(self.notifications.host());
+        let banner = self.stack.next_wake_deadline();
         let undo = self.notifications.log().clear_deadline();
         banner.into_iter().chain(undo).min()
     }
@@ -798,7 +819,9 @@ impl Widget for NotificationLayer {
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
-        self.stack.draw(host, scene, transform, text, theme);
+        self.feed_stack();
+        self.stack.draw(scene, transform, text, theme);
+        self.answer_stack();
         let cursor = self.cursor;
         if let Some(layout) = self.layout()
             && let Some(center) = self.center.as_mut()
@@ -853,10 +876,9 @@ impl Widget for NotificationLayer {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        let notifications = self.notifications.clone();
-        let pressed = self
-            .stack
-            .perform_semantic(notifications.host(), target, action);
+        self.feed_stack();
+        let pressed = self.stack.perform_semantic(target, action);
+        self.answer_stack();
         self.dirty |= pressed;
         pressed
     }
@@ -879,7 +901,7 @@ impl Widget for NotificationLayer {
         if !self.visible() {
             return None;
         }
-        let mut node = self.stack.accessibility(host)?;
+        let mut node = self.stack.accessibility()?;
         if let (Some(center), Some(layout)) = (self.centre(), self.layout()) {
             // The dialog stays the first child: its synthetic rects are
             // looked up by that path.

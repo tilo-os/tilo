@@ -630,6 +630,35 @@ impl OverviewPanel {
         }
     }
 
+    /// Start typing a new name for strip `strip` in place, as F2 or a press
+    /// on its name does; whether it can be named here.
+    pub fn rename_in_place(&mut self, strip: tilo_desktop_model::StripId) -> bool {
+        let picture = self.picture();
+        let Some(si) = picture.strips.iter().position(|s| s.id == strip) else {
+            return false;
+        };
+        self.begin_naming(&picture, si);
+        self.naming.is_some()
+    }
+
+    /// Carry pictured window `tab` to `to`, as a drag that has not been let
+    /// go yet; whether it is pictured.
+    pub fn carry(&mut self, tab: TabId, to: Point) -> bool {
+        let picture = self.picture();
+        let Some((si, wi, _)) = picture.find(tab) else {
+            return false;
+        };
+        let Some(from) = picture.tile(si, wi) else {
+            return false;
+        };
+        let mut press = OverviewPress::new(PressSource::Mouse, Some(tab), from.center());
+        press.moved(to);
+        self.press = Some(press);
+        self.cursor = Some(to);
+        self.bump();
+        true
+    }
+
     /// Put the keyboard on room or row `index` (past the rooms: New
     /// workspace, then Join).
     pub(super) fn focus_row(&mut self, index: usize) {

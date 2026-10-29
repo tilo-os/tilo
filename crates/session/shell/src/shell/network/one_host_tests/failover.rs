@@ -172,9 +172,9 @@ fn a_member_learns_a_host_added_while_it_was_away_and_stays_in_step_through_it()
 #[serial_test::serial]
 #[allow(
     clippy::too_many_lines,
-    reason = "one journey: the host added, the governor away and back"
+    reason = "one journey: the host added, the first device away and back"
 )]
-fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back() {
+fn a_governance_change_made_while_the_first_device_is_away_reaches_it_through_the_relay() {
     let Ada {
         relay,
         mut first,
@@ -207,48 +207,37 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
     };
     let refused_on = |device: &Device| !device.tree.read().governance_refusals.is_empty();
 
-    // The desktop, the room's governor, goes off; the laptop stays in step
-    // through the relay.
+    // The desktop goes off; the laptop stays in step through the relay.
     first.go_offline();
     let edit = second.write_note(room, "written while the desktop was off");
     until(&[&second], "the relay to take the laptop's edit", || {
         relay.keeps_write(room, &edit).then_some(())
     });
 
-    // Ada renames the workspace on the laptop: the relay is no governor, so
-    // the change waits.
+    // Ada renames the workspace on the laptop, which writes it at once:
+    // no device of hers needs to be in reach for it.
     second.tree.write().request_governance(
         room,
         GovernanceRequest::Command(DesktopCommand::RenameWorkspace {
             name: "Roadmap".into(),
         }),
     );
-    until(&[&second], "the rename to wait for the governor", || {
-        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
+    until(&[&second], "the laptop to write the rename", || {
+        assert!(!refused_on(&second), "nothing refused the rename");
+        (second.tree.read().room_outbox.is_empty()
+            && name_on(&second).as_deref() == Some("Roadmap"))
+        .then_some(())
     });
-    assert!(
-        !refused_on(&second),
-        "a governor out of reach refused nothing"
-    );
-    assert_eq!(name_on(&second).as_deref(), Some("Personal"));
 
-    // The desktop comes back: the laptop's session returns to it, and the
-    // rename is made.
+    // The desktop comes back and catches up, rename included.
     first.come_back();
     second.reach(&first);
     until_caught_up(&[&first, &second], "the desktop to catch up", room, || {
         (first.note(room).as_deref() == Some("written while the desktop was off")).then_some(())
     });
     until(&[&first, &second], "the rename on the desktop", || {
-        assert!(
-            !refused_on(&second),
-            "a governor out of reach refused nothing"
-        );
-        (name_on(&first).as_deref() == Some("Roadmap")).then_some(())
-    });
-    until(&[&first, &second], "the rename back on the laptop", || {
-        (second.tree.read().room_outbox.is_empty()
+        assert!(!refused_on(&second), "nothing refused the rename");
+        (name_on(&first).as_deref() == Some("Roadmap")
             && name_on(&second).as_deref() == Some("Roadmap"))
         .then_some(())
     });

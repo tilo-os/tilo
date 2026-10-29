@@ -241,7 +241,7 @@ impl ChatApp {
             self.emoji_picker.reopen();
         }
         let over = self.emoji_picker.rect().contains(self.last_mouse);
-        drive_retained_control(&mut self.emoji_picker, event, scale, modifiers, doc);
+        drive_retained_control(&mut *self.emoji_picker, event, scale, modifiers, doc);
         for picked in self.emoji_picker.take_events() {
             match picked {
                 ui::widget::PickerEvent::Picked(emoji) => self.on_hit_emoji_choice(&emoji, doc),
@@ -1003,7 +1003,7 @@ impl ChatApp {
         self.menu = None;
         self.emoji_open = false;
         self.attach_open = false;
-        self.channel_sheet = Some(sheet);
+        self.channel_sheet = Some(Box::new(sheet));
         self.set_composer_focus();
     }
 

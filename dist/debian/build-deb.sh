@@ -24,7 +24,7 @@ stage=$work/stage
 main=$work/tilo-session
 dev=$work/tilo-session-devel
 mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec/tilo,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/doc/tilo-session}
-install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-import-folders" "$main/usr/bin/"
+install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo" "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 # Tilo's own programs live in /usr/libexec/tilo; the old name stays on PATH.
 install -pm 0755 "$stage/bin/tilo-launcher" "$main/usr/libexec/tilo/"
 ln -s ../libexec/tilo/tilo-launcher "$main/usr/bin/tilo-launcher"
@@ -61,6 +61,7 @@ shlib_line=$(
     cd "$work"
     dpkg-shlibdeps -O \
         -e"$main/usr/bin/tilo-shell" \
+        -e"$main/usr/bin/tilo" \
         -e"$main/usr/libexec/tilo/tilo-launcher" \
         -e"$main/usr/bin/tilo-import-folders" \
         -e"$main/usr/libexec/tilo-unlock-helper" \

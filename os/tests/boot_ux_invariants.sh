@@ -32,6 +32,17 @@ if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollbac
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, Tilo rollback unlock and greeter modules\n' >&2
   exit 1
 fi
+# The sign-in screen reads touch screens and speaks: their drivers come along,
+# the sound drivers load (snd-seq, which loading snd-pcm loads), and ALSA's
+# default device is not routed to a PipeWire that never runs there.
+greeter_module="$root/os/usr/lib/dracut/modules.d/94tilo-greeter/module-setup.sh"
+if ! grep -Fq "instmods =drivers/input/touchscreen virtio_input" "$greeter_module" \
+  || ! grep -Fq "=sound/virtio snd-hda-intel snd-seq" "$greeter_module" \
+  || ! grep -Fq 'echo "audio:x:${audio:-63}:" >> "${initdir:?}/etc/group"' "$greeter_module" \
+  || ! grep -Fq "find /usr/share/alsa -type f -not -path '/usr/share/alsa/alsa.conf.d/*'" "$greeter_module"; then
+  printf 'the boot sign-in must carry touch screen and sound drivers and an ALSA default that opens without PipeWire\n' >&2
+  exit 1
+fi
 grep -Fq 'plymouth-set-default-theme tilo' "$containerfile"
 grep -Fq 'ModuleName=script' "$theme"
 grep -Fq 'Plymouth.SetDisplayPasswordFunction(display_password)' "$script"

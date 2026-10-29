@@ -5,6 +5,7 @@
 use super::participants::{
     MAX_FIND_QUERY_BYTES, MAX_PARTICIPANT_VIEWS, PARTICIPANT_VIEW_TTL, ParticipantViews,
 };
+use super::tests::Lent;
 use super::*;
 use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
 use crate::actions::{RegionKind, SearchTarget};
@@ -19,9 +20,9 @@ fn pid(name: &str) -> ParticipantId {
 }
 
 /// A synced widget over paragraphs `texts`, with the body block ids in order.
-fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) {
+fn widget_with(texts: &[&str]) -> (Editor, ui::State, Vec<String>) {
     let mut state = crate::initialized_state();
-    let mut wp = WordProcessorWidget::detached();
+    let mut wp = Editor::detached();
     wp.sync(&state.doc, &state.root);
     for (i, text) in texts.iter().enumerate() {
         if i > 0 {
@@ -248,8 +249,10 @@ fn views_rebase_under_concurrent_edits() {
 
 #[test]
 fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
-    let (mut wp, mut state, ids) = widget_with(&["hello", "other"]);
-    let _ = ui::undo::take_committed_action(&mut wp);
+    let (wp, mut state, ids) = widget_with(&["hello", "other"]);
+    let mut window = WordProcessorWidget::over(wp);
+    let _ = ui::undo::take_committed_action(&mut window);
+    let wp = window.editor_mut();
     let (agent, human) = (pid("agent"), pid("human-2"));
     wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
     wp.set_participant_view(&human, &caret(&ids[0], 5), &state.doc);
@@ -282,19 +285,21 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     );
     assert_eq!(wp.local_participant_view(), local_before);
     assert_eq!(
-        ui::undo::take_committed_action(&mut wp),
+        ui::undo::take_committed_action(&mut window),
         None,
         "a participant's edit never opens the local window's undo group"
     );
 
     let no_participant = ActionInvoker::actor("agent-actor");
     assert!(
-        wp.apply_participant_edit(
-            &no_participant,
-            &mut Edits::lend(&mut state.doc),
-            (Vec::new(), caret(&ids[0], 0))
-        )
-        .is_err()
+        window
+            .editor_mut()
+            .apply_participant_edit(
+                &no_participant,
+                &mut Edits::lend(&mut state.doc),
+                (Vec::new(), caret(&ids[0], 0))
+            )
+            .is_err()
     );
 }
 
@@ -376,7 +381,7 @@ enum Input {
 }
 
 /// Drive one real key press through `handle_event`.
-fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
+fn press(wp: &mut Editor, state: &mut ui::State, input: &Input) {
     use winit::keyboard::{ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
     let mut ev = ui::synthetic_input::key_event(
         winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
@@ -407,7 +412,7 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
         .modifiers(mods)
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(wp, &ui::synthetic_input::keyboard_input(ev));
+        .send(&mut Lent(wp), &ui::synthetic_input::keyboard_input(ev));
 }
 
 type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;
@@ -420,7 +425,7 @@ type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing
 fn assert_keyboard_action_parity(
     case: &str,
     texts: &[&str],
-    setup: impl FnOnce(&mut WordProcessorWidget, &mut ui::State, &[String]),
+    setup: impl FnOnce(&mut Editor, &mut ui::State, &[String]),
     inputs: &[Input],
     steps: &[Step],
 ) {
@@ -432,7 +437,7 @@ fn assert_keyboard_action_parity(
 
     let mut agent_state = crate::initialized_state();
     agent_state.doc = state.doc.clone();
-    let mut agent_widget = WordProcessorWidget::detached();
+    let mut agent_widget = Editor::detached();
     agent_widget.sync(&agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
@@ -477,7 +482,7 @@ fn assert_keyboard_action_parity(
 }
 
 /// Put the caret at `to` in `block`, anchored at `from`.
-fn select_in(wp: &mut WordProcessorWidget, block: &str, from: usize, to: usize) {
+fn select_in(wp: &mut Editor, block: &str, from: usize, to: usize) {
     wp.model_mut().set_caret(Caret {
         block: block.to_owned(),
         offset: from,
@@ -495,7 +500,7 @@ fn typed(text: &'static str) -> Step {
     Box::new(move |v, d| crate::actions::editing::type_text(v, d, text))
 }
 
-type Setup = fn(&mut WordProcessorWidget, &mut ui::State, &[String]);
+type Setup = fn(&mut Editor, &mut ui::State, &[String]);
 
 /// A named scenario: paragraphs, setup, the keystrokes, and the published
 /// primitives they must match.
@@ -680,12 +685,14 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
     let agent = pid("agent-task:5");
     wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
     wp.sync(&state.doc, &state.root);
+    let mut window = WordProcessorWidget::over(wp);
     let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
-        ui::resources::resources(&wp, &state.doc)
+        ui::resources::resources(&window, &state.doc)
     };
+    let wp = window.editor_mut();
     assert_eq!(
         format!(
             "{:?}",
@@ -774,10 +781,10 @@ fn invoke_opening_action(
 
 fn writer_view<O>(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
-    read: impl FnOnce(&WordProcessorWidget, &AutoCommit) -> O,
+    read: impl FnOnce(&Editor, &AutoCommit) -> O,
 ) -> O {
     let doc = app.read_document(Clone::clone);
-    app.with_widget(|wp: &mut WordProcessorWidget| read(wp, &doc))
+    app.with_widget(|window: &mut WordProcessorWidget| read(&window.state(), &doc))
         .expect("the app's view is Writer's widget")
 }
 

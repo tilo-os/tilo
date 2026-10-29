@@ -275,20 +275,6 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Whether a finger landing at `point` (as drawn) is on the card's seek
-    /// bar.
-    pub(super) fn now_playing_seek_at(&self, point: Point) -> bool {
-        use crate::shell::now_playing_panel::CardTarget;
-        let Some(view) = self.now_playing_view() else {
-            return false;
-        };
-        let Some(rect) = self.now_playing_rect(&view) else {
-            return false;
-        };
-        let p = self.untransform_quick_settings_pointer(point, Instant::now());
-        self.now_playing_card.laid_out(rect).target_at(&view, p) == Some(CardTarget::Seek)
-    }
-
     /// The held seek bar follows the pointer or the finger at `point`.
     pub(super) fn drag_now_playing_seek(&mut self, point: Point) {
         let p = self.untransform_quick_settings_pointer(point, Instant::now());
@@ -310,35 +296,59 @@ impl ShellOverlayHost {
         self.apply_now_playing_action(action, &view);
     }
 
-    /// Keyboard traversal into, through and out of the card. Tab from the
-    /// root page's last control enters the card; Tab past the card's last
-    /// control returns to the root page's first. `true` when handled.
-    pub(super) fn handle_now_playing_tab(&mut self, backwards: bool) -> bool {
+    /// F6 moves the keyboard between the panel and the card beside it, as
+    /// it moves between a window's panes. `true` when there was a card.
+    pub(super) fn switch_now_playing_focus(&mut self) -> bool {
         let Some((view, _)) = self.now_playing_layout() else {
             return false;
         };
-        let Some(chrome) = self.chrome.clone() else {
+        if self.now_playing_card.has_focus() {
+            self.now_playing_card.reset();
+            if let Some(app) = self.quick_settings.app_mut() {
+                app.set_focus(true);
+            }
+        } else {
+            if let Some(app) = self.quick_settings.app_mut() {
+                app.set_focus(false);
+            }
+            self.now_playing_card.focus_next(&view, false);
+        }
+        self.bump_chrome();
+        true
+    }
+
+    /// Tab past the panel's last control (or first, going back): on to
+    /// the card's controls when there is a card, else around the panel.
+    pub(super) fn tab_out_of_quick_settings(&mut self, backwards: bool) {
+        if let Some(app) = self.quick_settings.app_mut() {
+            app.set_focus(false);
+        }
+        if let Some((view, _)) = self.now_playing_layout()
+            && self.now_playing_card.focus_next(&view, backwards)
+        {
+            self.bump_chrome();
+            return;
+        }
+        if let Some(app) = self.quick_settings.app_mut() {
+            app.set_focus(true);
+        }
+    }
+
+    /// Tab while the card holds the keyboard: through its controls, and
+    /// back to the panel past its last. `true` when handled.
+    pub(super) fn handle_now_playing_tab(&mut self, backwards: bool) -> bool {
+        if !self.now_playing_card.has_focus() {
+            return false;
+        }
+        let Some((view, _)) = self.now_playing_layout() else {
             return false;
         };
-        if self.now_playing_card.has_focus() {
-            if self.now_playing_card.focus_next(&view, backwards) {
-                chrome.borrow_mut().bump();
-            } else {
-                let mut state = chrome.borrow_mut();
-                self.qs_root.focus_next(&state.quick_settings, backwards);
-                state.bump();
-            }
-            return true;
+        if !self.now_playing_card.focus_next(&view, backwards) {
+            self.now_playing_card.reset();
+            // Back past the card's first control lands on the panel's last.
+            self.quick_settings.enter_focus(backwards);
         }
-        let wraps = self
-            .qs_root
-            .focus_would_wrap(&chrome.borrow().quick_settings, backwards);
-        if !wraps {
-            return false;
-        }
-        self.qs_root.reset_focus();
-        self.now_playing_card.focus_next(&view, backwards);
-        chrome.borrow_mut().bump();
+        self.bump_chrome();
         true
     }
 
@@ -462,8 +472,8 @@ impl ShellOverlayHost {
             return true;
         }
         let focused = self.now_playing_card.focus_path(&view, path);
-        if focused {
-            self.qs_root.reset_focus();
+        if focused && let Some(app) = self.quick_settings.app_mut() {
+            app.set_focus(false);
         }
         focused
     }
@@ -478,8 +488,6 @@ impl ShellOverlayHost {
 #[cfg(test)]
 mod tests {
     use std::rc::Rc;
-
-    use winit::keyboard::{Key, NamedKey};
 
     use super::super::LayerId;
     use super::*;
@@ -503,17 +511,6 @@ mod tests {
         host.reconcile_quick_settings_open_edge(true);
         host.force_quick_settings_settled();
         (host, chrome, source)
-    }
-
-    fn tab(host: &mut ShellOverlayHost, backwards: bool) {
-        let mut handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &Key::Named(NamedKey::Tab),
-            backwards,
-            false,
-            &mut handled,
-        ));
-        assert!(handled);
     }
 
     fn target(host: &ShellOverlayHost, name: &str) -> Rect {
@@ -561,10 +558,8 @@ mod tests {
             player("idle", "Idle", PlaybackStatus::Paused),
             player("music", "Music", PlaybackStatus::Playing),
         ]);
-        let mut handled = false;
         let play = target(&host, "now_playing_play_pause");
-        host.handle_shell_quick_settings_click(play.center(), &mut handled);
-        assert!(handled);
+        assert!(host.handle_now_playing_click(play.center()));
         assert!(
             chrome.borrow().overlays.quick_settings,
             "the popover stays open"
@@ -578,9 +573,9 @@ mod tests {
         );
 
         let players = target(&host, "now_playing_players");
-        host.handle_shell_quick_settings_click(players.center(), &mut handled);
+        assert!(host.handle_now_playing_click(players.center()));
         let idle = target(&host, "now_playing_player[0]");
-        host.handle_shell_quick_settings_click(idle.center(), &mut handled);
+        assert!(host.handle_now_playing_click(idle.center()));
         assert_eq!(
             host.now_playing_view()
                 .map(|view| view.player().identity.clone()),
@@ -590,59 +585,99 @@ mod tests {
     }
 
     #[test]
-    fn reverse_tab_from_no_selection_opens_power_while_media_plays() {
-        let (mut host, chrome, _) =
+    fn tab_runs_from_the_panel_through_the_card_and_back() {
+        use winit::keyboard::{Key, NamedKey};
+        let (mut host, _chrome, _) =
             open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
+        let tab = |host: &mut ShellOverlayHost| {
+            let _ = ui::testing::dispatch(
+                host,
+                &ui::synthetic_input::key_press(Key::Named(NamedKey::Tab), None),
+            );
+            // The panel answers on its next frame, as it would on screen.
+            host.force_quick_settings_settled();
+        };
+        let mut steps = 0;
+        while !host.now_playing_card.has_focus() {
+            tab(&mut host);
+            steps += 1;
+            assert!(
+                steps < 64,
+                "Tab past the panel's last control reaches the card"
+            );
+        }
         assert!(
-            host.now_playing_view().is_some(),
-            "the card is present so a wrap could steal Shift+Tab"
+            host.quick_settings
+                .app()
+                .and_then(|app| app.accessibility())
+                .is_some_and(|panel| !holds_focus(&panel)),
+            "the panel no longer claims the reader's focus"
         );
-        tab(&mut host, true);
-        assert!(
-            !host.now_playing_card.has_focus(),
-            "Shift+Tab from no selection is Power, not the card"
-        );
-        let mut handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &Key::Named(NamedKey::Enter),
-            false,
-            false,
-            &mut handled,
-        ));
-        assert!(handled);
-        assert!(
-            host.power_menu_open(),
-            "Enter on Power must open the menu even when media is playing"
-        );
-        assert!(!chrome.borrow().overlays.quick_settings);
+        while host.now_playing_card.has_focus() {
+            tab(&mut host);
+            steps += 1;
+            assert!(
+                steps < 128,
+                "past the card's last control, Tab is the panel's again"
+            );
+        }
+    }
+
+    fn holds_focus(node: &ui::a11y::AccessNode) -> bool {
+        node.state.focused || node.children.iter().any(holds_focus)
     }
 
     #[test]
-    fn tab_runs_from_the_root_page_through_the_card_and_back() {
-        let (mut host, chrome, source) =
+    fn a_finger_scrubs_the_playhead_and_lifting_it_seeks() {
+        let (mut host, _chrome, source) =
             open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
-        let mut steps = 0;
-        tab(&mut host, false);
-        while !host
-            .qs_root
-            .focus_would_wrap(&chrome.borrow().quick_settings, false)
-        {
-            tab(&mut host, false);
-            steps += 1;
-            assert!(steps < 64, "the root page ends");
+        let seek = target(&host, "now_playing_seek");
+        let finger = |phase, at: Point| {
+            winit::event::WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location: winit::dpi::PhysicalPosition::new(at.x, at.y),
+                force: None,
+                id: 7,
+            })
+        };
+        let start = Point::new(seek.x0 + seek.width() * 0.25, seek.center().y);
+        let end = Point::new(seek.x0 + seek.width() * 0.75, seek.center().y);
+        for event in [
+            finger(winit::event::TouchPhase::Started, start),
+            finger(winit::event::TouchPhase::Moved, end),
+        ] {
+            assert!(ui::testing::dispatch(&mut host, &event));
         }
-        assert!(!host.now_playing_card.has_focus());
-        tab(&mut host, false);
-        assert!(host.now_playing_card.has_focus(), "Tab enters the card");
-        tab(&mut host, false);
-        tab(&mut host, false);
-        let mut handled = false;
-        assert!(host.handle_quick_settings_keyboard(
-            &Key::Named(NamedKey::Enter),
-            false,
-            false,
-            &mut handled,
+        assert!(
+            host.now_playing_card.scrubbing(),
+            "the playhead follows the finger"
+        );
+        let sent = source.sent.borrow().len();
+        assert!(ui::testing::dispatch(
+            &mut host,
+            &finger(winit::event::TouchPhase::Ended, end)
         ));
+        assert!(!host.now_playing_card.scrubbing());
+        assert!(
+            source.sent.borrow()[sent..]
+                .iter()
+                .any(|(_, command)| matches!(command, PlayerCommand::SetPosition { .. })),
+            "lifting the finger seeks: {:?}",
+            source.sent.borrow()
+        );
+    }
+
+    #[test]
+    fn f6_moves_the_keyboard_to_the_card_and_tab_runs_through_it_and_back() {
+        let (mut host, _chrome, source) =
+            open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
+        assert!(!host.now_playing_card.has_focus());
+        assert!(host.switch_now_playing_focus(), "F6 reaches the card");
+        assert!(host.now_playing_card.has_focus());
+        assert!(host.handle_now_playing_tab(false));
+        assert!(host.handle_now_playing_tab(false));
+        assert!(host.handle_now_playing_key(true, true));
         assert_eq!(
             source.sent.borrow().last(),
             Some(&(
@@ -650,12 +685,19 @@ mod tests {
                 PlayerCommand::PlayPause
             ))
         );
-        tab(&mut host, false);
-        tab(&mut host, false);
-        assert!(!host.now_playing_card.has_focus(), "Tab leaves the card");
-        // Shift+Tab from the root page's first control comes back.
-        tab(&mut host, true);
-        assert!(host.now_playing_card.has_focus());
+        let mut steps = 0;
+        while host.now_playing_card.has_focus() {
+            assert!(host.handle_now_playing_tab(false));
+            steps += 1;
+            assert!(steps < 32, "the card ends");
+        }
+        assert!(
+            !host.handle_now_playing_tab(false),
+            "past the card, Tab is the panel's again"
+        );
+        assert!(host.switch_now_playing_focus());
+        assert!(host.switch_now_playing_focus(), "and F6 goes back");
+        assert!(!host.now_playing_card.has_focus());
     }
 
     #[test]

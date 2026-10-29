@@ -10,8 +10,6 @@ use crate::history_mode::embedded::{PendingCommand, PendingCommandOutcome};
 use crate::history_mode::pending_controls::{
     ContinuationCommand, PendingControlStatus, PreparedContinuation,
 };
-use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{HostHistoryLayout, StandaloneHistoryHost};
 use crate::widget::Widget;
 
 mod controls;
@@ -27,52 +25,13 @@ pub(crate) struct HostTree<'a> {
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) taffy: &'a TaffyTree<()>,
-    pub(crate) records: Option<&'a crate::record::RecordSet>,
-    pub(crate) permissions: &'a crate::permissions::PermissionContext,
     pub(crate) focused: Option<NodeId>,
-    pub(crate) history_layout: Option<HostHistoryLayout>,
     /// The laid-out root, once the host built its layout.
     pub(crate) root_node: Option<NodeId>,
     pub(crate) pointer: &'a PointerPlace,
 }
 
-impl<'a> HostTree<'a> {
-    pub(crate) fn history_context(&self) -> HistoryReadContext<'a> {
-        HistoryReadContext::of(self.state, self.records, self.permissions)
-    }
-
-    /// The document History opens on: the focused component's, else the
-    /// root's, else the first bound component laid out, else the host's own.
-    pub(crate) fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        crate::standalone_history_host::capture_history_target(
-            self.focused
-                .and_then(|node| self.bindings.binding_for(node))
-                .or_else(|| self.root.callback_binding()),
-            self.bindings,
-            self.node_map.keys().copied(),
-            self.records,
-            self.state.document_identity(),
-        )
-    }
-
-    /// Whether `node` belongs to the standalone History chrome rather than
-    /// the app.
-    pub(crate) fn is_history_node(&self, node: NodeId) -> bool {
-        self.history_layout
-            .is_some_and(|layout| layout.contains(self.taffy, node))
-    }
-
-    /// Whether the app already presents History of its own: a registered
-    /// framework History, or a root (a hosted component, a registered
-    /// framework app) that supplies a shared History surface. The standalone
-    /// History chrome serves only the others; wrapping such a root as well
-    /// would stack two History toolbars and squeeze the app's layout.
-    pub(crate) fn supplies_own_history(&self) -> bool {
-        self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root)
-            || crate::history_mode::capability::provides_document_history(self.root)
-    }
-
+impl HostTree<'_> {
     /// The window a palette is asked for from, when the root lays several
     /// out (the desktop's strip of app tiles): the tile under the pointer
     /// that pressed, else the one holding keyboard focus. `None` for a lone
@@ -186,26 +145,6 @@ impl<'a> HostTree<'a> {
             .collect();
         crate::focus_navigation::within_keyboard_scope(order, &scopes, self.taffy)
     }
-
-    /// Where focus lands when History opens: its timeline, else the first
-    /// focusable History control in `order`.
-    pub(crate) fn history_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
-        order
-            .iter()
-            .copied()
-            .find(|&node| {
-                self.is_history_node(node)
-                    && self
-                        .inspect_node(node, |widget| widget.name() == "ActivityTimeline")
-                        .unwrap_or(false)
-            })
-            .or_else(|| {
-                order
-                    .iter()
-                    .copied()
-                    .find(|&node| self.is_history_node(node))
-            })
-    }
 }
 
 /// A host's document beside its bindings, borrowed for one write through a
@@ -214,8 +153,6 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
-    /// Who acts here: the author of what this host writes for its person.
-    pub(crate) author: &'a crate::permissions::UserId,
 }
 
 /// One invocation a host hands a door: who asks, with what argument, under
@@ -477,9 +414,6 @@ pub(crate) trait HostCore {
     /// the host presents next.
     fn widget_reached(&mut self);
 
-    /// The standalone History host beside the tree it presents.
-    fn document_history_with_tree(&mut self) -> (&mut StandaloneHistoryHost, HostTree<'_>);
-
     /// The live app root, for History surfaces it embeds.
     fn host_root_mut(&mut self) -> &mut dyn Widget;
 
@@ -497,77 +431,6 @@ pub(crate) trait HostCore {
         &mut self,
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>;
-
-    /// A History write changed the document: present and persist it.
-    fn history_changed_document(&mut self);
-
-    /// Build the fresh read-only app root a History preview draws.
-    fn build_history_preview(
-        &mut self,
-        factory: &crate::standalone_history_host::PreviewRootFactory,
-    ) -> Result<Box<dyn Widget>, String> {
-        factory()
-    }
-
-    /// Carry out what History asked of the host since it last looked: write
-    /// a restore the person confirmed, then build the preview a selection
-    /// asked for. Whether a preview was installed.
-    fn settle_history_requests(&mut self) -> bool {
-        let (host, _) = self.document_history_with_tree();
-        if let Some(confirmed) = host.take_confirmed_restore() {
-            let author = self.document().author.clone();
-            let result = self.apply_history_restore(&confirmed, author);
-            self.document_history_with_tree().0.report_restore(&result);
-        }
-        let (host, _) = self.document_history_with_tree();
-        if !host.has_preview_request() {
-            return false;
-        }
-        let root = host.preview_root().and_then(|factory| {
-            self.build_history_preview(&factory)
-                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
-                .ok()
-        });
-        self.with_history(|host, context| host.install_preview(root, context));
-        true
-    }
-
-    /// The one write behind every restore, from the History pane or an
-    /// action: one attributed, undoable change, presented and persisted like
-    /// any other.
-    fn apply_history_restore(
-        &mut self,
-        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
-        author: crate::permissions::UserId,
-    ) -> Result<bool, HistoryError> {
-        let result = crate::standalone_history::apply_restore(
-            self.document().state,
-            confirmed,
-            Some(author),
-        );
-        self.history_written(result)
-    }
-
-    /// Present and persist what a History write changed, and show History
-    /// the document as it now is.
-    fn history_written(
-        &mut self,
-        result: Result<bool, HistoryError>,
-    ) -> Result<bool, HistoryError> {
-        if matches!(result, Ok(true)) {
-            self.history_changed_document();
-        }
-        let _ = self.with_history(StandaloneHistoryHost::refresh);
-        result
-    }
-
-    fn with_history<R>(
-        &mut self,
-        visit: impl FnOnce(&mut StandaloneHistoryHost, &HistoryReadContext<'_>) -> R,
-    ) -> R {
-        let (host, tree) = self.document_history_with_tree();
-        visit(host, &tree.history_context())
-    }
 
     fn inspect_node<R>(
         &self,
@@ -669,27 +532,6 @@ pub(crate) trait HostCore {
 
     fn focused_widget_wants_tab_input(&self) -> bool {
         self.tree().focused_widget_wants_tab_input()
-    }
-
-    #[cfg(any(feature = "native", test))]
-    fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
-        self.tree().capture_history_target()
-    }
-
-    fn is_history_node(&self, node: NodeId) -> bool {
-        self.tree().is_history_node(node)
-    }
-
-    /// Note what History would open on and where focus is in the app, unless
-    /// focus is in History itself.
-    fn remember_history_content(&mut self) {
-        let (host, tree) = self.document_history_with_tree();
-        if tree.focused.is_some_and(|node| tree.is_history_node(node)) {
-            return;
-        }
-        let target = tree.capture_history_target();
-        let focus = crate::widget::layout::CompositionFocus::capture_live(tree.root);
-        host.remember_content_target(target, focus);
     }
 
     /// Run a control History held back while it was open, refused when its

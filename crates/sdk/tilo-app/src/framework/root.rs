@@ -387,6 +387,18 @@ fn with_app_view_mut<R>(content: &mut Element, visit: impl FnOnce(&mut dyn Widge
     }
 }
 
+/// The view effects answer on: the app's `content`, or what stands in for
+/// it while the resource is `unreadable`.
+fn effect_view<'a>(
+    unreadable: &'a mut Option<(String, Element)>,
+    content: &'a mut Element,
+) -> &'a mut dyn Widget {
+    match unreadable {
+        Some((_, shown)) => shown.as_mut(),
+        None => content.as_mut(),
+    }
+}
+
 impl ResourceRoot {
     /// Once the window's arrival settled (the app's view shows, its
     /// cross-fade over), the view stands in the arrival's place: the root
@@ -705,8 +717,8 @@ impl ResourceRoot {
         walk(self.content.as_ref(), self.resource.id, visit);
     }
 
-    /// Bind the edits surfaces offer on the rows `rows` name
-    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
+    /// Bind the edits views offer on the rows `rows` name
+    /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
     ///
     /// One walk of the view asks every surface about every row, so binding
     /// costs the view plus surfaces × rows, never the view once per row. Each
@@ -760,7 +772,7 @@ impl ResourceRoot {
     }
 
     /// The resource as published: its own actions and children, the edits
-    /// views and surfaces bound to where the user is, the live rows surfaces
+    /// views bound to where the user is, the live rows views and surfaces
     /// show, and the framework's operations every app answers.
     #[inline(never)]
     fn publication(&self) -> ResourceSpec {
@@ -887,19 +899,18 @@ impl ResourceRoot {
         base
     }
 
-    /// What the views and surfaces add over `base` now, as
+    /// What the views add over `base` now, as
     /// [`Self::decorate_publication`] adds it: the edits they bound, their
     /// availability, and the app's effects. Few actions, built per refresh.
     fn binding_overlay(&self, base: &BindingBase) -> Vec<tilo_actions::ActionSpec> {
         let state = self.typed.state();
-        let mut bound = {
+        let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
             self.typed.declarations(&*state)
         };
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            surface.bound_declarations(bound.as_mut());
             availability.extend(surface.availability());
         });
         let own = base
@@ -1029,7 +1040,7 @@ impl ResourceRoot {
         decoration: Decoration,
     ) -> ResourceSpec {
         let children = decoration == Decoration::Tree;
-        let mut bound = {
+        let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
             self.typed.declarations(state)
         };
@@ -1037,7 +1048,6 @@ impl ResourceRoot {
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            surface.bound_declarations(bound.as_mut());
             availability.extend(surface.availability());
             if children {
                 rows.extend(
@@ -1578,6 +1588,8 @@ impl RootModel for ResourceRoot {
         }
         self.follow_readability();
         self.storage.refresh();
+        self.typed
+            .poll_window_jobs(effect_view(&mut self.unreadable, &mut self.content));
         {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
@@ -1585,9 +1597,9 @@ impl RootModel for ResourceRoot {
         self.reveal_launched();
         self.settle_arrival();
         self.follow_search();
-        // What the view's sync changed (a surface's bound edits, its
-        // availability) reaches the bindings; the document-owned head is
-        // rebuilt only when the sync moved the state.
+        // What the view's sync changed (its bound edits, its availability)
+        // reaches the bindings; the document-owned head is rebuilt only when
+        // the sync moved the state.
         let head = self.refresh_bindings(Some(head));
         *self.binding_head.borrow_mut() = Some(head);
         // The save status says itself in the window's bar.
@@ -1706,7 +1718,11 @@ impl RootModel for ResourceRoot {
             return Some(update);
         }
         self.typed
-            .poll_effect(invocation, cancellation_requested)
+            .poll_effect(
+                invocation,
+                cancellation_requested,
+                effect_view(&mut self.unreadable, &mut self.content),
+            )
             .or_else(|| {
                 with_app_view_mut(&mut self.content, |view| {
                     ui_core::host_operation::poll_resource_operation(
@@ -1802,11 +1818,11 @@ impl RootModel for ResourceRoot {
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        let view: &mut dyn Widget = match &mut self.unreadable {
-            Some((_, shown)) => shown.as_mut(),
-            None => self.content.as_mut(),
-        };
-        if let Some(started) = self.typed.start_effect(op, doc.doc(), view)? {
+        if let Some(started) = self.typed.start_effect(
+            op,
+            doc.doc(),
+            effect_view(&mut self.unreadable, &mut self.content),
+        )? {
             return Ok(Some(started));
         }
         if let Some(started) =
@@ -1849,12 +1865,12 @@ impl ResourceRoot {
     /// What the resource's search entries are of now, and the surfaces'
     /// query sinks. What the surfaces show (a page's text, live rows)
     /// changes on its own, beside the resource's revision.
-    fn search_state(&self) -> (SearchState, Vec<super::surface::SearchQueries>) {
+    fn search_state(&self) -> (SearchState, Vec<super::publishing::SearchQueries>) {
         let mut shown = Vec::new();
         let mut queries = Vec::new();
         self.surfaces(&mut |surface| {
             shown.extend(surface.search_entries());
-            queries.push(surface.search_queries());
+            queries.extend(surface.search_queries());
         });
         let state = SearchState {
             revision: self.version(),
@@ -1916,7 +1932,11 @@ impl ResourceRoot {
             return;
         }
         let mut answering = false;
-        self.surfaces(&mut |surface| answering |= surface.search_queries().answering());
+        self.surfaces(&mut |surface| {
+            answering |= surface
+                .search_queries()
+                .is_some_and(|queries| queries.answering());
+        });
         if answering {
             return;
         }
@@ -2085,11 +2105,10 @@ impl RootSearch for ResourceRoot {
     }
 
     /// Every entry a hit can open, as the session's persistent index keeps
-    /// it: short metadata only, never a prose body. A surface that keeps its
-    /// entries out of the index ([`ResourceSurface::kept_in_search_index`])
+    /// it: short metadata only, never a prose body. A view that keeps its
+    /// entries out of the index
+    /// ([`Publishes::search_entries_while_running`](super::Publishes::search_entries_while_running))
     /// contributes none.
-    ///
-    /// [`ResourceSurface::kept_in_search_index`]: super::surface::ResourceSurface::kept_in_search_index
     fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
         self.surfaces(&mut |surface| {
@@ -2369,16 +2388,6 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         ui_core::history_mode::capability::document_history_definition(self.app_view())
     }
 
-    fn provides_document_history(&self) -> bool {
-        !self.history
-            || ui_core::widget::capability::capability::<
-                dyn ui_core::history_mode::capability::DocumentHistory,
-            >(self.app_view())
-            .is_some_and(
-                ui_core::history_mode::capability::DocumentHistory::provides_document_history,
-            )
-    }
-
     fn physical_text_policy(
         &self,
         previous: Option<&tilo_actions::EncodedAction>,
@@ -2399,9 +2408,6 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         if let Some(participant) = ui_core::invocation_scope::current_participant() {
             self.typed.note_applied(&participant, action);
         }
-        // Whoever applied it here, a surface that carries out what it means
-        // on this device is told once the state holds it.
-        self.typed.note_applied_here(action);
         with_app_view_mut(&mut self.content, |view| {
             if let Some(content) = ui_core::widget::capability::capability_mut::<
                 dyn ui_core::history_mode::capability::DocumentHistory,
@@ -2492,17 +2498,7 @@ impl RootApp for ResourceRoot {
     }
 
     fn take_save_retry(&mut self) -> bool {
-        fn take(widget: &mut dyn Widget, resource: std::any::TypeId) -> bool {
-            let own =
-                surface_mut(widget, resource).is_some_and(SurfacePublication::take_save_retry);
-            // Consume every surface's one-shot even when another requested it.
-            widget
-                .children_mut()
-                .into_iter()
-                .fold(own, |retry, child| take(child, resource) || retry)
-        }
-        let asked = self.save.take_record_retry();
-        take(self.content.as_mut(), self.resource.id) || asked
+        self.save.take_record_retry()
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {

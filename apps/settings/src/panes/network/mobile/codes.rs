@@ -39,7 +39,7 @@ pub(super) struct Asking {
 
 impl MobileModel {
     fn ask(&mut self, what: CodeAsk, prompt: SecretPrompt) {
-        self.cx.secrets().ask(
+        self.reach.secrets.ask(
             KEY,
             prompt
                 .with_icon(Icon::Lock)
@@ -115,7 +115,7 @@ impl MobileModel {
     /// Close the prompt.
     pub(super) fn close_codes(&mut self) {
         if self.asking.take().is_some() {
-            self.cx.secrets().close(KEY);
+            self.reach.secrets.close(KEY);
             self.changed = true;
         }
     }
@@ -130,7 +130,7 @@ impl MobileModel {
             Ok(()) => self.close_codes(),
             Err(why) => {
                 asking.busy = false;
-                self.cx.secrets().reject(KEY, why.clone());
+                self.reach.secrets.reject(KEY, why.clone());
             }
         }
     }
@@ -157,7 +157,7 @@ impl MobileModel {
 
     /// Take in what the person answered, and start what it asks for.
     pub(super) fn poll_codes(&mut self) {
-        let Some(outcome) = self.cx.secrets().take_answer(KEY) else {
+        let Some(outcome) = self.reach.secrets.take_answer(KEY) else {
             return;
         };
         match outcome {
@@ -171,11 +171,11 @@ impl MobileModel {
                     if let Some(asking) = &mut self.asking {
                         asking.busy = true;
                     }
-                    self.cx.secrets().busy(KEY, Some(t("net-mobile-checking")));
+                    self.reach.secrets.busy(KEY, Some(t("net-mobile-checking")));
                     self.start_job(work);
                 }
                 Ok(Begun::Done) => {}
-                Err(why) => self.cx.secrets().reject(KEY, why),
+                Err(why) => self.reach.secrets.reject(KEY, why),
             },
         }
     }

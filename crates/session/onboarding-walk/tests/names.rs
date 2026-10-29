@@ -6,10 +6,15 @@
 /// `Checkbox::new` names nothing.
 #[test]
 fn the_walk_presses_the_sessions_own_controls() {
-    let view = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shell/src/onboarding_view.rs"),
-    )
-    .unwrap();
+    // The view and the page modules beside it.
+    let shell = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shell/src");
+    let mut view = std::fs::read_to_string(shell.join("onboarding_view.rs")).unwrap();
+    for entry in std::fs::read_dir(shell.join("onboarding_view")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            view.push_str(&std::fs::read_to_string(path).unwrap());
+        }
+    }
     for press in onboarding_walk::PRESSES {
         let name = press.name;
         let named = if press.checkbox {

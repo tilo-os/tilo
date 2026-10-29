@@ -255,14 +255,14 @@ impl ShellOverlayHost {
             // The card's field and band, and the window's own inset under
             // it: the list takes what is left of the window.
             let inset = f64::from(theme.tokens.spacing.s2);
-            let fits = (window.y1 - origin.y - self.palette.chrome_height() - inset).max(160.0);
+            let fits = (window.y1 - origin.y - self.search_chrome_height() - inset).max(160.0);
             return (frame, list_max.min(fits));
         }
         (self.palette_frame(theme.text_scale), list_max)
     }
 
-    /// The command palette's laid-out card, for integration tests.
+    /// The search card as laid out, for integration tests.
     pub fn palette_rect_for_tests(&self) -> Rect {
-        self.palette.get_rect()
+        self.search_card()
     }
 }

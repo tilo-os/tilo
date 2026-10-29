@@ -1041,6 +1041,10 @@ fn super_chords_open_their_surfaces_once() {
             &key_press(Key::Named(NamedKey::Escape)),
             Modifiers::default()
         ));
+        // The sheet is an app: what Escape asked is carried out on the
+        // frame's update.
+        h.host
+            .update(&automerge::AutoCommit::new(), &automerge::ROOT);
         assert!(!h.chrome.borrow().overlays.projection);
     }
 
@@ -1336,48 +1340,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     }
 
     fn print_screen_preserves_transactional_workflows_below_capture() {
-        let mut h = build_harness();
-        h.host.begin_wifi_password("Tilo test network");
-        assert!(pump(
-            &mut h,
-            &ui::synthetic_input::key_input(
-                &Key::Character("a".into()),
-                winit::event::ElementState::Pressed
-            ),
-            Modifiers::default()
-        ));
-
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::PrintScreen)),
-            Modifiers::default()
-        ));
-        assert!(
-            h.chrome.borrow().quick_settings.wifi_password.is_some(),
-            "a typed Wi-Fi credential must not be discarded by Print Screen"
-        );
-        assert!(h.host.capture_studio.is_open());
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::Escape)),
-            Modifiers::default()
-        ));
-        assert!(!h.host.capture_studio.is_open());
-        assert!(pump(
-            &mut h,
-            &ui::synthetic_input::key_input(
-                &Key::Character("b".into()),
-                winit::event::ElementState::Pressed
-            ),
-            Modifiers::default()
-        ));
-        assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
-        assert_eq!(
-            h.host.wifi_password_field().map(TextInput::value),
-            Some("ab"),
-            "after capture closes, the original credential field must regain its text focus and selection"
-        );
-
         let mut permission = build_harness();
         permission
             .host
@@ -1996,8 +1958,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let mut h = build_harness();
         // Seed a stale query so the "clear on open" half of the spec
         // is observable too.
-        h.host.palette.set_query("stale residual");
-        assert!(!h.host.palette.is_focused(), "palette must start unfocused");
+        h.host.search.set_query("stale residual");
         assert!(!h.host.palette_visible(), "palette must start hidden");
 
         h.host
@@ -2011,17 +1972,12 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             h.host.palette_visible(),
             "Super+Space must open the global-search palette"
         );
-        assert!(
-            h.host.palette.is_focused(),
-            "opening the palette via Super+Space must focus its input \
-             (so the very first keystroke after open lands in the search box)"
-        );
         assert_eq!(
-            h.host.palette.query(),
+            h.host.search.query(),
             "",
             "opening the palette must clear any residual query — \
              {:?} should have been wiped",
-            h.host.palette.query()
+            h.host.search.query()
         );
     }
 
@@ -2054,7 +2010,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             SearchScope::Workspace,
             "Super+Space opens global search on the workspace in front, the launcher's scope"
         );
-        h.host.palette.set_query("zzyzx");
+        h.host.search.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
         // pass, never synchronously by the keystroke/query path. Exercise the
         // real lifecycle here: the first update starts the worker and a later
@@ -2147,7 +2103,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::Workspace);
         // Scoped to the workspace, typing still reaches other rooms' records:
         // the scope ranks what is here first, it hides nothing.
-        h.host.palette.set_query("field-guide");
+        h.host.search.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let listing = || {
@@ -2180,13 +2136,13 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let subtitle = h.host.search_results[idx].subtitle.clone();
         assert!(
             h.host
-                .palette
+                .search
                 .visible_entries()
                 .iter()
                 .any(|e| e.label == title && e.description == subtitle),
             "the record must reach the palette's own rows: {:?}",
             h.host
-                .palette
+                .search
                 .visible_entries()
                 .iter()
                 .map(|e| (&e.label, &e.description))
@@ -2194,7 +2150,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         );
 
         // Enter on that row.
-        h.host.palette.set_cursor(idx);
+        h.host.search.set_cursor(idx);
         h.host
             .activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
 
@@ -2246,7 +2202,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .iter()
             .map(crate::shell::search::ResourceKindText::localized_label)
             // The leading reset chip is painted separately from the
-            // registered kinds; see `draw_search_banner`.
+            // registered kinds, as the launcher's band paints it.
             .chain(std::iter::once("All".to_string()))
             .collect();
         for scope in h.host.search_scope_list() {

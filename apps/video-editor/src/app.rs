@@ -54,6 +54,7 @@ use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 mod accessibility;
 mod bin_paint;
 mod go_to_clip;
+mod hosting;
 mod inspector_layout;
 mod inspector_paint;
 mod interaction;
@@ -954,6 +955,13 @@ pub struct VideoEditorApp {
     /// the next edit of one of them is the difference from, and what the
     /// optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
+    /// The document the view follows, and the revision of it last presented.
+    live: Option<ui::framework::Live<Project>>,
+    presented: Option<(u64, u64)>,
+    /// Work left for the window by the view's effect handler and stage.
+    later: hosting::Later,
+    /// What the view publishes of the window, as it last showed it.
+    published: std::rc::Rc<std::cell::RefCell<hosting::Published>>,
     /// The inspector's switches, sliding as a click turns them.
     faces: ui::widget::FaceMotions,
     /// The content store the host lent the window: where a render made for
@@ -1112,7 +1120,7 @@ pub struct VideoEditorApp {
     last_tick: Instant,
     rect: Rect,
     /// Where every edit goes: the framework's dispatcher, handed over when
-    /// the editor is hosted ([`ui::framework::ResourceSurface::attach`]). The
+    /// the editor is hosted ([`Self::hosted`]). The
     /// host checks each against the participant's permissions, applies it
     /// through the replayable executor, records it as one undo step and
     /// attributes it in history.
@@ -1324,6 +1332,10 @@ impl VideoEditorApp {
         Self {
             project: Project::new("Untitled"),
             stored: std::rc::Rc::new(Project::new("Untitled")),
+            live: None,
+            presented: None,
+            later: hosting::Later::default(),
+            published: std::rc::Rc::default(),
             faces: ui::widget::FaceMotions::default(),
             content: None,
             clip_edit_bases: HashMap::new(),
@@ -5670,26 +5682,6 @@ impl VideoEditorApp {
         self.seed.selection_initialised = true;
     }
 
-    /// The presentation context Ctrl+K's resource tree is built from: a snapshot
-    /// of the open project plus the live playhead — a steady, level-triggered
-    /// value recomputed each frame.
-    pub(crate) fn video_resource_ctx(&self) -> VideoResourceCtx {
-        VideoResourceCtx {
-            project: self.project.clone(),
-            playhead: self.playhead,
-            // The copy `draw` reads, so the palette cannot report a level the
-            // meter on screen disagrees with.
-            mix: self.mix.clone(),
-        }
-    }
-
-    /// Test-only: plant a local project that has not been published through
-    /// the framework resource yet.
-    #[cfg(test)]
-    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
-        self.project = project;
-    }
-
     /// Test-only: move the playhead so the edits bound to it bind to a known time.
     #[cfg(test)]
     pub(crate) fn set_playhead_for_test(&mut self, playhead: f64) {
@@ -6045,11 +6037,20 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::presence::capability::PublishesPresence
     );
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.run_later();
+        self.follow_document();
         self.take_notice_actions();
         // While a clip-editing drag is in flight, the live preview lives only
         // in the in-memory project — the document isn't written until the
@@ -6159,6 +6160,7 @@ impl Widget for VideoEditorApp {
         // the frame that captures them.
         self.pump_mix_meter();
         self.publish_notices();
+        self.publish_shown();
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
@@ -7293,7 +7295,7 @@ impl VideoEditorApp {
     fn answer_effect(
         &mut self,
         effect: crate::actions::VideoEditorEffect,
-        cx: &mut ui::framework::EffectCx<Project, Self>,
+        cx: &mut ui::framework::EffectCx<Project>,
     ) -> ui::framework::EffectAnswer {
         use crate::actions::VideoEditorEffect;
         match &effect {
@@ -8501,14 +8503,6 @@ impl VideoEditorApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for VideoEditorApp {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
-    }
-}
-
 impl HelpMetrics {
     fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: &DialogType) -> Self {
         let s1 = f64::from(theme.tokens.spacing.s1);
@@ -8567,95 +8561,5 @@ impl VideoEditorApp {
             // bright, enabled Export button directly underneath it.
             ModalAction::primary("Export").enabled(self.export_is_offered()),
         ]
-    }
-}
-
-impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> for VideoEditorApp {
-    fn effect(
-        &mut self,
-        effect: crate::actions::VideoEditorEffect,
-        cx: &mut ui::framework::EffectCx<Project, Self>,
-    ) -> ui::framework::EffectAnswer {
-        crate::agent_timeline::effect(&effect, self.content.as_ref(), cx)
-            .unwrap_or_else(|| self.answer_effect(effect, cx))
-    }
-
-    /// Export needs an encoder in this build; cancelling needs a render
-    /// running.
-    fn effects(&self) -> Vec<ui::framework::EffectStatus> {
-        use crate::actions::VideoEditorEffect;
-        let mut statuses = Vec::new();
-        if let Some(reason) = crate::export::unavailable_reason() {
-            statuses.push(ui::framework::EffectStatus::unavailable(
-                VideoEditorEffect::EXPORT,
-                "export_unavailable",
-                reason,
-            ));
-            statuses.push(ui::framework::EffectStatus::unavailable(
-                VideoEditorEffect::RENDER_TIMELINE,
-                "export_unavailable",
-                reason,
-            ));
-        }
-        if self.export_job.is_none() {
-            statuses.push(ui::framework::EffectStatus::unavailable(
-                VideoEditorEffect::CANCEL_EXPORT,
-                "no_export_running",
-                "No export is running",
-            ));
-        }
-        statuses
-    }
-
-    /// The stored project changed: a local edit the host applied, a
-    /// collaborator's, an undo — or, in History mode, a past version. A drag
-    /// in flight keeps its live preview; the new project is loaded when it
-    /// lets go, exactly as for the standalone editor.
-    fn present(&mut self, project: &std::rc::Rc<Project>) {
-        self.stored = std::rc::Rc::clone(project);
-        if self.drag_is_editing() {
-            self.project_sync.reload_pending = true;
-            return;
-        }
-        self.project = Project::clone(project);
-        self.clip_edit_bases.clear();
-        self.project_sync.reload_pending = false;
-        #[cfg(any(feature = "gst", feature = "decode"))]
-        {
-            self.media_pipeline.monitor_stale = true;
-        }
-    }
-
-    /// A launch naming files imports them, the way a file chooser's pick
-    /// does, and places the first on the timeline. A screenshot or a past
-    /// version of anything else is hermetic.
-    fn attach(&mut self, cx: ui::framework::SurfaceCx<Project>) {
-        self.actions = Some(cx.dispatcher());
-        self.content = cx.content();
-        let mode = cx.mode();
-        self.seed.capture = mode == ui::framework::RunMode::Capture;
-        let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();
-        if launched.is_empty() {
-            self.seed.hermetic = !mode.is_live();
-            self.thumbnails.set_decoding(!self.seed.hermetic);
-            // A still render cannot wait on a background waveform compute.
-            self.render_pipeline.warm_waveforms_sync = self.seed.capture;
-        } else {
-            self.pending_imports = launched;
-            self.media_pipeline.auto_place_imports = true;
-        }
-    }
-
-    /// A `--shots` capture: the scenario's project is loaded; arrange the
-    /// editor around it. See [`Self::stage_capture`].
-    #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_capture(scenario);
-    }
-
-    /// Edits bound to this participant's playhead and measured mix,
-    /// published on the project beside its own actions.
-    fn bound_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Project>> {
-        crate::actions::surface_declarations(&self.video_resource_ctx())
     }
 }

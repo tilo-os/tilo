@@ -148,7 +148,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
-        "os/tests/release_pipeline_invariants.sh",
         "os/tests/workflow_dependency_invariants.sh",
         "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",

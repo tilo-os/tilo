@@ -12,6 +12,9 @@
 
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use neighbour_wire::NeighbourMsg;
 use tilo_browser_peer::Host;
 use tilo_browser_peer::remote_page::RemotePage;
@@ -133,6 +136,7 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
         .bind()
         .await
         .unwrap();
+    support::place(&relay, &laptop.cert).await;
     let native = RelayClient::connect_to_pinned_host(
         endpoint,
         relay.node_addr(),
@@ -161,7 +165,7 @@ async fn a_streamed_page_is_rebuilt_by_the_member_and_its_input_returns() {
         host_device.cert.clone(),
         browser_device.key,
     );
-    browser.join(workspace()).unwrap();
+    browser.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&browser]).await;
     let (tx, rx) = tokio::sync::oneshot::channel();
     browser

@@ -3,25 +3,20 @@
 //!
 //! The project's files, folders and texts are the record's
 //! ([`crate::project`]). Opening and saving real files and the editor's
-//! commands are the surface's [`CodeEditorEffect`]s; what the surface shows
-//! that is not in the document — the files it can open or save, symbols,
-//! search results — are its live rows.
+//! commands are the editor's [`CodeEditorEffect`](crate::effects::CodeEditorEffect)s;
+//! what the editor shows that is not in the document — the files it can open
+//! or save, symbols, search results — are its live rows.
 
 use std::path::PathBuf;
-use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
 #[cfg(feature = "samples")]
-use ui::framework::{Fixture, RunMode};
+use ui::framework::Fixture;
+use ui::framework::{EffectCx, LaunchInput, ResourceApp, ViewCx};
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionRef, Invoke, ResourceKind, SearchEntry};
+use ui::tilo_resource::{ActionRef, Invoke, ResourceKind};
 use ui::widget::Element;
 
 use crate::app::CodeApp;
-use crate::effects::CodeEditorEffect;
 use crate::project::Project;
 
 // The editor's Fluent catalog: what its history entries say.
@@ -30,7 +25,8 @@ ui::embedded_catalog!(static CATALOG, ["en-US"]);
 /// The id the project's embedded terminal is published under.
 pub const TERMINAL_RESOURCE_ID: &str = "code_editor.project/derived/terminal";
 
-/// Framework app: the code editor widget is the surface over [`Project`].
+/// Framework app: the code editor widget, laid out as a bound view over
+/// [`Project`].
 pub struct CodeEditorShell;
 
 /// Every screenshot scenario, over the sample project the fixture writes.
@@ -112,7 +108,7 @@ impl ResourceApp for CodeEditorShell {
         Box::new(
             shell
                 .sidebar(crate::explorer::sidebar(&explorer, &events))
-                .content(cx.surface(app)),
+                .content(crate::app::window(cx, app)),
         )
     }
 
@@ -166,60 +162,6 @@ impl ResourceApp for CodeEditorShell {
             }
             Err(error) => tracing::warn!(%error, "no scratch folder for the sample project"),
         }
-    }
-}
-
-impl ResourceSurface<Project, CodeEditorEffect> for CodeApp {
-    fn present(&mut self, state: &Rc<Project>) {
-        // Adopt shared file records only — never wipe an unpublished local tree.
-        self.adopt_resource_state(state);
-        self.present_terminal(state.terminal_panel.as_ref());
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Project>) {
-        self.set_highlight_waker(cx.waker());
-        self.attach_framework(
-            cx.dispatcher(),
-            cx.mode().is_live(),
-            cx.settings(),
-            cx.live(),
-        );
-        #[cfg(feature = "samples")]
-        if cx.mode() == RunMode::Capture
-            && let Some(sample) = cx.fixture::<SampleProject>()
-        {
-            self.open_sample(&sample.0);
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: CodeEditorEffect,
-        cx: &mut EffectCx<Project, Self>,
-    ) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_row(id)
-    }
-
-    /// The symbols declared in the buffers and the running project search's
-    /// hits; the files are the resource's own entries.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.code_search_entries()
     }
 }
 
@@ -697,6 +639,25 @@ mod tests {
             "metadata must not read buffer bodies"
         );
     }
+    #[test]
+    fn ctrl_end_and_ctrl_home_move_to_the_ends_of_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("ends.rs");
+        std::fs::write(&file, "fn a() {}\n\nfn last() {}").unwrap();
+        let mut app = TestApp::<CodeEditorShell>::launched(&[file.to_str().unwrap()]).unwrap();
+        app.harness().click_named("editor_view").unwrap();
+        let caret = |app: &mut TestApp<CodeEditorShell>| {
+            let observed = app.harness().native_input_snapshot().unwrap();
+            let at = |key: &str| observed.get(key).and_then(serde_json::Value::as_u64);
+            (at("caret_line"), at("caret_column"))
+        };
+        app.harness().set_modifiers(&["ctrl".to_owned()]);
+        app.harness().key("End");
+        assert_eq!(caret(&mut app), (Some(2), Some(12)));
+        app.harness().key("Home");
+        assert_eq!(caret(&mut app), (Some(0), Some(0)));
+    }
+
     #[test]
     fn hosted_tab_and_shift_tab_indent_through_the_document_door_without_leaving_focus() {
         let directory = tempfile::tempdir().unwrap();

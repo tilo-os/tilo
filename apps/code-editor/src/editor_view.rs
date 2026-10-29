@@ -1402,7 +1402,9 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    fn move_home(&mut self, extend: bool) {
+    /// To the line's first non-blank character, then its start; with Ctrl,
+    /// to the start of the file.
+    fn move_home(&mut self, extend: bool, document: bool) {
         self.carets.truncate(1);
         if self.carets.is_empty() {
             self.carets.push(Caret::at(0, 0));
@@ -1415,6 +1417,11 @@ impl EditorView {
         }
         if !extend {
             c.anchor = None;
+        }
+        if document {
+            (c.line, c.col) = (0, 0);
+            self.scroll_to_caret();
+            return;
         }
         // Smart home: first non-whitespace, then column 0.
         let first_non_ws = self.lines.get(c.line).map_or(0, |line| {
@@ -1428,7 +1435,8 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    fn move_end(&mut self, extend: bool) {
+    /// To the end of the line; with Ctrl, to the end of the file.
+    fn move_end(&mut self, extend: bool, document: bool) {
         self.carets.truncate(1);
         if self.carets.is_empty() {
             self.carets.push(Caret::at(0, 0));
@@ -1441,6 +1449,9 @@ impl EditorView {
         }
         if !extend {
             c.anchor = None;
+        }
+        if document {
+            c.line = self.lines.len().saturating_sub(1);
         }
         c.col = self.lines.get(c.line).map_or(0, |l| l.chars().count());
         self.scroll_to_caret();
@@ -2606,8 +2617,8 @@ impl EditorView {
                     self.move_caret(0, 1, shift);
                 }
             }
-            Key::Named(NamedKey::Home) => self.move_home(shift),
-            Key::Named(NamedKey::End) => self.move_end(shift),
+            Key::Named(NamedKey::Home) => self.move_home(shift, ctrl),
+            Key::Named(NamedKey::End) => self.move_end(shift, ctrl),
             Key::Named(NamedKey::PageUp) => {
                 let rows = (self.rect.height() / self.line_h).floor() as isize;
                 self.move_caret(0, -rows, shift);

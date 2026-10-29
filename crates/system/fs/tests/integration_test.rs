@@ -2473,28 +2473,36 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
         };
         let root = uid == 0;
 
-        // No person named: each caller sees the files as their own. The
-        // kernel keeps what one caller was answered for the attribute TTL,
-        // so each case below looks at a fresh mount first.
+        // No person named: each caller sees the files as their own.
         let (dir, session, endpoint, store) = mount_owned_by(None, root).await;
         let home = dir.path();
         if root {
-            // Only root can mount for other accounts: one looking sees the
-            // files as its own, not as the daemon's. (The mount point itself
-            // was already answered to root, waiting for the mount.)
+            // Only root can mount for other accounts. Callers in turn, each
+            // right after the one before: every one sees the files as its
+            // own, never as the daemon's or the previous caller's.
             if std::path::Path::new("/usr/bin/setpriv").is_file() {
-                let out = std::process::Command::new("/usr/bin/setpriv")
-                    .args(["--reuid", "65534", "--regid", "65534", "--clear-groups"])
-                    .args(["stat", "-c", "%u:%g"])
-                    .arg(home.join(".config"))
-                    .output()
-                    .expect("setpriv runs");
-                assert_eq!(
-                    String::from_utf8_lossy(&out.stdout),
-                    "65534:65534\n",
-                    "{}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
+                let stat_as = |id: u32| {
+                    let out = std::process::Command::new("/usr/bin/setpriv")
+                        .args(["--reuid", &id.to_string(), "--regid", &id.to_string()])
+                        .args(["--clear-groups", "stat", "-c", "%u:%g"])
+                        .arg(home)
+                        .arg(home.join(".config"))
+                        .output()
+                        .expect("setpriv runs");
+                    assert!(
+                        out.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                    String::from_utf8_lossy(&out.stdout).into_owned()
+                };
+                for id in [65534, 65533, 0, 65534] {
+                    assert_eq!(
+                        stat_as(id),
+                        format!("{id}:{id}\n{id}:{id}\n"),
+                        "caller {id}"
+                    );
+                }
             }
         } else {
             // A guest as ush builds one: a user namespace mapping only the

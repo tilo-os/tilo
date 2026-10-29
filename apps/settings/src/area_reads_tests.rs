@@ -14,7 +14,6 @@ use crate::SettingsShell;
 use crate::categories::Category;
 use crate::effects::{defer_area_reads_in_tests, pane_row_id};
 
-use crate::settings_app::SettingsApp;
 use ui::framework::testing::TestApp;
 
 /// A window that reads every area before its first frame.
@@ -32,7 +31,7 @@ fn reading_after() -> TestApp<SettingsShell> {
 
 /// The areas that have read, by profiling name.
 fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         crate::area::registry()
             .live_areas
             .iter()
@@ -277,14 +276,7 @@ fn a_window_publishes_every_area_a_little_after_its_first_frame() {
 #[test]
 fn asking_for_a_host_intent_reads_no_display() {
     let mut window = reading_after();
-    let intent = window
-        .surface::<SettingsApp, _>(|settings| {
-            <SettingsApp as ui::framework::ResourceSurface<
-                crate::resource::Settings,
-                crate::effects::SettingsEffect,
-            >>::take_host_intent(settings)
-        })
-        .expect("the settings surface is mounted");
+    let intent = window.harness().take_host_intent();
     assert!(intent.is_none(), "nothing was asked of the host");
     assert!(
         !read(&mut window).contains(&"settings.rows.displays"),

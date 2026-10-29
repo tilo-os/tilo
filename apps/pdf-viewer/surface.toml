@@ -3,7 +3,7 @@
 [[resources]]
 kind = "pdf.document"
 label = "PDF"
-version = 3
+version = 4
 fields = [
   { path = "source", type = "Bytes", readonly = true },
   { path = "source_name", type = "String", readonly = true },

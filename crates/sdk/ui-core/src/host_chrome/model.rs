@@ -10,10 +10,10 @@ use fluent::FluentArgs;
 use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, ResourceSpec};
 
 use super::edit::EDIT_RESOURCE;
+use crate::history_mode::door::{HISTORY_RESOURCE, encode_entry};
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
 use crate::search::request::SEARCH_RESOURCE;
-use crate::standalone_history_host::{HISTORY_RESOURCE, HISTORY_SESSION_KIND, encode_entry};
 use crate::widget::HistoryEntryId;
 
 /// How many recent changes a History menu lists.
@@ -28,7 +28,7 @@ pub(crate) enum CommandGroup {
     /// The app's own document and effect actions.
     AppActions,
     AppViews,
-    /// Show or hide History, and compare selected changes.
+    /// Show or hide History.
     History,
     /// Recent changes, newest first.
     RecentChanges,
@@ -153,9 +153,6 @@ pub(crate) fn host_commands(
         }
     }
 
-    let session = resources
-        .iter()
-        .find(|resource| resource.kind == HISTORY_SESSION_KIND);
     let history = find(HISTORY_RESOURCE);
     if let Some(history) = history {
         let toggle = match action(history, "hide") {
@@ -166,13 +163,6 @@ pub(crate) fn host_commands(
         };
         commands.extend(
             toggle.map(|command| command.with_shortcut(HostShortcut::History, conventions)),
-        );
-    }
-    if let Some(session) = session {
-        commands.extend(
-            action(session, "compare")
-                .and_then(|spec| HostCommand::new(session, spec, CommandGroup::History))
-                .map(|command| command.with_label("host-history-compare")),
         );
     }
     if let Some(history) = history
@@ -202,9 +192,8 @@ fn action<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ActionSpec> {
     resource.actions.iter().find(|action| action.id == id)
 }
 
-/// The host's own resources are presented by their own commands above; the
-/// broker-facing `tilo.history` door is the same History.
+/// The host's own resources are presented by their own commands above.
 fn is_app_resource(resource: &ResourceSpec) -> bool {
     let id = resource.id.as_str();
-    !(id.starts_with("tilo.host") || id == crate::app::HISTORY_ACTION_RESOURCE)
+    !id.starts_with("tilo.host")
 }

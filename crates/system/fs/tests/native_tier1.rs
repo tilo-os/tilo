@@ -43,18 +43,17 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 /// this account, never to root or to the author's uid.
 const LOCAL_OWNER: (u32, u32) = (4242, 4242);
 
-fn required() -> bool {
-    std::env::var("TILO_REQUIRE_FANOTIFY").is_ok_and(|v| v == "1")
+fn unavailable(why: std::fmt::Arguments<'_>) {
+    tilo_test_env::capability_unavailable(tilo_test_env::Capability::Fanotify, why);
 }
 
 /// The two store volumes, or `None` (after saying why) when this machine
 /// cannot run Tier 1.
 fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     let skip = |why: String| {
-        assert!(!required(), "{test}: TILO_REQUIRE_FANOTIFY=1 but {why}");
-        eprintln!(
-            "skipping {test}: {why} (set TILO_FS_NATIVE_STORES=/a:/b to two dedicated Btrfs volumes and run as root)"
-        );
+        unavailable(format_args!(
+            "{test}: {why} (set TILO_FS_NATIVE_STORES=/a:/b to two dedicated Btrfs volumes and run as root)"
+        ));
         None
     };
     let Some(spec) = std::env::var_os("TILO_FS_NATIVE_STORES") else {
@@ -769,7 +768,7 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
         return;
     };
     if Command::new("git").arg("--version").output().is_err() {
-        assert!(!required(), "git is not installed");
+        unavailable(format_args!("git is not installed"));
         return;
     }
     let mut pair = start_pair(&a, &b);
@@ -1117,7 +1116,7 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
         return;
     };
     if Command::new("git").arg("--version").output().is_err() {
-        assert!(!required(), "git is not installed");
+        unavailable(format_args!("git is not installed"));
         return;
     }
     let mut pair = start_pair(&a, &b);
@@ -1452,7 +1451,7 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         return;
     };
     if Command::new("sqlite3").arg("--version").output().is_err() {
-        assert!(!required(), "sqlite3 is not installed");
+        unavailable(format_args!("sqlite3 is not installed"));
         return;
     }
     let mut pair = start_pair(&a, &b);

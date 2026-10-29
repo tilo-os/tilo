@@ -31,7 +31,7 @@
 //!     one [`StoreItem`] stream.
 //!   * [`actions`]         — dispatches Add / Install / Remove via app-host.
 //!   * [`worker`]          — the serialized catalogue and package worker.
-//!   * [`app`]             — the `StoreApp` surface.
+//!   * [`app`]             — the `StoreApp` window.
 //!   * [`bindings`]        — the surface's controls, bound to the resource.
 //!   * [`fixture`]         — the catalogue screenshots show, and its artwork.
 //!   * [`widgets`]         — the catalogue card and the app icon.

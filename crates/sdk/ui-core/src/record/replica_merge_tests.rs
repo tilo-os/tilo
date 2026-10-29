@@ -220,3 +220,136 @@ fn the_room_answering_for_a_record_wakes_its_readers_until_it_arrives() {
         .unwrap();
     assert!(!store.room_answered(&want.id), "something of it arrived");
 }
+
+fn large_text_record() -> (RecordOwners, RecordStore, RecordCheckout, ObjId, String) {
+    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    let source = "fn source() { /* café */ }\n".repeat(900);
+    store
+        .reserve_record(&want)
+        .unwrap()
+        .initialize(|doc| {
+            let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&body, 0, 0, &source).unwrap();
+            put_text(doc, "beside", "unchanged");
+            Ok(())
+        })
+        .unwrap();
+    let body = store
+        .read(&want.id, |doc| doc.get(&ROOT, "body").unwrap().unwrap().1)
+        .unwrap();
+    (owners, store, want, body, source)
+}
+
+#[test]
+fn an_ahead_snapshot_keeps_exact_text_history_actor_and_bystander() {
+    let (_owners, store, want, body, source) = large_text_record();
+    let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    store
+        .reserve_record(&other)
+        .unwrap()
+        .initialize(|doc| {
+            put_text(doc, "body", "another record");
+            Ok(())
+        })
+        .unwrap();
+    let bystander = store.with(&other.id, AutoCommit::save).unwrap();
+    let actor = store.read(&want.id, |doc| doc.get_actor().clone()).unwrap();
+    let mut peer = store.read(&want.id, |doc| doc.clone().fork()).unwrap();
+    let before = peer.get_heads();
+    // Metadata-only lookup must test the same existing-change condition as
+    // the old full-change lookup, including the large creation change.
+    for hash in &before {
+        assert_eq!(
+            peer.get_change_by_hash(hash).unwrap().hash(),
+            peer.get_change_meta_by_hash(hash).unwrap().hash
+        );
+    }
+    peer.splice_text(&body, 0, 0, "// remote\n").unwrap();
+    peer.commit();
+    let heads = peer.get_heads();
+    store
+        .with(&want.id, |doc| {
+            for hash in &heads {
+                assert!(doc.get_change_by_hash(hash).is_none());
+                assert!(doc.get_change_meta_by_hash(hash).is_none());
+            }
+        })
+        .unwrap();
+    let snapshot = peer.save();
+    let (changed, observed) = store
+        .merge_replica(
+            &want,
+            collab_types::DocumentMutation::Snapshot(snapshot.clone()),
+        )
+        .unwrap();
+    assert!(changed);
+    assert_eq!(observed, heads);
+    store
+        .with(&want.id, |doc| {
+            assert_eq!(doc.text(&body).unwrap(), format!("// remote\n{source}"));
+            assert_eq!(doc.get_heads(), heads);
+            assert_eq!(doc.get_actor(), &actor);
+            assert_eq!(identity(doc).as_ref(), Some(&want));
+            assert_eq!(text(doc, "beside").as_deref(), Some("unchanged"));
+            assert_eq!(doc.get_changes_meta(&before).len(), 1);
+            assert!(doc.get_missing_deps(&[]).is_empty());
+        })
+        .unwrap();
+    let (changed, observed) = store
+        .merge_replica(&want, collab_types::DocumentMutation::Snapshot(snapshot))
+        .unwrap();
+    assert!(!changed, "an identical snapshot is a no-op");
+    assert_eq!(observed, heads);
+    assert_eq!(store.with(&other.id, AutoCommit::save).unwrap(), bystander);
+}
+
+#[test]
+fn a_divergent_snapshot_preserves_both_branches_and_local_actor() {
+    let (_owners, store, want, body, source) = large_text_record();
+    let actor = store.read(&want.id, |doc| doc.get_actor().clone()).unwrap();
+    let mut peer = store.read(&want.id, |doc| doc.clone().fork()).unwrap();
+    let before = peer.get_heads();
+    peer.splice_text(&body, source.chars().count(), 0, "// remote\n")
+        .unwrap();
+    peer.commit();
+    let remote_heads = peer.get_heads();
+    store
+        .with(&want.id, |doc| {
+            doc.splice_text(&body, 0, 0, "// local\n").unwrap();
+            doc.commit();
+        })
+        .unwrap();
+    let local_heads = store.with(&want.id, AutoCommit::get_heads).unwrap();
+    let snapshot = peer.save();
+    let (changed, observed) = store
+        .merge_replica(
+            &want,
+            collab_types::DocumentMutation::Snapshot(snapshot.clone()),
+        )
+        .unwrap();
+    assert!(changed);
+    assert_eq!(observed, remote_heads);
+    store
+        .with(&want.id, |doc| {
+            assert_eq!(
+                doc.text(&body).unwrap(),
+                format!("// local\n{source}// remote\n")
+            );
+            assert_eq!(doc.get_actor(), &actor);
+            let heads = doc.get_heads();
+            assert_eq!(heads.len(), 2);
+            assert!(heads.contains(&local_heads[0]));
+            assert!(heads.contains(&remote_heads[0]));
+            assert_eq!(doc.get_changes_meta(&before).len(), 2);
+            assert!(doc.get_missing_deps(&[]).is_empty());
+        })
+        .unwrap();
+    assert!(
+        !store
+            .merge_replica(&want, collab_types::DocumentMutation::Snapshot(snapshot))
+            .unwrap()
+            .0
+    );
+}

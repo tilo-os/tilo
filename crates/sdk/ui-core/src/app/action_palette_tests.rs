@@ -68,25 +68,6 @@ impl crate::search::SearchProvider for LazyProvider {
 /// One open resource exporting a [`Flip`] action, plus a searchable
 /// People provider.
 struct Publisher;
-struct ConsumingKeyboardRoot;
-impl Widget for ConsumingKeyboardRoot {
-    crate::testing::inert_widget_methods!(leaf_layout);
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if matches!(
-            event,
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-        ) {
-            ctx.state
-                .document_mut()
-                .put(&ROOT, "escaped_keyboard", true)
-                .unwrap();
-            *ctx.handled = true;
-        }
-    }
-    fn name(&self) -> &'static str {
-        "consuming-keyboard-root"
-    }
-}
 impl Widget for Publisher {
     crate::provides!(
         dyn crate::resources::PublishesResources,
@@ -308,76 +289,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
 
         app.invalidate_widget_resource_cache();
         assert!(app.actions.open_resource_search_cache.borrow().is_none());
-    }
-
-    // Case `visible_search_uses_existing_palette_and_fresh_authority`.
-    {
-        for revoke in [false, true] {
-            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
-            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-            app.enable_document_history_chrome();
-            app.init_layout();
-            let node = app
-                .history_layout
-                .unwrap()
-                .search
-                .expect("retained Search button");
-            assert!(app.is_history_node(node), "Search is admitted local chrome");
-            let button = app
-                .document_history
-                .search_mut()
-                .expect("palette-capable host shows Search");
-            assert_eq!(button.test_id(), Some("standalone-search-open"));
-            assert!(button.perform_action(
-                &crate::a11y::Action::Activate,
-                &[],
-                &mut crate::widget::Edits::lend(&mut app.state.doc),
-                &app.state.root
-            ));
-            assert_eq!(app.dispatch_history_controls(), 1);
-            assert!(
-                app.action_palette().is_some(),
-                "real semantic button opens existing palette"
-            );
-            app.actions
-                .action_palette
-                .as_deref_mut()
-                .unwrap()
-                .set_query("Flip it");
-            assert!(
-                app.action_palette()
-                    .unwrap()
-                    .result_labels()
-                    .iter()
-                    .any(|label| label.contains("Flip it"))
-            );
-            if revoke {
-                app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-                    "restricted",
-                ));
-            }
-            assert!(app.action_palette_handle_key(&synth_enter()));
-            assert_eq!(
-                app.state.doc.get(&ROOT, "flipped").unwrap().is_some(),
-                !revoke,
-                "activation re-resolves current permission rather than cached row authority"
-            );
-            assert!(
-                !app.collect_resources()
-                    .iter()
-                    .any(|resource| resource.id.as_str() == crate::search::request::SEARCH_RESOURCE),
-                "host Search never becomes an application/broker resource"
-            );
-            let address =
-                tilo_actions::ActionAddress::new(crate::search::request::SEARCH_RESOURCE, "open");
-            assert!(
-                app.invoke_resource_action(
-                    ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)
-                )
-                .is_err(),
-                "broker admission and matching actor names do not grant host UI locality"
-            );
-        }
     }
 
     // Case `denied_lazy_search_action_never_crosses_the_host_permission_door`.
@@ -612,107 +523,6 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
 
 #[test]
 fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
-    // Case `tab_focused_host_buttons_keep_enter_and_space_out_of_consuming_app`.
-    {
-        for open_search in [false, true] {
-            for key in [NamedKey::Enter, NamedKey::Space] {
-                let mut app =
-                    App::new_with_controlled_inputs(State::new(), Box::new(ConsumingKeyboardRoot));
-                app.enable_document_history_chrome();
-                app.init_layout();
-                let layout = app.history_layout.unwrap();
-                let target = if open_search {
-                    layout.search.unwrap()
-                } else {
-                    layout.toolbar.unwrap()
-                };
-                app.set_focused_node(None);
-                let mut tab = synth_enter();
-                if let WindowEvent::KeyboardInput { event, .. } = &mut tab {
-                    event.logical_key = Key::Named(NamedKey::Tab);
-                }
-                // Exercise the real native Tab event route, rather than assigning
-                // the target directly or activating the Button as an AT action.
-                for _ in 0..app.focusable_order.len() {
-                    assert!(app.handle_tab_navigation(&tab, None));
-                    if app.focused_node == Some(target) {
-                        break;
-                    }
-                }
-                assert_eq!(app.focused_node, Some(target), "Tab reaches host control");
-                let ime = WindowEvent::Ime(winit::event::Ime::Commit("composed text".into()));
-                let mut handled = false;
-                let mut focus = None;
-                assert!(app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus));
-                assert!(
-                    app.state
-                        .doc
-                        .get(&ROOT, "escaped_keyboard")
-                        .unwrap()
-                        .is_none(),
-                    "IME input focused on host chrome must never reach app content"
-                );
-                let mut event = synth_enter();
-                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
-                    event.logical_key = Key::Named(key);
-                }
-                let mut handled = false;
-                let mut focus = None;
-                assert!(app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus));
-                assert!(
-                    app.state
-                        .doc
-                        .get(&ROOT, "escaped_keyboard")
-                        .unwrap()
-                        .is_none(),
-                    "focused chrome input must never reach consuming app content"
-                );
-                assert!(!handled, "Button leaves activation to the native fallback");
-                app.handle_unconsumed_activation_key(&event, &mut handled);
-                assert!(handled);
-                assert_eq!(app.dispatch_control_invocations(), 1);
-                assert_eq!(app.action_palette().is_some(), open_search);
-                assert_eq!(app.document_history.is_open(), !open_search);
-                assert!(
-                    app.state
-                        .doc
-                        .get(&ROOT, "escaped_keyboard")
-                        .unwrap()
-                        .is_none()
-                );
-                // Positive control: the same fixture consumes and mutates when
-                // its own app node receives this event with chrome unfocused.
-                app.set_focused_node(Some(layout.app));
-                let mut handled = false;
-                app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
-                assert!(handled);
-                assert_eq!(
-                    app.state
-                        .doc
-                        .get(&ROOT, "escaped_keyboard")
-                        .unwrap()
-                        .and_then(|(value, _)| value.as_bool()),
-                    Some(true)
-                );
-                app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
-                let mut handled = false;
-                app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus);
-                assert!(
-                    handled,
-                    "app-focused IME reaches the same consuming fixture"
-                );
-                assert_eq!(
-                    app.state
-                        .doc
-                        .get(&ROOT, "escaped_keyboard")
-                        .unwrap()
-                        .and_then(|(value, _)| value.as_bool()),
-                    Some(true)
-                );
-            }
-        }
-    }
-
     // Case `ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo`.
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
@@ -959,7 +769,7 @@ fn host_commands_present_host_services_and_enter_the_palette_door() {
         app.state.doc.put(ROOT, "title", title).unwrap();
         app.state.commit_action(None, None);
     }
-    app.enable_document_history_chrome();
+    app.present_history_in_header();
     app.init_layout();
     let platform = app.input.platform;
 
@@ -974,69 +784,11 @@ fn host_commands_present_host_services_and_enter_the_palette_door() {
     );
     let flip = find(&commands, CommandGroup::AppActions, "flip");
     assert_eq!(flip.label, "Flip it");
-    let show = find(&commands, CommandGroup::History, "open");
-    assert_eq!(show.label, "Show History");
-    assert!(show.enabled);
-    assert_eq!(
-        show.shortcut,
-        Some(HostShortcut::History.shortcut(platform))
-    );
-    assert!(
-        !commands
-            .iter()
-            .any(|command| command.binding.address().action == "compare"),
-        "nothing to compare before History opens"
-    );
-    let recent: Vec<_> = commands
-        .iter()
-        .filter(|command| command.group == CommandGroup::RecentChanges)
-        .cloned()
-        .collect();
-    assert_eq!(recent.len(), 2);
-    assert!(
-        recent
-            .iter()
-            .all(|command| command.enabled && command.label.contains(" · "))
-    );
-    assert!(
-        commands
-            .iter()
-            .all(|command| command.binding.address().resource != "tilo.history"),
-        "the broker History door is the History menu, not a second copy"
-    );
 
     // An app action enters the same door as the palette and is undoable
     // from the Edit command.
     assert!(app.invoke_host_command(&flip.invocation().unwrap()));
     assert!(app.state.doc.get(ROOT, "flipped").unwrap().is_some());
-
-    // Show History opens the pane; the item becomes Hide History, and
-    // Compare waits for two selected changes.
-    assert!(app.invoke_host_command(&show.invocation().unwrap()));
-    assert!(app.document_history.is_open());
-    let commands = app.host_commands(false);
-    let hide = find(&commands, CommandGroup::History, "hide");
-    assert_eq!(hide.label, "Hide History");
-    assert!(!find(&commands, CommandGroup::History, "compare").enabled);
-    assert!(app.invoke_host_command(&hide.invocation().unwrap()));
-    assert!(!app.document_history.is_open());
-
-    // A recent change opens History at that change: the newest is the flip.
-    let newest = app
-        .host_commands(true)
-        .into_iter()
-        .find(|command| command.group == CommandGroup::RecentChanges)
-        .unwrap();
-    assert!(app.invoke_host_command(&newest.invocation().unwrap()));
-    let snapshot = app.document_history_snapshot().unwrap().unwrap();
-    assert_eq!(
-        snapshot.selection,
-        vec![snapshot.entries.last().unwrap().id]
-    );
-
-    // The keyboard shortcut is the same command.
-    assert!(app.invoke_host_shortcut(HostShortcut::History));
-    assert!(!app.document_history.is_open());
 
     // Undo through the Edit command reverts the flip.
     let undo = find(&app.host_commands(false), CommandGroup::Undo, "undo");

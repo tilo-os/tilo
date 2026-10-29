@@ -651,7 +651,7 @@ mod tests {
     struct PrivateBus {
         daemon: std::process::Child,
         address: String,
-        _directory: tempfile::TempDir,
+        directory: tempfile::TempDir,
     }
 
     impl PrivateBus {
@@ -675,7 +675,7 @@ mod tests {
             Self {
                 daemon,
                 address: address.trim().to_owned(),
-                _directory: directory,
+                directory,
             }
         }
 
@@ -851,7 +851,7 @@ mod tests {
         let proxy = dbus_proxy::spawn_filtered_proxy(
             &dbus_proxy::find_proxy_binary().expect("the builder image installs xdg-dbus-proxy"),
             &bus.address,
-            &bus._directory.path().join("app-proxy"),
+            &bus.directory.path().join("app-proxy"),
             &filter,
         )
         .expect("the launcher's proxy starts");

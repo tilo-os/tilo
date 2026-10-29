@@ -11,20 +11,15 @@
 //! is the reader's own view state and its [`BooksEffect`]s, never the
 //! document's.
 
-use std::rc::Rc;
-
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, Effected, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SeedCx,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{LaunchInput, ResourceApp, SeedCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::prelude::Effect;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Collection, Derived, Id, Invoke, JsonSchema, Map, Model,
-    Refusal, resource,
+    self, ActionCx, Atom, Collection, Derived, Id, Invoke, JsonSchema, Map, Model, Refusal,
+    resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -872,7 +867,8 @@ pub(crate) fn mark_place_id(kind: AnnoKind, comment: bool, id: Uuid) -> String {
     format!("{kind}:{id}")
 }
 
-/// Books: the reader widget is the surface over the [`Ebook`] library.
+/// Books: the reader widget, laid out as a bound view over the [`Ebook`]
+/// library.
 pub struct EbookShell;
 
 impl ResourceApp for EbookShell {
@@ -900,7 +896,7 @@ impl ResourceApp for EbookShell {
         // annotation or match it is anchored at.
         let opens = app.opens();
         cx.on_open(move |anchor: &str| opens.borrow_mut().push(anchor.to_owned()));
-        cx.surface(app)
+        crate::app::window(cx, app)
     }
 
     fn label(state: &Ebook) -> String {
@@ -1124,75 +1120,6 @@ pub enum BooksEffect {
     /// Fetches a book a collaborator shared from the workspace and opens it.
     #[effect(row, job, cancellable, idempotent)]
     Download { book: String },
-}
-
-impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
-    fn present(&mut self, state: &Rc<Ebook>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Ebook>) {
-        self.attach_host(&cx);
-    }
-
-    const APPLIED: bool = true;
-
-    /// A removal applied here, from the shelf, the palette, a script or an
-    /// agent once the person agreed: this device forgets the book's file.
-    fn applied(&mut self, action: &<Ebook as tilo_resource::Resource>::Action) {
-        if let EbookAction::RemoveFromLibrary(removed) = &action.operation {
-            self.forget_removed(&removed.book);
-        }
-    }
-
-    #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or("read"));
-    }
-
-    fn effect(&mut self, effect: BooksEffect, cx: &mut EffectCx<Ebook, Self>) -> EffectAnswer {
-        match effect {
-            BooksEffect::OpenBook => Ok(Self::choose_book(cx)),
-            BooksEffect::OpenStored { content, name } => self.open_stored(content, name, cx),
-            effect => {
-                let invocation = cx.invocation().unwrap_or_default();
-                let entries: Vec<LibraryEntry> = cx
-                    .live()
-                    .with(|state| state.entries.values().cloned().collect());
-                let answer = self.begin_effect(invocation, effect, &entries)?;
-                if matches!(answer, Effected::Pending) {
-                    self.await_effect(invocation, cx.reply());
-                }
-                Ok(answer)
-            }
-        }
-    }
-
-    /// Where the reader is in the open book: its page chrome, a row beside
-    /// the library.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.reading_row().into_iter().collect()
-    }
-
-    /// The reading position, or the book, chapter, annotation or location a
-    /// search hit names, when the published page leaves it out.
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.reading_row()
-            .filter(|row| row.id() == id)
-            .or_else(|| self.search_row(id))
-    }
-
-    /// The library's edits bound to where the reader is: the page's
-    /// bookmark and notes, and the selection's highlight and note.
-    fn bound_declarations(&self) -> Vec<ActionDecl<Ebook>> {
-        self.reading_declarations()
-    }
-
-    /// The books with their chapters' prose, their annotations and the
-    /// library's remote books: what the reader holds, not the document.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.book_search_entries()
-    }
 }
 
 /// A dispatcher of the library for tests that drive the reader (or one of

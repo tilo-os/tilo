@@ -9,7 +9,7 @@
 //!
 //! Which relays a person has is what this device enrolled for them: the
 //! home-peer registrations beside the identity keys (`home-peers.json`), for
-//! this device's user and their personal workspace. A request names a relay
+//! this device's user. A request names a relay
 //! by its endpoint id; one that is not among them is refused.
 
 use std::io::{BufRead, BufReader};
@@ -63,8 +63,6 @@ struct Registration {
     label: String,
     user_public_key: String,
     #[serde(default)]
-    relay_workspace_ids: Vec<u64>,
-    #[serde(default)]
     relay_endpoint: Option<serde_json::Value>,
     #[serde(default)]
     environments: tilo_relay_protocol::RelayEnvironments,
@@ -86,8 +84,8 @@ pub fn identity_root(identity: &IdentityPaths) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The person's relays: registrations of this device's user that keep their
-/// personal workspace. Anything unreadable is no relay.
+/// The person's relays: the registrations of this device's user. Anything
+/// unreadable is no relay.
 pub fn relays(identity: &IdentityPaths) -> Vec<RelayPeer> {
     let Ok(user) = tilo_user_identity::persist::read_public_key(&identity.user_pubkey) else {
         return Vec::new();
@@ -120,7 +118,6 @@ pub fn relays_with_offers(
     let mut out: Vec<RelayPeer> = registrations
         .into_iter()
         .filter(|r| r.user_public_key.eq_ignore_ascii_case(&user_hex))
-        .filter(|r| r.relay_workspace_ids.contains(&workspace))
         .map(|r| RelayPeer {
             label: if r.label.trim().is_empty() {
                 r.relay_service_node_id.chars().take(8).collect()
@@ -413,7 +410,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_persons_relays_are_their_registrations_that_keep_their_personal_workspace() {
+    fn a_persons_relays_are_their_registrations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("home-peers.json");
         let me = [7u8; 32];
@@ -440,7 +437,11 @@ mod tests {
         )
         .unwrap();
         let relays = relays_with_offers(&path, &me, &tilo_relay_protocol::RelayOffers::new());
-        assert_eq!(relays.len(), 2);
+        assert_eq!(
+            relays.len(),
+            3,
+            "every registration of the person's, no one else's"
+        );
         let home = relays.iter().find(|peer| peer.label == "Home").unwrap();
         assert_eq!(home.relay, relay);
         assert_eq!(home.workspace, workspace);

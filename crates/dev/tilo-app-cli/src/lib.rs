@@ -3045,10 +3045,8 @@ mod tests {{
         fn draw(&mut self, scene: &mut ui::vello::Scene, transform: ui::kurbo::Affine, text: &mut ui::TextRenderer, theme: &ui::Theme, presence: &ui::presence::PresenceCtx) {{ self.root.draw(scene, transform, text, theme, presence); }}
         fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
         fn get_rect(&self) -> ui::kurbo::Rect {{ self.root.get_rect() }}
-    }}
-
-    impl ui::prelude::ResourceSurface<GraphFlags> for GraphForm {{
-        fn present(&mut self, _: &std::rc::Rc<GraphFlags>) {{}}
+        fn as_any(&self) -> Option<&dyn std::any::Any> {{ Some(self) }}
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {{ Some(self) }}
     }}
 
     struct GraphApp;
@@ -3063,7 +3061,7 @@ mod tests {{
             cx.route_graph_bool(context.values(), "shared-enabled", GraphFlags::paths().enabled);
             let document = graph_document();
             let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
-            cx.surface(GraphForm {{ root, values: context.values().clone() }})
+            Box::new(GraphForm {{ root, values: context.values().clone() }})
         }}
     }}
 
@@ -10140,7 +10138,7 @@ fn app_readme(spec: &AppSpec) -> String {
     if spec.template == Template::Document {
         let _ = writeln!(
             out,
-            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
+            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive; Undo takes it back, so it runs at once and every surface offers Undo."
         );
     }
     if spec.template == Template::Collection {

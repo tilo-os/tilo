@@ -39,7 +39,7 @@ impl ShellOverlayHost {
         mut self,
         config: settings_store::hardware::QuickSettingsConfig,
     ) -> Self {
-        self.qs_root = QuickSettingsRoot::with_config(config);
+        self.quick_settings = quick_settings::QuickSettingsPanel::with_arrangement(config);
         self
     }
 
@@ -70,13 +70,13 @@ impl ShellOverlayHost {
     /// displays other than the one in use.
     #[cfg(test)]
     pub(crate) fn machine_banner_rects(&self) -> &[Rect] {
-        &self.machine_banners
+        self.machine_banners()
     }
 
     /// The displays the last paint edged for a ringing call.
     #[cfg(test)]
     pub(crate) fn call_edge_rects(&self) -> &[Rect] {
-        &self.call_edges
+        self.call_edges()
     }
 
     /// The QS action dispatcher, for callers that actuate hardware
@@ -150,7 +150,6 @@ impl ShellOverlayHost {
     /// summoned from, the way choosing it in any clipboard manager does;
     /// browsed from Quick Settings, it is only copied.
     pub(super) fn choose_clipboard_item(&mut self, id: [u8; 32]) {
-        self.qs_selected_clipboard = Some(id);
         let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(id));
         let Some(chrome) = self.chrome.as_ref() else {
             return;
@@ -234,9 +233,17 @@ impl ShellOverlayHost {
     }
 
     /// Where the hardware-key readout (volume, brightness) was last
-    /// painted; `None` while none is up.
+    /// painted on the display it is pinned to, the one the person works on;
+    /// `None` while none is up.
     pub fn osd_rect(&self) -> Option<Rect> {
-        self.osd_painted.get()
+        self.osd_painted.borrow().first().copied()
+    }
+
+    /// Every slab of the hardware-key readout the last paint drew, the one
+    /// on the display the person works on first: a brightness readout also
+    /// shows on each display that changed ([`crate::shell::osd::slab_displays`]).
+    pub fn osd_rects(&self) -> Vec<Rect> {
+        self.osd_painted.borrow().clone()
     }
 
     /// Paint the transient hardware-key readout, if one is up.
@@ -247,7 +254,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.osd_painted.set(None);
+        self.osd_painted.borrow_mut().clear();
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -293,13 +300,24 @@ impl ShellOverlayHost {
         if alpha <= 0.0 {
             return;
         }
-        // Clear of the caret there.
-        let area = crate::shell::osd::OsdArea {
-            viewport: pin.display,
-            caret: self.text_caret,
-        };
-        self.osd_painted
-            .set(osd.draw(scene, transform, text_renderer, theme, area, alpha));
+        // A brightness readout also shows on each display that changed, with
+        // the same motion and expiry: one readout, several slabs.
+        let outputs: Vec<(&str, Rect)> = self
+            .outputs
+            .iter()
+            .map(|output| (output.connector.as_str(), output.rect()))
+            .collect();
+        let mut painted = self.osd_painted.borrow_mut();
+        for display in crate::shell::osd::slab_displays(&osd, pin.display, &outputs) {
+            // Clear of the caret there.
+            let area = crate::shell::osd::OsdArea {
+                viewport: display,
+                caret: self.text_caret,
+            };
+            if let Some(rect) = osd.draw(scene, transform, text_renderer, theme, area, alpha) {
+                painted.push(rect);
+            }
+        }
     }
 
     /// Paint the passing acknowledgement ("Enrollment token copied"), if one

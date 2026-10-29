@@ -99,3 +99,37 @@ fn a_joined_replica_refuses_an_expired_authority_or_a_forged_roster_certificate(
         "a roster certificate's signature is checked"
     );
 }
+
+#[test]
+fn a_relayed_document_is_decided_by_the_rooms_governance_without_being_taken_in() {
+    let (mut peer, _, member, _, now) = crate::admission_tests::seeded();
+    let held = peer.document("test.app", "tab:1").unwrap();
+    let message = peer
+        .publication_mut()
+        .publish_document("test.app", "tab:1", held.clone(), &member, now)
+        .unwrap();
+    let author = member.verifying_key().to_bytes();
+    assert_eq!(
+        peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &message, now),
+        Ok(true)
+    );
+    assert_eq!(
+        peer.document("test.app", "tab:1"),
+        Some(held),
+        "deciding takes nothing in"
+    );
+    assert!(
+        peer.decide_relayed_document(TransportOrigin::RelayDelta([9; 32]), &message, now)
+            .is_err(),
+        "a write is its relaying device's own"
+    );
+    let mut tampered = message;
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut tampered {
+        envelope.payload.push(0);
+    }
+    assert!(
+        peer.decide_relayed_document(TransportOrigin::RelayDelta(author), &tampered, now)
+            .is_err(),
+        "its signature is checked"
+    );
+}

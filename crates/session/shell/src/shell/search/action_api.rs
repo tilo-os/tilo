@@ -971,167 +971,161 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn argument_binding_follows_the_declared_parameters_exactly() {
-        {
-            let args = ActionArgs::bind(
+        let args = ActionArgs::bind(
+            PARAMS,
+            [
+                ("text".to_string(), text("hello")),
+                ("at".to_string(), ArgValue::Integer(4)),
+            ],
+        )
+        .expect("well-formed arguments must bind");
+        assert_eq!(args.text("text"), Some("hello"));
+        assert_eq!(args.integer("at"), Some(4));
+    }
+
+    // An optional parameter may be left out; a required one may not.
+    #[test]
+    fn an_optional_parameter_may_be_omitted_and_a_required_one_may_not() {
+        let args = ActionArgs::bind(PARAMS, [("text".to_string(), text("hi"))])
+            .expect("omitting an optional parameter must bind");
+        assert_eq!(args.integer("at"), None, "no default is invented");
+
+        assert_eq!(
+            ActionArgs::bind(PARAMS, []),
+            Err(ArgError::Missing {
+                name: "text".to_string()
+            }),
+            "a required parameter must be supplied"
+        );
+    }
+
+    // A dropped argument would answer `ok` to a caller that asked for
+    // something it did not get.
+    #[test]
+    fn an_undeclared_argument_is_refused() {
+        assert_eq!(
+            ActionArgs::bind(
                 PARAMS,
                 [
-                    ("text".to_string(), text("hello")),
-                    ("at".to_string(), ArgValue::Integer(4)),
-                ],
+                    ("text".to_string(), text("hi")),
+                    ("colour".to_string(), text("red")),
+                ]
+            ),
+            Err(ArgError::Unknown {
+                name: "colour".to_string()
+            })
+        );
+    }
+
+    // Types are checked, not coerced.
+    #[test]
+    fn a_wrong_typed_argument_is_refused() {
+        assert_eq!(
+            ActionArgs::bind(PARAMS, [("text".to_string(), ArgValue::Integer(7))]),
+            Err(ArgError::WrongType {
+                name: "text".to_string(),
+                expected: ParamType::Text,
+                got: ParamType::Integer,
+            })
+        );
+    }
+
+    // Refuses an empty invocation *before* running, so a bad call cannot
+    // leave a half-applied edit. Asserted through `invoke`, not `bind` alone.
+    #[test]
+    fn invoking_without_required_arguments_never_reaches_the_action() {
+        use std::cell::Cell;
+        use std::rc::Rc as StdRc;
+
+        let ran = StdRc::new(Cell::new(false));
+        let flag = StdRc::clone(&ran);
+        let mut reg = SearchRegistry::new();
+        reg.register(StdRc::new(ParamProvider {
+            ran: StdRc::clone(&flag),
+        }));
+
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &reg,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+
+        // Enumeration is the only way a headless caller learns to pass it.
+        let listed = catalog.enumerate();
+        let entry = listed
+            .iter()
+            .find(|a| a.resource.id == "needs.text")
+            .expect("the parameterised action is enumerable");
+        assert_eq!(entry.params.len(), 1);
+        assert_eq!(entry.params[0].name, "text");
+        assert!(entry.params[0].required);
+
+        let selected = catalog
+            .select(&ResourceRef::new("params", "needs.text"))
+            .expect("addressable");
+
+        let err = selected
+            .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
+            .expect_err("a required parameter must not be skippable");
+        assert!(matches!(
+            err,
+            ActionError::Arguments(ArgError::Missing { .. })
+        ));
+        assert!(
+            !ran.get(),
+            "the action's body must not run when its arguments are refused"
+        );
+
+        // …and with the argument it declared, it runs.
+        selected
+            .invoke(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+                &chrome,
+                [("text".to_string(), text("ok"))],
             )
-            .expect("well-formed arguments must bind");
-            assert_eq!(args.text("text"), Some("hello"));
-            assert_eq!(args.integer("at"), Some(4));
-        }
+            .expect("the declared argument must be accepted");
+        assert!(ran.get(), "a satisfied invocation reaches the action");
+    }
 
-        // Phase `an_optional_parameter_may_be_omitted_and_a_required_one_may_not`.
-        // An optional parameter may be left out; a required one may not.
-        {
-            let args = ActionArgs::bind(PARAMS, [("text".to_string(), text("hi"))])
-                .expect("omitting an optional parameter must bind");
-            assert_eq!(args.integer("at"), None, "no default is invented");
-
-            assert_eq!(
-                ActionArgs::bind(PARAMS, []),
-                Err(ArgError::Missing {
-                    name: "text".to_string()
-                }),
-                "a required parameter must be supplied"
-            );
-        }
-
-        // Phase `an_undeclared_argument_is_refused`.
-        // A dropped argument would answer `ok` to a caller that asked for
-        // something it did not get.
-        {
-            assert_eq!(
-                ActionArgs::bind(
-                    PARAMS,
-                    [
-                        ("text".to_string(), text("hi")),
-                        ("colour".to_string(), text("red")),
-                    ]
-                ),
-                Err(ArgError::Unknown {
-                    name: "colour".to_string()
-                })
-            );
-        }
-
-        // Phase `a_wrong_typed_argument_is_refused`.
-        // Types are checked, not coerced.
-        {
-            assert_eq!(
-                ActionArgs::bind(PARAMS, [("text".to_string(), ArgValue::Integer(7))]),
-                Err(ArgError::WrongType {
-                    name: "text".to_string(),
-                    expected: ParamType::Text,
-                    got: ParamType::Integer,
-                })
-            );
-        }
-
-        // Phase `invoking_without_required_arguments_never_reaches_the_action`.
-        // Refuses an empty invocation *before* running, so a bad call cannot
-        // leave a half-applied edit. Asserted through `invoke`, not `bind` alone.
-        {
-            use std::cell::Cell;
-            use std::rc::Rc as StdRc;
-
-            let ran = StdRc::new(Cell::new(false));
-            let flag = StdRc::clone(&ran);
-            let mut reg = SearchRegistry::new();
-            reg.register(StdRc::new(ParamProvider {
-                ran: StdRc::clone(&flag),
-            }));
-
-            let chrome = chrome_rc();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let catalog = ActionCatalog::build(
-                &reg,
-                "",
-                SearchScope::All,
-                None,
-                &chrome.borrow(),
-                &doc,
-                &root,
-                &AllVisible,
-            );
-
-            // Enumeration is the only way a headless caller learns to pass it.
-            let listed = catalog.enumerate();
-            let entry = listed
-                .iter()
-                .find(|a| a.resource.id == "needs.text")
-                .expect("the parameterised action is enumerable");
-            assert_eq!(entry.params.len(), 1);
-            assert_eq!(entry.params[0].name, "text");
-            assert!(entry.params[0].required);
-
-            let selected = catalog
-                .select(&ResourceRef::new("params", "needs.text"))
-                .expect("addressable");
-
-            let err = selected
-                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
-                .expect_err("a required parameter must not be skippable");
-            assert!(matches!(
-                err,
-                ActionError::Arguments(ArgError::Missing { .. })
-            ));
-            assert!(
-                !ran.get(),
-                "the action's body must not run when its arguments are refused"
-            );
-
-            // …and with the argument it declared, it runs.
-            selected
-                .invoke(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &root,
-                    &chrome,
-                    [("text".to_string(), text("ok"))],
-                )
-                .expect("the declared argument must be accepted");
-            assert!(ran.get(), "a satisfied invocation reaches the action");
-        }
-
-        // Phase `a_nullary_action_still_invokes_with_no_arguments`.
-        // The parameter machinery must not make an existing nullary caller
-        // pass anything new.
-        {
-            let reg = registry_with_actions();
-            let chrome = chrome_rc();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let catalog = ActionCatalog::build(
-                &reg,
-                "settings",
-                SearchScope::All,
-                None,
-                &chrome.borrow(),
-                &doc,
-                &root,
-                &AllVisible,
-            );
-            let selected = catalog
-                .select(&ResourceRef::new("actions", "settings.open"))
-                .expect("addressable");
-            assert!(
-                selected.params().is_empty(),
-                "a chrome toggle declares no parameters"
-            );
-            selected
-                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
-                .expect("a nullary action takes no arguments");
-            assert!(chrome.borrow().overlays.ws_settings);
-        }
+    // The parameter machinery must not make an existing nullary caller
+    // pass anything new.
+    #[test]
+    fn a_nullary_action_still_invokes_with_no_arguments() {
+        let reg = registry_with_actions();
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &reg,
+            "settings",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+        let selected = catalog
+            .select(&ResourceRef::new("actions", "settings.open"))
+            .expect("addressable");
+        assert!(
+            selected.params().is_empty(),
+            "a chrome toggle declares no parameters"
+        );
+        selected
+            .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
+            .expect("a nullary action takes no arguments");
+        assert!(chrome.borrow().overlays.ws_settings);
     }
 
     /// A provider whose one row takes a required text argument.

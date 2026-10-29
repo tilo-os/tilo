@@ -16,16 +16,15 @@ use ui::widget::Widget;
 use super::super::{NetworkService, SAMPLE_VPN_HOME, SampleNetwork};
 use super::{FakeNetwork, hosted_model, mount_network, rendered_enabled, settle_until, work_vpn};
 use crate::i18n::t;
-use crate::settings_app::SettingsApp;
 
 type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
 fn document(app: &mut App) -> ui::storage::SettingsDocument {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
-            .cx
-            .storage()
+            .reach
+            .storage
             .settings_document()
             .clone()
     })
@@ -47,12 +46,10 @@ fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
 
 /// Whether the page says `text`.
 fn draws(app: &mut App, text: &str) -> bool {
-    app.surface::<SettingsApp, _>(|settings| {
-        let model = super::super::area(settings).unwrap().model();
-        let model = model.borrow();
-        super::shown(&model).iter().any(|line| line.contains(text))
-    })
-    .unwrap()
+    app.settle();
+    provider_settings_ui::widgets::announced_text(app.harness().root_widget())
+        .iter()
+        .any(|line| line.contains(text))
 }
 
 /// The window over `fake`, on the page of the "Work" tunnel, its session's

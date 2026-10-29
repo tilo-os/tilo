@@ -66,9 +66,6 @@ rustflags = [
 # cc-rs combines generic and target-specific flags. Keep platform flags scoped
 # to their target, and avoid incompatible native LTO in distribution overrides.
 [env]
-# Tokio's test harness workers use this process default rather than an
-# application runtime builder. Leave caller overrides intact.
-RUST_MIN_STACK = { value = "16777216", force = false }
 # sccache (the CI runners' RUSTC_WRAPPER, which cc-rs reuses for C) must not
 # use its preprocessor direct mode: it dropped declarations from libspa-sys's
 # generated wrappers under Fedora 44's GCC 16. Its rustup probe (`rustc

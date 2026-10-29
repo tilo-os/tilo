@@ -55,7 +55,7 @@ pub(crate) fn with_history(
         let name = if control.is_open() {
             "host-history-hide"
         } else {
-            "standalone-history-title"
+            "history-mode-title"
         };
         toolbar.actions.push(
             ToolbarAction::new(

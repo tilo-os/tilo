@@ -3,8 +3,8 @@
 
 use crate::{NativeWorkspaceOwner, RoomId, publication};
 use ed25519_dalek::SigningKey;
-use std::time::SystemTime;
 use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
 
 /// A route checked against the installed package's signed resource declarations.
 /// The host supplies those declarations from verified package evidence, never
@@ -210,13 +210,17 @@ impl NativeWorkspaceOwner {
             }
         })
     }
-    /// Create an empty, canonical record with actual current governor custody.
-    /// Existing records remain byte-identical. Publication is durable before
-    /// this returns; the caller may only then admit the creator's channel.
+    /// Create an empty, canonical record as this device, signed with its
+    /// own key: the governor's, or a member's the room lets create it (its
+    /// app may author records here and the member may change the record),
+    /// as every receiver admits it. Existing records remain byte-identical.
+    /// Publication is durable before this returns; the caller may only then
+    /// admit the creator's channel.
     ///
     /// # Errors
-    /// Custody is not the selected governing device, creation is refused, or
-    /// the same native owner publication barrier cannot commit the candidate.
+    /// The creator is not this device, the room does not let them create
+    /// the record, or the same native owner publication barrier cannot
+    /// commit the candidate.
     pub fn prepare_application_record(
         &self,
         room: RoomId,
@@ -228,14 +232,26 @@ impl NativeWorkspaceOwner {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         if creator != candidate.device()
-            || creator != candidate.governor()
             || key.verifying_key().to_bytes() != creator.device_public_key
         {
-            return Err("application creator lacks exact current governor signing custody".into());
+            return Err("application creator lacks this device's own signing custody".into());
         }
-        candidate.peer.permissions(creator.device_public_key, now)?;
+        let member = candidate.peer.permissions(creator.device_public_key, now)?;
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
+        }
+        if creator != candidate.governor() {
+            if !member
+                .policy
+                .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
+            {
+                return Err("the room does not let this application author its records".into());
+            }
+            let node =
+                collab_types::document_node(candidate.peer.room(), &route.app, &route.record);
+            if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
+                return Err("application record creator may not change the record".into());
+            }
         }
         let message = candidate.peer.publication_mut().publish_document(
             &route.app,

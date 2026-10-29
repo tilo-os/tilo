@@ -1640,17 +1640,17 @@ pub struct NavShell {
     /// The app's columns while [`Self::nothing_listed`] stands in for them.
     held: Option<nothing_listed::Held>,
     rail: Option<Element>,
-    filter: Option<SearchField>,
+    filter: Option<Box<SearchField>>,
     controls: Option<Element>,
     headers: Box<[Header; 4]>,
     pending: Pending,
-    toggle: Button,
-    back: Button,
-    inspector_toggle: Button,
+    toggle: Box<Button>,
+    back: Box<Button>,
+    inspector_toggle: Box<Button>,
     /// The window's History control: the one that opens History and the
     /// one, on, that closes it.
-    history_open: Button,
-    history_close: Button,
+    history_open: Box<Button>,
+    history_close: Box<Button>,
     requests: Rc<Requests>,
     pane_binding: Option<LocalBinding<NavPane>>,
     sidebar_state: Option<OpenBinding>,
@@ -1669,7 +1669,7 @@ pub struct NavShell {
     /// What the host meets in place of a part of a screen not in front, one
     /// per part in the tree.
     inert_parts: Vec<InertPart>,
-    layout_theme: Theme,
+    layout_theme: Box<Theme>,
     conventions: PlatformConventions,
 
     rect: Rect,
@@ -1745,6 +1745,9 @@ pub struct NavShell {
     can_back: Option<Rc<std::cell::Cell<bool>>>,
     /// The slot a host is changing through [`crate::component::Described::slot_views`].
     slot_edit: Option<component::SlotEdit>,
+    /// The window's search narrows the sidebar's list wherever it stands
+    /// ([`Self::search_sidebar`]).
+    sidebar_search: bool,
 }
 
 impl Default for NavShell {
@@ -1786,17 +1789,17 @@ impl NavShell {
             controls: None,
             headers: Box::new(Column::ALL.map(Header::new)),
             pending: Pending::default(),
-            toggle,
-            back,
-            inspector_toggle,
-            history_open: crate::standalone_history_host::history_control_button(
+            toggle: Box::new(toggle),
+            back: Box::new(back),
+            inspector_toggle: Box::new(inspector_toggle),
+            history_open: Box::new(crate::history_mode::door::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Closed,
-            ),
-            history_close: crate::standalone_history_host::history_control_button(
+            )),
+            history_close: Box::new(crate::history_mode::door::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Open,
-            ),
+            )),
             requests,
             pane_binding: None,
             sidebar_state: None,
@@ -1809,7 +1812,7 @@ impl NavShell {
             baseline: Vec::new(),
             host_parts: Vec::new(),
             inert_parts: Vec::new(),
-            layout_theme: Theme::dark(),
+            layout_theme: Box::new(Theme::dark()),
             conventions: PlatformConventions::default(),
             rect: Rect::ZERO,
             geometry: NavGeometry::default(),
@@ -1845,6 +1848,7 @@ impl NavShell {
             retired_status_actions: Vec::new(),
             can_back: None,
             slot_edit: None,
+            sidebar_search: false,
         }
     }
 
@@ -1977,7 +1981,7 @@ impl NavShell {
     /// keeps the field: read it back with [`Self::filter`].
     #[must_use]
     pub fn with_filter(mut self, filter: SearchField) -> Self {
-        self.filter = Some(filter);
+        self.filter = Some(Box::new(filter));
         self.slots_changed();
         self
     }
@@ -2027,6 +2031,17 @@ impl NavShell {
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// The window's search narrows the sidebar's list
+    /// ([`crate::widget::Filterable`]) wherever it stands: also while a
+    /// narrow window shows the content screen, whose content may then show
+    /// what the list's filter finds. Without it the search reaches the list
+    /// only while it is on screen.
+    #[must_use]
+    pub fn search_sidebar(mut self) -> Self {
+        self.sidebar_search = true;
         self
     }
 
@@ -2482,11 +2497,11 @@ impl NavShell {
     /// The window's filter field ([`Self::with_filter`]): its query and the
     /// count the filtered column reports.
     pub fn filter(&self) -> Option<&SearchField> {
-        self.filter.as_ref()
+        self.filter.as_deref()
     }
 
     pub fn filter_mut(&mut self) -> Option<&mut SearchField> {
-        self.filter.as_mut()
+        self.filter.as_deref_mut()
     }
 
     // --- state -------------------------------------------------------------
@@ -3000,7 +3015,7 @@ impl NavShell {
             Column::Content => Some(self.content.as_mut()),
             Column::Inspector => self.inspector.as_deref_mut(),
         };
-        if let (Some(field), Some(target)) = (self.filter.as_mut(), target) {
+        if let (Some(field), Some(target)) = (self.filter.as_deref_mut(), target) {
             crate::widget::sync_filter(field, target);
         }
     }
@@ -4003,6 +4018,11 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if self.sidebar_search
+            && request.wants::<dyn crate::widget::Filterable>()
+            && let Some(sidebar) = &self.sidebar
+        {
+            sidebar.provide(request);
         } else {
             self.content.provide(request);
         }
@@ -4017,6 +4037,11 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if self.sidebar_search
+            && request.wants::<dyn crate::widget::Filterable>()
+            && let Some(sidebar) = &mut self.sidebar
+        {
+            sidebar.provide_mut(request);
         } else {
             self.content.provide_mut(request);
         }
@@ -4095,7 +4120,7 @@ impl Widget for NavShell {
         self.finish_slot_edit();
         self.apply_pending();
         self.refresh_slot_inputs();
-        self.layout_theme = theme.clone();
+        *self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
         } else {
@@ -4311,7 +4336,7 @@ impl Widget for NavShell {
             inspector.as_deref_mut(),
         ];
         let mut rail = rail.as_deref_mut();
-        let mut filter = filter.as_mut().map(|f| f as &mut dyn Widget);
+        let mut filter = filter.as_deref_mut().map(|f| f as &mut dyn Widget);
         let mut controls = controls.as_deref_mut();
         let mut titles: Vec<Option<&mut dyn Widget>> = Vec::with_capacity(4);
         let mut leadings: Vec<Option<&mut (dyn Widget + 'static)>> = Vec::with_capacity(4);
@@ -4330,11 +4355,11 @@ impl Widget for NavShell {
             mores.push(Some(more as &mut dyn Widget));
             actions.push(list.iter_mut().map(|a| Some(a.as_mut())).collect());
         }
-        let mut toggle = Some(toggle as &mut dyn Widget);
-        let mut back = Some(back as &mut dyn Widget);
-        let mut inspector_toggle = Some(inspector_toggle as &mut dyn Widget);
-        let mut history_open = Some(history_open as &mut dyn Widget);
-        let mut history_close = Some(history_close as &mut dyn Widget);
+        let mut toggle = Some(&mut **toggle as &mut dyn Widget);
+        let mut back = Some(&mut **back as &mut dyn Widget);
+        let mut inspector_toggle = Some(&mut **inspector_toggle as &mut dyn Widget);
+        let mut history_open = Some(&mut **history_open as &mut dyn Widget);
+        let mut history_close = Some(&mut **history_close as &mut dyn Widget);
         let mut status_action = status_action.as_mut().map(|b| b as &mut dyn Widget);
         let mut band = band.as_deref_mut().map(|w| w as &mut dyn Widget);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());

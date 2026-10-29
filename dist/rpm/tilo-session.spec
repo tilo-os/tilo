@@ -200,6 +200,7 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 
 %install
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
+install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
 install -Dpm 0755 bin/tilo-relay-admin %{buildroot}%{_libexecdir}/tilo/tilo-relay-admin
 ln -s ../libexec/tilo/tilo-relay-admin %{buildroot}%{_bindir}/tilo-relay-admin
@@ -288,6 +289,7 @@ for program in fs tilo-relay-admin tilo-enroll; do
     test -x %{buildroot}%{_bindir}/$program
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
+test -x %{buildroot}%{_bindir}/tilo
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
 # A session entry that names a binary the package does not install is the
@@ -352,6 +354,7 @@ done
 %files
 %dir %{_libexecdir}/tilo
 %{_bindir}/tilo-shell
+%{_bindir}/tilo
 %{_bindir}/fs
 %{_bindir}/tilo-relay-admin
 %{_libexecdir}/tilo/tilo-relay-admin

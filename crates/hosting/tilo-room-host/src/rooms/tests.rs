@@ -409,19 +409,18 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key);
     for index in 1..=MAX_PUBLICATION_TAIL {
-        let mut request_id = [0; 32];
-        request_id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_le_bytes());
-        rooms
-            .grant_app_authorship(
-                &created.room,
-                &cert,
-                GrantAppAuthorshipRequest {
-                    request_id,
-                    app: format!("so.tilo.rollover-fixture-{index}"),
-                },
-            )
-            .await
-            .unwrap();
+        let app = std::collections::BTreeSet::from([format!("so.tilo.rollover-fixture-{index}")]);
+        assert!(
+            rooms
+                .settle_app_authorship(
+                    &created.room,
+                    &cert,
+                    &app,
+                    &std::collections::BTreeSet::new()
+                )
+                .await
+                .unwrap()
+        );
     }
     let current = rooms.room(&created.room).await.unwrap();
     let tail = current
@@ -729,26 +728,23 @@ async fn legacy_window_write_respects_current_member_grants() {
     clippy::significant_drop_tightening,
     reason = "the relay remains live through the policy assertions and its consuming shutdown"
 )]
-async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() {
+async fn applications_are_prepared_for_the_current_owner_only() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(scratch.path(), &key, &cert).await;
     let rooms = relay.rooms();
     let created = rooms.create("Private app authoring").await.unwrap();
-    let request = GrantAppAuthorshipRequest {
-        request_id: [71; 32],
-        app: "so.tilo.chat".into(),
-    };
-    let result = rooms
-        .grant_app_authorship(&created.room, &cert, request.clone())
-        .await
-        .unwrap();
-    assert_eq!(
+    let chat = std::collections::BTreeSet::from(["so.tilo.chat".to_owned()]);
+    assert!(
         rooms
-            .grant_app_authorship(&created.room, &cert, request.clone())
+            .settle_app_authorship(
+                &created.room,
+                &cert,
+                &chat,
+                &std::collections::BTreeSet::new()
+            )
             .await
-            .unwrap(),
-        result,
+            .unwrap()
     );
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     Box::pin(assert_canonical_chat_preparation(
@@ -778,37 +774,15 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
         );
         assert!(policy.app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now),));
     }
-    let mut conflict = request.clone();
-    conflict.app = "so.tilo.ebook".into();
-    assert!(
-        rooms
-            .grant_app_authorship(&created.room, &cert, conflict)
-            .await
-            .is_err()
-    );
     let other_root = SigningKey::from_bytes(&[73; 32]);
     let other_key = SigningKey::from_bytes(&[74; 32]);
     let mut stranger = cert.clone();
     stranger.user_public_key = other_root.verifying_key().to_bytes();
     stranger.device_public_key = other_key.verifying_key().to_bytes();
     sign_device_cert(&mut stranger, &other_root).unwrap();
-    assert!(
-        rooms
-            .grant_app_authorship(&created.room, &stranger, request.clone())
-            .await
-            .is_err()
-    );
     let mut changed_certificate = cert.clone();
     changed_certificate.device_label = "different signed certificate".into();
     sign_device_cert(&mut changed_certificate, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    // Exact retries must not accept a different current certificate simply
-    // because its key and request identifier were previously successful.
-    assert!(
-        rooms
-            .grant_app_authorship(&created.room, &changed_certificate, request)
-            .await
-            .is_err()
-    );
     assert!(
         rooms
             .prepare_application(
@@ -1489,7 +1463,10 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     admit_view_reader(&rooms, &created.room, &key, &member).await;
     let governor = collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key);
     let device = collab_types::Ed25519PublicKey::from_bytes(member.device_public_key);
-    let channel = collab_types::ChannelId::new();
+    // The device names the record it asks for: a channel nobody named may
+    // be anyone's own record and admits no one.
+    let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
+    let channel = route.channel(&created.room);
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
@@ -1503,9 +1480,10 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     .access_request_now(1, false, &vault)
     .unwrap()
     .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
         room: created.room.clone(),
         request: Box::new(request),
+        route: Box::new(route),
         delivery: 1,
     })
     .unwrap();

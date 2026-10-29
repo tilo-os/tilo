@@ -182,12 +182,16 @@ plaintext path.
 
 ### How a channel is provisioned
 
-- **Creation.** The device that governs a route's room creates the route's
-  MLS group and its `Genesis` frame (`tilo_action_broker::channel_encryption`)
-  the first time an allowed endpoint opens the route or an allowed device
-  asks for it. Only the governor creates, so no device that missed a genesis
-  starts a second group beside one that holds content. `Genesis` closes the
-  plaintext gate for good.
+- **Creation.** Any participant creates a route's MLS group and its
+  `Genesis` frame (`tilo_action_broker::channel_encryption`): an allowed
+  device whose endpoint opens the route, or that holds nothing of a route an
+  allowed device asks for, waits a short while of its own for a genesis and
+  creates the group when none arrives; one that has seen a genesis never
+  creates another. Two geneses made at once (or one made by a device that
+  missed the other during an outage) resolve to the lower digest, and every
+  device that held the other group, or sealed under it, hands its content
+  keys to the winner's members with its next commit, so nothing written
+  under either is lost. `Genesis` closes the plaintext gate for good.
 - **Migration.** A channel that carried plaintext before migrates the same
   way on its next open. New content is encrypted from then on. Old
   plaintext stays in the replicas of the members that hold it, and the local
@@ -335,7 +339,7 @@ If the lost machine was the room's governor, see the known limits above.
   proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
   admits a device, or a service member, only while the same read decision
   allows that record; a channel whose record it cannot name is withheld from
-  whoever a Deny over a pattern of records could keep out. A Deny below a
+  everyone, as it may be a member's own record. A Deny below a
   record (an item, a field) still binds only honest clients and doors: one key
   opens the whole record, so against a modified client the record is the
   confidentiality boundary

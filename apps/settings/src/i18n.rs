@@ -17,9 +17,19 @@ static INDEX: ui::i18n::EmbeddedCatalog = {
     catalog
 };
 
+/// Load every catalogue Settings' words come from at once, its own ahead of
+/// the shared provider copy: one loaded later, on the first word a page's
+/// part writes from it, moves the language's revision under a window
+/// already composed in that language and builds it all again.
+fn ensure() {
+    INDEX.ensure();
+    CATALOG.ensure();
+    provider_settings_ui::i18n::CATALOG.ensure();
+}
+
 /// Native Settings copy takes precedence; shared provider copy fills missing keys.
 pub fn t(key: &str) -> String {
-    INDEX.ensure();
+    ensure();
     let local = CATALOG.t(key);
     if local == key {
         provider_settings_ui::i18n::t(key)
@@ -29,7 +39,7 @@ pub fn t(key: &str) -> String {
 }
 
 pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    INDEX.ensure();
+    ensure();
     let local = CATALOG.t_args(key, args);
     if local == key {
         provider_settings_ui::i18n::t_args(key, args)

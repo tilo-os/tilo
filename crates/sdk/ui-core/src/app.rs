@@ -42,18 +42,11 @@ pub mod animation_schedule;
 mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
-mod document_history;
 mod follow_ups;
 mod handoff;
 mod held_answers;
-mod history_actions;
 mod host_commands;
 
-/// The broker-facing History door, which host chrome presents as its own.
-#[cfg(any(feature = "native", test))]
-pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
-#[cfg(test)]
-mod history_actions_tests;
 #[cfg(test)]
 mod host_worker_pump_tests;
 mod model_lifecycle;
@@ -63,7 +56,6 @@ mod retirement_assembly;
 #[cfg(test)]
 mod retirement_lifecycle_tests;
 mod surface_route;
-pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
 mod runtime;
 mod window_bar;
@@ -582,12 +574,10 @@ pub struct App {
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: Box<ActionRuntime>,
-    document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
-    history_chrome_enabled: bool,
+    /// The window presents search itself (its palette), rather than a
+    /// shell hosting the app.
+    search_presented: bool,
     native_document_chrome: bool,
-    history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
-    history_viewport_width: f64,
-    history_focus_pending: bool,
     continuation: ContinuationRuntime,
     /// A failed pre-terminal handoff must not re-enter directed effects.
     action_publication_failure: Option<String>,
@@ -2539,6 +2529,15 @@ impl App {
     /// with no caret restore, since the field legitimately changed.
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
+        self.rebuild_structure_placing_focus();
+    }
+
+    /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
+    /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
+    /// goes, over where it was before the rebuild: a caller restoring the focus it captured
+    /// before must leave it.
+    pub(crate) fn rebuild_structure_placing_focus(&mut self) -> bool {
+        let mut requested = false;
         let _entry = self.enter_wake_scope();
         let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
@@ -2684,13 +2683,14 @@ impl App {
                 };
             }
             // The tree this rebuild made is the one a control asked focus in.
-            self.apply_focus_request();
+            requested = self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
         // was built with; asked once per build, not per frame.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
         self.window.preferred_size = self.root_widget.preferred_window_size();
+        requested
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of
@@ -4806,12 +4806,10 @@ pub(crate) mod ordinary_confirmation_tests {
                     crate::search::open_search_binding(&crate::search::SearchRequest::this_app()),
                 ),
             ))
-            .push(Box::new(
-                crate::standalone_history_host::history_control_button(
-                    "coverage-history",
-                    crate::widget::window_header::HistoryControl::Closed,
-                ),
-            ))
+            .push(Box::new(crate::history_mode::door::history_control_button(
+                "coverage-history",
+                crate::widget::window_header::HistoryControl::Closed,
+            )))
             .push(Box::new(
                 crate::widget::Button::new("coverage-missing-app", "Missing app action")
                     .on_action(missing_binding("ordinary:fixture")),
