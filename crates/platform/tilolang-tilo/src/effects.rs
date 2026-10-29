@@ -9,6 +9,7 @@
 use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
+use tilolang_runtime::program::ProgramOutcome;
 use tilolang_runtime::value::{ResourceRef, to_json};
 use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
 
@@ -24,10 +25,34 @@ pub enum HostEffect {
     /// Evaluate a tilolang expression against every app of the room: a view block renders, a
     /// value block is shown as data, and an action block runs or, when it needs a person's
     /// approval, is recorded as a suggested invocation.
-    #[effect(returns)]
+    ///
+    /// The block itself changes only the room's record: each action it applies is decided as
+    /// the caller's code, and what it commits carries that action's own need (an outside effect
+    /// needs what reaching outside needs), so running it is an undoable change, not an outside
+    /// one.
+    #[effect(kind = "undoable", returns)]
     RunBlock {
         #[param("The block's source, such as `letters.send(@letters.Draft:id)` or a view body")]
         source: String,
+    },
+    /// Run a program.
+    ///
+    /// Run a tilolang program as the caller's code (agents.md, "One tool, programs, sessions"):
+    /// statements that read, find, loop and apply actions, each action decided as the caller's
+    /// code. The program says what it `print`s and the value of its last line. Its top-level
+    /// `let`s are kept for the caller's next program of the same session.
+    ///
+    /// A program is one step: what it changes commits together, or nothing does. One that would
+    /// change many resources or destroy something answers with a preview of the actions it
+    /// would apply, and changes nothing until it is sent again with `confirm`.
+    #[effect(kind = "undoable", returns)]
+    RunProgram {
+        #[param("The program's source: statements, one per line")]
+        source: String,
+        #[param("The session whose `let`s it sees and adds to (default the caller's own)")]
+        session: Option<String>,
+        #[param("Apply what its preview listed")]
+        confirm: Option<bool>,
     },
     /// Run a flow.
     ///
@@ -136,6 +161,22 @@ fn published_ids(value: &mut Json, app: &str) {
     }
 }
 
+/// More resources than this changed by one program are many: it answers with a preview first.
+const MANY_RESOURCES: usize = 3;
+
+/// Whether a program whose committed actions are `steps` is previewed before it applies: it
+/// changes many resources, or destroys something.
+fn wants_preview(steps: &[Json]) -> bool {
+    let mut resources: Vec<&str> = steps
+        .iter()
+        .flat_map(|step| step["resources"].as_array().into_iter().flatten())
+        .filter_map(Json::as_str)
+        .collect();
+    resources.sort_unstable();
+    resources.dedup();
+    resources.len() > MANY_RESOURCES || steps.iter().any(|step| step["destructive"] == true)
+}
+
 fn output(value: Json) -> ActionOutput {
     ActionOutput {
         value: Some(value),
@@ -184,6 +225,16 @@ impl Host {
                     }),
                 }))
             }
+            HostEffect::RunProgram {
+                source,
+                session,
+                confirm,
+            } => Ok(output(self.run_program(
+                agent,
+                session.as_deref().unwrap_or_default(),
+                &source,
+                confirm.unwrap_or(false),
+            ))),
             HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
             HostEffect::Resolve { target, decision } => {
                 if caller.is_some_and(|caller| caller.agent) {
@@ -206,6 +257,103 @@ impl Host {
                     .collect(),
             ))),
         }
+    }
+
+    /// Run `source` as `agent`'s program in its session `session`: what it printed, the names
+    /// its session binds, and how it ended.
+    ///
+    /// The program is one step: it runs on a checkpoint of the record, and what it committed is
+    /// handed to the door only when it ended well, and, if it changes many resources or
+    /// destroys something, only when `confirm` says the caller saw its preview. Otherwise the
+    /// record and the session's `let`s go back to how they were.
+    fn run_program(&self, agent: &Principal, session: &str, source: &str, confirm: bool) -> Json {
+        let key = format!("{}\u{1f}{session}", agent.0);
+        let mut sessions = self.inner.programs.borrow_mut();
+        let kept = sessions.entry(key).or_default();
+        let saved = kept.clone();
+        let checkpoint = self.store().checkpoint();
+        let first = self.next_ticket();
+        let reply = kept.run(self.runtime(), agent, source);
+        let planned = self.store().committed_from(first);
+        let steps = self.planned_steps(&planned);
+        let failed = matches!(
+            reply.outcome,
+            ProgramOutcome::Rejected(_) | ProgramOutcome::Failed(_)
+        );
+        let previewed = !confirm && wants_preview(&steps);
+        if failed || previewed {
+            // Nothing of it reaches the room: the record and the session are as they were.
+            for entry in &planned {
+                let _ = self.store().take_ticket(entry.ticket);
+            }
+            self.store().rewind(checkpoint);
+            *kept = saved;
+        } else {
+            self.store().keep(checkpoint);
+        }
+        if previewed {
+            return json!({
+                "kind": "program",
+                "state": "preview",
+                "output": reply.output,
+                "steps": steps,
+                "changed": 0,
+            });
+        }
+        let changed = if failed { 0 } else { planned.len() };
+        let lets: Vec<Json> = kept
+            .bindings()
+            .iter()
+            .map(|binding| json!({"name": binding.name, "type": binding.ty}))
+            .collect();
+        let (state, detail) = match reply.outcome {
+            ProgramOutcome::Done => ("done", Json::Null),
+            ProgramOutcome::Rejected(lines) => ("rejected", json!(lines)),
+            ProgramOutcome::Suspended(suggestion) => {
+                let waiting = json!({"run": suggestion.run, "action": suggestion.action});
+                self.inner.suspended.borrow_mut().push_back(suggestion);
+                ("suspended", waiting)
+            }
+            ProgramOutcome::Failed(reason) => ("failed", json!(reason)),
+        };
+        json!({
+            "kind": "program",
+            "state": state,
+            "output": reply.output,
+            "detail": detail,
+            "lets": lets,
+            "changed": changed,
+        })
+    }
+
+    /// What each committed action of a program would do, as its preview lists it: the action
+    /// by its name, the resources it changes, and whether it destroys something.
+    fn planned_steps(&self, planned: &[crate::store::Committed]) -> Vec<Json> {
+        planned
+            .iter()
+            .map(|entry| {
+                let action = &entry.action;
+                let declared = self.inner.package_of(&action.app).ok().and_then(|package| {
+                    package
+                        .meta
+                        .actions
+                        .iter()
+                        .find(|declared| declared.id == action.action_id)
+                        .cloned()
+                });
+                let removes = action
+                    .edits
+                    .iter()
+                    .any(|edit| matches!(edit, crate::action::DynEdit::Remove { .. }));
+                json!({
+                    "app": action.app,
+                    "action": declared.as_ref().map_or(action.action_id.as_str(), |d| d.name.as_str()),
+                    "resources": action.changed(),
+                    "destructive": removes
+                        || declared.as_ref().is_some_and(crate::surface::is_destructive),
+                })
+            })
+            .collect()
     }
 
     fn run_flow_source(

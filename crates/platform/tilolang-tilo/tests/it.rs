@@ -25,6 +25,7 @@ mod legacy;
 mod outbox;
 mod outcomes;
 mod policy;
+mod programs;
 mod publication;
 mod records;
 mod reflection;
