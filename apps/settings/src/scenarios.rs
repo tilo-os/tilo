@@ -79,6 +79,9 @@ const NETWORK_MOBILE_LOCKED: &str = "network-mobile-locked";
 const NETWORK_MOBILE_PUK: &str = "network-mobile-puk";
 /// Network on its first page: the Wi-Fi list and the controls under it.
 const NETWORK_LIST: &str = "network-list";
+/// The wired connection's page, and the data each connection used.
+const NETWORK_WIRED: &str = "network-wired";
+const NETWORK_USAGE: &str = "network-usage";
 const NETWORK_ALL: &str = "network-all";
 const NETWORK_PAGE: &str = "network-page";
 const NETWORK_VPN: &str = "network-vpn";
@@ -94,8 +97,10 @@ const NETWORK_VPN_KILL_SWITCH: &str = "network-vpn-kill-switch";
 const NETWORK_VPN_BLOCKING: &str = "network-vpn-blocking";
 /// Every network capture.
 #[cfg(test)]
-const NETWORK_SCENARIOS: [&str; 17] = [
+const NETWORK_SCENARIOS: [&str; 19] = [
     NETWORK_LIST,
+    NETWORK_WIRED,
+    NETWORK_USAGE,
     NETWORK_WIFI_OFF,
     NETWORK_SCANNING,
     NETWORK_KNOWN,
@@ -172,6 +177,8 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_MOBILE_LOCKED,
                 NETWORK_MOBILE_PUK,
                 NETWORK_LIST,
+                NETWORK_WIRED,
+                NETWORK_USAGE,
                 NETWORK_ALL,
                 NETWORK_PAGE,
                 NETWORK_VPN,
@@ -289,6 +296,10 @@ pub enum NetworkSample {
     Scanning,
     /// The known networks.
     Known,
+    /// The wired connection's page.
+    Wired,
+    /// The data each connection used.
+    Usage,
     /// The first page: the Wi-Fi list and the controls under it.
     List,
     /// Every network in range.
@@ -429,6 +440,8 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
             Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            Some(NETWORK_WIRED) => Some(NetworkSample::Wired),
+            Some(NETWORK_USAGE) => Some(NetworkSample::Usage),
             Some(NETWORK_LIST) => Some(NetworkSample::List),
             Some(NETWORK_ALL) => Some(NetworkSample::AllNetworks),
             Some(NETWORK_PAGE) => Some(NetworkSample::NetworkPage),
@@ -771,6 +784,8 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             | NETWORK_SCANNING
             | NETWORK_KNOWN
             | NETWORK_LIST
+            | NETWORK_WIRED
+            | NETWORK_USAGE
             | NETWORK_ALL
             | NETWORK_PAGE
             | NETWORK_VPN

@@ -1612,7 +1612,15 @@ fn known_networks_list_every_saved_network_by_last_use_and_forget_one() {
     ];
     let mut model = model(&fake);
     let count = t_args("net-known-count", &[("count", 3.into())]);
-    assert!(shown(&mut model).contains(&count), "the row says how many");
+    assert!(
+        !shown(&mut model).contains(&count),
+        "the first page lists the networks in range, not the saved ones"
+    );
+    run(&mut model, NetworkEffect::ShowAllNetworks).unwrap();
+    assert!(
+        shown(&mut model).contains(&count),
+        "every network's page says how many are known"
+    );
     run(&mut model, NetworkEffect::ShowKnownNetworks).unwrap();
     let text = shown(&mut model);
     let at = |name: &str| {
@@ -2868,4 +2876,81 @@ fn a_network_saved_or_forgotten_elsewhere_shows_while_network_is_open() {
         before + 2,
         "the same profiles read only the status"
     );
+}
+
+/// Data usage is the session's count, charted per connection on its page
+/// (opened from the first page's row) and forgotten from its row's verb.
+#[test]
+fn data_usage_is_charted_per_connection_and_forgotten() {
+    use crate::prefs::NetworkUsage;
+    use crate::testing::invoke_section;
+    without_a_modem();
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    app.harness().resize((1280, 1400)).unwrap();
+    let kind = <NetworkUsage as ui::tilo_resource::Resource>::KIND;
+    let now = tilo_clock::unix_now_i64();
+    let offset = ui::clock::local_now().offset().local_minus_utc();
+    for received in [1_000_u64, 2_001_000] {
+        invoke_section(
+            &mut app,
+            kind,
+            "count-data-used",
+            serde_json::json!({
+                "readings": [{
+                    "counter": "wlan0", "connection": "wifi:home-uuid", "kind": "wifi",
+                    "name": "Home_Network", "received": received, "sent": 0,
+                }],
+                "boot": "b", "at": now, "offset": offset,
+            }),
+        )
+        .unwrap();
+    }
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.settle();
+    assert!(
+        ui::widget::find_test_id(app.harness().root_widget(), "settings.network.usage").is_some(),
+        "the first page's row opens data usage"
+    );
+    app.call("show-data-usage", serde_json::json!({})).unwrap();
+    app.settle();
+    let root = app.harness().root_widget();
+    for id in [
+        "network.usage.overview",
+        "network.usage.span",
+        "settings.network.usage.wifi:home-uuid",
+    ] {
+        assert!(ui::widget::find_test_id(root, id).is_some(), "{id}");
+    }
+    let text = provider_settings_ui::widgets::announced_text(root);
+    assert!(
+        text.iter().any(|line| line.contains("2 MB")),
+        "the connection's total: {text:#?}"
+    );
+    invoke_section(
+        &mut app,
+        kind,
+        "forget-data-used",
+        serde_json::json!({ "connection": "wifi:home-uuid" }),
+    )
+    .unwrap();
+    assert!(app.settings::<NetworkUsage>().get().connections.is_empty());
+}
+
+/// The cable's details are its own page: the first page says how it
+/// stands and opens it.
+#[test]
+fn the_wired_connection_opens_its_page() {
+    let fake = Arc::new(FakeNetwork::default());
+    let mut model = model(&fake);
+    model.wired.device = Some("eth0".into());
+    model.wired.connected = true;
+    let first = shown(&mut model);
+    assert!(
+        !first.contains(&t("net-auto-ipv4")),
+        "the address form is not on the first page"
+    );
+    run(&mut model, NetworkEffect::ShowWired).unwrap();
+    assert_eq!(model.page_key().as_deref(), Some(PAGE_WIRED));
+    assert!(shown(&mut model).contains(&t("net-interface")));
 }

@@ -63,10 +63,10 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(|effect| effect.spec(<settings::panes::mouse_keyboard::InputEffect>::OPERATION)),
     );
-    // The data used is started again by the `mobile_data_usage` section's
-    // verb.
+    // The data used is started again and forgotten by the `network_usage`
+    // section's verbs.
     actions.extend(
-        <settings::prefs::MobileDataUsage>::declarations()
+        <settings::prefs::NetworkUsage>::declarations()
             .iter()
             .map(declaration_spec),
     );
@@ -83,6 +83,7 @@ fn people_find_settings_actions_by_the_words_they_use() {
         ("microphone", "select-input"),
         ("compose", "set-compose-key"),
         ("data usage", "reset-data-used"),
+        ("bandwidth", "show-data-usage"),
     ] {
         let found: Vec<&str> = ui::search::system::actions_found_by(query, &actions)
             .into_iter()

@@ -9678,10 +9678,10 @@ pub fn run() {
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
-    // This device's mobile data is counted into its section whatever window
+    // This device's data usage is counted into its section whatever window
     // is open: the count is the device's, not a page's.
-    if let Err(error) = crate::shell::mobile_data::spawn() {
-        tracing::warn!(%error, "mobile data is not counted");
+    if let Err(error) = crate::shell::network_usage::spawn() {
+        tracing::warn!(%error, "data usage is not counted");
     }
     let tool_service = match crate::shell::tool_intents::spawn() {
         Ok(service) => Some(service),

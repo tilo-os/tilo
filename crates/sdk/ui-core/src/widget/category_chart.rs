@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, RoundedRectRadii, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -17,7 +17,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::chart_labels::format_compact;
+use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartInspection, InteractiveChart, draw_title, handle_chart_event,
@@ -71,6 +71,9 @@ pub struct CategorySeries {
     pub id: String,
     pub name: String,
     pub color: Color,
+    /// The theme's categorical chart colour at this index, in place of
+    /// `color`: it follows the theme as it changes.
+    pub palette: Option<usize>,
     pub values: Vec<CategoryValue>,
 }
 
@@ -85,6 +88,7 @@ impl CategorySeries {
             id: id.into(),
             name: name.into(),
             color,
+            palette: None,
             values: values.into_iter().map(CategoryValue::new).collect(),
         }
     }
@@ -98,8 +102,27 @@ impl CategorySeries {
             id: id.into(),
             name: name.into(),
             color,
+            palette: None,
             values,
         }
+    }
+    /// A series in the theme's categorical chart colour `index`
+    /// ([`crate::chart_palette::ChartPalette::categorical`]).
+    pub fn from_palette(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        index: usize,
+        values: Vec<CategoryValue>,
+    ) -> Self {
+        Self {
+            palette: Some(index),
+            ..Self::from_values(id, name, Color::TRANSPARENT, values)
+        }
+    }
+    fn color_in(&self, theme: &Theme) -> Color {
+        self.palette.map_or(self.color, |index| {
+            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+        })
     }
 }
 
@@ -127,6 +150,9 @@ pub struct CategoryChartStyle {
     pub interactive_legend: bool,
     pub show_values: bool,
     pub tooltip: bool,
+    /// How values read on the value axis, on bars and in the tooltip of a
+    /// value without its own detail.
+    pub value_format: AxisLabelFormat,
 }
 
 impl Default for CategoryChartStyle {
@@ -141,6 +167,7 @@ impl Default for CategoryChartStyle {
             interactive_legend: true,
             show_values: false,
             tooltip: true,
+            value_format: AxisLabelFormat::Compact,
         }
     }
 }
@@ -508,6 +535,52 @@ impl CategoryChart {
     }
 }
 
+/// Label every how many categories, so labels `needed` wide fit categories
+/// `room` wide.
+fn label_stride(needed: f64, room: f64) -> usize {
+    if room <= 0.0 || !needed.is_finite() {
+        return 1;
+    }
+    crate::num::usize_of_f64((needed / room).ceil()).max(1)
+}
+
+impl CategoryChart {
+    /// The corners of `bar`: a stack is one bar, rounded only at its ends.
+    fn radii(&self, bars: &[Bar], bar: Bar) -> RoundedRectRadii {
+        let radius = self.style.corner_radius.min(bar.rect.width() / 3.0);
+        if !matches!(
+            self.style.layout,
+            CategoryLayout::Stacked | CategoryLayout::Percent
+        ) {
+            return RoundedRectRadii::from_single_radius(radius);
+        }
+        let stacked = |beside: &&Bar| {
+            beside.category == bar.category
+                && beside.series != bar.series
+                && beside.rect.height() >= 0.5
+        };
+        let above = bars
+            .iter()
+            .filter(stacked)
+            .any(|other| other.rect.y1 <= bar.rect.y0 + 0.5);
+        let below = bars
+            .iter()
+            .filter(stacked)
+            .any(|other| other.rect.y0 >= bar.rect.y1 - 0.5);
+        let top = if bar.display_value >= 0.0 && !above {
+            radius
+        } else {
+            0.0
+        };
+        let bottom = if bar.display_value < 0.0 && !below {
+            radius
+        } else {
+            0.0
+        };
+        RoundedRectRadii::new(top, top, bottom, bottom)
+    }
+}
+
 fn safe_range(min: f64, max: f64) -> (f64, f64) {
     if min.is_finite() && max > min {
         let pad = (max - min) * 0.08;
@@ -623,7 +696,7 @@ impl Widget for CategoryChart {
             let label = if self.style.layout == CategoryLayout::Percent {
                 format!("{:.0}%", value * 100.0)
             } else {
-                format_compact(value)
+                format_axis_value(value, self.style.value_format)
             };
             let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
             tr.draw_style(
@@ -635,7 +708,8 @@ impl Widget for CategoryChart {
                 &theme.text(TextRole::Caption),
             );
         }
-        for bar in self.bars() {
+        let bars = self.bars();
+        for &bar in &bars {
             let Some(series) = self.series.get(bar.series) else {
                 continue;
             };
@@ -649,12 +723,9 @@ impl Widget for CategoryChart {
             {
                 theme.tokens.colors.intent.value_fill
             } else {
-                series.color
+                series.color_in(theme)
             };
-            let shape = RoundedRect::from_rect(
-                bar.rect,
-                self.style.corner_radius.min(bar.rect.width() / 3.0),
-            );
+            let shape = RoundedRect::from_rect(bar.rect, self.radii(&bars, bar));
             scene.fill(Fill::NonZero, transform, color, None, &shape);
             if self.inspection.hovered == Some((bar.category, bar.series)) {
                 scene.stroke(
@@ -666,7 +737,11 @@ impl Widget for CategoryChart {
                 );
             }
             if self.style.show_values && bar.rect.height() >= 22.0 {
-                let label = format_compact(bar.display_value);
+                let label = if self.style.layout == CategoryLayout::Percent {
+                    format!("{:.0}%", bar.display_value * 100.0)
+                } else {
+                    format_axis_value(bar.display_value, self.style.value_format)
+                };
                 let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
                 let ink = theme
                     .tokens
@@ -688,7 +763,25 @@ impl Widget for CategoryChart {
         }
         let group_width = plot.width()
             / f64::from(u32::try_from(self.categories.len().max(1)).unwrap_or(u32::MAX));
+        // Labels wider than their category are thinned to every n-th, counted
+        // back from the last: the latest category always keeps its label.
+        let widest = self
+            .categories
+            .iter()
+            .map(|category| {
+                f64::from(
+                    tr.measure_style(&category.label, None, &theme.text(TextRole::Caption))
+                        .0,
+                )
+            })
+            .fold(0.0_f64, f64::max);
+        let every = label_stride(widest + f64::from(theme.tokens.spacing.s2), group_width);
+        let last = self.categories.len().saturating_sub(1);
         for (index, category) in self.categories.iter().enumerate() {
+            if !(last - index).is_multiple_of(every) {
+                continue;
+            }
+            let label_room = group_width * crate::num::f64_of_usize(every);
             let x =
                 plot.x0 + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * group_width;
             let (width, _) =
@@ -698,7 +791,7 @@ impl Widget for CategoryChart {
                 &category.label,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
-                Some(crate::num::f32_of_f64(group_width.max(0.0))),
+                Some(crate::num::f32_of_f64(label_room.max(0.0))),
                 &theme.text(TextRole::Caption),
             );
         }
@@ -709,9 +802,13 @@ impl Widget for CategoryChart {
                 transform,
                 tr,
                 theme,
-                self.series
-                    .iter()
-                    .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+                self.series.iter().map(|series| {
+                    (
+                        series.id.as_str(),
+                        series.name.as_str(),
+                        series.color_in(theme),
+                    )
+                }),
                 Rect::new(self.rect.x0 + 58.0, y, self.rect.x1 - 12.0, y),
             );
         } else {
@@ -731,7 +828,7 @@ impl Widget for CategoryChart {
                 format!("{} · {}", category.label, series.name)
             };
             let detail = if value.detail.is_empty() {
-                format_compact(value.value)
+                format_axis_value(value.value, self.style.value_format)
             } else {
                 value.detail.clone()
             };
@@ -887,7 +984,14 @@ mod tests {
             assert_eq!(chart.bars()[0].display_value, 1.0);
         }
 
+        fn crowded_labels_thin_to_what_fits() {
+            assert_eq!(label_stride(30.0, 40.0), 1);
+            assert_eq!(label_stride(50.0, 20.0), 3);
+            assert_eq!(label_stride(10.0, 0.0), 1);
+        }
+
         waterfall_range_tracks_cumulative_values();
+        crowded_labels_thin_to_what_fits();
         hiding_category_series_reflows_groups_and_recomputes_range();
         percent_layout_renormalizes_after_a_series_is_hidden();
     }

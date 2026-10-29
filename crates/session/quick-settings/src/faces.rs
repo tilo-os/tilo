@@ -608,11 +608,6 @@ pub(crate) struct NetworkFace {
 pub(crate) enum Item {
     /// A sentence standing for an empty or unavailable list.
     Message(String),
-    /// "Turn on" under a radio that is off.
-    TurnOn {
-        label: String,
-        effect: QsEffect,
-    },
     Network(NetworkFace),
     Accessory(crate::BtDevice),
     Profile {
@@ -675,13 +670,8 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
             "qs-turning-off"
         })));
     } else if !state.wifi {
+        // The tile the section opens under turns the radio on.
         items.push(Item::Message(wifi_off_message(state)));
-        if !state.radios.wifi_hardware_blocked {
-            items.push(Item::TurnOn {
-                label: t("qs-wifi-turn-on"),
-                effect: QsEffect::SetWifi { on: true },
-            });
-        }
     } else {
         for network in ordered_networks(&state.wifi_networks) {
             let joining = state.wifi_joining.as_deref() == Some(network.ssid.as_str());
@@ -752,10 +742,6 @@ fn bluetooth(state: &QuickSettingsState) -> Vec<Item> {
         items.extend(devices.into_iter().map(Item::Accessory));
     } else {
         items.push(Item::Message(t("qs-bluetooth-off")));
-        items.push(Item::TurnOn {
-            label: t("qs-bluetooth-turn-on"),
-            effect: QsEffect::SetBluetooth { on: true },
-        });
     }
     items.push(Item::Settings {
         label: t("qs-bluetooth-pair"),

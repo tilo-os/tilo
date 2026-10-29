@@ -77,14 +77,6 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 .with_role(TextRole::Caption)
                 .with_id(format!("qs-{}-message", section_id(section))),
         )],
-        Item::TurnOn { label, effect } => {
-            vec![Box::new(Container::new().with_no_padding().with_child(
-                Box::new(actions.bind_effect_invocation(
-                    Button::new(&format!("qs-{}-turn-on", section_id(section)), label),
-                    effect,
-                )),
-            ))]
-        }
         Item::Network(network) => network_rows(cx, network),
         Item::Accessory(device) => {
             let mut row = ListRow::new(format!("qs-accessory-{}", device.address), &device.name)

@@ -46,8 +46,8 @@ fn last_joined(profile: &SavedNetworkProfile) -> String {
 }
 
 impl Page<'_> {
-    /// Every network in range, narrowed by the window bar's search, and the
-    /// way into one that hides its name.
+    /// Every network in range, narrowed by the window bar's search, the way
+    /// into one that hides its name and the networks this device knows.
     pub(super) fn all_page(&self) -> Vec<SettingsSection> {
         let mut content = self.wifi_status_rows();
         if self.wifi_enabled && !self.wifi_absent() {
@@ -80,6 +80,16 @@ impl Page<'_> {
             &t("net-hidden-entry"),
             None,
             NetworkEffect::ShowHiddenNetwork,
+        ))));
+        content.push(row(Box::new(self.drill_row(
+            "settings.network.known",
+            Icon::History,
+            &t_args(
+                "net-known-count",
+                &[("count", self.saved_wifi().count().into())],
+            ),
+            None,
+            NetworkEffect::ShowKnownNetworks,
         ))));
         vec![card(
             &t_args(
@@ -190,18 +200,26 @@ impl Page<'_> {
     pub(super) fn network_page(&self, ssid: &str) -> Vec<SettingsSection> {
         let net = self.in_range(ssid).filter(|_| self.wifi_enabled);
         let profile = self.saved_profile_of(ssid);
-        let mut sections = vec![card(
-            &t("net-status"),
-            rows(self.status_rows(ssid, net, profile)),
-        )];
+        let mut status = self.status_rows(ssid, net, profile);
+        if let Some(usage) =
+            profile.and_then(|profile| self.usage_row(&format!("wifi:{}", profile.uuid)))
+        {
+            status.push(usage);
+        }
+        let mut sections = vec![card(&t("net-status"), rows(status))];
         if let Some(profile) = profile {
             sections.push(card(&t("net-settings"), rows(self.settings_rows(profile))));
-            sections.push(card(&t("net-addresses"), rows(self.address_rows(profile))));
         }
         sections.push(card(
             &t("net-actions"),
             rows(self.action_rows(ssid, net, profile)),
         ));
+        // What few change last: how this network is joined and addressed.
+        if let Some(profile) = profile {
+            let mut advanced = self.advanced_rows(profile);
+            advanced.extend(self.address_rows(profile));
+            sections.push(card(&t("net-advanced"), rows(advanced)));
+        }
         sections
     }
 
@@ -293,10 +311,8 @@ impl Page<'_> {
         out
     }
 
-    /// A saved network's settings: joining it by itself and first, metered
-    /// data, the address it shows, whether it hides its name, its password
-    /// and, on a work or school network, who it knows this device as.
-    #[expect(clippy::too_many_lines, reason = "one row per setting")]
+    /// A saved network's everyday settings: joining it by itself, metered
+    /// data and its password.
     fn settings_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
         // Every setting here acts on the network's own row.
         let live = self.profile_live(profile).into_resource();
@@ -317,27 +333,9 @@ impl Page<'_> {
         )];
         let Some(settings) = self.profile_settings.get(&uuid) else {
             out.push(note(&t("net-notice-policy-unread")));
+            out.extend(self.password_rows(profile));
             return out;
         };
-        out.push(setting_row_described(
-            &t("net-priority"),
-            &t("net-priority-caption"),
-            Box::new(
-                self.bind_on_row(
-                    &live,
-                    NumberInput::new(f64::from(settings.priority.unwrap_or(0)))
-                        .with_range(-999.0, 999.0)
-                        .with_step(1.0)
-                        .with_precision(0)
-                        .with_id(&format!("network.profile.priority.{uuid}"))
-                        .with_accessible_name(t("net-priority")),
-                    effect(NetworkEffect::SET_PRIORITY).map({
-                        let uuid = uuid.clone();
-                        move |value: f64| (uuid.clone(), priority_of(value))
-                    }),
-                ),
-            ),
-        ));
         let metered = settings.metered.map_or("Automatic", metered_id);
         out.push(setting_row_described(
             &t("net-metered-connection"),
@@ -361,6 +359,41 @@ impl Page<'_> {
                                 .map_or(label, |policy| metered_id(policy).to_owned());
                             (uuid.clone(), id)
                         }
+                    }),
+                ),
+            ),
+        ));
+        out.extend(self.password_rows(profile));
+        out
+    }
+
+    /// A saved network's rarer settings: joining it first, the address it
+    /// shows, whether it hides its name, on a work or school network who it
+    /// knows this device as, and waking this machine over it.
+    fn advanced_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+        // Every setting here acts on the network's own row.
+        let live = self.profile_live(profile).into_resource();
+        let uuid = profile.uuid.clone();
+        let mut out = Vec::new();
+        let Some(settings) = self.profile_settings.get(&uuid) else {
+            out.extend(self.wake_rows(profile));
+            return out;
+        };
+        out.push(setting_row_described(
+            &t("net-priority"),
+            &t("net-priority-caption"),
+            Box::new(
+                self.bind_on_row(
+                    &live,
+                    NumberInput::new(f64::from(settings.priority.unwrap_or(0)))
+                        .with_range(-999.0, 999.0)
+                        .with_step(1.0)
+                        .with_precision(0)
+                        .with_id(&format!("network.profile.priority.{uuid}"))
+                        .with_accessible_name(t("net-priority")),
+                    effect(NetworkEffect::SET_PRIORITY).map({
+                        let uuid = uuid.clone();
+                        move |value: f64| (uuid.clone(), priority_of(value))
                     }),
                 ),
             ),
@@ -404,7 +437,6 @@ impl Page<'_> {
                 ),
             ),
         ));
-        out.extend(self.password_rows(profile));
         if let (Some(_), Some(form)) = (&settings.enterprise, self.identity_forms.get(&uuid)) {
             out.extend([
                 Self::text_field(

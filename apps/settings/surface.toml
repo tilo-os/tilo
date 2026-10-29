@@ -800,16 +800,15 @@ params = [
 ]
 
 [[resources]]
-kind = "settings.mobile-data-usage"
-label = "Mobile data used"
+kind = "settings.network-usage"
+label = "Data usage"
 version = 1
 person = true
 fields = [
   { path = "reset_day", type = "ResetDay" },
-  { path = "period", type = "u32", readonly = true },
-  { path = "period_day", type = "u32", readonly = true },
-  { path = "used", type = "u64", readonly = true },
-  { path = "counter", type = "Option<u64>", readonly = true },
+  { path = "limit_gb", type = "u32" },
+  { path = "connections", type = "BTreeMap<String, ConnectionUsage>", readonly = true },
+  { path = "counters", type = "BTreeMap<String, Bytes>", readonly = true },
   { path = "boot", type = "Option<String>", readonly = true },
 ]
 
@@ -817,14 +816,25 @@ fields = [
 id = "count-data-used"
 kind = "undoable"
 params = [
-  { name = "total", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "readings", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, connection = { type = "string" }, counter = { type = "string" }, kind = { type = "string", enum = ["wifi", "wired", "mobile"] }, received = { type = "integer", minimum = 0 }, sent = { type = "integer", minimum = 0 } } } } },
   { name = "boot", required = false, schema = { type = ["string", "null"] } },
   { name = "at", required = true, schema = { type = "integer" } },
+  { name = "offset", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
 ]
 
 [[resources.verbs]]
 id = "reset-data-used"
 kind = "undoable"
+params = [
+  { name = "connection", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "forget-data-used"
+kind = "undoable"
+params = [
+  { name = "connection", required = false, schema = { type = ["string", "null"] } },
+]
 
 [[resources]]
 kind = "tilo.accounts"

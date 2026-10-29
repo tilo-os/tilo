@@ -721,6 +721,70 @@ fn signal_pct_to_bucket(pct: u8) -> u8 {
     }
 }
 
+/// A connection's traffic as its interface counts it: the interface, the
+/// connection's profile on it now, and the bytes the interface moved since
+/// it appeared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterfaceTraffic {
+    /// The kernel interface (`wlp2s0`).
+    pub interface: String,
+    /// The profile's id and name.
+    pub uuid: String,
+    pub name: String,
+    pub wired: bool,
+    pub traffic: crate::modem::Traffic,
+}
+
+/// The traffic of every Wi-Fi and wired connection up now, read from their
+/// interfaces' counters. The hotspot this device shares is left out: what
+/// it carries is counted on the connection it shares. Modems count their
+/// own ([`crate::read_mobile`]).
+///
+/// # Errors
+/// When `NetworkManager` cannot be asked.
+pub fn read_interface_traffic() -> Result<Vec<InterfaceTraffic>, String> {
+    let (devices, active) =
+        with_nm(|nm| async move { Ok((nm.devices().await?, nm.active_connections().await?)) })?;
+    Ok(interface_traffic(&devices, &active, |interface| {
+        let read = |name: &str| {
+            std::fs::read_to_string(format!("/sys/class/net/{interface}/statistics/{name}"))
+                .ok()?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        };
+        Some(crate::modem::Traffic {
+            received: read("rx_bytes")?,
+            sent: read("tx_bytes")?,
+        })
+    }))
+}
+
+fn interface_traffic(
+    devices: &[Device],
+    active: &[ActiveConnection],
+    counters: impl Fn(&str) -> Option<crate::modem::Traffic>,
+) -> Vec<InterfaceTraffic> {
+    devices
+        .iter()
+        .filter(|device| matches!(device.kind, DeviceKind::Wifi | DeviceKind::Ethernet))
+        .filter_map(|device| {
+            let connection = active.iter().find(|connection| {
+                Some(&connection.path) == device.active.as_ref()
+                    && connection.state == tilo_nm::ActiveState::Activated
+                    && connection.id != HOTSPOT_PROFILE
+            })?;
+            Some(InterfaceTraffic {
+                interface: device.interface.clone(),
+                uuid: connection.uuid.clone(),
+                name: connection.id.clone(),
+                wired: device.kind == DeviceKind::Ethernet,
+                traffic: counters(&device.interface)?,
+            })
+        })
+        .collect()
+}
+
 /// What the machine's network connection currently is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
@@ -2777,5 +2841,75 @@ mod wifi_radio_tests {
             ..RadioState::default()
         };
         assert_eq!(with_kill_switches(nm.clone(), RfkillState::default()), nm);
+    }
+}
+
+#[cfg(test)]
+mod interface_traffic_tests {
+    use super::*;
+
+    fn device(kind: DeviceKind, interface: &str, active: Option<&str>) -> Device {
+        Device {
+            path: String::new(),
+            interface: interface.into(),
+            kind,
+            state: 100,
+            hw_address: String::new(),
+            active: active.map(str::to_owned),
+        }
+    }
+
+    fn connection(path: &str, id: &str, state: tilo_nm::ActiveState) -> ActiveConnection {
+        ActiveConnection {
+            path: path.into(),
+            id: id.into(),
+            uuid: format!("uuid-{id}"),
+            kind: "802-11-wireless".into(),
+            state,
+            devices: Vec::new(),
+            profile: String::new(),
+        }
+    }
+
+    /// Each Wi-Fi and wired interface up counts toward the profile on it;
+    /// one connecting, the hotspot, a modem and an interface without
+    /// counters count nothing.
+    #[test]
+    fn interfaces_count_toward_the_connection_up_on_them() {
+        use tilo_nm::ActiveState::{Activated, Activating};
+        let devices = [
+            device(DeviceKind::Wifi, "wlan0", Some("/a/1")),
+            device(DeviceKind::Ethernet, "eth0", Some("/a/2")),
+            device(DeviceKind::Ethernet, "eth1", Some("/a/3")),
+            device(DeviceKind::Wifi, "wlan1", Some("/a/4")),
+            device(DeviceKind::Modem, "cdc-wdm0", Some("/a/5")),
+            device(DeviceKind::Ethernet, "gone0", Some("/a/6")),
+        ];
+        let active = [
+            connection("/a/1", "Home", Activated),
+            connection("/a/2", "Office", Activated),
+            connection("/a/3", "Dock", Activating),
+            connection("/a/4", HOTSPOT_PROFILE, Activated),
+            connection("/a/5", "Carrier", Activated),
+            connection("/a/6", "Gone", Activated),
+        ];
+        let read = interface_traffic(&devices, &active, |interface| {
+            (interface != "gone0").then_some(crate::modem::Traffic {
+                received: 10,
+                sent: 1,
+            })
+        });
+        let named: Vec<(&str, &str, bool)> = read
+            .iter()
+            .map(|traffic| {
+                (
+                    traffic.interface.as_str(),
+                    traffic.name.as_str(),
+                    traffic.wired,
+                )
+            })
+            .collect();
+        assert_eq!(named, [("wlan0", "Home", false), ("eth0", "Office", true)]);
+        assert_eq!(read[0].uuid, "uuid-Home");
     }
 }

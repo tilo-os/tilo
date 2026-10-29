@@ -59,6 +59,7 @@ mod labels;
 pub(crate) mod mobile;
 mod order;
 mod page;
+mod usage;
 pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
@@ -130,6 +131,14 @@ pub enum NetworkEffect {
     /// Show mobile data and the SIM: the modem's whole page.
     #[effect(view, label = "Mobile")]
     ShowMobile,
+    /// Show the wired connection's page: how it stands, its addresses and
+    /// waking this machine over it.
+    #[effect(view, label = "Wired connection settings")]
+    ShowWired,
+    /// Show the data each connection used, day by day.
+    #[effect(view, label = "Data usage")]
+    #[effect(keywords = "data usage, traffic, bandwidth, network statistics")]
+    ShowDataUsage,
     /// Ask for the name and password of a network that does not broadcast
     /// its name, to join it.
     #[effect(view, label = "Other network")]
@@ -375,6 +384,10 @@ pub(crate) const PAGE_HOTSPOT: &str = "hotspot";
 pub(crate) const PAGE_ADVANCED: &str = "advanced";
 /// The modem's page: mobile data and the SIM.
 pub(crate) const PAGE_MOBILE: &str = "mobile";
+/// The wired connection's page.
+pub(crate) const PAGE_WIRED: &str = "wired";
+/// The data each connection used.
+pub(crate) const PAGE_USAGE: &str = "usage";
 /// A network's page: `wifi:<ssid>`.
 const PAGE_WIFI: &str = "wifi:";
 
@@ -1795,6 +1808,8 @@ pub struct NetworkModel {
     hotspot_name: LocalState<String>,
     hotspot_password: Arc<Mutex<String>>,
     hotspot_band: LocalState<String>,
+    /// The span the data usage chart shows ([`usage::Span`]).
+    usage_span: LocalState<usize>,
     ipv4_forms: HashMap<String, Ipv4Form>,
     ipv6_forms: HashMap<String, Ipv6Form>,
     proxy_forms: HashMap<String, ProxyForm>,
@@ -1902,6 +1917,10 @@ impl NetworkModel {
     fn sample(reach: Reach, wanted: Option<crate::scenarios::NetworkSample>) -> Self {
         use crate::scenarios::NetworkSample;
         let mut model = Self::loaded_from(reach, Arc::new(SampleNetwork));
+        // A capture's own profile shows counted data usage.
+        if wanted.is_some() {
+            usage::sample(&model.reach.storage);
+        }
         match wanted {
             Some(NetworkSample::WifiOff) => {
                 model.wifi_enabled = false;
@@ -1916,6 +1935,8 @@ impl NetworkModel {
                 model.scanned_at = Some(ui::time::now());
             }
             Some(NetworkSample::Known) => model.open_page(PAGE_KNOWN, t("net-known")),
+            Some(NetworkSample::Wired) => model.open_page(PAGE_WIRED, t("net-wired")),
+            Some(NetworkSample::Usage) => model.open_page(PAGE_USAGE, t("net-usage")),
             Some(NetworkSample::AllNetworks) => {
                 model.open_page(PAGE_ALL, t("net-all-networks"));
             }
@@ -2034,6 +2055,7 @@ impl NetworkModel {
             hotspot_name: LocalState::new(DEFAULT_HOTSPOT_NAME.into()),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_band: LocalState::new(band_shown("Automatic")),
+            usage_span: LocalState::new(usage::Span::FIRST),
             ipv4_forms: HashMap::new(),
             ipv6_forms: HashMap::new(),
             proxy_forms: HashMap::new(),
@@ -2639,6 +2661,14 @@ impl NetworkModel {
             }
             NetworkEffect::ShowMobile => {
                 self.open_page(PAGE_MOBILE, t("net-mobile"));
+                Begun::Done
+            }
+            NetworkEffect::ShowWired => {
+                self.open_page(PAGE_WIRED, t("net-wired"));
+                Begun::Done
+            }
+            NetworkEffect::ShowDataUsage => {
+                self.open_page(PAGE_USAGE, t("net-usage"));
                 Begun::Done
             }
             NetworkEffect::ShowHiddenNetwork => {

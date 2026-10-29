@@ -4,7 +4,7 @@
 
 pub use settings_sections::desktop::*;
 pub use settings_sections::device_vpn::DeviceVpnPrefs;
-pub use settings_sections::mobile_data::{MobileDataUsage, ResetDay};
+pub use settings_sections::network_usage::{ConnectionKind, NetworkUsage, ResetDay};
 pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
 pub use settings_sections::providers::{AgentProviders, HostedAgentProviders};

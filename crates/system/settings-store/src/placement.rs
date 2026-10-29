@@ -67,7 +67,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("display_transaction", Holder::Device),
     ("history", Holder::Device),
     ("input_device", Holder::Device),
-    ("mobile_data_usage", Holder::Device),
+    ("network_usage", Holder::Device),
     ("power", Holder::Device),
     (crate::search_history::SECTION, Holder::Device),
     ("updates", Holder::Device),
