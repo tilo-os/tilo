@@ -16,7 +16,7 @@
 # takes beside the filters) and passes every line on to the job's log unchanged,
 # recording each test's name and time as it goes, and adds what this job
 # recorded to the run's records in the build directory
-# (docs/measurements/test-timings.md). It never decides the run: the tests'
+# (docs/measurements/test-timings.json). It never decides the run: the tests'
 # verdict is what nextest reported.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

@@ -48,5 +48,4 @@ tilo-app test --json
 tilo-app inspect --audit --json
 ```
 
-More: [A resource workflow](../../sdk-resource-journey.md),
-[Scripts and agents](../../agent-action-api.md).
+More: [Build an app](../../app-development.md).

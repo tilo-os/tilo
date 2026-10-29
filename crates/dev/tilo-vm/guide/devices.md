@@ -235,7 +235,7 @@ tilo-vm vm restart opi                   # reboot over SSH; wait for the new boo
 ```
 
 A board's image is sealed, so an upgrade takes a published image through the
-device's own update path (docs/development/devices.md) and reboots, never a
+device's own update path and reboots, never a
 local build. `--ref` and `--from sha:<commit>` read the board the device's
 image was built for (`/usr/lib/tilo/hardware-profile.json`) and take that
 board's image of the build, `tilo-vm:main-<sha7>-<board>` or a branch's

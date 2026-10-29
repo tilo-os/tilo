@@ -83,7 +83,7 @@ swap=shell,app:notes`). P01 then reads `base <commit> + <components> swapped fro
 and fails unless every requested swap is the layer its slot runs.
 
 `vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
-prebuilt signed layers through verified `swap-artifact` (`docs/layer-artifacts.md`), the
+prebuilt signed layers through verified `swap-artifact`, the
 route for a change to the shared app runtime (a standalone `app:<dir>` swap is refused
 because an app needs the exact runtime it was built with):
 

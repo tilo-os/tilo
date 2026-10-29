@@ -89,8 +89,7 @@ path = "src/relay_offers_cli.rs"
 #   shell replay through the selection a bound shell authority hands the
 #   store (`tilo-relay-shell`); it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
-#   content stays opaque. `docs/architecture/security.md` ("What a
-#   workspace host reads and originates") lists the same powers.
+#   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
 #   workspace merge like any other automerge peers.
 # - Fully in-process testable — `Relay::start` binds a random-port

@@ -94,9 +94,7 @@ The `hosting` group has two jobs: the relay's cost per collaborator-hour
 and the host's peak memory and CPU. The capacity curve behind that point and
 the deployed caps (guests and spectators from 50 to 4000, the caps at once, and
 the price of 100 concurrent guests per node) is t's `perf-room-capacity` check
-(`t dispatch perf-room-capacity`, `tools/perf/room_capacity.py`);
-[docs/benchmarks/room-host-capacity-2026-10.md](../benchmarks/room-host-capacity-2026-10.md)
-records a run.
+(`t dispatch perf-room-capacity`, `tools/perf/room_capacity.py`).
 
 The `stream` group qualifies a native window on the browser desktop:
 `scripts/perf/native_stream_qualification.mjs` runs this commit's host

@@ -3,7 +3,7 @@
 One of a person's devices can route another of theirs out to the internet:
 a laptop on hotel Wi-Fi goes out through the desktop at home, or reaches the
 home network. The two devices are already certified peers of one identity
-(`docs/device-mesh.md`) with an iroh connection between their shells, so the
+ with an iroh connection between their shells, so the
 tunnel rides that connection: NAT traversal and relay fallback come with it,
 and nobody configures keys, ports or endpoints.
 

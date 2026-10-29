@@ -49,7 +49,7 @@ egress_usd_per_gb = 0.09
 
 # Nodes a public room host (tilo-room-service and its relay) runs on, read by
 # tools/perf/room_capacity.py summarize to price concurrent guests from a
-# tilo-room-load sweep (docs/benchmarks/room-host-capacity-2026-10.md). The
+# tilo-room-load sweep. The
 # same capacity rule as above, without egress beyond what a node includes.
 # Hetzner's EUR list prices are converted at the rate of its own USD price
 # list (CCX13: EUR 43.49 = USD 51.09, so 1.175); `room_node_checked` above

@@ -182,8 +182,7 @@ After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
 provider/ID with its declared arguments, adding `--wait` so the answer is the
 result and not the admission. To follow a pending receipt, use
-`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
-`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
 presented app identity, surface, frame count, and rendering errors for foreign
@@ -659,8 +658,7 @@ A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
-together with a CPU bound that catches a thread spinning without blocking
-.
+together with a CPU bound that catches a thread spinning without blocking.
 
 ## Idle memory
 

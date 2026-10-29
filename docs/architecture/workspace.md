@@ -21,7 +21,7 @@ empty.
 ## Members and devices
 
 **A member is a person's identity**: a certified human root
-([`collaboration.md`](collaboration.md), "Identity"). Membership, roles,
+(`crates/collab/tilo-user-identity`). Membership, roles,
 grants and history name members, never devices.
 
 **A member has devices.** Each device has its own key, certified by the root;
@@ -90,7 +90,7 @@ permissions have one implementation, and the file case is not privileged.
 
 Membership and permissions are workspace state, changed by actions like any
 other state and checked by the action policy
-([`permissions.md`](permissions.md)). A participant with the grant admits a
+(`crates/collab/action-policy`). A participant with the grant admits a
 member or a device and hands over the keys; there is no single device that
 owns the workspace's governance.
 

@@ -179,7 +179,7 @@ encrypted offline media for the backup.
    In the `release/root.crt` row above, replace the "none yet" sentence with
    ``Release root DER SHA-256 `<hex>` `` (`release-ca.sh inspect
    keys/release/root.crt` prints it; `tools/tests/test_release_trust_roots.py`
-   checks it), compare it with your paper copy, run `t test`, and push.
+   checks it), compare it with your paper copy, run the tests, and push.
 5. Put the token and both backups in separate safes. Every image built from
    that commit on verifies updates through the root; images built before keep
    verifying `cosign.pub`, which is why OS images carry both signatures (the

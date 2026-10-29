@@ -107,6 +107,5 @@ python3 -m unittest discover -s tools/ci -p test_rystic_ci.py -q
 
 These stdlib-only tests fake the subprocess and version-handshake boundaries.
 They compile nothing and never start, download or lease a real twin. Existing
-manual usage in `scripts/test-cloud-rystic.py` is unchanged. Prior observed test
-results and unsupported contract details remain in
-[`docs/testing/cloud-rystic-results.md`](../../docs/testing/cloud-rystic-results.md).
+manual usage in `scripts/test-cloud-rystic.py` is unchanged.
+

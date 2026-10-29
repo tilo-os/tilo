@@ -48,7 +48,7 @@ the CLI version pinned by the example's `wasm-bindgen` dependency. Set `CHROME`
 to a Chromium executable or install Playwright's Chromium. Missing browser,
 WASM target, CLI or compiled probe is an error, never a skipped test.
 
-`t test accounts-web-storage` runs the same production probe in CI, after
+CI runs the same production probe, after
 WASM Clippy of accounts, secret-vault, tilo-files and tilo-secrets with the
 standard browser-only lint exceptions. It uses the normal builder image and
 x86_64 CPU software rendering; no GPU, KVM or FUSE is required. The check

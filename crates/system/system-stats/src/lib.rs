@@ -24,8 +24,7 @@
 //! `processes` for the apps the image ships, whatever the room's
 //! capabilities name for others) and writes it into the connection before
 //! the app holds it; a grant the person gives later through the permission
-//! prompt is added by the service. The architecture note is
-//! `docs/architecture/system-settings-services.md`, "System information".
+//! prompt is added by the service.
 
 pub mod apps;
 #[cfg(unix)]

@@ -31,8 +31,7 @@ def call(sock_path: str, payload: dict, timeout: float = 5.0) -> dict:
 
     To wait for a result rather than poll for it, add `wait_ms` to an
     `actions_invoke`, `actions_status` or `actions_enumerate` payload: the
-    compositor holds the reply until it has settled (see
-    docs/agent-action-api.md). The socket timeout is extended to outlast
+    compositor holds the reply until it has settled. The socket timeout is extended to outlast
     that wait.
     """
     wait_s = payload.get("wait_ms", 0) / 1000.0

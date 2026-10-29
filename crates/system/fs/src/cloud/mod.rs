@@ -6,8 +6,7 @@
     clippy::significant_drop_tightening,
     reason = "state guards are scoped to short in-memory sections and never held across network I/O; the lint cannot see block-scoped guards end"
 )]
-//! Cloud accounts as mounted folders (`docs/architecture/storage.md`,
-//! §6.10 "Cloud accounts").
+//! Cloud accounts as mounted folders.
 //!
 //! A `WebDAV`, Nextcloud (and, through the same [`cloud_source::CloudSource`]
 //! interface, Google Drive, `OneDrive`, Dropbox or `iCloud` Drive) account set

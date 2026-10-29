@@ -5,8 +5,7 @@
 //!
 //! The viewfinder is media: what is drawn straight onto it (the guides)
 //! takes the theme's media colours, and every control
-//! stands on a floating panel inked from the theme (`docs/ui-migration.md`,
-//! "Scrims and media").
+//! stands on a floating panel inked from the theme.
 
 use ui::TextRole;
 use ui::chrome::panel_ground;

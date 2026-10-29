@@ -61,9 +61,8 @@ checking its ownership, directory permissions, and embedded development marker.
 
 ## Local builds
 
-Install the relevant
-[native dependencies](development/platforms/linux.md#native-dependencies-by-component),
-then run one of:
+Install the native dependencies ([CONTRIBUTING.md](../CONTRIBUTING.md)), then
+run one of:
 
 ```bash
 dist/debian/build-deb.sh

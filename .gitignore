@@ -16,7 +16,7 @@ os/tilo-desktop
 # staged payload, tarball and the built RPMs.
 dist/rpm/build/
 
-# Local build routing (see DEVELOPMENT.md)
+# Local build routing: the distrobox dist/rpm/rpmbuild.sh packages in
 .build-container
 
 # Throwaway keys and state of tools/web/local-registry.sh

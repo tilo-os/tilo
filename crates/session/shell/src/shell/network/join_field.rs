@@ -4,8 +4,8 @@
 //!
 //! - a site (`tilo.coffee`, `https://example.org/`): its home workspace,
 //!   joined through the site's admission door;
-//! - a workspace link in the web grammar
-//!   (docs/architecture/web-routing.md): with an `invite` secret, that
+//! - a workspace link in the web grammar:
+//!   with an `invite` secret, that
 //!   invitation, redeemed at the host the link names over HTTPS; without
 //!   one, the site's workspace through its door, when that is the room the
 //!   link names;

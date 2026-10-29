@@ -1,7 +1,5 @@
 # Android
 
-For running Android APKs on Tilo, see [Android compatibility qualification](android-compatibility.md).
-
 A Tilo app can run as a standalone Android app: the same code, the same
 toolkit and the same widgets, drawn with wgpu on Vulkan in a `NativeActivity`.
 Every app `tilo-app new` scaffolds builds for Android with no Android code of

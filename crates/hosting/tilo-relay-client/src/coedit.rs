@@ -17,8 +17,7 @@ use serde::{Deserialize, Serialize};
 /// collaboration message the host may still read: a workspace host
 /// classifies it to decide retention, replay and compaction, and folds
 /// unsealed document frames. Only a sealed document's content is opaque to
-/// it (`docs/architecture/security.md`, "What a workspace host reads and
-/// originates").
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoeditPayload {
     /// A complete, idempotent state checkpoint for one logical document.

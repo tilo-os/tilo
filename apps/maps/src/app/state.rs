@@ -329,7 +329,7 @@ impl MapsApp {
 
     /// Populate the traffic overlay.
     ///
-    /// Tilo traffic is a crowdsourced, peer-shared layer (see `docs/architecture/product.md`);
+    /// Tilo traffic is a crowdsourced, peer-shared layer;
     /// no such live feed is wired yet, so the LIVE app has no reports and the
     /// overlay stays empty — the map then shows "No traffic data" rather than
     /// inventing congestion. When the bundled offline cartography is loaded

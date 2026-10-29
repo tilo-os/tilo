@@ -12,8 +12,8 @@ tilo-vm vm upgrade                     # back to the VM's channel's newest image
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad
 ```
 
-A published image goes the way every device takes an update
-(docs/development/devices.md): the VM pins it in its channel's place
+A published image goes the way every device takes an update:
+the VM pins it in its channel's place
 (`tilo-update-channel pin`) and its own `tilo-verified-update` checks the
 signature and stages it.
 
@@ -75,7 +75,7 @@ to the channel at once. To see what exists:
 The local builds below (`image build`, `--from local`, `--image <layout>`) are the
 temporary path for an image t cannot yet publish from a branch: they send an
 unsigned image over SSH instead of the device's signed update path, and go away
-once every branch can be published (docs/development/devices.md).
+once every branch can be published.
 
 `tilo-vm image build` runs the same build as `--from local` without a VM and
 leaves the dev image as an OCI layout, `target/tilo-vm/image`, with its

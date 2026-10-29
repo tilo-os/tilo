@@ -60,5 +60,5 @@ not exercise an upgrade.
 
 Next: `tilo-app guide actions` to expose the capability or `guide verify` to
 inspect its public surface.
-More: [Templates and examples](../../examples.md#examples),
-[A resource workflow](../../sdk-resource-journey.md).
+More: [Build an app](../../app-development.md) and the
+[`shared-checklist` example](../../../examples/apps/shared-checklist).

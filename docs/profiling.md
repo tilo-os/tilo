@@ -79,8 +79,7 @@ also records, per frame:
 - `input_commit_us` — document commits and undo boundaries;
 - `input_to_commit_us` — from the start of the oldest banked event to this
   frame's CPU commit. It ends before the render worker submits, so it is not
-  input-to-photon latency; join it to presentation through `cpu_frame_id`
-  (`docs/native-presentation-feedback.md`).
+  input-to-photon latency; join it to presentation through `cpu_frame_id`.
 
 The phases are disjoint spans inside each event; what is left of
 `handle_event_us` is routing glue (focus, shortcuts, palette and navigation

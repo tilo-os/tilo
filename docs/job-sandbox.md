@@ -1,9 +1,8 @@
 # Job sandbox
 
 `tilo-sandbox`'s `job` module (`crates/platform/tilo-sandbox/src/job`) runs one command as an isolated
-job on a shared kernel. t, the build and test runner, is its first user: every
-check t runs on a worker is one job. `ush`'s approved checks
-([approved-check-runtime.md](approved-check-runtime.md)) are the second.
+job on a shared kernel. `ush`'s approved checks
+(`ush::approved_checks::ApprovedChecks`) use it.
 
 The decision is a shared kernel with namespaces, cgroups, seccomp and Landlock.
 There is no VM per job. This document gives the reasons, the threat model, every

@@ -76,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then
-            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (DEVELOPMENT.md, Dependency features)." >&2
+            echo "crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result." >&2
             exit 1
           fi
           cargo hakari verify

@@ -6,7 +6,7 @@
 //! for bots. Both get the same answers, so a person's Shortcut and a bot
 //! fire on the same change in the same way.
 //!
-//! The rules (docs/architecture/bots.md §4): no program fires on its own
+//! The rules: no program fires on its own
 //! change; a chain of runs stops past [`MAX_CHAIN_DEPTH`]; a run's id is
 //! derived from what fired it, so firing twice reuses every invocation id;
 //! one installation's firings run one at a time in event order.

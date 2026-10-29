@@ -1077,7 +1077,7 @@ package = "tilo-app-cli"
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
-  "examples/apps/", "examples/README.md", "docs/examples.md",
+  "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
   "docs/developers/tasks/",
   # The portability lint compiles in the policy gate's rules table, and the

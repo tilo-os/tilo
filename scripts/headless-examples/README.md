@@ -51,20 +51,17 @@ have their own explicit external prerequisites.
 
 `native-pair-journey.py --state-proof` isolates signed native app-state composition
 without an audio server. It requires late app hydration, concurrent semantic edits
-and local presentation on both compositors. See [native app-state acceptance](../../docs/native-app-state-acceptance.md)
-for the remote command, qualification boundaries and installed-device recipe.
+and local presentation on both compositors.
 
 `native-pair-journey.py` checks two certified native Chat peers with private
 synthetic audio. It currently fails at governed app creation and writes an
-explicitly unqualified receipt. See [native Chat pair acceptance](../../docs/native-chat-pair-acceptance.md)
-for remote build inputs, observed blockers and the steps that have not executed.
+explicitly unqualified receipt.
 
 `startup-frame-timeline.py` launches a synthetic native SDK payload through a
 private registered desktop action and the production net-off sandbox. It records
 SDK presentation events, compositor-painted frame observation bounds and a live
 frame trace. It does not measure a physical display or bypass ordinary OS
-enrollment. See [native first-frame measurements](../../docs/benchmarks/native-first-frame-2026-10-06.md)
-for the remote wrapper, build inputs, raw samples and cache limitations.
+enrollment.
 
 ## `tilo-control` CLI
 

@@ -226,8 +226,8 @@ fn recording_a_manual_decline_never_waits_for_the_disk() {
 
 #[test]
 fn automatic_display_input_requires_current_enrolment_and_certified_route() {
-    // A personal-device certificate enrols its device by itself
-    // (docs/device-mesh.md). This controller proves one for its assigned
+    // A personal-device certificate enrols its device by itself.
+    // This controller proves one for its assigned
     // workspaces only: its route is the person's, and only the registration
     // the fixture made enrols it.
     let mut fixture = Fixture::with_controller(authenticated_workspace_peer);

@@ -259,8 +259,7 @@ fn matches_word_start(text: &str, query: &str) -> bool {
     })
 }
 
-/// One destination. Every part but the label is optional; see
-/// `docs/ui-migration.md`, "Rows: what each part of a `NavItem` means".
+/// One destination. Every part but the label is optional.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
     /// Stable across rebuilds; selection, expansion and focus follow it.

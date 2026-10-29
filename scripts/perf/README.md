@@ -8,14 +8,11 @@ executable stand-alone; the higher-level flow is described below.
 - `shm_swizzle_bench` — a Cargo example calling the production SHM pixel
   conversion on reused storage, with pixel/capacity checks and raw timing
   samples. Run it in the benchmark environment with `cargo run --locked
-  -p shell --release --example shm_swizzle_bench`. The
-  [paired comparison](../../docs/shm-conversion-benchmark.md) records its scope,
-  results and remaining system measurements.
+  -p shell --release --example shm_swizzle_bench`.
 
 - `shm_pipeline_bench` — a CPU fixture calling production conversion,
   frame-store publication and snapshot paths, with byte/capacity/sequence
-  checks. The [frame-copy investigation](../../docs/shm-pipeline-benchmark.md)
-  records the next measured target and its boundary with renderer work.
+  checks.
 
 - `frame-loop-bench.py` — run the real compositor loop with cadence and
   input-to-present instrumentation. Its `--gate` mode is the quick desktop
@@ -42,9 +39,7 @@ executable stand-alone; the higher-level flow is described below.
   missing, never skips; what needs a person at the panel (tearing, a flash on
   the frame an overlay appears, a VT switch) is printed as such and never
   reported as passed. Writes one `drm.presentation-checks` record per run and
-  the log it read; see
-  [compositor](../../docs/architecture/compositor.md), "Verifying on
-  hardware".
+  the log it read.
 
 - `browser_qualification.mjs BUNDLE_DIR --out REPORT --renderer R` — the
   browser runtime's qualification: a release desktop bundle in headless Chrome
@@ -168,8 +163,7 @@ The device session must be unlocked. Enable the greeter's
 normal `configure-session-diagnostics@greeter` presentation flag before sign-in
 for physical input and presentation evidence. For GPU diagnosis also enable
 `gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
-does not enable GPU timestamp queries. See `docs/agent-action-api.md` for the
-semantic configuration and normal sign-in actions.
+does not enable GPU timestamp queries.
 
 The capture never touches the person's notebook. Every Notes window in a
 workspace opens that workspace's one notebook, so the capture first creates a

@@ -107,8 +107,7 @@ An app entry's `kind` is omitted and its versions keep their flat `tapp_*` field
 entry carries `"kind": "bot"`, its versions carry `bot` instead of the
 `tapp_*` fields, and its signature uses the bot domain, so neither kind can
 pass for the other. Snapshots list both kinds under `entries`, and the
-owner (or channel) signature and the snapshot hash cover all of them. See
-[architecture/bots.md](architecture/bots.md) §10 for bot entries.
+owner (or channel) signature and the snapshot hash cover all of them.
 
 Postcard was chosen over JSON because JSON's key order and
 whitespace are not deterministic across encoders — signatures

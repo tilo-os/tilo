@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The prebuilt layer cohort vm-acceptance-cohort installs through verified
-# swap-artifact (docs/layer-artifacts.md), as two t checks:
+# swap-artifact, as two checks:
 #
 #   vm-cohort.sh produce   vm-cohort-x86_64: this commit's launcher, install,
 #                          shell and apps+runtime as full signed layer streams,

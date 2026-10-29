@@ -9883,7 +9883,7 @@ mod tests {
         let peer = iroh::SecretKey::from_bytes(&[0xE4; 32]);
         let (net, _commands) = personal_continuity_network_for_test(user);
         // A personal-device certificate from the person's root enrols its
-        // device by itself (docs/device-mesh.md); this peer proves one for
+        // device by itself; this peer proves one for
         // assigned workspaces only, so nothing but the display cache could.
         authenticated_workspace_peer(&net, &root, &peer);
         let owner =

@@ -3,7 +3,7 @@
 Date: 2026-09-22
 The implementation contract for installing Full Tilo from the running OS
 without a USB drive. The product journey it serves is in
-[`docs/guided-setup.md`](../guided-setup.md).
+[`installer-experience.md`](../installer-experience.md).
 
 Design decisions:
 
@@ -403,8 +403,7 @@ Any mismatch leaves the partitions untouched and logs why.
   retained OS with its BootOrder unchanged.
 - Windows: the helper's probe and plan run on the Windows CI runner in read-only
   mode. The destructive round trip needs a Windows guest image on a KVM runner.
-  Until that exists, Windows support stays **unverified**, and
-  `docs/migration-status.md` says so.
+  Until that exists, Windows support stays **unverified**.
 
 The product gate in `setup/view.rs` enables Full Tilo only when all of the
 following hold: the probe passes, the catalog contains an internal release for

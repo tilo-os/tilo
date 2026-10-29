@@ -467,9 +467,6 @@ The size is only a hint; decide by use when they disagree.
 | Long-form documents | `Reading` |
 | Size that belongs to the document or canvas | `with_content_size(px)` / `TextStyle::content(px)` |
 
-The exact API changes for code written against the old size-based calls are
-in the Typography section of `docs/ui-migration.md`.
-
 ## Editing contract
 
 Caret movement and character deletion use Unicode extended grapheme clusters.

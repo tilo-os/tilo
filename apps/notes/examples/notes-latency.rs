@@ -36,8 +36,7 @@
 //!
 //! It excludes the compositor, the display pipeline and the panel. The
 //! installed-desktop measurement from the kernel input event to KMS
-//! presentation is `scripts/perf/device_notes_latency.py`
-//! (`docs/native-typing-measurement.md`).
+//! presentation is `scripts/perf/device_notes_latency.py`.
 //!
 //! ```text
 //! cargo run --release -p notes --example notes-latency

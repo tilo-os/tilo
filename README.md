@@ -5,108 +5,63 @@
 </picture>
 
 [Website](https://tilo.so) · [Contribute](CONTRIBUTING.md) ·
-[Build an app](docs/developers/getting-started.md) ·
+[Build an app](docs/app-development.md) ·
 [Source & issues](https://code.tilo.so/tilo/tilo)
 
-Tilo is a Linux desktop built around collaboration, excellent integration
-between devices and user experience/freedom. You can share a _workspace_ with
-someone and work together in all Tilo apps. Tilo gives you full history, search
-and sync between devices and people, for all resources. You can also add AI
-agents, with their own permissions and history.
+Tilo is a Linux desktop built around collaboration and around working across
+your own devices. You share a _workspace_ with someone and work together in
+every Tilo app, with full history, undo, search and sync between devices and
+people. You can add AI agents too, with their own permissions and history.
 
-We're building the desktop, the apps, and the system underneath them together.
-It's a lot of work, and it's still **early alpha**. Expect things to break.
-Please don't trust Tilo with your only copy of any important data at the moment.
+We build the desktop, the apps and the system underneath them together. Tilo
+is **early alpha**: expect things to break, and don't trust it with your only
+copy of important data.
 
-## What
+## How it works
 
-- **Workspaces you can share:** Each has its own collaborators, permissions,
-  hosts, apps and data. Your computer draws Tilo apps locally, even if you are
-  not hosting the workspace.
-- **Scrolling window manager:** Apps sit in horizontally scrolling strips. Tabs
-  can group different apps, not just documents in one app.
-- **Collaboration across apps:** Files, notes, terminals and the other apps use
-  the same underlying system for shared state, history and undo.
-- **One way to do things:** The controls you use, assistive technology, scripts
-  and agents reach the same resources and actions.
-- **Strong defaults:** Apps use shared controls, theming, search and storage
-  rather than rebuilding them independently.
+- **Workspaces are the unit of collaboration.** Each has its own members,
+  roles, apps, layout and data, and is on every device of every member.
+- **People and devices are separate.** A member is an identity; each of their
+  devices has its own key. Devices sync directly over iroh, end to end
+  encrypted with MLS. A server is just a device that stores more.
+- **All shared state is CRDT.** Edits from several people and devices merge.
+- **Apps are resources, actions and views.** An app declares its typed state
+  and the actions that change it; collaboration, history and undo,
+  permissions, sync and search come from that. Scripts, assistive technology
+  and agents use the same actions as the buttons.
+- **The shell is built like an app.** Launcher, top bar and settings run on
+  the same toolkit and model as every other app. Windows sit in horizontally
+  scrolling strips; tabs can group different apps.
 
-Take a look at our [architecture guide](docs/architecture/README.md) if you want
-to know more theoretical stuff. The [apps directory](apps/README.md) has a full
-app list with per-app status and screenshots.
+The [architecture overview](docs/architecture/README.md) explains the model
+and where it lives in the code; [`workspace.md`](docs/architecture/workspace.md)
+is the full specification. The [apps directory](apps/README.md) lists the apps.
 
-## Can I try it
+## Try it
 
-Start with [Getting Tilo onto a computer](docs/getting-started.md). It covers
-virtual machines, adding the desktop to an existing Linux system, and installing
-the complete OS.
+There is no public release download yet. [Getting started](docs/getting-started.md)
+covers virtual machines, adding the desktop to an existing Linux system and
+installing the OS. To build and run it from source, follow
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-We're not offering a public release download yet. If you'd like to work on Tilo,
-the [development guide](DEVELOPMENT.md) has the dev VM and local build paths. A
-VM is the better place to experiment than your everyday desktop.
+## Help build it
 
-## Want to help
-
-Thanks! You don't need to understand the whole system to make a useful
-contribution, you don't even need to know programming. Bug reports, small fixes,
-accessibility testing, translations, documentation and design feedback all help.
-If you do want to contribute code and use AI agents, please ensure you
-understand what you are doing.
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). It explains where to ask, how to
-find the relevant code and how to submit a change.
+You don't need to understand the whole system to help, or even to program: bug
+reports, small fixes, accessibility testing, translations, documentation and
+design feedback all count. [CONTRIBUTING.md](CONTRIBUTING.md) takes you from a
+checkout to a pull request; [Build an app](docs/app-development.md) covers the
+app SDK.
 
 Our home is [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo).
 [GitHub](https://github.com/tilo-os/tilo) is a mirror; please send issues and
-pull requests to Forgejo.
-
-People and coding agents are both welcome. If you're using an agent, please
-understand the change you're submitting and tell us what you tested.
-[AGENTS.md](AGENTS.md) is for the agent; you don't need to follow its operating
-routine yourself.
-
-## Working on the code
-
-Tilo is one Rust workspace. Rustup selects the toolchain pinned in
-`rust-toolchain.toml`. Native dependencies and platform-specific setup are in
-[DEVELOPMENT.md](DEVELOPMENT.md).
-
-You can build individual pieces rather than the whole OS:
-
-```sh
-cargo build --locked -p shell        # desktop compositor and control tools
-cargo build --locked -p tilo-ui      # UI toolkit
-cargo build --locked -p tilo-fs      # collaborative filesystem
-cargo build --locked -p file-explorer
-```
-
-For a focused shell test on Linux:
-
-```sh
-cargo test --locked -p shell --test it interaction_test::
-```
-
-Use [t](docs/t.md) for broader checks and remote builds.
-[Headless testing](docs/headless-testing.md) covers driving apps and rendering
-screenshots without touching your desktop.
-
-A few useful places:
-
-| You're interested in…            | Start here                                                |
-| -------------------------------- | --------------------------------------------------------- |
-| A particular feature or library  | [Code map](docs/codemap.md)                               |
-| Writing your own app             | [App developer guide](docs/developers/getting-started.md) |
-| The UI toolkit and app framework | `crates/sdk/`                                             |
-| The compositor and desktop       | `crates/session/shell/`                                   |
-| Files and storage                | `crates/system/fs/`                                       |
-| The OS image                     | `os/`                                                     |
+pull requests to Forgejo. People and coding agents are both welcome; if you
+use an agent, understand the change you submit and say what you tested.
+[AGENTS.md](AGENTS.md) is for the agent.
 
 ## License and security
 
-Tilo is fully open source, see [LICENSE.md][LICENSE.md] for licensing details
-(short story: everything you need to publish an app is MIT, all other code is
-AGPL 3.0)
+Tilo is open source: everything you need to publish an app is MIT, the rest is
+AGPL 3.0. See [LICENSING.md](LICENSING.md).
 
-Please report vulnerabilities privately using [SECURITY.md](SECURITY.md), not a
-public issue.
+Please report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md), not in a public issue.
