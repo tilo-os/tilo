@@ -265,9 +265,6 @@ pub(crate) fn structure_signature(snapshot: &InspectionSnapshot) -> u64 {
     }
     let mut hasher = std::hash::DefaultHasher::new();
     visit_node(&snapshot.root, &mut hasher);
-    if let Some(presentation) = &snapshot.presentation {
-        visit_node(presentation, &mut hasher);
-    }
     hasher.finish()
 }
 
@@ -339,7 +336,6 @@ mod tests {
             viewport: [100, 100],
             keyboard_focus_owner: Some(format!("/Column/TextInput[{focused}]")),
             root,
-            presentation: None,
         }
     }
     fn ime(x: u32, y: u32) -> ImeWindowState {

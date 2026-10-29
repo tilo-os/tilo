@@ -5,7 +5,7 @@
 //! DOM) needs only what changed: while typing that is the edited field and
 //! its caret, not the whole window's hundreds of nodes. The patch is a JSON
 //! array of operations, applied in order, each naming a node by its `p`ath:
-//! `"root"` or `"presentation"`, then child indices, with `"s"` stepping from
+//! `"root"`, then child indices, with `"s"` stepping from
 //! a retained widget into its semantics node.
 //!
 //! - `{"p":P,"own":N}`: node P's own fields become N's; its `children` (and,
@@ -13,8 +13,8 @@
 //! - `{"p":P,"splice":[at,removed,[N…]]}`: in P's children, `removed` nodes
 //!   at `at` give way to the whole nodes listed. Later operations address
 //!   the list as it is after the splice.
-//! - `{"p":P,"full":N}`: the value at P (a semantics node or the
-//!   presentation tree, possibly `null`) becomes N, whole.
+//! - `{"p":P,"full":N}`: the value at P (a semantics node, possibly
+//!   `null`) becomes N, whole.
 //!
 //! Children are matched by identity (keys, semantic keys, action targets
 //! and roles of semantic nodes; paths of widgets) from both ends of a list,
@@ -61,15 +61,6 @@ pub fn write_inspection_patch(
     };
     writer.out.push(b'[');
     InspectionNode::diff(&mut writer, &old.root, &mut new.root);
-    writer.path[0] = Step::Presentation;
-    match (&old.presentation, &mut new.presentation) {
-        (Some(old), Some(new)) => InspectionNode::diff(&mut writer, old, new),
-        (None, None) => {}
-        (old, new) => {
-            writer.stats.removed += old.as_ref().map_or(0, Node::count);
-            writer.full(&*new, new.as_ref().map_or(0, Node::count));
-        }
-    }
     writer.out.push(b']');
     writer.stats
 }
@@ -77,7 +68,6 @@ pub fn write_inspection_patch(
 #[derive(Clone, Copy)]
 enum Step {
     Root,
-    Presentation,
     Semantics,
     Child(usize),
 }
@@ -102,7 +92,6 @@ impl Writer<'_> {
             }
             match step {
                 Step::Root => self.out.extend_from_slice(b"\"root\""),
-                Step::Presentation => self.out.extend_from_slice(b"\"presentation\""),
                 Step::Semantics => self.out.extend_from_slice(b"\"s\""),
                 Step::Child(child) => self.out.extend_from_slice(child.to_string().as_bytes()),
             }
@@ -334,7 +323,6 @@ mod tests {
             viewport: [100, 100],
             keyboard_focus_owner: Some("App[0]".into()),
             root: node("Shell[0]", None, vec![node("App[0]", Some(app), vec![])]),
-            presentation: None,
         }
     }
 
@@ -416,28 +404,15 @@ mod tests {
     }
 
     #[test]
-    fn semantics_appearing_and_the_presentation_tree_go_whole() {
+    fn semantics_that_appear_go_whole() {
         let old = snapshot(items(0..3), "");
         let mut new = snapshot(items(0..3), "");
         new.root.semantics = Some(AccessNode::new(Role::Window).with_name("Desk"));
-        new.presentation = Some(InspectionNode {
-            path: "History[0]".into(),
-            widget: "History".into(),
-            test_id: None,
-            focusable: false,
-            rect: [0.0; 4],
-            child_clip: None,
-            layout: None,
-            semantics: None,
-            children: vec![],
-        });
         let (text, stats) = patch(&old, &mut new);
-        assert_eq!(stats.added, 2);
+        assert_eq!(stats.added, 1);
         assert!(text.starts_with(r#"[{"p":["root","s"],"full":{"role":"Window""#));
-        assert!(text.contains(r#"{"p":["presentation"],"full":{"path":"History[0]""#));
         let (text, stats) = patch(&new, &mut snapshot(items(0..3), ""));
-        assert_eq!(stats.removed, 2);
+        assert_eq!(stats.removed, 1);
         assert!(text.contains(r#"{"p":["root","s"],"full":null}"#));
-        assert!(text.contains(r#"{"p":["presentation"],"full":null}"#));
     }
 }

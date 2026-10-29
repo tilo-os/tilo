@@ -122,8 +122,6 @@ pub struct InspectionSnapshot {
     /// Always serialize absence as null: omission means legacy unknown ownership.
     pub keyboard_focus_owner: Option<String>,
     pub root: InspectionNode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presentation: Option<InspectionNode>,
 }
 
 /// One deterministic accessibility-contract violation found in a laid-out
@@ -5887,7 +5885,6 @@ impl FrameHarness {
             viewport: [self.viewport.0, self.viewport.1],
             keyboard_focus_owner,
             root,
-            presentation: None,
         }
     }
 
