@@ -10,6 +10,13 @@
 //! start-up deadline does not run, and closing it lets the launch go
 //! ([`cancel`]). A room this device's own host places is held before apps
 //! start, so its launches never wait here.
+//!
+//! Where a room stands is read from the workspace tree, so it is looked at
+//! by the room's waiter, never by the thread asking for the launch: launches
+//! are asked for from the frame loop with the tree held (a saved window
+//! reopened by `peer_windows::examine` holds it for writing), and a look
+//! there would wait on the tree its own thread holds. Nothing here takes the
+//! tree on the caller's thread.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -44,6 +51,10 @@ struct Held {
     launches: Vec<(HeldLaunch, Start)>,
     /// Ends the room's waiter once nothing waits for the room any more.
     let_go: Arc<Notify>,
+    /// What the room waits on, as its waiter last saw it; none until the
+    /// waiter has looked and found the room not ready. Only then do the
+    /// room's launches wait: before, they are about to start or wait.
+    waits_on: Option<RoomWait>,
 }
 
 /// Say where rooms stand for this thread's session's launches from now on.
@@ -55,9 +66,11 @@ pub(crate) fn set_source(source: RoomStatusSource) {
 /// not late while it does.
 pub(super) fn waits(session: &LaunchSession, package_id: &str) -> bool {
     lock(&session.rooms.0).held.values().any(|held| {
-        held.launches
-            .iter()
-            .any(|(launch, _)| launch.package_id == package_id)
+        held.waits_on.is_some()
+            && held
+                .launches
+                .iter()
+                .any(|(launch, _)| launch.package_id == package_id)
     })
 }
 
@@ -76,11 +89,16 @@ fn same_launch(a: &HeldLaunch, b: &HeldLaunch) -> bool {
         && a.command.args == b.command.args
 }
 
-/// Start `launch` with `start`, or hold it while its room waits.
+/// Start `launch` with `start` once its room is ready: now, when it names
+/// no room or no room waits in this session; otherwise through its room's
+/// waiter, which looks at the room off this thread and starts the launch
+/// at once when the room is ready, or holds it while the room waits.
+///
+/// Takes no lock but this module's: the caller may hold the workspace tree.
 ///
 /// # Errors
 ///
-/// As `start`, for a launch started now.
+/// As `start`, for a launch started on this thread.
 pub(super) fn admit(
     session: &LaunchSession,
     launch: HeldLaunch,
@@ -92,19 +110,25 @@ pub(super) fn admit(
     let Some(source) = lock(&session.rooms.0).source.clone() else {
         return start(launch, session);
     };
-    // Looked at with no lock of this module held, which the room's status
-    // may itself wait on. A waiter that released the room meanwhile is
-    // answered by the next one: it starts from this look, and a room ready
-    // since then is no longer what it saw.
-    let status = source.status(room);
-    if !matches!(status, RoomStatus::Waiting { .. }) {
-        return start(launch, session);
-    }
+    hold(session, (source, room), (launch, start), None);
+    Ok(())
+}
+
+/// Hold `launch` for `room` until the room's waiter starts or refuses it,
+/// waking a waiter for the room when none waits yet: one that starts from
+/// `seen`, the room as already looked at, or that looks first.
+fn hold(
+    session: &LaunchSession,
+    (source, room): (RoomStatusSource, RoomId),
+    (launch, start): (HeldLaunch, Start),
+    seen: Option<(RoomStatus, RoomWait)>,
+) {
     let mut rooms = lock(&session.rooms.0);
     let first = !rooms.held.contains_key(&room);
     let held = rooms.held.entry(room).or_insert_with(|| Held {
         launches: Vec::new(),
         let_go: Arc::new(Notify::new()),
+        waits_on: seen.as_ref().map(|(_, wait)| *wait),
     });
     let let_go = Arc::clone(&held.let_go);
     if !held
@@ -112,23 +136,22 @@ pub(super) fn admit(
         .iter()
         .any(|(waiting, _)| same_launch(waiting, &launch))
     {
-        tracing::info!(%room, package_id = %launch.package_id, "a launch waits for its room");
         held.launches.push((launch, start));
     }
     drop(rooms);
     if first {
-        wait_for(session, source, room, (status, let_go));
+        wait_for(session, source, room, (seen.map(|(seen, _)| seen), let_go));
     }
-    Ok(())
 }
 
-/// Wait for `room`, last seen as `seen`, on a thread of its own: woken by
-/// the room's changes only, it ends with the room's launches.
+/// Wait for `room`, last seen as `seen` or not looked at yet, on a thread
+/// of its own: woken by the room's changes only, it ends with the room's
+/// launches.
 fn wait_for(
     session: &LaunchSession,
     source: RoomStatusSource,
     room: RoomId,
-    (seen, let_go): (RoomStatus, Arc<Notify>),
+    (seen, let_go): (Option<RoomStatus>, Arc<Notify>),
 ) {
     let waiter = session.clone();
     let spawned = std::thread::Builder::new()
@@ -136,6 +159,8 @@ fn wait_for(
         .spawn(move || {
             waiter.clone().adopt();
             waiter.wait_for_room(&source, room, seen, &let_go);
+            drop((waiter, source));
+            LaunchSession::disown();
         });
     if let Err(error) = spawned {
         // Nothing can wait for the room: its launches start as they would
@@ -153,51 +178,85 @@ impl LaunchSession {
         &self,
         source: &RoomStatusSource,
         room: RoomId,
-        mut seen: RoomStatus,
+        mut seen: Option<RoomStatus>,
         let_go: &Notify,
     ) {
         loop {
-            let change = std::pin::pin!(source.change(room, seen.clone()));
-            let released = std::pin::pin!(let_go.notified());
-            let now = match pollster::block_on(select(change, released)) {
-                Either::Left((now, _)) => now,
-                // Looked at below: nothing waits any more.
-                Either::Right(((), _)) => seen.clone(),
+            let now = match &seen {
+                // The first look, here rather than where the launch was
+                // asked for: that thread may hold the tree.
+                None => source.status(room),
+                Some(seen) => {
+                    let change = std::pin::pin!(source.change(room, seen.clone()));
+                    let released = std::pin::pin!(let_go.notified());
+                    match pollster::block_on(select(change, released)) {
+                        Either::Left((now, _)) => now,
+                        // Looked at below: nothing waits any more.
+                        Either::Right(((), _)) => seen.clone(),
+                    }
+                }
             };
+            // Looked at with no lock of this module held, which the tree's
+            // writers may themselves wait on.
+            let waits_on = matches!(now, RoomStatus::Waiting { .. }).then(|| {
+                if source.placing(room) {
+                    RoomWait::Placing
+                } else {
+                    RoomWait::Joining
+                }
+            });
             let mut rooms = lock(&self.rooms.0);
-            let Some(held) = rooms.held.get(&room) else {
+            let Some(held) = rooms.held.get_mut(&room) else {
                 return;
             };
             if held.launches.is_empty() {
                 rooms.held.remove(&room);
                 return;
             }
-            if matches!(now, RoomStatus::Waiting { .. }) {
-                seen = now;
+            if let Some(wait) = waits_on {
+                if held.waits_on.is_none() {
+                    for (launch, _) in &held.launches {
+                        tracing::info!(%room, package_id = %launch.package_id, "a launch waits for its room");
+                    }
+                }
+                held.waits_on = Some(wait);
+                seen = Some(now);
                 continue;
             }
+            let waited = held.waits_on.is_some();
             let launches = rooms
                 .held
                 .remove(&room)
                 .map(|held| held.launches)
                 .unwrap_or_default();
             drop(rooms);
-            if let RoomStatus::Refused(reason) = now {
-                tracing::info!(%room, %reason, "launches waiting for a room are refused");
-                for (launch, _) in launches {
-                    self.startup.fail(
-                        super::super::launch_readiness::command_token(&launch.command),
-                        reason.clone(),
-                    );
-                    self.push(super::room_refused(launch, &reason));
+            match now {
+                // A room refused while its launches waited for it: they
+                // will not start. One refused already when it was first
+                // looked at starts its apps, which say why they cannot open
+                // anything, as before rooms were waited for.
+                RoomStatus::Refused(reason) if waited => {
+                    tracing::info!(%room, %reason, "launches waiting for a room are refused");
+                    for (launch, _) in launches {
+                        self.startup.fail(
+                            super::super::launch_readiness::command_token(&launch.command),
+                            reason.clone(),
+                        );
+                        self.push(super::room_refused(launch, &reason));
+                    }
                 }
-            } else {
-                tracing::info!(%room, "launches waiting for a room start");
-                for (launch, start) in launches {
-                    // Its window is due as any start's is, from now.
-                    super::hold_presentation_for(&launch.package_id, Duration::ZERO);
-                    // A failure to start is reported through the session.
-                    let _ = start(launch, self);
+                _ => {
+                    if waited {
+                        tracing::info!(%room, "launches waiting for a room start");
+                    }
+                    for (launch, start) in launches {
+                        if waited {
+                            // Its window is due as any start's is, from now.
+                            super::hold_presentation_for(&launch.package_id, Duration::ZERO);
+                        }
+                        // A failure to start is reported through the session.
+                        let _ = start(launch, self);
+                    }
                 }
             }
             return;
@@ -293,34 +352,31 @@ pub(crate) enum RoomWait {
 
 /// What `package_id`'s window waits on, when its launch waits for its room.
 /// The window's place says it as where the window comes from
-/// (`PendingWindow::arrives_from`).
+/// (`PendingWindow::arrives_from`). Drawn on the frame loop, with the tree
+/// held: it reads what the room's waiter saw, never the tree.
 pub(crate) fn room_wait(package_id: &str) -> Option<RoomWait> {
     let session = LaunchSession::current();
     let rooms = lock(&session.rooms.0);
-    let room = rooms.held.iter().find_map(|(room, held)| {
+    rooms.held.values().find_map(|held| {
         held.launches
             .iter()
             .any(|(launch, _)| launch.package_id == package_id)
-            .then_some(*room)
-    })?;
-    let source = rooms.source.clone()?;
-    drop(rooms);
-    Some(if source.placing(room) {
-        RoomWait::Placing
-    } else {
-        RoomWait::Joining
+            .then_some(held.waits_on)
+            .flatten()
     })
 }
 
 /// Visual review: a launch of `package_id` waits for `room` as a real one
-/// does, against `tree`'s rooms, and starts nothing once it may.
+/// does, against `tree`'s rooms, and starts nothing once it may. Looks at
+/// the room here, so the frame drawn next shows the launch waiting.
 pub fn hold_for_shots(
     tree: crate::shell::state::WorkspaceTreeHandle,
     package_id: &str,
     room: RoomId,
 ) {
     let started: Start = |_, _| Ok(());
-    set_source(RoomStatusSource::new(tree, None));
+    let source = RoomStatusSource::new(tree, None);
+    set_source(source.clone());
     let launch = HeldLaunch {
         authority: None,
         #[cfg(target_os = "linux")]
@@ -337,7 +393,21 @@ pub fn hold_for_shots(
             x11_workspace: None,
         },
     };
-    let _ = admit(&LaunchSession::current(), launch, started);
+    let status = source.status(room);
+    let seen = matches!(status, RoomStatus::Waiting { .. }).then(|| {
+        let wait = if source.placing(room) {
+            RoomWait::Placing
+        } else {
+            RoomWait::Joining
+        };
+        (status, wait)
+    });
+    hold(
+        &LaunchSession::current(),
+        (source, room),
+        (launch, started),
+        seen,
+    );
 }
 
 /// The person closed the window `package_id` was to open in `room`: its
