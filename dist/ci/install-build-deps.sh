@@ -217,7 +217,7 @@ debian)
         curl ca-certificates build-essential binutils clang libclang-dev cmake \
         pkg-config capnproto file dpkg-dev autoconf automake libtool libgcrypt20-dev \
         libxkbcommon-dev libwayland-dev libseat-dev libinput-dev libudev-dev \
-        libdrm-dev libgbm-dev libgl-dev libegl-dev libpipewire-0.3-dev \
+        libdrm-dev libgbm-dev libgl-dev libegl-dev libpixman-1-dev libpipewire-0.3-dev \
         libdbus-1-dev dbus-daemon xdg-dbus-proxy libfontconfig-dev libfreetype-dev \
         libharfbuzz-dev libfuse3-dev libgstreamer1.0-dev \
         libgstreamer-plugins-base1.0-dev
@@ -229,7 +229,7 @@ fedora)
         autoconf automake libtool libgcrypt-devel \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
-        mesa-libEGL-devel pipewire-devel dbus-devel dbus-daemon xdg-dbus-proxy \
+        mesa-libEGL-devel pixman-devel pipewire-devel dbus-devel dbus-daemon xdg-dbus-proxy \
         fontconfig-devel freetype-devel harfbuzz-devel fuse3-devel \
         gstreamer1-devel gstreamer1-plugins-base-devel
     if [[ $profile == workspace || $profile == test ]]; then
@@ -251,7 +251,7 @@ fedora)
 arch)
     packages=(
         curl git base-devel binutils rustup clang cmake pkgconf capnproto file namcap
-        libxkbcommon wayland seatd libinput systemd-libs libdrm mesa
+        libxkbcommon wayland seatd libinput systemd-libs libdrm mesa pixman
         pipewire dbus xdg-dbus-proxy fontconfig freetype2 harfbuzz fuse3 libgcrypt
         gstreamer gst-plugins-base-libs
     )
