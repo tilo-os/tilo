@@ -240,6 +240,91 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     }
 }
 
+/// Who reacted with each emoji, as the row's reactions show it.
+fn reactions(row: &UiNode) -> Vec<(String, Vec<Principal>)> {
+    let Some(node) = find(row, "ui.Reactions") else {
+        return Vec::new();
+    };
+    let Some(Value::Map(entries)) = node.props.get("reactions") else {
+        panic!("reactions as a map: {:?}", node.props);
+    };
+    entries
+        .iter()
+        .map(|(emoji, who)| {
+            let Value::List(who) = who else {
+                panic!("who reacted, as a set: {who:?}");
+            };
+            let who = who
+                .iter()
+                .map(|p| match p {
+                    Value::Principal(p) => p.clone(),
+                    other => panic!("a principal: {other:?}"),
+                })
+                .collect();
+            (emoji.as_text().unwrap_or_default().to_owned(), who)
+        })
+        .collect()
+}
+
+#[test]
+fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let m = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Shots are up."), Value::Opt(None)],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
+    let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
+    assert!(
+        reactions(&rows(&mut ada_design)[0]).is_empty(),
+        "no reactions yet"
+    );
+
+    // Both react with the same emoji before either hears of the other's.
+    call(&ada, "react", vec![m.clone(), Value::text("👍")]);
+    ada.commit();
+    call(&ben, "react", vec![m.clone(), Value::text("👍")]);
+    call(&ben, "react", vec![m.clone(), Value::text("🎉")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let both = vec![
+        (
+            "👍".to_owned(),
+            vec![Principal::new("ada"), Principal::new("ben")],
+        ),
+        ("🎉".to_owned(), vec![Principal::new("ben")]),
+    ];
+    for view in [&mut ada_design, &mut ben_design] {
+        let mut shown = reactions(&rows(view)[0]);
+        shown.sort();
+        let mut want = both.clone();
+        want.sort();
+        assert_eq!(shown, want, "neither reaction is lost");
+        let node = find(&rows(view)[0], "ui.Reactions").cloned().unwrap();
+        assert!(node.events.contains_key("toggle"), "a pill toggles");
+    }
+
+    // Ada's second press takes hers back; Ben's stays.
+    call(&ada, "react", vec![m.clone(), Value::text("👍")]);
+    ada.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        let shown = reactions(&rows(view)[0]);
+        assert!(
+            shown.contains(&("👍".to_owned(), vec![Principal::new("ben")])),
+            "{shown:?}"
+        );
+    }
+}
+
 /// Every text `row` shows.
 fn shown_in(row: &UiNode) -> Vec<String> {
     let mut out = Vec::new();

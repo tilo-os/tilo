@@ -35,6 +35,8 @@ type Message {
     parts: Collection<Part>
     /// Whether it is pinned to its channel, which search finds.
     pinned: Bool = false
+    /// Who reacted, by emoji.
+    reactions: Map<Set<Principal>>
 
     search {
         filter pinned (icon: .pin)
@@ -97,6 +99,20 @@ action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") 
 /// Pins a message to its channel, or unpins it.
 action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: m.pinned) {
     m.pinned = pinned
+}
+
+/// Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
+action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
+    let mine = if let who = m.reactions.get(emoji) {
+        who.any(p -> p == invoker)
+    } else {
+        false
+    }
+    if mine {
+        m.reactions.remove(emoji, invoker)
+    } else {
+        m.reactions.add(emoji, invoker)
+    }
 }
 
 /// Starts a thread from a message of a channel, named after what the message says.
@@ -177,6 +193,9 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
             on press: set(revised, m.body).then(set(editing, m))
         }
         button(pin(m), icon_only: true)
+        ui.EmojiPicker {
+            on pick(e): react(m, e)
+        }
     }
 }
 
@@ -205,6 +224,9 @@ view thread_message(m: Message, replying: State<Option<Message>>, editing: State
             on press: set(revised, m.body).then(set(editing, m))
         }
         button(pin(m), icon_only: true)
+        ui.EmojiPicker {
+            on pick(e): react(m, e)
+        }
     }
 }
 
@@ -238,6 +260,11 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
         }
     } else {
         said(m)
+    }
+    if not m.reactions.keys().is_empty() {
+        ui.Reactions(reactions: m.reactions) {
+            on toggle(e): react(m, e)
+        }
     }
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
