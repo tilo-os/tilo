@@ -660,11 +660,7 @@ impl Widget for ThemeTiles {
 }
 
 impl ui::widget::controls::ActionControls for ThemeTiles {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(ui::widget::ActionEmitter::take)
-    }
+    ui::widget::controls::optional_emitter_controls!();
 }
 
 #[cfg(test)]

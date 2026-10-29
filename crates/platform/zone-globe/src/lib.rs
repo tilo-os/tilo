@@ -1122,11 +1122,7 @@ impl Widget for TimeZoneGlobe {
 }
 
 impl ui::widget::controls::ActionControls for TimeZoneGlobe {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(ui::widget::ActionEmitter::take)
-    }
+    ui::widget::controls::optional_emitter_controls!();
 }
 
 #[cfg(test)]
