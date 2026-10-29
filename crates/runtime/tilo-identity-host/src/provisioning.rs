@@ -984,8 +984,6 @@ fn copy_home_peers(
     if local_cert.capabilities.can_act_as_host {
         let device_id = hex::encode(local_cert.device_public_key);
         let service_id = hex::encode(relay_service_node_id);
-        let topic =
-            tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
         let registration = tilo_relay_protocol::HomePeerRegistration {
             schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: device_id,
@@ -998,7 +996,8 @@ fn copy_home_peers(
             },
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
-            relay_workspace_ids: vec![topic],
+            // It serves its person, whichever workspaces it holds.
+            relay_workspace_ids: Vec::new(),
             environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         if !relay_is_dialable(&entries, &registration) {

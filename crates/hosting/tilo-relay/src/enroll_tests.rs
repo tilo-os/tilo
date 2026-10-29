@@ -137,9 +137,9 @@ fn a_held_root_certifies_an_administrator_into_the_fleet() {
 }
 
 /// A host certified out of band becomes one of the person's home peers:
-/// the registry names its relay, where that relay listens and the
-/// person's continuity shard, so the device shares workspaces on it. A
-/// device that may not host is never registered.
+/// the registry names its relay and where that relay listens, and no
+/// workspace before it holds one. A device that may not host is never
+/// registered.
 #[test]
 fn a_host_certified_out_of_band_is_registered_as_a_home_peer() {
     let identity_root = tempfile::tempdir().unwrap();
@@ -186,11 +186,9 @@ fn a_host_certified_out_of_band_is_registered_as_a_home_peer() {
         peer.user_public_key,
         hex::encode(root.verifying_key().to_bytes())
     );
-    assert_eq!(
-        peer.relay_workspace_ids,
-        vec![tilo_relay::personal_continuity_workspace_id(
-            &root.verifying_key().to_bytes()
-        )]
+    assert!(
+        peer.relay_workspace_ids.is_empty(),
+        "a new home peer holds none of the person's workspaces yet"
     );
     let endpoint = peer.relay_endpoint.as_ref().expect("the dial hint is kept");
     assert_eq!(endpoint.id.as_bytes(), &service);
@@ -979,16 +977,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         signature: [0; 64],
     };
     sign_device_cert(&mut home_cert, &root).unwrap();
-    register_home_peer(
-        approver_root.path(),
-        &home_cert,
-        [43; 32],
-        &[tilo_relay::personal_continuity_workspace_id(
-            &root.verifying_key().to_bytes(),
-        )],
-        None,
-    )
-    .unwrap();
+    register_home_peer(approver_root.path(), &home_cert, [43; 32], &[], None).unwrap();
 
     // Seed the new device's key so the approval pins exactly this device:
     // an unpinned approver answers whichever device solicits first.
@@ -1076,13 +1065,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     )
     .unwrap();
     assert_eq!(peers.len(), 1);
-    assert!(
-        peers[0]
-            .relay_workspace_ids
-            .contains(&tilo_relay::personal_continuity_workspace_id(
-                &root.verifying_key().to_bytes()
-            ))
-    );
+    assert_eq!(peers[0].relay_service_node_id, hex::encode([43; 32]));
     let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
     let identity = runtime_identity::load_from_path(record).unwrap();
     assert!(

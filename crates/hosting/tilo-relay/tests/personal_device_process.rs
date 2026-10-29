@@ -132,10 +132,7 @@ fn write_approver_fixture(
         label: "Home peer".into(),
         user_public_key: hex::encode(user),
         device_cert: Some(home_cert),
-        relay_workspace_ids: vec![
-            FILE_WORKSPACE,
-            tilo_relay::personal_continuity_workspace_id(&user),
-        ],
+        relay_workspace_ids: vec![FILE_WORKSPACE],
         environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     tilo_files::native::atomic::write_creating_parent(
@@ -295,9 +292,6 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     .unwrap();
     assert_eq!(transferred, vec![source_registration.clone()]);
     assert!(transferred[0].relay_workspace_ids.contains(&FILE_WORKSPACE));
-    assert!(transferred[0].relay_workspace_ids.contains(
-        &tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
-    ));
 
     // The approver process has exited; the transferred, authenticated relay
     // address remains enough to reach the home peer without DNS/lookup.
@@ -338,23 +332,6 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             workspace_id: FILE_WORKSPACE,
             ..
         })
-    ));
-    let continuity = tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes());
-    crate::common::admit_members(
-        &relay,
-        continuity,
-        &[member_cert.device_public_key],
-        state.path(),
-    )
-    .await;
-    client
-        .send(Envelope::Subscribe {
-            workspace_id: continuity,
-        })
-        .unwrap();
-    assert!(matches!(
-        tilo_test_env::within("the continuity workspace's Ready", client.recv()).await,
-        Some(Envelope::Ready { workspace_id, .. }) if workspace_id == continuity
     ));
 }
 

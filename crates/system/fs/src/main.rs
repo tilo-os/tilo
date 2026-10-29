@@ -1407,14 +1407,6 @@ fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<
     Ok(selected)
 }
 
-fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
-    let hash = blake3::derive_key("tilo-personal-continuity-v1\0", user_public_key);
-    let mut first8 = [0_u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    if id == 0 { 1 } else { id }
-}
-
 fn managed_system_service() -> bool {
     std::env::var_os("INVOCATION_ID").is_some()
 }
@@ -1447,9 +1439,6 @@ fn export_home_peer(
     let paths = identity_paths();
     let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
-    relay_workspace_ids.push(personal_continuity_workspace_id(
-        &governor.verifying_key().to_bytes(),
-    ));
     relay_workspace_ids.sort_unstable();
     relay_workspace_ids.dedup();
     let authority = WorkspaceAuthorityEnvelope::sign(

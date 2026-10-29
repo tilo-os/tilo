@@ -26,7 +26,7 @@
 //!   an app this device opens there first, on the room's session.
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
-    registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
+    registered_home_peer_addrs, room_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::network::invite::enrollment_driver;
@@ -924,8 +924,7 @@ impl ShellNetwork {
         if &device == self.local_peer_id.as_bytes() {
             return Some(PersonsHost::Here);
         }
-        let topics = relay_topics_for_home_peers(std::iter::empty(), Some(user));
-        if let Some(home) = registered_home_peer_addrs(Some(user), &topics)
+        if let Some(home) = registered_home_peer_addrs(Some(user))
             .ok()?
             .into_iter()
             .find(|home| home.expectation.device_public_key == device)

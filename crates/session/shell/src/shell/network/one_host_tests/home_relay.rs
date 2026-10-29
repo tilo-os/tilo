@@ -69,7 +69,7 @@ impl HomeRelay {
             label: RELAY_LABEL.into(),
             user_public_key: hex::encode(person.user()),
             device_cert: Some(cert),
-            relay_workspace_ids: vec![super::super::personal_continuity_topic_id(&person.user())],
+            relay_workspace_ids: Vec::new(),
             environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         std::fs::write(&registry, serde_json::to_vec(&vec![registration]).unwrap()).unwrap();

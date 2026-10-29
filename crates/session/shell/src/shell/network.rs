@@ -504,24 +504,6 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
     tilo_relay_protocol::personal_continuity_workspace_id(user_public_key)
 }
 
-/// Topics a machine dials on startup and on home-peer refresh.
-///
-/// Local rooms are included, and so is the person topic, so a device with no
-/// rooms yet still reaches the peers enrolled for that identity.
-fn relay_topics_for_home_peers(
-    rooms: impl IntoIterator<Item = RoomId>,
-    user: Option<[u8; 32]>,
-) -> std::collections::BTreeSet<u64> {
-    let mut topics = rooms
-        .into_iter()
-        .map(room_topic_id)
-        .collect::<std::collections::BTreeSet<_>>();
-    if let Some(user) = user {
-        topics.insert(personal_continuity_topic_id(&user));
-    }
-    topics
-}
-
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its Iroh identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
@@ -758,7 +740,6 @@ fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistra
 
 fn registered_home_peer_addrs(
     local_user: Option<[u8; 32]>,
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
 ) -> Result<Vec<RegisteredHomePeer>, String> {
     let Some(local_user) = local_user else {
         return Ok(Vec::new());
@@ -766,26 +747,21 @@ fn registered_home_peer_addrs(
     Ok(home_peers_from_registrations(
         read_home_peer_registry()?,
         local_user,
-        relay_workspace_ids,
     ))
 }
 
-/// The dialable home peers among `registrations`: those of `local_user` that
-/// serve one of `relay_workspace_ids`.
+/// The dialable home peers among `registrations`: those of `local_user`.
+/// A home peer the person paired serves the person, whichever of their
+/// workspaces it holds yet.
 fn home_peers_from_registrations(
     registrations: Vec<tilo_relay_protocol::HomePeerRegistration>,
     local_user: [u8; 32],
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
 ) -> Vec<RegisteredHomePeer> {
     let mut addrs = Vec::new();
     for registration in registrations {
         if registration.label.is_empty()
             || registration.label.len() > MAX_HOME_PEER_LABEL_BYTES
             || registration.relay_workspace_ids.len() > MAX_HOME_PEER_WORKSPACES
-            || !registration
-                .relay_workspace_ids
-                .iter()
-                .any(|workspace| relay_workspace_ids.contains(workspace))
         {
             continue;
         }
@@ -1951,9 +1927,7 @@ impl ShellNetwork {
                 )
             });
 
-        let relay_workspace_ids = relay_topics_for_home_peers(tree.read().rooms(), local_person);
-        let home_peers =
-            registered_home_peer_addrs(local_person, &relay_workspace_ids).unwrap_or_default();
+        let home_peers = registered_home_peer_addrs(local_person).unwrap_or_default();
         let home_peer_ids = home_peers
             .iter()
             .map(|host| host.addr.id)
@@ -4336,15 +4310,12 @@ impl ShellNetwork {
         // or without a relay. A missing or malformed relay registry must not
         // skip them.
         changed |= self.dial_direct_peers();
-        let mut relay_workspace_ids = relay_topics_for_home_peers(self.tree.read().rooms(), None);
-        if let Some(user) = self.local_person {
-            relay_workspace_ids.insert(personal_continuity_topic_id(&user));
-        }
         let desired = match self.local_person {
             None => Ok(Vec::new()),
-            Some(user) => inputs.registrations.clone().map(|registrations| {
-                home_peers_from_registrations(registrations, user, &relay_workspace_ids)
-            }),
+            Some(user) => inputs
+                .registrations
+                .clone()
+                .map(|registrations| home_peers_from_registrations(registrations, user)),
         };
         let Ok(desired) = desired else {
             // Preserve existing routes for availability, but fail closed for
@@ -9531,7 +9502,7 @@ mod tests {
                 label: "Home relay".into(),
                 user_public_key: hex::encode(user_public_key),
                 device_cert: None,
-                relay_workspace_ids: vec![personal_continuity_topic_id(&user_public_key)],
+                relay_workspace_ids: Vec::new(),
                 environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             std::fs::write(
@@ -10952,7 +10923,7 @@ mod tests {
             assert!(key_path.exists(), "keypair file must exist after spawn");
         }
 
-        fn home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms() {
+        fn home_peer_registry_survives_restart_and_admits_only_the_persons_peers() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x11; 32];
@@ -10992,22 +10963,24 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let rooms = std::collections::BTreeSet::from([42]);
-            let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
-            let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+            let first_boot = registered_home_peer_addrs(Some(own_user)).unwrap();
+            let restarted = registered_home_peer_addrs(Some(own_user)).unwrap();
             assert_eq!(first_boot, restarted, "registry is durable across restart");
-            assert_eq!(first_boot.len(), 1);
-            assert_eq!(first_boot[0].addr.id, service);
+            // Both of the person's peers, whatever workspaces each holds;
+            // never another identity's.
+            let mut ids: Vec<_> = first_boot.iter().map(|peer| peer.addr.id).collect();
+            ids.sort();
+            let mut expected = vec![service, other_service];
+            expected.sort();
+            assert_eq!(ids, expected);
         }
 
-        fn cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms() {
+        fn cold_boot_dials_a_home_peer_that_holds_no_workspace_yet() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x11; 32];
-            let topic = personal_continuity_topic_id(&own_user);
             let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
             let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
-            let other_service = iroh::SecretKey::from_bytes(&[0x44; 32]).public();
             std::fs::write(
                 &registry,
                 serde_json::to_vec(&serde_json::json!([
@@ -11017,15 +10990,7 @@ mod tests {
                         "relay_service_node_id": hex::encode(service.as_bytes()),
                         "label": "Home server",
                         "user_public_key": hex::encode(own_user),
-                        "relay_workspace_ids": [topic],
-                    },
-                    {
-                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                        "device_node_id": hex::encode(device.as_bytes()),
-                        "relay_service_node_id": hex::encode(other_service.as_bytes()),
-                        "label": "Unrelated room",
-                        "user_public_key": hex::encode(own_user),
-                        "relay_workspace_ids": [77],
+                        "relay_workspace_ids": [],
                     },
                 ]))
                 .expect("registry"),
@@ -11033,8 +10998,7 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let rooms = relay_topics_for_home_peers(std::iter::empty(), Some(own_user));
-            let peers = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+            let peers = registered_home_peer_addrs(Some(own_user)).unwrap();
             assert_eq!(peers.len(), 1);
             assert_eq!(peers[0].addr.id, service);
             assert_eq!(peers[0].expectation.user_public_key, own_user);
@@ -11080,9 +11044,7 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let hosts =
-                registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
-                    .expect("registry parses");
+            let hosts = registered_home_peer_addrs(Some(own_user)).expect("registry parses");
             assert!(hosts.iter().any(|host| host.addr == hint));
             assert!(
                 hosts
@@ -11155,8 +11117,8 @@ mod tests {
         }
 
         shell_network_spawns_with_default_keypair();
-        home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms();
-        cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms();
+        home_peer_registry_survives_restart_and_admits_only_the_persons_peers();
+        cold_boot_dials_a_home_peer_that_holds_no_workspace_yet();
         home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id();
         home_peer_registry_defaults_to_the_active_identity_root();
         live_registry_refresh_connects_a_newly_approved_home_peer();

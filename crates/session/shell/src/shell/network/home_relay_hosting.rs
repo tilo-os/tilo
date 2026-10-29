@@ -82,8 +82,7 @@ impl ShellNetwork {
             .ok_or("native identity unavailable")?;
         let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
         let user = certificate.user_public_key;
-        let topics = super::relay_topics_for_home_peers(std::iter::empty(), Some(user));
-        Ok(super::registered_home_peer_addrs(Some(user), &topics)?
+        Ok(super::registered_home_peer_addrs(Some(user))?
             .into_iter()
             .next())
     }
