@@ -9,7 +9,6 @@ use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
 };
-use ui::record::RecordStore;
 
 struct Unavailable;
 impl TileResolver for Unavailable {
@@ -51,14 +50,9 @@ fn tree() -> DesktopTree {
 #[test]
 fn canonical_topology_reconciles_without_replacing_unchanged_hosts() {
     let mut tree = tree();
-    let mut surface = DesktopSurface::build(
-        &tree,
-        &RecordStore::in_memory(),
-        &mut Unavailable,
-        SurfaceChrome::default(),
-    );
+    let mut surface = DesktopSurface::build(&tree, &mut Unavailable, SurfaceChrome::default());
     assert_eq!(
-        surface.reconcile(&tree, &RecordStore::in_memory(), &mut Unavailable),
+        surface.reconcile(&tree, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::Unchanged
     );
     assert_eq!(surface.strip_ids(), vec![StripId(2)]);
@@ -72,7 +66,7 @@ fn canonical_topology_reconciles_without_replacing_unchanged_hosts() {
             .unwrap(),
     );
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
-    surface.reconcile(&tree, &RecordStore::in_memory(), &mut Unavailable);
+    surface.reconcile(&tree, &mut Unavailable);
     let group = &mut surface.row_mut(StripId(2)).unwrap().groups[0];
     assert_eq!(
         group.width(),
@@ -83,7 +77,7 @@ fn canonical_topology_reconciles_without_replacing_unchanged_hosts() {
         before
     );
     tree.workspaces[0].strips[0].window_groups.clear();
-    surface.reconcile(&tree, &RecordStore::in_memory(), &mut Unavailable);
+    surface.reconcile(&tree, &mut Unavailable);
     assert!(surface.row_mut(StripId(2)).unwrap().groups.is_empty());
 }
 #[test]
@@ -93,12 +87,6 @@ fn stable_records_and_app_identity_do_not_depend_on_titles() {
     assert_eq!(
         tilo_desktop_model::apps::canonical_app_id(&tab.tile),
         Some("so.tilo.word-processor".to_string())
-    );
-    assert_eq!(
-        tilo_desktop::records::scratch_tab_record(tab.id)
-            .id
-            .to_string(),
-        "tab:0020000000000009"
     );
     assert_eq!(
         tilo_desktop::records::component_record(
@@ -113,12 +101,7 @@ fn stable_records_and_app_identity_do_not_depend_on_titles() {
 #[test]
 fn actual_frame_lays_out_shared_widgets_and_tab_identity() {
     let tree = tree();
-    let surface = DesktopSurface::build(
-        &tree,
-        &RecordStore::in_memory(),
-        &mut Unavailable,
-        SurfaceChrome::default(),
-    );
+    let surface = DesktopSurface::build(&tree, &mut Unavailable, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
     frame.poll_frame().unwrap();
@@ -145,12 +128,7 @@ fn local_selection_emits_intent_without_mutating_canonical_tree() {
     tree.workspaces[0].strips[0].window_groups[0]
         .tabs
         .push(second);
-    let mut surface = DesktopSurface::build(
-        &tree,
-        &RecordStore::in_memory(),
-        &mut Unavailable,
-        SurfaceChrome::default(),
-    );
+    let mut surface = DesktopSurface::build(&tree, &mut Unavailable, SurfaceChrome::default());
     surface.row_mut(StripId(2)).unwrap().groups[0].set_active_tab(19);
     assert_eq!(
         surface.take_intents(),
@@ -254,11 +232,7 @@ fn grouped_application_overlay_is_drawn_once_for_the_active_tab_only() {
             .into_iter()
             .collect(),
     );
-    let records = RecordStore::in_memory();
-    for id in [first, 19] {
-        tilo_desktop::records::create_scratch_tab_record(&records, id).unwrap();
-    }
-    let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     assert!(
         ui::Widget::modal_capture(&surface).is_none(),
         "inactive modal must not capture the active tab's input"
@@ -286,9 +260,7 @@ fn grouped_application_overlay_is_drawn_once_for_the_active_tab_only() {
 #[test]
 fn replacing_the_room_requires_fresh_component_contexts() {
     let mut tree = tree();
-    let records = RecordStore::in_memory();
-    let mut surface =
-        DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
+    let mut surface = DesktopSurface::build(&tree, &mut Unavailable, SurfaceChrome::default());
     // The workspace under the same id is another room now: another
     // workspace, as a migration that joins a slot to its room makes one.
     let before = tree.workspaces[0].clone();
@@ -300,7 +272,7 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     replaced.strips = before.strips;
     tree.workspaces[0] = replaced;
     assert_eq!(
-        surface.reconcile(&tree, &records, &mut Unavailable),
+        surface.reconcile(&tree, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired
     );
 }
@@ -323,24 +295,22 @@ fn moving_a_tab_with_changed_application_resolves_the_new_identity() {
     }
     for ready_on_move in [true, false] {
         let mut tree = tree();
-        let records = RecordStore::in_memory();
         let mut resolver = Resolved {
             ids: vec![],
             ready: ready_on_move,
         };
-        let mut surface =
-            DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+        let mut surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
         let group = &mut tree.workspaces[0].strips[0].window_groups[0];
         group.id = 99;
         group.tabs[0].tile = TileContent::AppPlaceholder {
             kind: AppKind::Other("so.tilo.notes".into()),
             label: "Notes".into(),
         };
-        surface.reconcile(&tree, &records, &mut resolver);
+        surface.reconcile(&tree, &mut resolver);
         if !ready_on_move {
             assert_eq!(resolver.ids, ["so.tilo.word-processor"]);
             resolver.ready = true;
-            surface.reconcile(&tree, &records, &mut resolver);
+            surface.reconcile(&tree, &mut resolver);
         }
         assert_eq!(resolver.ids, ["so.tilo.word-processor", "so.tilo.notes"]);
         assert_eq!(surface.row(StripId(2)).unwrap().groups[0].id, 99);
@@ -371,21 +341,19 @@ fn check_empty_workspace_transition(initially_empty: bool) {
     } else {
         (&populated, &empty)
     };
-    let records = RecordStore::in_memory();
-    let mut surface =
-        DesktopSurface::build(before, &records, &mut Unavailable, empty_workspace_chrome());
+    let mut surface = DesktopSurface::build(before, &mut Unavailable, empty_workspace_chrome());
     assert_eq!(has_empty_workspace_marker(&surface), initially_empty);
     assert_eq!(surface.strip_ids(), vec![StripId(2)]);
     assert_eq!(
-        surface.reconcile(after, &records, &mut Unavailable),
+        surface.reconcile(after, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired
     );
     // The host replaces only after handling the explicit rebuild outcome.
-    surface = DesktopSurface::build(after, &records, &mut Unavailable, empty_workspace_chrome());
+    surface = DesktopSurface::build(after, &mut Unavailable, empty_workspace_chrome());
     assert_eq!(surface.strip_ids(), vec![StripId(2)]);
     assert_eq!(has_empty_workspace_marker(&surface), !initially_empty);
     assert_eq!(
-        surface.reconcile(after, &records, &mut Unavailable),
+        surface.reconcile(after, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::Unchanged
     );
 }
@@ -404,7 +372,6 @@ fn flush_work_area_is_reachable_and_maximized_groups_stay_maximized() {
     tree.workspaces[0].strips[0].window_groups[0].maximized = true;
     let mut surface = DesktopSurface::build(
         &tree,
-        &RecordStore::in_memory(),
         &mut Unavailable,
         SurfaceChrome {
             work_area: tilo_desktop::composition::WorkArea::Flush {
@@ -475,12 +442,7 @@ fn three_strip_tree(selected: [usize; 3]) -> DesktopTree {
     reason = "a test helper: a missing frame or row is the failure"
 )]
 fn deck_frame(tree: &DesktopTree) -> ui::headless::FrameHarness {
-    let surface = DesktopSurface::build(
-        tree,
-        &RecordStore::in_memory(),
-        &mut Unavailable,
-        SurfaceChrome::default(),
-    );
+    let surface = DesktopSurface::build(tree, &mut Unavailable, SurfaceChrome::default());
     let mut frame = ui::headless::FrameHarness::for_root(
         ui::state::State::new(),
         surface,
@@ -516,7 +478,7 @@ fn go_to_strip(frame: &mut ui::headless::FrameHarness, tree: &mut DesktopTree, s
     tree.active_strip.insert(workspace, strip);
     frame
         .root_mut::<DesktopSurface>()
-        .reconcile(tree, &RecordStore::in_memory(), &mut Unavailable);
+        .reconcile(tree, &mut Unavailable);
     settle(frame);
 }
 

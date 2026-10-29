@@ -133,7 +133,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        chrome.borrow_mut().retry_new_tab_records();
+        chrome.borrow_mut().resolve_opened_records();
         self.place_new_groups();
         let current_rev = chrome.borrow().revision;
         let closing_visuals = self
@@ -145,18 +145,14 @@ impl ShellOverlayHost {
         self.last_chrome_revision = current_rev;
         let outcome = {
             let st = chrome.borrow();
-            let records = st.records().clone();
             let tree = st.tree();
-            let failures = st.record_creation_errors(&tree);
             let Some(surface) = self.desktop_surface_mut() else {
                 return false;
             };
             surface.reconcile(
                 &tree.desktop,
-                &records,
                 &mut crate::shell::NativeTileResolver {
                     inputs: &st.hosted_inputs,
-                    failures: &failures,
                 },
             )
         };
@@ -164,12 +160,8 @@ impl ShellOverlayHost {
             tilo_desktop::composition::ReconcileOutcome::Unchanged => false,
             tilo_desktop::composition::ReconcileOutcome::Updated => true,
             tilo_desktop::composition::ReconcileOutcome::RebuildRequired => {
-                let (desktop, failures) = {
-                    let st = chrome.borrow();
-                    let tree = st.tree();
-                    (tree.desktop.clone(), st.record_creation_errors(&tree))
-                };
-                self.rebuild_workspace_content(&chrome, &desktop, &failures)
+                let desktop = chrome.borrow().tree().desktop.clone();
+                self.rebuild_workspace_content(&chrome, &desktop)
             }
         }
     }
