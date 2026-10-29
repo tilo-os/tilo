@@ -121,6 +121,68 @@ impl Embed {
     }
 }
 
+/// How a reference reads in plain text for one reader: the same as its chip reads for them.
+///
+/// A reference's run keeps the title its resource had when the text was written; plain text
+/// derived from rich text (an excerpt, a row, a notification, what search shows and matches)
+/// never reads that run to a reader who cannot read the resource, and reads the title the
+/// resource has now to one who can ([`read_text`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reading {
+    /// A resource the reader holds, by what it is called now.
+    Title(String),
+    /// A resource the reader cannot read: only that something is there ([`UNSHARED`]).
+    Unshared,
+    /// As the run says: a person, or a resource only its own app can say how it reads.
+    AsWritten,
+}
+
+/// What a reference to a resource the reader cannot read says, in the source language: the
+/// wording of the chip (`rich-text-reference-unreadable`), where no catalogue says it in the
+/// reader's language.
+pub const UNSHARED: &str = "Not shared with you";
+
+/// The id of the phrase [`UNSHARED`] is, in every catalogue that says it.
+pub const UNSHARED_PHRASE: &str = "rich-text-reference-unreadable";
+
+/// `text` as one reader reads it: each run of a [`MARK`] mark (`runs`: its start and end, in
+/// characters, and the mark's value) read as `read` says ([`Reading`]), `unshared` for a
+/// resource they cannot read, and the rest of the text as written. A run that overlaps one
+/// before it, or names nothing, reads as written.
+pub fn read_text<'a>(
+    text: &str,
+    runs: impl IntoIterator<Item = (usize, usize, &'a str)>,
+    read: &mut dyn FnMut(&Embed) -> Reading,
+    unshared: &str,
+) -> String {
+    let mut runs: Vec<(usize, usize, &str)> = runs
+        .into_iter()
+        .filter(|(start, end, _)| start < end)
+        .collect();
+    if runs.is_empty() {
+        return text.to_owned();
+    }
+    runs.sort_by_key(|(start, end, _)| (*start, *end));
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for (start, end, value) in runs {
+        if start < at || end > chars.len() {
+            continue;
+        }
+        let said = match Embed::of_mark(value).map(|embed| read(&embed)) {
+            Some(Reading::Title(title)) if !title.trim().is_empty() => title,
+            Some(Reading::Unshared) => unshared.to_owned(),
+            Some(Reading::Title(_) | Reading::AsWritten) | None => continue,
+        };
+        out.extend(chars.get(at..start).unwrap_or_default());
+        out.push_str(&said);
+        at = end;
+    }
+    out.extend(chars.get(at..).unwrap_or_default());
+    out
+}
+
 /// Whether a [`MARK`] mark's value names a resource rather than a person, in any form.
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
@@ -194,6 +256,50 @@ mod tests {
         assert!(!names_resource("u-ada"));
         assert_eq!(Embed::of_mark("u-ada"), Some(ada));
         assert_eq!(Embed::of_mark(""), None);
+    }
+
+    #[test]
+    fn plain_text_reads_each_reference_for_its_reader() {
+        let held = Embed::resource("so.tilo.lang.board", "", "tl:so.tilo.lang.board:d/f:t1");
+        let hidden = Embed::resource("so.tilo.lang.board", "", "tl:so.tilo.lang.board:other");
+        // `Ask @Ada about Fix it, not Acquisition plan.` as written.
+        let text = "Ask @Ada about Fix it, not Acquisition plan.";
+        let held_value = held.mark_value();
+        let hidden_value = hidden.mark_value();
+        let runs = [
+            (4, 8, "u-ada"),
+            (15, 21, held_value.as_str()),
+            (27, 43, hidden_value.as_str()),
+        ];
+        let mut read = |embed: &Embed| match embed {
+            Embed::Person(_) => Reading::AsWritten,
+            other if *other == held => Reading::Title("Fix the release build".into()),
+            Embed::Resource(_) => Reading::Unshared,
+        };
+        assert_eq!(
+            read_text(text, runs, &mut read, UNSHARED),
+            "Ask @Ada about Fix the release build, not Not shared with you."
+        );
+        // A run past the text, or one overlapping another, reads as written.
+        let mut all_unshared = |_: &Embed| Reading::Unshared;
+        assert_eq!(
+            read_text(
+                "ab",
+                [(0, 9, hidden_value.as_str())],
+                &mut all_unshared,
+                "x"
+            ),
+            "ab"
+        );
+        assert_eq!(
+            read_text(
+                "abcd",
+                [(0, 2, hidden_value.as_str()), (1, 3, held_value.as_str())],
+                &mut all_unshared,
+                "x"
+            ),
+            "xcd"
+        );
     }
 
     #[test]

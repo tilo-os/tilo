@@ -528,6 +528,13 @@ impl Runtime {
         *self.core.phrases.borrow_mut() = Some(Box::new(phrases));
     }
 
+    /// What a reference to a resource the person cannot read says, in their language: the
+    /// chip's wording (`tilo_reference::embed::UNSHARED`).
+    #[must_use]
+    pub fn unshared(&self) -> String {
+        self.core.unshared()
+    }
+
     /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and
     /// whether it is the person looking. What `lenses(r)` reads; a view that read the lenses
     /// on it runs again when they move.

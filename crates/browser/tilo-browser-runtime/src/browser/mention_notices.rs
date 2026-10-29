@@ -109,6 +109,9 @@ impl Desktop {
                     doc: &doc,
                     tree: tree.as_ref(),
                     quiet,
+                    // The page cannot tell what the person holds of what a text refers to:
+                    // an excerpt names no resource, never a title they may not read.
+                    read: &ui::mentions::reading_nothing,
                 },
                 &name,
             );

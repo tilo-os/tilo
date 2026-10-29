@@ -27,6 +27,8 @@ tilolang-all = All { $kind }
 tilolang-empty = Nothing here yet
 tilolang-edited = Last edited
 tilolang-edited-by = Edited by
+# A reference in rich text to something the reader cannot read, as its chip says it.
+rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
 tilolang-more = More actions
