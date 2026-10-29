@@ -1,11 +1,12 @@
-//! Every room this profile takes part in, as the brokers ask about them: its
-//! own room and the rooms it joined.
+//! Every room this profile takes part in, as the brokers ask about them: the
+//! profile's own workspace, whose record holds what this profile keeps of
+//! it (the person's grants to apps, effect records), and the rooms it
+//! joined, the profile's own room included once its host placed it.
 use super::{joined::Joined, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_action_broker::services::WorkspaceAuthority;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace};
 use tilo_identity_host::broker::WorkspaceMembership;
-use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 
 pub(super) struct Rooms {
     pub(super) profile: Arc<ProfileWorkspace>,
@@ -31,7 +32,18 @@ impl WorkspaceAuthority for Rooms {
             return self.profile.with_tree(read);
         }
         let mut tree = self.profile.snapshot()?;
-        tree.workspaces.extend(self.joined.workspaces());
+        let joined: Vec<_> = self
+            .joined
+            .workspaces()
+            .into_iter()
+            .filter(|joined| {
+                !tree
+                    .workspaces
+                    .iter()
+                    .any(|own| own.room() == joined.room())
+            })
+            .collect();
+        tree.workspaces.extend(joined);
         read(&tree);
         Ok(())
     }
@@ -76,53 +88,5 @@ impl WorkspaceMembership for Rooms {
         if !found && let Some(workspace) = self.joined.workspace(*room) {
             read(&workspace);
         }
-    }
-}
-
-/// Each commit goes to the owner of the room it names.
-pub(super) struct Owners {
-    pub(super) own: Arc<dyn OwnerCommitService>,
-    pub(super) joined: Arc<Joined>,
-}
-
-impl Owners {
-    /// `own` commits for the profile's room; each room it `joined`, its owner.
-    pub(super) fn new(own: Arc<dyn OwnerCommitService>, joined: &Arc<Joined>) -> Self {
-        Self {
-            own,
-            joined: Arc::clone(joined),
-        }
-    }
-}
-
-impl OwnerCommitService for Owners {
-    fn requires_room(&self, room: &str) -> bool {
-        self.own.requires_room(room) || self.joined.requires_room(room)
-    }
-
-    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
-        if self.joined.requires_room(&request.room) {
-            self.joined.commit(request)
-        } else {
-            self.own.commit(request)
-        }
-    }
-
-    fn commit_with_record_kind(
-        &self,
-        request: OwnerCommitRequest,
-        record_kind: Option<String>,
-    ) -> CommitFuture {
-        if self.joined.requires_room(&request.room) {
-            self.joined.commit(request)
-        } else {
-            self.own.commit_with_record_kind(request, record_kind)
-        }
-    }
-
-    /// The profile's own room decides; a fenced joined room refuses only
-    /// its own commits.
-    fn health(&self) -> Result<(), String> {
-        self.own.health()
     }
 }

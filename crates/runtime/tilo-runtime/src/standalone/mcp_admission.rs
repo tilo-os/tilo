@@ -60,9 +60,8 @@ impl std::error::Error for Refusal {}
 pub(in crate::standalone) struct SessionAdmission {
     caller: Caller,
     room: RoomId,
-    own_room: bool,
     certificate: DeviceCert,
-    enrollment: Option<(tilo_peer_state::join::TransportHint, u64)>,
+    enrollment: (tilo_peer_state::join::TransportHint, u64),
     presentation: Vec<u8>,
     _registration: super::super::execution::ExecutionRegistration,
 }
@@ -93,7 +92,7 @@ impl SessionAdmission {
     /// run keeps its lease. Ending it there would kill the person's whole
     /// agent session over one transient failure.
     fn check_original_custody(&self, joined: &Joined) -> Result<(), Refusal> {
-        let (certificate, enrollment) = match joined.mcp_material(self.room, self.own_room) {
+        let (certificate, enrollment) = match joined.mcp_material(self.room) {
             Ok(material) => material,
             Err(reason) => {
                 tracing::warn!(
@@ -120,35 +119,29 @@ impl Joined {
     fn mcp_material(
         &self,
         room: RoomId,
-        own_room: bool,
-    ) -> Result<
-        (
-            DeviceCert,
-            Option<(tilo_peer_state::join::TransportHint, u64)>,
-        ),
-        String,
-    > {
-        if own_room {
-            let (certificate, _) = self.custody.current_native_material(room_topic(room)?)?;
-            return Ok((certificate, None));
-        }
-        let (hint, certificate, _, continuity) =
-            Connect::new(self.owner.clone(), room)?.material(&self.custody)?;
-        Ok((certificate, Some((hint, continuity))))
+    ) -> Result<(DeviceCert, (tilo_peer_state::join::TransportHint, u64)), String> {
+        // Read apart, so a custody that no longer matches the enrollment is
+        // a confirmed change rather than a read that failed.
+        let (certificate, _) = self.custody.current_native_material(room_topic(room)?)?;
+        let enrollment = self.owner.with_current(room, |view| {
+            Ok((view.transport_hint()?.clone(), view.continuity()))
+        })?;
+        Ok((certificate, enrollment))
     }
 
     pub(in crate::standalone) fn admit_mcp_execution(
         &self,
         room: &str,
-        own_room: &str,
         actor: &str,
     ) -> Result<Arc<SessionAdmission>, String> {
         let selected = RoomId::parse(room).ok_or("invalid exact MCP room")?;
         if selected.is_nil() || selected.to_string() != room {
             return Err("noncanonical MCP room".into());
         }
-        let own_room = room == own_room;
-        let (certificate, enrollment) = self.mcp_material(selected, own_room)?;
+        // Only a room this device currently takes part in under its
+        // enrolled custody is admitted.
+        Connect::new(self.owner.clone(), selected)?.material(&self.custody)?;
+        let (certificate, enrollment) = self.mcp_material(selected)?;
         let caller =
             Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                 .in_room(room)
@@ -164,7 +157,7 @@ impl Joined {
         // lease, then re-read the pinned material: a concurrent native fence
         // either closes the lease or is detected by the changed continuity.
         let registration = self.executions.register_checked(selected, &caller, || {
-            let current = self.mcp_material(selected, own_room)?;
+            let current = self.mcp_material(selected)?;
             if current != (certificate.clone(), enrollment.clone()) {
                 return Err("room changed while admitting execution".into());
             }
@@ -186,7 +179,6 @@ impl Joined {
         let admission = Arc::new(SessionAdmission {
             caller,
             room: selected,
-            own_room,
             certificate,
             enrollment,
             presentation,

@@ -21,15 +21,16 @@ impl Fixture {
         // reach the machine's own identity store.
         let profile = tilo_paths::scope_profile(std::env::temp_dir());
 
-        let (joined, directory) = Joined::test_empty().await;
-        let joined = Arc::try_unwrap(joined).unwrap_or_else(|_| panic!("fixture has no rooms"));
         let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let (joined, directory) = Joined::test_hosting(room).await;
+        let joined =
+            Arc::try_unwrap(joined).unwrap_or_else(|_| panic!("fixture holds no sessions"));
         let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             joined.custody.device_cert.user_public_key,
         );
         let admit = || {
             joined
-                .admit_mcp_execution(&room.to_string(), &room.to_string(), &actor)
+                .admit_mcp_execution(&room.to_string(), &actor)
                 .unwrap()
         };
         let (ended, other) = (admit(), admit());
@@ -118,11 +119,7 @@ impl Fixture {
         .unwrap();
         self.joined.install_custody_paths(paths);
         self.joined
-            .admit_mcp_execution(
-                &self.room.to_string(),
-                &self.room.to_string(),
-                &actor(&self.joined),
-            )
+            .admit_mcp_execution(&self.room.to_string(), &actor(&self.joined))
             .unwrap()
     }
 }

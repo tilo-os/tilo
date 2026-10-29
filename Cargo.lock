@@ -20976,6 +20976,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-resource",
+ "tilo-room-host",
  "tilo-rt",
  "tilo-secrets",
  "tilo-test-env",

@@ -6,15 +6,16 @@
 //! adapters (launcher, governance, durable owner, peer network). Here the
 //! profile launches its installed apps through the platform launcher
 //! (`crate::apps`), records the grants people give apps for other apps'
-//! actions in its own workspace, owns its room's documents durably
-//! (`owner`), local to this machine, joins rooms a Tilo device or cloud
-//! host governs (`joined`), serves route keys for both
+//! actions in its own workspace, places the profile's room on the room host
+//! it runs in process and takes part in it as in every room it joins, a
+//! Tilo device or cloud host governs (`joined`), serves route keys for them
 //! (`channels`) and routes offloadable actions through the person's home
 //! relay when one retains its room ([`crate::offload`]); every other host
 //! service is absent,
 //! and the broker answers as it does for any host that does not provide one.
-//! What this host keeps durably is in the profile: the room, grants, effect
-//! and task records in its own workspace file, the invocation journal and
+//! What this host keeps durably is in the profile: the room host's rooms,
+//! the joined rooms' record, grants, effect and task records in its own
+//! workspace file, the invocation journal and
 //! collaboration history.
 
 mod channels;
@@ -26,16 +27,14 @@ mod joined;
 mod media_import;
 #[cfg(test)]
 mod media_import_tests;
-mod owner;
 mod rooms;
 mod workspace;
 
 use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
-use joined::{Joined, Refusal};
-use owner::{AdoptedRoom, RecordCreation, RoomOwner};
-use rooms::{Owners, Rooms};
+use joined::{Joined, RecordCreation, Refusal};
+use rooms::Rooms;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -64,6 +63,8 @@ use workspace::{ProfileGrants, ProfileWorkspace};
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
+/// Where the room host this runtime runs keeps its rooms.
+const ROOM_HOST: &str = "room-host";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -119,19 +120,14 @@ impl Standalone {
         stage("opening the joined rooms and channel keys");
         let (joined, channel_keys) = joined_rooms_and_keys(
             root,
-            &room_id,
+            (&room_id, workspace.governs()),
             storage,
             (Arc::clone(&channels), Arc::clone(&fanout)),
         )?;
-        stage("opening the room owner");
-        let owner = room_owner(
-            root,
-            &room_id,
-            &workspace,
-            &apps,
-            dev,
-            channel_keys.keys.clone(),
-        )?;
+        if workspace.governs() {
+            stage("placing the workspace on this device's room host");
+            place_own_room(root, &room_id, &workspace.name(), &joined, (&apps, dev))?;
+        }
         let rooms = Arc::new(Rooms::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
@@ -146,11 +142,13 @@ impl Standalone {
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
         stage("starting the collaboration broker");
         let (policy_origin, policy_time) = execution_policy_clock()?;
-        let owners = Arc::new(Owners::new(owner, &joined));
         let broker = tilo_action_broker::collab_broker::spawn_with_services(
             root.join(COLLAB_SOCKET),
             Some(rooms as Arc<dyn WorkspaceAuthority>),
-            PeerPublisher::with_optional_owner_commit(None, owners),
+            PeerPublisher::with_optional_owner_commit(
+                None,
+                Arc::clone(&joined) as Arc<dyn OwnerCommitService>,
+            ),
             None,
             HostServices {
                 native_certificates: Some(Arc::new(Certificates {
@@ -254,7 +252,7 @@ impl RuntimeServices for Standalone {
             .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
         let admission = self
             .joined
-            .admit_mcp_execution(&self.room, &self.room, &self.actor)
+            .admit_mcp_execution(&self.room, &self.actor)
             .map_err(io::Error::other)?;
         let host = broker
             .certified_local_action_host(admission.caller(), admission.presentation())
@@ -428,7 +426,7 @@ impl RuntimeActionHost {
         Arc::new(move || {
             let admission = host
                 .joined
-                .admit_mcp_execution(&room, &host.room, &actor)
+                .admit_mcp_execution(&room, &actor)
                 .map_err(io::Error::other)?;
             let caller = admission.caller().clone();
             // The MCP client is an agent the person's device hands this
@@ -776,43 +774,66 @@ fn workspace_files(
         .ok()
 }
 
-/// The durable owner of the profile's room: this host's own, governed with
-/// the device key, or for a profile adopted from the desktop session one
-/// that refuses every commit.
-fn room_owner(
+/// Place the profile's room, its workspace called `name`, on the room host
+/// this runtime runs in process, and hold it as a joined room from then on.
+/// Apps create records there in the kinds their installed manifests declare,
+/// or in dev mode (`apps`, `dev`) the kinds a build that is not installed
+/// names.
+fn place_own_room(
     profile: &Path,
     room: &str,
-    workspace: &Arc<ProfileWorkspace>,
-    apps: &Arc<apps::Apps>,
-    dev: bool,
-    keys: tilo_action_broker::channel_encryption::ChannelKeyProvider,
-) -> io::Result<Arc<dyn OwnerCommitService>> {
-    if !workspace.governs() {
-        return Ok(Arc::new(AdoptedRoom {
-            room: room.to_owned(),
-        }));
-    }
+    name: &str,
+    joined: &Arc<Joined>,
+    (apps, dev): (&Arc<apps::Apps>, bool),
+) -> io::Result<()> {
+    let (key, cert) = tilo_identity_host::broker::trusted_current_device(room)?;
+    let room_id = RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?;
+    let host = tilo_rt::app()
+        .handle()
+        .block_on(tilo_room_host::host::RoomHost::open(
+            tilo_room_host::host::HostConfig::new(
+                profile.join(ROOM_HOST),
+                tilo_room_host::host::HostMode::Device,
+            ),
+            tilo_room_host::host::HostIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key,
+                device_cert: cert,
+                revocations: tilo_user_identity::RevocationList::new(),
+            },
+            joined.endpoint(),
+        ))
+        .map_err(io::Error::other)?;
     let apps = Arc::clone(apps);
-    let creation = RecordCreation {
-        declared_kinds: Box::new(move |app| apps.declared_resource_kinds(app)),
-        dev,
-    };
-    let device = tilo_identity_host::broker::trusted_current_device(room)?;
-    let owner = RoomOwner::open(profile, room, device, creation, Arc::clone(workspace), keys)?;
-    Ok(Arc::new(owner))
+    joined
+        .install_host(
+            Arc::new(host),
+            RecordCreation {
+                declared_kinds: Box::new(move |app| apps.declared_resource_kinds(app)),
+                dev,
+            },
+        )
+        .map_err(io::Error::other)?;
+    tilo_rt::app()
+        .handle()
+        .block_on(joined.place(room_id, name))
+        .map_err(io::Error::other)?;
+    joined.hold_session(room_id);
+    Ok(())
 }
 
-/// The joined rooms and this device's channel keys for them and for the
-/// profile's own room, under the device's trusted custody.
+/// The joined rooms and this device's channel keys for them, under the
+/// device's trusted custody. `room` is the profile's own, which it governs
+/// unless the desktop session does.
 fn joined_rooms_and_keys(
     profile: &Path,
-    room: &str,
+    (room, governs): (&str, bool),
     storage: IdentityStorage,
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
 ) -> io::Result<(Arc<Joined>, channels::Channels)> {
     let custody = tilo_identity_host::broker::trusted_current_device(room)?;
     let channels = Arc::clone(&broker.0);
-    let joined = joined_rooms(profile, room, custody.clone(), broker)?;
+    let joined = joined_rooms(profile, (room, governs), custody.clone(), broker)?;
     let keys = channels::open(
         profile,
         RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?,
@@ -825,11 +846,12 @@ fn joined_rooms_and_keys(
 }
 
 /// The rooms this profile joined, synced as this device over an endpoint
-/// keyed by its device key. It refuses to enroll in its own room and in the
-/// rooms the desktop session already enrolled this device in.
+/// keyed by its device key. It refuses to enroll in the rooms the desktop
+/// session already enrolled this device in, and in the profile's own room
+/// when the desktop session governs it.
 fn joined_rooms(
     profile: &Path,
-    room: &str,
+    (room, governs): (&str, bool),
     (key, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
 ) -> io::Result<Arc<Joined>> {
@@ -849,7 +871,9 @@ fn joined_rooms(
         )
         .map_err(io::Error::other)?;
     let mut refused = joined::desktop_enrolled(profile)?;
-    refused.extend(RoomId::parse(room));
+    if !governs {
+        refused.extend(RoomId::parse(room));
+    }
     Joined::open(profile, custody, endpoint, refused, broker)
 }
 
