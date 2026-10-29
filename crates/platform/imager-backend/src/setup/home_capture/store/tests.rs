@@ -4,7 +4,7 @@ fn fixture(root: &Path, operation: &str) -> (Store, Record) {
     let pin = PinnedDirectory::open_absolute(root).unwrap();
     let store = Store::open(pin, operation).unwrap();
     let grant = Grant {
-        schema: 1,
+        schema: 2,
         operation: operation.into(),
         caller: rustix::process::geteuid().as_raw(),
         home: NativePath::encode(root),

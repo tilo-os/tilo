@@ -153,7 +153,7 @@ impl Record {
     fn validate(&self) -> io::Result<()> {
         operation(&self.grant.operation)?;
         if self.schema != 1
-            || self.grant.schema != 1
+            || self.grant.schema != 2
             || self.grant.owner != self.grant.caller
             || self.source.uuid != self.grant.subvolume
             || self.source.filesystem != self.grant.filesystem

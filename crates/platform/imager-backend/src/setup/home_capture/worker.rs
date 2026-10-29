@@ -960,10 +960,10 @@ mod tests {
         assert!(encoded["command"].get("password").is_none());
         assert!(encoded["command"].get("output").is_none());
         let mut snapshot_claim = encoded.clone();
-        snapshot_claim["custody"] = serde_json::json!({
+        snapshot_claim["custody"] = serde_json::json!({"preparation":{
             "relative":crate::setup::migration_store::NativePath::encode(
                 std::path::Path::new(".local/state/tilo/installer/preparations")),
-            "stable":[1,448,1000,1001]});
+            "stable":[1,448,1000,1001]},"settings_lock":null});
         let snapshot_request = serde_json::from_value::<Request>(snapshot_claim).unwrap();
         assert!(snapshot_request.validate_protocol().is_err());
         let mut mismatch = encoded.clone();

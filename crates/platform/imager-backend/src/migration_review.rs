@@ -795,6 +795,74 @@ fn running_setup_files(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The settings lock the running setup keeps in `home`, relative to it.
+#[cfg(target_os = "linux")]
+fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
+    running_setup_files(home).into_iter().find(|file| {
+        file.file_name() == Some(std::ffi::OsStr::new(tilo_settings_records::LOCK_FILE))
+    })
+}
+
+/// Whether `relative` can name a settings profile's lock below a Home: a
+/// bounded path of plain names ending where the settings records keep it.
+#[cfg(target_os = "linux")]
+fn settings_lock_shape(relative: &Path) -> bool {
+    !relative.as_os_str().is_empty()
+        && relative.as_os_str().len() <= 4096
+        && relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        && relative.ends_with(
+            Path::new(tilo_settings_records::RECORDS_DIR).join(tilo_settings_records::LOCK_FILE),
+        )
+}
+
+/// Inode, mode, owner and group of the regular file at `relative` below
+/// `root`, reached one no-follow edge at a time. `None` where nothing, or
+/// anything but a plain file, is there.
+#[cfg(target_os = "linux")]
+fn held_file(
+    root: &Arc<PinnedDirectory>,
+    relative: &Path,
+) -> io::Result<Option<(u64, u32, u32, u32)>> {
+    use cap_fs_ext::MetadataExt;
+    let found = |parent: &Arc<PinnedDirectory>, name: &std::ffi::OsStr| match metadata_nofollow(
+        &parent.file,
+        Path::new(name),
+    ) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    };
+    let mut parts: Vec<_> = relative.components().collect();
+    let Some(last) = parts.pop() else {
+        return Ok(None);
+    };
+    let mut pin = root.clone();
+    for part in parts {
+        let Some(metadata) = found(&pin, part.as_os_str())? else {
+            return Ok(None);
+        };
+        if !metadata.is_dir() || metadata.is_symlink() {
+            return Ok(None);
+        }
+        pin = pin.open_child(part.as_os_str(), &metadata)?;
+    }
+    let Some(metadata) = found(&pin, last.as_os_str())? else {
+        return Ok(None);
+    };
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Ok(None);
+    }
+    pin.validate()?;
+    Ok(Some((
+        metadata.ino(),
+        cap_primitives::fs::MetadataExt::mode(&metadata),
+        cap_primitives::fs::MetadataExt::uid(&metadata),
+        cap_primitives::fs::MetadataExt::gid(&metadata),
+    )))
+}
+
 impl InstallerCustody {
     fn review(home: &Path) -> io::Result<Option<Arc<Self>>> {
         use cap_fs_ext::MetadataExt;

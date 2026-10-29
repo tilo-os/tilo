@@ -14,9 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The directory below a profile's root holding its documents.
 pub const RECORDS_DIR: &str = "records";
-/// The holder's lock, which a browser page has none of.
+/// The holder's lock in the documents directory, which a browser page has
+/// none of. It stays behind when the holder exits.
 #[cfg(not(target_arch = "wasm32"))]
-const LOCK_FILE: &str = "settings.lock";
+pub const LOCK_FILE: &str = "settings.lock";
 const DOOR_FILE: &str = "settings.sock";
 
 /// The root of this person's own settings profile: `tilo` below the XDG

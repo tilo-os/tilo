@@ -75,7 +75,7 @@ impl SourceIntent {
             && !self.home.categories.home
             && self.home.categories.flatpak
             && self.home.flatpak_inventory.is_some();
-        if self.schema != 3 || !(home || applications) || self.home.home_policy != HomePolicy::Copy
+        if self.schema != 4 || !(home || applications) || self.home.home_policy != HomePolicy::Copy
         {
             return Err(failure("Invalid original-source intent variant"));
         }
@@ -137,7 +137,7 @@ impl Store {
         )?;
         let mut omissions = Vec::new();
         if let Some(preparation) = preparation {
-            omissions.push(preparation.validate_original(home, original.uid())?);
+            omissions.extend(preparation.validate_original(home, original.uid())?);
         }
         if let Some(control) = crate::setup::migration_review::OriginalOmission::source_control(
             home,
@@ -154,7 +154,7 @@ impl Store {
         )?;
         let inventory = InventoryCustody::register(&storage(&self.records)?, plan, inventory)?;
         let intent = SourceIntent {
-            schema: 3,
+            schema: 4,
             kind: if plan.categories.home {
                 "offline-original-source"
             } else {
