@@ -2,9 +2,8 @@
 //! areas the panes read, the settings document and the sections' actions,
 //! the pane shown and what asks for another.
 //!
-//! The window ([`crate::window::SettingsWindow`]) draws it; the view
-//! ([`crate::window::window`]) answers the effects and publishes the live
-//! rows from it. Everything here is read through a shared reference, so the
+//! The window's view ([`crate::window::window`]) draws it, answers the
+//! effects and publishes the live rows from it. Everything here is read through a shared reference, so the
 //! effect handler, the published rows and the window hold it together.
 
 use std::cell::{Cell, RefCell};
@@ -121,13 +120,6 @@ impl SettingsApp {
         };
         app.areas = crate::area::Areas::of(&app.area_context());
         app
-    }
-
-    /// Open on `category`.
-    #[must_use]
-    pub fn with_category(self, category: Category) -> Self {
-        self.selected.set(category);
-        self
     }
 
     /// Attach the app to the view `cx`: the settings document and the

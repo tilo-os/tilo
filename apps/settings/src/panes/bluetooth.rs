@@ -1475,7 +1475,7 @@ mod tests {
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         change: impl FnOnce(&mut BluetoothModel) -> T + 'static,
     ) -> T {
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             change(&mut area(settings).unwrap().model().borrow_mut())
         })
         .expect("the Settings window is mounted")
@@ -1656,10 +1656,10 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let radios = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
+            .with_widget::<crate::window::Inspected, _>(|settings| settings.radios().clone())
             .expect("the Settings window is mounted");
         let device_rows = |app: &mut TestApp<SettingsShell>| {
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::bluetooth::area(settings)
                     .unwrap()
                     .rows()
@@ -1809,7 +1809,7 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Bluetooth);
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::bluetooth::area(settings)
                 .unwrap()
                 .model()

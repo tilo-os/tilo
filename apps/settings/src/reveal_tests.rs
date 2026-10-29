@@ -52,14 +52,12 @@ fn a_setting_opens_scrolled_to_its_control_with_the_keyboard_on_it() {
         .expect("the setting opens");
         settle(&mut app);
         assert_eq!(
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Category::from_slug(setting.page),
             "{id} opens its page"
         );
         assert_eq!(
-            app.with_widget::<crate::window::SettingsWindow, _>(
-                |settings| settings.pending_reveal()
-            ),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.pending_reveal()),
             Some(None),
             "{id} was shown"
         );
@@ -128,7 +126,7 @@ fn a_setting_link_shows_the_setting() {
     let window = app.harness().root_widget().get_rect();
     let setting = settings_store::index::setting("power.critical").expect("indexed");
     assert_eq!(
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+        app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
         Some(Category::Power)
     );
     let (rect, focused) =
@@ -155,7 +153,7 @@ fn a_reopened_window_shows_its_page() {
     let mut reopened = app.reopen().expect("the same window, reopened");
     settle(&mut reopened);
     assert_eq!(
-        reopened.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+        reopened.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
         Some(Category::Keyboard)
     );
 }

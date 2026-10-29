@@ -909,7 +909,7 @@ impl UpdateControl for FakeControl {
 #[test]
 fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
     let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
@@ -1084,7 +1084,7 @@ fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
     use ui::prelude::TestApp;
 
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
@@ -1228,7 +1228,7 @@ fn a_stalled_update_control_never_holds_the_window() {
         windows_support: Arc::new(|| WindowsReadiness::NotOffered),
     };
     let model = app
-        .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        .with_widget::<crate::window::Inspected, _>(move |settings| {
             let shared = std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
             *shared.borrow_mut() =
                 UpdatesModel::reading(settings.storage(), settings.sections().clone(), readers);

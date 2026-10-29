@@ -1399,7 +1399,7 @@ mod tests {
             frame.contains("left"),
             "time left at the rate it drains: {frame}"
         );
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings).expect("the power area").span.set(1);
         })
         .expect("the Settings window is mounted");

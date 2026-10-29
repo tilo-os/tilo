@@ -1414,7 +1414,7 @@ mod tests {
             "no switch at a guessed position: {ids:?}"
         );
         let shown = |app: &mut TestApp<SettingsShell>| {
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
                 area(settings).unwrap().shown.get()
             })
             .expect("the Settings window is mounted")

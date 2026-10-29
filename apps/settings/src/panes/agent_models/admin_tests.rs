@@ -96,7 +96,7 @@ fn start(app: &mut TestApp<SettingsShell>, effect: &AgentModelsEffect) {
 }
 
 fn config(app: &mut TestApp<SettingsShell>) -> ProviderConfig {
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         crate::panes::agent_models::area(app)
             .unwrap()
             .model()
@@ -108,7 +108,7 @@ fn config(app: &mut TestApp<SettingsShell>) -> ProviderConfig {
 }
 
 fn key_buffer(app: &mut TestApp<SettingsShell>, id: &str) -> Arc<Mutex<String>> {
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         crate::panes::agent_models::area(app)
             .unwrap()
             .model()
@@ -132,7 +132,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
         },
     );
     let id = config(&mut app).profiles[0].id.clone();
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         let model = crate::panes::agent_models::area(app)
             .unwrap()
             .model()
@@ -160,7 +160,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
         .is_err()
     );
     assert_eq!(*draft.lock_recover(), "private-key-draft");
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         assert!(
             crate::panes::agent_models::area(app)
                 .unwrap()
@@ -176,7 +176,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
 }
 
 fn assert_private(app: &mut TestApp<SettingsShell>) {
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         let model = crate::panes::agent_models::area(app)
             .unwrap()
             .model()
@@ -207,7 +207,7 @@ fn with_panel<T>(
     app: &mut TestApp<SettingsShell>,
     f: impl FnOnce(&ProviderPanel<PanelActions>) -> T,
 ) -> T {
-    app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+    app.with_widget::<crate::window::Inspected, _>(|app| {
         f(&crate::panes::agent_models::area(app)
             .unwrap()
             .model()
@@ -226,7 +226,7 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
         backend.state.lock_recover().config.upsert(profile);
         let mut app = mount(backend.clone());
         let draft = app
-            .with_widget::<crate::window::SettingsWindow, _>(|app| {
+            .with_widget::<crate::window::Inspected, _>(|app| {
                 let pane = crate::panes::agent_models::area(app)
                     .unwrap()
                     .model()

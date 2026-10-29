@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(observed, devices());
         assert!(untouched);
         let refused = app
-            .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+            .with_widget::<crate::window::Inspected, _>(move |settings| {
                 let mut model = crate::panes::display::area(settings)
                     .unwrap()
                     .model()
@@ -681,7 +681,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()
@@ -756,7 +756,7 @@ mod tests {
         assert!(offered(&mut app, "include-shared-display"));
         assert!(!offered(&mut app, "order-shared-display"));
 
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()
@@ -877,7 +877,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()

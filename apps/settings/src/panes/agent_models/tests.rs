@@ -59,7 +59,7 @@ fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
 pub(super) fn rendered<T>(model: &mut AgentModelsModel, read: impl FnOnce(&dyn Widget) -> T) -> T {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let held = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             Rc::clone(area(settings).unwrap().model())
         })
         .unwrap();
@@ -580,7 +580,7 @@ pub(super) fn hosted_model(
 ) {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let cx = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.area_context())
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.area_context())
         .unwrap();
     let mut model = AgentModelsModel::new(&cx.storage, cx.sections, cx.provider_admin, control);
     model.follow_local_profile = false;
@@ -977,7 +977,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
     crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
     let gate = crate::stall::Stall::new();
     let stalled = Arc::clone(&gate);
-    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+    app.with_widget::<crate::window::Inspected, _>(move |settings| {
         let model = crate::panes::agent_models::area(settings).unwrap().model();
         let mut model = model.borrow_mut();
         model.follow_local_profile = false;
@@ -1004,7 +1004,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
         .expect("the window draws its next frame");
     gate.assert_held("the click");
     let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             let model = crate::panes::agent_models::area(settings)
                 .unwrap()
                 .model()

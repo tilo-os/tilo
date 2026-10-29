@@ -246,7 +246,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     assert!(app.harness().a11y_node_named("Format").is_some());
 
     let mut driver = SearchDriver::default();
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let offer = InPlace::of(settings);
         assert_eq!(
             offer,
@@ -275,7 +275,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
         "the search looks for the chosen file family only"
     );
 
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         driver.drive(
             settings,
             "helpful",
@@ -296,7 +296,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     crate::effects::show_pane(&mut app, Category::DEFAULT);
     app.settle();
     let offer = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| InPlace::of(settings))
+        .with_widget::<crate::window::Inspected, _>(|settings| InPlace::of(settings))
         .expect("the Settings window is mounted");
     assert_eq!(
         offer,

@@ -79,6 +79,7 @@ pub mod pages;
 pub mod prefs;
 pub mod radios;
 pub mod replies;
+pub(crate) mod reveal;
 pub mod search;
 pub mod secrets;
 pub mod sections;
@@ -97,11 +98,12 @@ pub mod device_fleet;
 pub mod dispatcher;
 pub(crate) mod input_sources;
 pub mod keyboard_preview;
+pub(crate) mod keyboard_watch;
 pub mod panes;
 pub mod speaker_setup;
 
 pub use settings_app::SettingsApp;
-pub use window::SettingsWindow;
+pub use window::Inspected;
 
 pub use resource::{Settings, SettingsShell, parse_settings_uri};
 

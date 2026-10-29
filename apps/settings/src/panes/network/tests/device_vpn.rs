@@ -34,7 +34,7 @@ fn status() -> DeviceVpnStatus {
 fn document(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
 ) -> ui::storage::SettingsDocument {
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .reach
@@ -92,7 +92,7 @@ fn the_vpn_list_routes_through_and_shares_with_the_persons_devices() {
         Some(Through::device(DESK))
     );
     let state = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             let model = super::super::area(settings).unwrap().model();
             let model = model.borrow();
             model.vpn.devices.status.as_ref().unwrap().rows()[0]
@@ -292,7 +292,7 @@ fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
             ..device_vpn::ClientStatus::default()
         });
     }
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .model()

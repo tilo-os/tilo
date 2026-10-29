@@ -1299,7 +1299,7 @@ mod tests {
         app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
         change: impl FnOnce(&mut UsersModel) + 'static,
     ) -> String {
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             let mut model = area(settings).unwrap().model().borrow_mut();
             change(&mut model);
             model.changed = true;
@@ -1639,7 +1639,7 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Users);
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::users::area(settings)
                 .unwrap()
                 .model()
@@ -1714,7 +1714,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the change");
         let open = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
             })
         });
         let open = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();

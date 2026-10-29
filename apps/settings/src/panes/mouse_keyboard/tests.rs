@@ -198,7 +198,7 @@ pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, 
     // them once the read has landed.
     tilo_test_env::wait_until("the device's layouts are read", || {
         app.settle();
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             !crate::panes::mouse_keyboard::area(settings)
                 .unwrap()
                 .catalog_pending()
@@ -293,7 +293,7 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
                 panic!(
                     "{name}: the chooser is still on the page after Escape closed its list \
                      ({error}); showing {:?}",
-                    app.with_widget::<crate::window::SettingsWindow, _>(|settings| (
+                    app.with_widget::<crate::window::Inspected, _>(|settings| (
                         settings.selected(),
                         settings.sidebar_open()
                     ))
@@ -664,7 +664,7 @@ fn each_tablet_is_one_card_holding_its_own_pad_buttons() {
 /// The Pointing page of a window whose area reports `devices` attached.
 fn pointing_with(devices: Option<InputHardwareSnapshot>) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
+    app.with_widget::<crate::window::Inspected, _>(|surface| {
         let area = crate::panes::mouse_keyboard::area(surface).unwrap();
         area.live.set(false);
         area.devices.borrow_mut().1 = devices;
@@ -741,7 +741,7 @@ fn a_card_appears_for_each_attached_tablet() {
         "the switch keeps this tablet's shape"
     );
     // Unplugging removes the card.
-    app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
+    app.with_widget::<crate::window::Inspected, _>(|surface| {
         crate::panes::mouse_keyboard::area(surface)
             .unwrap()
             .devices

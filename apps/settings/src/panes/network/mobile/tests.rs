@@ -38,13 +38,13 @@ fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Wi
     // Away from Network, so its page is built over the model lent.
     crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
     let held = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             Rc::clone(area(settings).unwrap().model())
         })
         .unwrap();
     std::mem::swap(&mut *held.borrow_mut(), model);
     crate::effects::show_pane(&mut app, crate::categories::Category::Network);
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .model()
@@ -128,7 +128,7 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
 
     let mut app = App::new().unwrap();
     let radios = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.radios().clone())
         .expect("the Settings window is mounted");
     radios.set(Present::NONE);
     app.settle();
@@ -156,7 +156,7 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
     radios.set(Present::ALL);
     // Once read, ModemManager's answer is the one: the scripted device
     // has no modem, whatever the kernel says.
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         area(settings).unwrap().model();
     })
     .unwrap();
@@ -172,7 +172,7 @@ fn only_a_locked_sim_offers_unlocking_and_only_a_blocked_one_the_puk() {
 
     let mut app = App::new().unwrap();
     let (_, locked) = scripted(Some(MobileSample::Locked));
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         *area(settings).unwrap().model().borrow_mut() = locked;
     })
     .unwrap();
@@ -188,7 +188,7 @@ fn only_a_locked_sim_offers_unlocking_and_only_a_blocked_one_the_puk() {
     );
 
     let (_, registered) = scripted(Some(MobileSample::Registered));
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         *area(settings).unwrap().model().borrow_mut() = registered;
     })
     .unwrap();
@@ -263,7 +263,7 @@ fn settle_until(app: &mut App, done: impl Fn(&MobileModel) -> bool) {
     loop {
         app.settle();
         let reached = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 done(&area(settings).unwrap().model().borrow())
             })
             .unwrap();
@@ -284,7 +284,7 @@ fn shown(app: &mut App) -> Vec<String> {
 }
 
 fn lock(app: &mut App) -> Option<SimLock> {
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         area(settings)
             .unwrap()
             .model()
@@ -357,7 +357,7 @@ fn a_locked_sim_is_unlocked_from_the_password_prompt() {
         model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(1)
     });
     assert!(
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| area(settings)
+        app.with_widget::<crate::window::Inspected, _>(|settings| area(settings)
             .unwrap()
             .model()
             .borrow()
@@ -382,7 +382,7 @@ fn a_locked_sim_is_unlocked_from_the_password_prompt() {
         assert!(!said.iter().any(|text| text.contains(code)));
         assert!(!device.changes().iter().any(|change| change.contains(code)));
         let inspection = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 area(settings)
                     .unwrap()
                     .model()
@@ -487,7 +487,7 @@ fn changing_the_pin_asks_for_the_current_one_and_a_new_one() {
         model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(2)
     });
     assert!(
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| area(settings)
+        app.with_widget::<crate::window::Inspected, _>(|settings| area(settings)
             .unwrap()
             .model()
             .borrow()
@@ -759,7 +759,7 @@ fn the_count_the_reset_day_and_reset_are_the_sections() {
     edit_field(&mut app, kind, "reset_day", 3).unwrap();
     assert_eq!(app.settings::<MobileDataUsage>().get().reset_day.get(), 3);
     let reported = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings).unwrap().model().borrow().inspection()
         })
         .unwrap();

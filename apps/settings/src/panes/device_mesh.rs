@@ -2233,7 +2233,7 @@ mod tests {
         change: impl FnOnce(&mut DeviceMeshModel) -> T + 'static,
     ) -> T {
         let changed = app
-            .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+            .with_widget::<crate::window::Inspected, _>(move |settings| {
                 change(&mut area(settings).unwrap().model().borrow_mut())
             })
             .expect("the Settings window is mounted");

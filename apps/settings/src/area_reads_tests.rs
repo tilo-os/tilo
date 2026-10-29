@@ -31,7 +31,7 @@ fn reading_after() -> TestApp<SettingsShell> {
 
 /// The areas that have read, by profiling name.
 fn read(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         crate::area::registry()
             .live_areas
             .iter()

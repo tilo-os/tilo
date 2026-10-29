@@ -10,7 +10,7 @@
 /// suite run never reads the user's accounts, replays their interrupted
 /// account journal or writes a migration marker into their config.
 mod support {
-    use settings::SettingsWindow;
+    use settings::Inspected;
     use ui::widget::Widget;
     use vello::kurbo::Rect;
 
@@ -87,7 +87,7 @@ mod support {
         fn settling(widget: &dyn Widget) -> bool {
             if let Some(window) = widget
                 .as_any()
-                .and_then(|any| any.downcast_ref::<SettingsWindow>())
+                .and_then(|any| any.downcast_ref::<Inspected>())
             {
                 return Widget::has_pending_visual_work(window);
             }

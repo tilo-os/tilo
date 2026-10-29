@@ -20,7 +20,7 @@ use crate::i18n::t;
 type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
 fn document(app: &mut App) -> ui::storage::SettingsDocument {
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .reach

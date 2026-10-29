@@ -29,8 +29,7 @@ fn start_cost() {
 /// What launching settings costs cold, one process per launch as on a device:
 /// from the process starting to its first frame drawn, fonts and every
 /// other per-process cache empty. The first frame builds the window's
-/// widget tree once, and composes it once more against the window's first
-/// allocation (History presents by width): never a third time.
+/// widget tree once.
 #[test]
 fn cold_start() {
     let start = ui::framework::testing::perf::cold_start(
@@ -41,8 +40,8 @@ fn cold_start() {
     start.print();
     assert_eq!(
         start.calls("frame", "ui.rebuild_structure"),
-        2,
-        "the first frame builds the tree once and composes it once for its size"
+        1,
+        "the first frame builds the tree once"
     );
 }
 

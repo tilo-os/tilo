@@ -32,7 +32,7 @@ fn window_showing(
     app.harness().resize(size).unwrap();
     away_from_network(&mut app);
     let held = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             Rc::clone(area(settings).unwrap().model())
         })
         .unwrap();
@@ -71,7 +71,7 @@ fn rendered<T>(model: &mut NetworkModel, read: impl FnOnce(&dyn Widget) -> T) ->
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
     away_from_network(&mut app);
     let held = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             Rc::clone(area(settings).unwrap().model())
         })
         .unwrap();
@@ -720,7 +720,7 @@ fn hosted_model(
     service: Arc<dyn NetworkService>,
 ) -> NetworkModel {
     let cx = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::network::area(settings).unwrap().reach.clone()
         })
         .unwrap();
@@ -735,7 +735,7 @@ fn mount_network(
     observed: NetworkModel,
 ) -> Option<()> {
     away_from_network(app);
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         *crate::panes::network::area(settings)
             .unwrap()
             .model()
@@ -752,7 +752,7 @@ fn settle_until(
     loop {
         app.settle();
         let reached = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 let model = crate::panes::network::area(settings)
                     .unwrap()
                     .model()
@@ -795,7 +795,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
         "test stand-ins cannot masquerade as device observations"
     );
     let row_ids = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::network::NetworkArea>()
@@ -1401,7 +1401,7 @@ fn profile_settings_round_trip_through_the_effect_layer() {
     }
     let held = fake.settings.lock().unwrap()["home-uuid"].clone();
     let read = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::network::area(settings)
                 .unwrap()
                 .model()
@@ -2515,7 +2515,7 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     wired_only.adopt_snapshot(snapshot).unwrap();
     mount_network(&mut app, wired_only).unwrap();
     let radios = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.radios().clone())
         .expect("the Settings window is mounted");
 
     radios.set(Present::NONE);

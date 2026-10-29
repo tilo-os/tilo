@@ -15,30 +15,42 @@
 //!   screen (the pane, full-screen, with a back arrow that returns to the
 //!   list). Picking a category navigates the list → its content screen.
 //!
-//! ## The view and the window
+//! ## The view
 //!
 //! [`window`] is the view: it answers [`SettingsEffect`]s and publishes the
-//! live rows from the [`SettingsApp`] it shares with the window, and builds
-//! the content column as a part of the view keyed by what it shows
-//! ([`PaneKey`]). A pane bound to its settings sections is view code over
-//! them ([`crate::panes::view`]); the others are the widgets their areas
-//! build. The window ([`SettingsWindow`]) holds the shell, follows the pane
-//! asked for, the window bar's search and a setting asked to be shown, and
-//! moves the key; the part is built again when it moves.
+//! live rows from the [`SettingsApp`] it shares with its parts, and lays out
+//! the shell over view state ([`Chrome`]): the sidebar's list bound to the
+//! pane shown and to the window bar's search, the content's title, the
+//! narrow window's front screen, and the content column, a part keyed by
+//! what it shows ([`PaneKey`]) — the pane, as view code over its sections
+//! ([`crate::panes::view`]), or the settings the search found
+//! ([`crate::setting::found`]). The view's upkeep moves that state on every
+//! sync, from what the areas read and what the palette, an agent or a
+//! capture asked for.
+//!
+//! What the toolkit cannot say of a view yet stays as small pieces of
+//! Settings' own around the shell, each with its reason:
+//! [`crate::reveal::Reveal`] (showing a setting asked for),
+//! [`crate::secrets::SecretSheet`] (the password prompt),
+//! [`crate::keyboard_watch::KeyboardWatch`] (the drawn keyboard watching the
+//! keys) and [`Inspected`] (what a diagnostic reads of the window).
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::categories::Category;
 use crate::effects::SettingsEffect;
+use crate::keyboard_watch::KeyboardWatch;
 use crate::resource::Settings;
+use crate::reveal::{Reveal, RevealAsks};
 use crate::settings_app::{ScrollOffset, SettingsApp};
 use crate::sidebar;
-use ui::framework::{Publishes, ViewCx};
-use ui::widget::NavMode;
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, Element, ModelPath};
-use ui::widget::{Container, NavPane, NavShell, Scrollable, Widget};
-use ui::{AppKind, AppWidget, IconDescriptor};
+use settings_store::index::Setting;
+use ui::LocalState;
+use ui::framework::{Publishes, Upkeep, ViewCx};
+use ui::widget::toast::{Notice, ToastKind};
+use ui::widget::{AppModel, Element, ModelPath, Widget};
+use ui::widget::{Container, NavMode, NavPane, NavShell, QueryView, Scrollable};
 
 /// What the content column shows: the pane of `category`, or the settings
 /// the window bar's search found. `generation` moves whenever the column is
@@ -47,7 +59,7 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 #[derive(Clone)]
 pub(crate) struct PaneKey {
     category: Category,
-    found: Vec<&'static settings_store::index::Setting>,
+    found: Vec<&'static Setting>,
     reads: Vec<crate::setting::Read>,
     generation: u64,
 }
@@ -58,13 +70,323 @@ impl PartialEq for PaneKey {
     }
 }
 
-impl PaneKey {
-    fn of(category: Category) -> Self {
-        Self {
-            category,
-            found: Vec::new(),
-            reads: Vec::new(),
-            generation: 0,
+/// The settings the window bar's search found, while it finds any.
+#[derive(Default)]
+struct Searched {
+    /// The query they were found for.
+    query: String,
+    settings: Vec<&'static Setting>,
+    /// What each shown by name or as a switch of the device is set to.
+    reads: Vec<crate::setting::Read>,
+    /// The screen a narrow window showed before it showed them.
+    over: Option<NavPane>,
+}
+
+/// The window's view state, shared by the parts of its view and its
+/// upkeep: what the shell shows and what was asked of it.
+pub(crate) struct Chrome {
+    app: Rc<SettingsApp>,
+    /// What the content column shows.
+    key: LocalState<PaneKey>,
+    /// The page the sidebar's list chooses.
+    selection: LocalState<Option<String>>,
+    /// The content's title.
+    title: LocalState<String>,
+    /// The screen a narrow window shows.
+    pane: LocalState<NavPane>,
+    /// The window bar's search, as the sidebar's list is narrowed to it.
+    filter: LocalState<String>,
+    searched: RefCell<Searched>,
+    value_follows: crate::setting::Follows,
+    /// The pages the panes drilled into, as the content was last built.
+    pages_seen: Cell<u64>,
+    /// A change the session did not save, said in the window's bar.
+    notice: RefCell<Notice>,
+    /// The pane the window bar's search opened on, while it is open.
+    queried: Cell<Option<Category>>,
+    /// The setting or control asked to be shown.
+    reveal: Rc<RevealAsks>,
+}
+
+impl Chrome {
+    fn new(app: Rc<SettingsApp>) -> Rc<Self> {
+        let selected = app.selected();
+        let chrome = Self {
+            key: LocalState::new(PaneKey {
+                category: selected,
+                found: Vec::new(),
+                reads: Vec::new(),
+                generation: 0,
+            }),
+            selection: LocalState::new(Some(selected.slug().to_owned())),
+            title: LocalState::new(String::new()),
+            pane: LocalState::new(NavPane::Content),
+            filter: LocalState::new(String::new()),
+            searched: RefCell::default(),
+            value_follows: crate::setting::Follows::default(),
+            pages_seen: Cell::new(app.pages().revision()),
+            notice: RefCell::default(),
+            queried: Cell::new(None),
+            reveal: Rc::default(),
+            app,
+        };
+        chrome.title.set(chrome.content_title());
+        Rc::new(chrome)
+    }
+
+    fn content_title(&self) -> String {
+        if self.searched.borrow().settings.is_empty() {
+            let selected = self.app.selected();
+            self.app
+                .pages()
+                .top(selected)
+                .map_or_else(|| selected.label(), |page| page.title)
+        } else {
+            crate::i18n::t("settings-found-title")
+        }
+    }
+
+    /// Build the content column again for what the window shows now, and
+    /// title it.
+    fn refresh(&self) {
+        let next = {
+            let searched = self.searched.borrow();
+            self.key.with(|key| PaneKey {
+                category: self.app.selected(),
+                found: searched.settings.clone(),
+                reads: searched.reads.clone(),
+                generation: key.generation + 1,
+            })
+        };
+        self.key.set(next);
+        let title = self.content_title();
+        if self.title.with(|shown| *shown != title) {
+            self.title.set(title);
+        }
+        let slug = self.app.selected().slug();
+        if self
+            .selection
+            .with(|chosen| chosen.as_deref() != Some(slug))
+        {
+            self.selection.set(Some(slug.to_owned()));
+        }
+    }
+
+    /// Show `category`'s pane.
+    pub(crate) fn select(&self, category: Category) {
+        if self.app.selected() != category {
+            self.reveal.kept.set(None);
+            self.app.show(category);
+            self.pages_seen.set(self.app.pages().revision());
+            self.refresh();
+        }
+        self.show(NavPane::Content);
+    }
+
+    /// A narrow window shows `pane`.
+    fn show(&self, pane: NavPane) {
+        if self.pane.with(|shown| *shown != pane) {
+            self.pane.set(pane);
+        }
+    }
+
+    /// Stage `staged`: a pane, the list screen, a search or a focused control.
+    fn stage(&self, staged: crate::scenarios::Staged) {
+        use crate::scenarios::Staged;
+        match staged {
+            Staged::Pane(category) => self.select(category),
+            Staged::List(category) => {
+                self.select(category);
+                self.show(NavPane::Sidebar);
+            }
+            Staged::Search(category, query) => {
+                self.select(category);
+                self.filter.set(query.to_owned());
+            }
+            Staged::Focused(category, control) => {
+                self.select(category);
+                self.reveal.control.set(Some(control));
+            }
+        }
+    }
+
+    /// Follow what the window bar's search asks for now: the settings it
+    /// finds are shown in place of the pane while it finds any, in front of
+    /// the list in a narrow window.
+    fn follow_query(&self) {
+        let query = self.filter.with(Clone::clone);
+        let was_shown = {
+            let mut searched = self.searched.borrow_mut();
+            if query == searched.query {
+                return;
+            }
+            searched.query.clone_from(&query);
+            let found = crate::setting::matching(&query);
+            if found.is_empty() && searched.settings.is_empty() {
+                return;
+            }
+            let was_shown = !searched.settings.is_empty();
+            searched.settings = found;
+            was_shown
+        };
+        self.read_found();
+        self.refresh();
+        let shown = !self.searched.borrow().settings.is_empty();
+        if shown && !was_shown {
+            let over = self.pane.with(|pane| *pane);
+            self.searched.borrow_mut().over = Some(over);
+            self.show(NavPane::Content);
+        } else if !shown && let Some(over) = self.searched.borrow_mut().over.take() {
+            self.show(over);
+        }
+    }
+
+    /// Read the values of the settings found again; whether one changed.
+    fn read_found(&self) -> bool {
+        let mut searched = self.searched.borrow_mut();
+        let values = crate::setting::reads(&self.app, &self.value_follows, &searched.settings);
+        if values == searched.reads {
+            return false;
+        }
+        searched.reads = values;
+        true
+    }
+
+    /// Whether the content column shows what the window last asked of it:
+    /// the part is built again for a moved key on its next sync.
+    fn content_shown(&self) -> bool {
+        self.key.with(|key| key.generation) == self.app.content_built().get()
+    }
+
+    /// Whether the pane shown is built as it will show.
+    fn settled(&self) -> bool {
+        !self.app.pane_settling() && self.content_shown()
+    }
+
+    /// Move the window's state on, before its widgets sync: what work
+    /// finished, what was asked for, what the search finds now.
+    fn sync(&self) {
+        let app = &self.app;
+        // A capture's scenario, staged through the view.
+        if let Some(staged) = app.take_staged() {
+            self.stage(staged);
+        }
+        // A change the session refused to store (or could not) went back
+        // to what it was: the window says so, plainly, rather than leaving
+        // the person to find the old value on their next visit.
+        if settings_store::deferred_failure_pending() {
+            let failures = settings_store::take_deferred_failures();
+            for failure in &failures {
+                tracing::warn!(
+                    sections = ?failure.sections,
+                    error = %failure.error,
+                    "a settings change was not saved"
+                );
+            }
+            if !failures.is_empty() {
+                self.notice.borrow_mut().show(
+                    crate::i18n::t("settings-change-not-saved"),
+                    ToastKind::Error,
+                );
+            }
+        }
+        {
+            let mut notice = self.notice.borrow_mut();
+            notice.expire();
+            notice.publish();
+        }
+        // Background work an effect started finishes whether or not its pane
+        // is open.
+        for area in app.areas().iter() {
+            area.poll();
+        }
+        // After the first frame, the areas read one at a time until every
+        // area's rows are published.
+        if app.area_reads().take_due() {
+            app.read_on();
+        }
+        // A sidebar row, a search hit or an agent asked for a pane: opening
+        // it shows the pane, leaving behind what search found.
+        if let Some(category) = app.take_requested_pane() {
+            let found = {
+                let mut searched = self.searched.borrow_mut();
+                searched.over = None;
+                !std::mem::take(&mut searched.settings).is_empty()
+            };
+            if found && app.selected() == category {
+                self.refresh();
+            }
+            self.select(category);
+            if let Some(setting) = app.take_requested_setting() {
+                self.reveal.setting.set(Some(setting));
+                // The pane is built anew even when it is already open, so
+                // its control takes the keyboard in the rebuild.
+                self.refresh();
+            }
+        }
+        // The window bar's search writes what it asks for to the list's
+        // filter.
+        self.follow_query();
+        let searching = !self.searched.borrow().settings.is_empty();
+        if searching && self.read_found() {
+            self.refresh();
+        }
+        // The read the pane shown waits for has landed, or the layout list
+        // the Keyboard page showed without: build the pane.
+        if (app.pane_waits().get() && !app.pane_reading())
+            || (app.keyboard_partial().get()
+                && !app.areas().iter().any(crate::area::PaneArea::partial))
+        {
+            app.keyboard_partial().set(false);
+            self.refresh();
+        }
+        // A pane drilled into a page or came back out of one: the page is
+        // built from its top, titled in the header.
+        let pages = app.pages().revision();
+        if pages != self.pages_seen.get() {
+            self.pages_seen.set(pages);
+            app.forget_scroll(app.selected());
+            self.refresh();
+        }
+        // Another language: the content column is built again in it, as a
+        // page that is view code over its sections wrote its words as it
+        // was built.
+        if self.content_shown() && app.content_language().get() != ui::i18n::I18nManager::revision()
+        {
+            self.refresh();
+        }
+    }
+
+    /// When the window next wants a sync while nothing else happens.
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        let areas = self
+            .app
+            .areas()
+            .iter()
+            .filter_map(crate::area::PaneArea::next_wake)
+            .min();
+        match (areas, self.notice.borrow().deadline()) {
+            (Some(areas), Some(notice)) => Some(areas.min(notice)),
+            (areas, notice) => areas.or(notice),
+        }
+    }
+
+    /// What the window bar's search queries now: the pane it opened on
+    /// while it stays open, else the shown pane, when that pane offers a
+    /// query ([`crate::area::PaneArea::query`]).
+    fn pane_query(&self) -> Option<&dyn crate::area::PaneQuery> {
+        let category = self.queried.get().unwrap_or_else(|| self.app.selected());
+        self.app
+            .areas()
+            .iter()
+            .find_map(|area| area.query(category))
+    }
+
+    /// The search opened, or is typed into: it queries the pane it opened
+    /// on.
+    fn query_opened(&self) {
+        if self.queried.get().is_none() {
+            self.queried.set(Some(self.app.selected()));
         }
     }
 }
@@ -89,15 +411,29 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
         let staged = Rc::clone(&app);
         cx.on_stage(move |scenario| staged.stage(crate::scenarios::staged(scenario)));
     }
-    let key = ui::LocalState::new(PaneKey::of(app.selected()));
-    let content = {
-        let app = Rc::clone(&app);
-        cx.switch(&key, move |cx, key| content(&app, key, Some(&*cx)))
-    };
-    let mut window = SettingsWindow::over(Rc::clone(&app), Content::Bound(key, Some(content)));
-    window.look = Some(Look {
-        prefs: cx.settings::<crate::prefs::AppearancePrefs>(),
-        device: cx.settings::<crate::prefs::AppearanceDevicePrefs>(),
+    let chrome = Chrome::new(Rc::clone(&app));
+    let shell = shell(cx, &chrome);
+    let content = Reveal::new(
+        Rc::clone(&chrome.reveal),
+        {
+            let chrome = Rc::clone(&chrome);
+            move || chrome.settled()
+        },
+        Box::new(
+            Container::new()
+                .filling()
+                .with_no_padding()
+                .landmark("Settings", "settings.app")
+                .with_child(Box::new(shell)),
+        ),
+    );
+    let content = KeyboardWatch::new(Rc::clone(&app), Box::new(content));
+    let content = crate::secrets::SecretSheet::new(app.secrets().clone(), Box::new(content));
+    let content = cx.upkeep(upkeep(cx, &chrome), Box::new(content));
+    let content = Box::new(Inspected {
+        app: Rc::clone(&app),
+        chrome,
+        content,
     });
     let (rows, row, pending, intents) = (Rc::clone(&app), Rc::clone(&app), Rc::clone(&app), app);
     cx.publishing(
@@ -113,33 +449,153 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
                     .iter()
                     .find_map(crate::area::PaneArea::take_host_intent)
             }),
-        Box::new(window),
+        content,
     )
 }
 
+/// The shell over `chrome`: the sidebar's list, the content's title and
+/// Back, the narrow window's front screen, and the content column, a part
+/// of the view keyed by what it shows. The window bar's search narrows the
+/// list even while a narrow window shows the content, where what it finds
+/// shows; on a pane that lists the answer to a query (models on Hugging
+/// Face), it queries the pane instead.
+fn shell(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> NavShell {
+    let content = {
+        let app = Rc::clone(&chrome.app);
+        cx.switch(&chrome.key, move |cx, key| content(cx, &app, key))
+    };
+    let content = {
+        let (offered, opened, typed, closed) = (
+            Rc::clone(chrome),
+            Rc::clone(chrome),
+            Rc::clone(chrome),
+            Rc::clone(chrome),
+        );
+        QueryView::new(content, move |text| {
+            typed.query_opened();
+            if let Some(query) = typed.pane_query() {
+                query.set_query_text(text);
+            }
+        })
+        .offered_while(move || offered.pane_query().is_some())
+        .on_open(move || opened.query_opened())
+        .on_close(move || {
+            if let Some(query) = closed.pane_query() {
+                query.query_closed();
+            }
+            closed.queried.set(None);
+        })
+    };
+    let (can_go_back, go_back) = (chrome.app.pages().clone(), chrome.app.pages().clone());
+    NavShell::new()
+        .content_kind(ui::widget::ContentKind::Page)
+        .with_id("settings.shell")
+        .mode(NavMode::Push)
+        .with_pane_state(&chrome.pane)
+        .search_sidebar()
+        .sidebar(sidebar::build(&cx.actions(), &chrome.selection, &chrome.filter).into_widget())
+        .sidebar_header("", Vec::new())
+        .content_header_bound(&chrome.title, Vec::new())
+        .on_back(
+            move || can_go_back.can_go_back(),
+            move || {
+                go_back.back();
+            },
+        )
+        .content(Box::new(content))
+}
+
+/// What the view keeps up beside the shell: `chrome` moved on every sync,
+/// the areas' work, wakes and first readings, the look while the
+/// Appearance page is open, the areas' collaboration, and the page shown,
+/// kept with the window.
+fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
+    let app = &chrome.app;
+    let (synced, waking) = (Rc::clone(chrome), Rc::clone(chrome));
+    let (busy, pending, presented) = (Rc::clone(app), Rc::clone(app), Rc::clone(app));
+    let (requests, events) = (Rc::clone(app), Rc::clone(app));
+    let (captured, restored) = (Rc::clone(app), Rc::clone(chrome));
+    let look = Rc::clone(app);
+    let prefs = cx.settings::<crate::prefs::AppearancePrefs>();
+    let device = cx.settings::<crate::prefs::AppearanceDevicePrefs>();
+    Upkeep::new()
+        .on_sync(move || synced.sync())
+        .busy(move || busy.areas().iter().any(crate::area::PaneArea::busy))
+        .next_wake(move || waking.next_wake())
+        .pending_visual_work(move || {
+            pending.areas().iter().any(|area| {
+                crate::area::PaneArea::first_read(area)
+                    || crate::area::PaneArea::pending_visual_work(area)
+            })
+        })
+        .on_presented(move || {
+            presented.area_reads().presented();
+            presented.area_reads().wake();
+        })
+        // While the page that changes the look is open, the window shows
+        // itself in it the instant a control changes it: the host applies
+        // what differs. The toolkit folds in the contrast, the interface
+        // scale and the text scale.
+        .appearance(move || {
+            (look.selected() == Category::Appearance).then(|| {
+                prefs.state().with(|prefs| {
+                    device
+                        .state()
+                        .with(|device| crate::panes::appearance::intent(prefs, device))
+                })
+            })
+        })
+        // Account setup, nearby pairing and identity administration share
+        // the app's collaboration connection through their host-action
+        // clients.
+        .collaboration(
+            move || {
+                requests
+                    .areas()
+                    .iter()
+                    .flat_map(crate::area::PaneArea::take_collab_requests)
+                    .collect()
+            },
+            move |event| {
+                for area in events.areas().iter() {
+                    area.handle_collab_event(event);
+                }
+            },
+        )
+        // The page shown, kept with the window: a reopened Settings window
+        // shows the page it showed.
+        .kept_view(
+            <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
+            1,
+            move || captured.selected().slug().as_bytes().to_vec(),
+            move |payload| {
+                let page = std::str::from_utf8(payload)
+                    .ok()
+                    .and_then(Category::from_slug)
+                    .ok_or_else(|| "not a Settings page".to_owned())?;
+                // A link the window was opened with is already asked for
+                // and wins.
+                if !restored.app.pane_requested() {
+                    restored.select(page);
+                }
+                Ok(())
+            },
+        )
+}
+
 /// What the content column shows for `key`, scrolled: the settings found,
-/// the request for a workspace identity, a note while the pane's area reads,
-/// or the pane. In the view (`cx`), a pane that is view code over its
-/// sections is built as such, and so are the rows found of such a pane;
-/// outside it, only the panes the areas build show.
-fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) -> Element {
+/// the request for a workspace identity, a note while the pane's area
+/// reads, or the pane.
+fn content(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, key: &PaneKey) -> Element {
     app.content_built().set(key.generation);
     let (body, offset): (Element, ScrollOffset) = if key.found.is_empty() {
         (
-            pane_body(app, key.category, cx),
+            pane_body(cx, app, key.category),
             app.scroll_offset(key.category),
         )
     } else {
-        let bound = cx.map_or_else(Vec::new, |cx| {
-            crate::setting::bound_rows(cx, &key.found, &key.reads)
-        });
         (
-            Box::new(crate::setting::Found::new(
-                app.sections().actions().cloned(),
-                key.found.clone(),
-                key.reads.clone(),
-                bound,
-            )),
+            crate::setting::found(cx, &key.found, &key.reads),
             ScrollOffset::default(),
         )
     };
@@ -161,7 +617,7 @@ fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) 
 }
 
 /// The body of `category`'s pane: see [`content`].
-fn pane_body(app: &Rc<SettingsApp>, category: Category, cx: Option<&ViewCx<Settings>>) -> Element {
+fn pane_body(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>, category: Category) -> Element {
     if category.needs_workspace_identity() && ui::workspace_identity::missing() {
         app.pane_waits().set(false);
         app.keyboard_partial().set(false);
@@ -184,67 +640,24 @@ fn pane_body(app: &Rc<SettingsApp>, category: Category, cx: Option<&ViewCx<Setti
             )]),
         )]);
     }
-    cx.and_then(|cx| crate::panes::view(cx, app, category))
+    crate::panes::view(cx, app, category)
         .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
 }
 
-/// The person's appearance, followed while the view lives: the look the
-/// window shows itself in while the page that changes it is open.
-struct Look {
-    prefs: ui::framework::Setting<crate::prefs::AppearancePrefs>,
-    device: ui::framework::Setting<crate::prefs::AppearanceDevicePrefs>,
-}
-
-/// How the window's content column is built.
-enum Content {
-    /// By the view's part keyed by what it shows: the window moves the key,
-    /// and hands the part to its shell once.
-    Bound(ui::LocalState<PaneKey>, Option<Element>),
-    /// By the window itself, outside any view: the panes bound to their
-    /// sections show nothing. A window a test lays out on its own.
-    Detached(PaneKey),
-}
-
-/// The Settings window: the shell, its sidebar and the content column, over
-/// the [`SettingsApp`] it shares with its view. See the module docs.
-pub struct SettingsWindow {
+/// The Settings window as a diagnostic reads it: what it shows, as the
+/// native input audit's snapshot says ([`Widget::native_input_snapshot`]),
+/// and, for a test, the [`SettingsApp`] behind it (it dereferences to it).
+///
+/// A piece of Settings' own around its view: the snapshot is Settings' own
+/// contract with its audit (the categories its list shows, the page
+/// shown), which no view state of the toolkit's says.
+pub struct Inspected {
     app: Rc<SettingsApp>,
-    content: Content,
-    structure_dirty: bool,
-    /// The screen a narrow window opens on.
-    narrow_screen: NavPane,
-    /// The search a window without its shell yet is staged with.
-    staged_filter: String,
-    /// The setting asked to be shown, until its pane is built.
-    reveal: Option<&'static settings_store::index::Setting>,
-    /// The setting whose control took the keyboard, to scroll to once laid out.
-    reveal_scroll: Option<&'static settings_store::index::Setting>,
-    /// The setting shown, kept in sight until the person acts.
-    revealed: Option<&'static settings_store::index::Setting>,
-    /// The control a capture puts the keyboard on, once its pane is built.
-    capture_focus: Option<&'static str>,
-    /// The row of the setting just shown, marked for a moment.
-    highlight: Option<(&'static settings_store::index::Setting, ui::time::Instant)>,
-    rect: vello::kurbo::Rect,
-    shell: Option<NavShell>,
-    /// The text scale the content column was composed for.
-    shell_text_scale: f32,
-    /// The pane the window bar's search opened on, while it is open.
-    queried: Option<Category>,
-    found_query: String,
-    found: Vec<&'static settings_store::index::Setting>,
-    found_reads: Vec<crate::setting::Read>,
-    /// The screen a narrow window showed before it showed the settings found.
-    found_over: Option<NavPane>,
-    value_follows: crate::setting::Follows,
-    pages_seen: u64,
-    secret: Option<crate::secrets::ShownPrompt>,
-    /// The person's appearance, as the view follows it; `None` outside a
-    /// view, where it is read from the settings when asked.
-    look: Option<Look>,
+    chrome: Rc<Chrome>,
+    content: Element,
 }
 
-impl std::ops::Deref for SettingsWindow {
+impl std::ops::Deref for Inspected {
     type Target = SettingsApp;
 
     fn deref(&self) -> &SettingsApp {
@@ -252,450 +665,87 @@ impl std::ops::Deref for SettingsWindow {
     }
 }
 
-impl Default for SettingsWindow {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SettingsWindow {
-    /// A window over a fresh [`SettingsApp`], outside any view.
-    pub fn new() -> Self {
-        Self::detached(SettingsApp::new())
-    }
-
-    /// A window over `app`, outside any view: it builds its content column
-    /// itself.
-    #[must_use]
-    pub fn detached(app: SettingsApp) -> Self {
-        let app = app.into_shared();
-        let key = PaneKey::of(app.selected());
-        Self::over(app, Content::Detached(key))
-    }
-
-    fn over(app: Rc<SettingsApp>, content: Content) -> Self {
-        Self {
-            app,
-            content,
-            structure_dirty: false,
-            narrow_screen: NavPane::Content,
-            staged_filter: String::new(),
-            reveal: None,
-            reveal_scroll: None,
-            revealed: None,
-            capture_focus: None,
-            highlight: None,
-            rect: vello::kurbo::Rect::ZERO,
-            shell: None,
-            shell_text_scale: 1.0,
-            queried: None,
-            found_query: String::new(),
-            found: Vec::new(),
-            found_reads: Vec::new(),
-            found_over: None,
-            value_follows: crate::setting::Follows::default(),
-            pages_seen: 0,
-            secret: None,
-            look: None,
-        }
-    }
-
-    /// A detached window on `category`.
-    pub fn with_selected(category: Category) -> Self {
-        Self::detached(SettingsApp::new().with_category(category))
-    }
-
-    /// This window on `category`.
-    #[must_use]
-    pub fn with_category(mut self, category: Category) -> Self {
-        self.select(category);
-        self
-    }
-
-    /// This window opening on the list screen when narrow.
-    #[must_use]
-    pub fn with_category_list(mut self) -> Self {
-        self.narrow_screen = NavPane::Sidebar;
-        self
-    }
-
+impl Inspected {
     /// What the window shares with its view.
+    #[must_use]
     pub fn app(&self) -> &SettingsApp {
         &self.app
     }
 
-    #[cfg(test)]
-    pub fn pending_reveal(&self) -> Option<&'static str> {
-        self.reveal.or(self.reveal_scroll).map(|setting| setting.id)
+    /// The window's shell.
+    fn shell(&self) -> Option<&NavShell> {
+        fn find(widget: &dyn Widget) -> Option<&NavShell> {
+            if let Some(shell) = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<NavShell>())
+            {
+                return Some(shell);
+            }
+            widget.children().into_iter().find_map(find)
+        }
+        find(&*self.content)
     }
 
-    /// Show `category`'s pane.
-    pub fn select(&mut self, category: Category) {
-        if self.app.selected() != category {
-            self.revealed = None;
-            self.app.show(category);
-            self.pages_seen = self.app.pages().revision();
-            self.structure_dirty = true;
-            self.refresh_shell_children();
-        }
-        if let Some(shell) = &mut self.shell {
-            shell.show(ui::widget::NavPane::Content);
-        }
-    }
-
+    /// Whether the window shows one screen at a time.
+    #[must_use]
     pub fn is_narrow(&self) -> bool {
-        self.shell
-            .as_ref()
+        self.shell()
             .is_some_and(|shell| !shell.geometry().stack.is_empty())
     }
 
+    /// Whether the sidebar's list shows.
+    #[must_use]
     pub fn sidebar_open(&self) -> bool {
-        self.shell.as_ref().is_some_and(NavShell::is_sidebar_open)
+        self.shell().is_some_and(NavShell::is_sidebar_open)
     }
 
-    pub fn search_query(&self) -> &str {
-        match &self.shell {
-            Some(shell) => shell
-                .sidebar_ref::<ui::widget::NavList>()
-                .map_or("", ui::widget::NavList::filter),
-            None => &self.staged_filter,
-        }
+    /// What the window bar's search narrows the list to.
+    #[must_use]
+    pub fn search_query(&self) -> String {
+        self.chrome.filter.with(Clone::clone)
     }
 
-    pub fn back_button_rect(&self) -> vello::kurbo::Rect {
-        self.shell
-            .as_ref()
-            .map_or(vello::kurbo::Rect::ZERO, |shell| shell.geometry().back)
+    /// Type `query` into the window bar's search, as its field does.
+    pub fn narrow_sidebar(&self, query: &str) {
+        self.chrome.filter.set(query.to_owned());
     }
 
-    pub(crate) fn narrow_sidebar(&mut self, query: &str) {
-        match self
-            .shell
-            .as_mut()
-            .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
-        {
-            Some(nav) => nav.set_filter(query),
-            None => query.clone_into(&mut self.staged_filter),
-        }
-        self.follow_query(query);
-    }
-
-    /// Follow what the window bar's search asks for now: the settings it
-    /// finds are shown in place of the pane while it finds any.
-    fn follow_query(&mut self, query: &str) {
-        if query == self.found_query {
-            return;
-        }
-        query.clone_into(&mut self.found_query);
-        let found = crate::setting::matching(query);
-        if found.is_empty() && self.found.is_empty() {
-            return;
-        }
-        let was_shown = !self.found.is_empty();
-        self.found = found;
-        self.read_found();
-        self.structure_dirty = true;
-        self.refresh_shell_children();
-        let narrow = self.is_narrow();
-        if let Some(shell) = self.shell.as_mut().filter(|_| narrow) {
-            if !self.found.is_empty() && !was_shown {
-                self.found_over = Some(shell.front_pane());
-                shell.show(NavPane::Content);
-            } else if self.found.is_empty()
-                && let Some(over) = self.found_over.take()
-            {
-                shell.show(over);
-            }
-        }
-    }
-
-    /// Read the values of the settings found again; whether one changed.
-    fn read_found(&mut self) -> bool {
-        let values = crate::setting::reads(&self.app, &self.value_follows, &self.found);
-        if values == self.found_reads {
-            return false;
-        }
-        self.found_reads = values;
-        true
-    }
-
+    /// The settings the search found, best first.
     #[must_use]
     pub fn found_settings(&self) -> Vec<&'static str> {
-        self.found.iter().map(|setting| setting.id).collect()
-    }
-
-    /// Stage `staged`: a pane, the list screen, a search or a focused control.
-    pub fn stage_scene(&mut self, staged: crate::scenarios::Staged) {
-        use crate::scenarios::Staged;
-        match staged {
-            Staged::Pane(category) => self.select(category),
-            Staged::List(category) => {
-                self.select(category);
-                self.narrow_screen = NavPane::Sidebar;
-                if let Some(shell) = &mut self.shell {
-                    shell.back();
-                }
-            }
-            Staged::Search(category, query) => {
-                self.select(category);
-                self.narrow_sidebar(query);
-            }
-            Staged::Focused(category, control) => {
-                self.select(category);
-                self.capture_focus = Some(control);
-            }
-        }
-    }
-
-    /// The content column for the shell: the view's part, handed over once,
-    /// or the column built here.
-    fn take_content(&mut self) -> Option<Element> {
-        match &mut self.content {
-            Content::Bound(_, content) => content.take(),
-            Content::Detached(key) => Some(content(&self.app, key, None)),
-        }
-    }
-
-    fn build_shell(&mut self) -> NavShell {
-        let nav = sidebar::build(
-            self.app.sections().actions(),
-            self.app.selected(),
-            &self.staged_filter,
-        );
-        let can_go_back = self.app.pages().clone();
-        let go_back = self.app.pages().clone();
-        let mut shell = NavShell::new()
-            .content_kind(ui::widget::ContentKind::Page)
-            .with_id("settings.shell")
-            .mode(NavMode::Push)
-            .sidebar(nav)
-            .sidebar_header("", Vec::new())
-            .content_header(self.content_title(), Vec::new())
-            .on_back(
-                move || can_go_back.can_go_back(),
-                move || {
-                    go_back.back();
-                },
-            );
-        if let Some(content) = self.take_content() {
-            shell.set_content(content);
-        }
-        shell.show(self.narrow_screen);
-        shell
-    }
-
-    fn content_title(&self) -> String {
-        if self.found.is_empty() {
-            let selected = self.app.selected();
-            self.app
-                .pages()
-                .top(selected)
-                .map_or_else(|| selected.label(), |page| page.title)
-        } else {
-            crate::i18n::t("settings-found-title")
-        }
-    }
-
-    /// Build the content column again for what the window shows now, and
-    /// title it.
-    fn refresh_shell_children(&mut self) {
-        let next = |key: &PaneKey, window: &Self| PaneKey {
-            category: window.app.selected(),
-            found: window.found.clone(),
-            reads: window.found_reads.clone(),
-            generation: key.generation + 1,
-        };
-        match &self.content {
-            Content::Bound(key, _) => {
-                let moved = key.with(|key| next(key, self));
-                key.set(moved);
-            }
-            Content::Detached(key) => {
-                let moved = next(key, self);
-                self.content = Content::Detached(moved);
-                if self.shell.is_some()
-                    && let Some(content) = self.take_content()
-                    && let Some(shell) = &mut self.shell
-                {
-                    shell.set_content(content);
-                }
-            }
-        }
-        let title = self.content_title();
-        let selected = self.app.selected();
-        if let Some(shell) = &mut self.shell {
-            if let Some(nav) = shell.sidebar_mut::<ui::widget::NavList>() {
-                if nav.selected_id().as_deref() != Some(selected.slug()) {
-                    nav.set_selected(Some(selected.slug()));
-                }
-            } else {
-                shell.set_sidebar(Some(sidebar::build(
-                    self.app.sections().actions(),
-                    selected,
-                    "",
-                )));
-            }
-            shell.set_content_title(title);
-        }
-    }
-}
-
-impl SettingsWindow {
-    /// What the keyboard drawn on the Keyboard pane shows now.
-    ///
-    /// # Errors
-    /// The drawn keyboard could not be read.
-    pub fn keyboard_inspection(&self) -> Result<serde_json::Value, String> {
-        self.keyboard_now()
-            .unwrap_or_else(|| self.app.keyboard_inspection())
-    }
-
-    /// The keyboard drawn on the Keyboard pane, read now; `None` while the
-    /// pane draws none.
-    fn keyboard_now(&self) -> Option<Result<serde_json::Value, String>> {
-        fn mounted_map(widget: &dyn Widget) -> Option<&ui::KeyboardMap> {
-            if let Some(map) = widget
-                .as_any()
-                .and_then(|value| value.downcast_ref::<ui::KeyboardMap>())
-            {
-                return Some(map);
-            }
-            widget.children().into_iter().find_map(mounted_map)
-        }
-        if self.app.selected() != Category::Keyboard {
-            return None;
-        }
-        mounted_map(self).map(ui::KeyboardMap::inspection_snapshot)
-    }
-
-    /// Hand the effects what the drawn keyboard and the add-source picker
-    /// show now: whatever moved them (a key held, a layout, a key inspected,
-    /// a filter typed) went through the window.
-    /// Whether the content column shows what the window last asked of it:
-    /// the view's part is built again for a moved key on its next sync.
-    fn content_shown(&self) -> bool {
-        match &self.content {
-            Content::Bound(key, _) => {
-                key.with(|key| key.generation) == self.app.content_built().get()
-            }
-            Content::Detached(_) => true,
-        }
-    }
-
-    fn share_keyboard(&self) {
-        self.app
-            .keyboard_drawn(self.keyboard_now().and_then(Result::ok));
-        let picker = (self.app.selected() == Category::Keyboard)
-            .then(|| crate::panes::mouse_keyboard::input_picker_snapshot(self))
-            .flatten();
-        self.app.input_picker_drawn(picker);
-    }
-}
-
-// Account setup, nearby pairing and identity administration share the app's
-// collaboration connection through their host-action clients.
-impl ui::widget::Collaborative for SettingsWindow {
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        self.app
-            .areas()
+        self.chrome
+            .searched
+            .borrow()
+            .settings
             .iter()
-            .flat_map(crate::area::PaneArea::take_collab_requests)
+            .map(|setting| setting.id)
             .collect()
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        for area in self.app.areas().iter() {
-            area.handle_collab_event(event);
-        }
+    /// The setting asked to be shown that is not in sight yet.
+    #[cfg(test)]
+    pub(crate) fn pending_reveal(&self) -> Option<&'static str> {
+        self.chrome.reveal.pending()
     }
 }
 
-/// The window bar's search queries the shown pane where it offers a query
-/// ([`crate::area::PaneArea::query`]), and otherwise narrows the sidebar's
-/// list and lists the settings it finds: the window is its `Filterable`,
-/// so the search reaches the list while what it found is in front of it in
-/// a narrow window.
-impl SettingsWindow {
-    /// What the window bar's search queries now: the pane it opened on while
-    /// it stays open, else the shown pane, when that pane offers a query.
-    fn pane_query(&self) -> Option<&dyn crate::area::PaneQuery> {
-        let category = self.queried.unwrap_or_else(|| self.app.selected());
-        self.app
-            .areas()
-            .iter()
-            .find_map(|area| area.query(category))
-    }
-}
+impl ui::widget::Decorator for Inspected {
+    type Inner = dyn Widget;
 
-impl ui::widget::Queryable for SettingsWindow {
-    fn query_opened(&mut self) {
-        self.queried.get_or_insert_with(|| self.app.selected());
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
     }
 
-    fn set_query_text(&mut self, text: &str) {
-        self.queried.get_or_insert_with(|| self.app.selected());
-        if let Some(query) = self.pane_query() {
-            query.set_query_text(text);
-        }
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
     }
 
-    fn query_closed(&mut self) {
-        if let Some(query) = self.pane_query() {
-            query.query_closed();
-        }
-        self.queried = None;
-    }
-}
-
-impl ui::widget::Filterable for SettingsWindow {
-    fn set_filter(&mut self, query: &str) {
-        self.narrow_sidebar(query);
+    fn name(&self) -> &'static str {
+        "SettingsInspected"
     }
 
-    fn filter_count(&self) -> Option<ui::widget::FilterCount> {
-        self.shell
-            .as_ref()?
-            .sidebar_ref::<ui::widget::NavList>()
-            .and_then(ui::widget::Filterable::filter_count)
-    }
-}
-
-impl Widget for SettingsWindow {
-    // Tests and hosts reach the window by its type.
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::widget::Queryable>() {
-            if self.pane_query().is_some() {
-                request.provide::<dyn ui::widget::Queryable>(self);
-            }
-        } else if request.wants::<dyn ui::widget::Filterable>() {
-            request.provide::<dyn ui::widget::Filterable>(self);
-        } else if request.wants::<dyn ui::widget::Collaborative>() {
-            request.provide::<dyn ui::widget::Collaborative>(self);
-        } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
-            request.provide::<dyn ui::application_view::ApplicationViewState>(self);
-        }
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::widget::Queryable>() {
-            if self.pane_query().is_some() {
-                request.provide::<dyn ui::widget::Queryable>(self);
-            }
-        } else if request.wants::<dyn ui::widget::Filterable>() {
-            request.provide::<dyn ui::widget::Filterable>(self);
-        } else if request.wants::<dyn ui::widget::Collaborative>() {
-            request.provide::<dyn ui::widget::Collaborative>(self);
-        } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
-            request.provide::<dyn ui::application_view::ApplicationViewState>(self);
-        }
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        self.content.take_structure_change()
     }
 
     fn native_input_snapshot(
@@ -730,7 +780,8 @@ impl Widget for SettingsWindow {
         let (state, path) = ui::doc::document_ref(state, path);
         let mut categories = Vec::new();
         let mut nav_id = None;
-        inspect(self, &mut categories, &mut nav_id);
+        self.content
+            .for_each_child(&mut |child| inspect(child, &mut categories, &mut nav_id));
         // get_heads closes pending transactions. Only a disposable clone may
         // perform that operation: the original document stays untouched.
         let mut witness = state.clone();
@@ -743,14 +794,15 @@ impl Widget for SettingsWindow {
         let valid = |value: vello::kurbo::Rect| {
             value.is_finite() && value.width() > 0.0 && value.height() > 0.0
         };
+        let root = self.content.get_rect();
         // The search is the window bar's, outside the app: what it narrowed
         // the sidebar to is what the app shows of it.
         Some(serde_json::json!({
             "app": "so.tilo.settings",
             "nav_id": nav_id,
-            "ready": valid(self.rect) && nav_id.is_some(),
+            "ready": valid(root) && nav_id.is_some(),
             "search_query": self.search_query(),
-            "root_rect": rect(self.rect),
+            "root_rect": rect(root),
             "selected_category": self.app.selected().slug(),
             "rendered_result_count": categories.len(),
             "rendered_category_ids": categories,
@@ -762,689 +814,6 @@ impl Widget for SettingsWindow {
             "effective_document_heads": heads,
             "original_pending_ops": state.pending_ops(),
         }))
-    }
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // A capture's scenario, staged through the view.
-        if let Some(staged) = self.app.take_staged() {
-            self.stage_scene(staged);
-        }
-        // A change the session refused to store (or could not) went back
-        // to what it was: the window says so, plainly, rather than leaving
-        // the person to find the old value on their next visit.
-        if settings_store::deferred_failure_pending() {
-            let failures = settings_store::take_deferred_failures();
-            for failure in &failures {
-                tracing::warn!(
-                    sections = ?failure.sections,
-                    error = %failure.error,
-                    "a settings change was not saved"
-                );
-            }
-            if !failures.is_empty()
-                && let Some(shell) = self.shell.as_mut()
-            {
-                shell.toast(
-                    crate::i18n::t("settings-change-not-saved"),
-                    ui::widget::toast::ToastKind::Error,
-                );
-            }
-        }
-        // Background work an effect started finishes whether or not its pane
-        // is open.
-        for area in self.app.areas().iter() {
-            area.poll();
-        }
-        // After the first frame, the areas read one at a time until every
-        // area's rows are published.
-        if self.app.area_reads().take_due() {
-            self.app.read_on();
-        }
-        // A sidebar row opens its pane through the pane row's open effect;
-        // only a bare app outside a host selects here. Search is local
-        // presentation state: no CRDT text, collaboration traffic or undo.
-        if let Some(category) = self.app.take_requested_pane() {
-            // Opening a page, from the sidebar or a setting found, shows the
-            // page; what search found is left behind.
-            let found = !self.found.is_empty();
-            self.found.clear();
-            self.found_over = None;
-            if found && self.app.selected() == category {
-                self.structure_dirty = true;
-                self.refresh_shell_children();
-            }
-            self.select(category);
-            if let Some(setting) = self.app.take_requested_setting() {
-                self.reveal = Some(setting);
-                // The pane is built anew even when it is already open, so
-                // its control takes the keyboard in the rebuild.
-                self.structure_dirty = true;
-                self.refresh_shell_children();
-            }
-        }
-        // The window bar's search is typed into the sidebar's list, outside
-        // the app: what it asks for now is read from there.
-        let query = self.search_query().to_owned();
-        self.follow_query(&query);
-        if !self.found.is_empty() && self.read_found() {
-            self.structure_dirty = true;
-            self.refresh_shell_children();
-        }
-        // The read the pane shown waits for has landed, or the layout list
-        // the Keyboard page showed without: build the pane.
-        if (self.app.pane_waits().get() && !self.app.pane_reading())
-            || (self.app.keyboard_partial().get()
-                && !self.app.areas().iter().any(crate::area::PaneArea::partial))
-        {
-            self.app.keyboard_partial().set(false);
-            self.structure_dirty = true;
-            self.refresh_shell_children();
-        }
-
-        // A pane drilled into a page or came back out of one: the page is
-        // built from its top, titled in the header.
-        let pages = self.app.pages().revision();
-        if pages != self.pages_seen {
-            self.pages_seen = pages;
-            self.app.forget_scroll(self.app.selected());
-            self.structure_dirty = true;
-            self.refresh_shell_children();
-        }
-
-        // Another language: the content column is built again in it, as a
-        // page that is view code over its sections wrote its words as it
-        // was built.
-        if self.content_shown()
-            && self.app.content_language().get() != ui::i18n::I18nManager::revision()
-        {
-            self.structure_dirty = true;
-            self.refresh_shell_children();
-        }
-
-        // A pane asked for a secret, or is done with the one it asked.
-        if crate::secrets::ShownPrompt::follow(&mut self.secret, self.app.secrets()) {
-            self.structure_dirty = true;
-        }
-
-        if let Some(shell) = &mut self.shell {
-            shell.sync(state, path);
-        }
-        if let Some(shown) = &mut self.secret {
-            shown.dialog.sync(state, path);
-        }
-        self.share_keyboard();
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        // Create the shell once and reuse it so its collapse/overlay state
-        // survives category switches. The panes compose for the text scale:
-        // a change of it builds the content column anew.
-        provider_settings_ui::widgets::set_compose_text_growth(theme.text_growth());
-        if self.shell.is_none() {
-            self.shell_text_scale = theme.text_scale;
-            self.shell = Some(self.build_shell());
-        } else if self.shell_text_scale.to_bits() != theme.text_scale.to_bits() {
-            self.shell_text_scale = theme.text_scale;
-            self.refresh_shell_children();
-        }
-        let settled = !self.app.pane_settling() && self.content_shown();
-        #[allow(
-            clippy::expect_used,
-            reason = "shell was just set unconditionally above; nothing between there and here can clear it"
-        )]
-        let shell = self.shell.as_mut().expect("just set above");
-        // Composed panes recreate their controls on layout, including the
-        // follow-up layout that scrolling a revealed control can request.
-        // Preserve the current control's identity, not the old focus ordinal
-        // or the last reveal request: either could steal focus after a move.
-        let focused = focused_control_id(shell).map(str::to_owned);
-        let shell_node = shell.build_layout(taffy, theme, node_map);
-        // The pane asked to show a setting is built: its control takes the
-        // keyboard, which the rebuild keeps on it. A pane still being read
-        // (or showing its first reading as on its way) shows its control
-        // once it is built; a control the pane does not
-        // show (no such device) leaves the page open at its top.
-        if let Some(setting) = self.reveal.filter(|_| settled) {
-            self.reveal = None;
-            clear_control_focus(shell);
-            if focus_control(shell, &|id| setting.is_control(id)) {
-                self.reveal_scroll = Some(setting);
-            }
-        } else if let Some(id) = self.capture_focus.filter(|_| settled) {
-            if focus_control(shell, &|control| control == id) {
-                self.capture_focus = None;
-            }
-        } else if let Some(id) = focused {
-            focus_control(shell, &|control| control == id);
-        }
-
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            size: taffy::Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        };
-        // `new_with_children` only fails for a child `NodeId` from a
-        // different tree, which never happens here — see
-        // `ui::widget::TaffyTreeExt`. Fall back to the child directly rather
-        // than panic, on the off chance that ever changes.
-        taffy.widget_node(style, &[shell_node], node_map, self)
-    }
-
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        // `taffy.layout(...)` only errors for a `NodeId` from a different
-        // tree, which never happens here — see `ui::widget::TaffyTreeExt`.
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
-        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell)
-            && let Some(&shell_node) = children.first()
-        {
-            shell.apply_layout(taffy, shell_node, origin);
-            if let Some(setting) = self.reveal_scroll.take() {
-                self.scroll_to_control(setting);
-                self.highlight = Some((setting, ui::time::now()));
-                self.revealed = Some(setting);
-            } else if let Some(setting) = self.revealed {
-                // Scrolls only once the control has left the view.
-                self.scroll_to_control(setting);
-            }
-        }
-        self.share_keyboard();
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw(scene, transform, text_renderer, theme, presence);
-        }
-        // The row of a setting just shown is marked as a found match is,
-        // for a moment.
-        match self.highlighted_row() {
-            Some(row) => ui::widget::paint_find_match(scene, transform, row, true, theme),
-            None => self.highlight = None,
-        }
-        self.app.area_reads().presented();
-        self.app.area_reads().wake();
-    }
-
-    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
-        fn observe_map(widget: &mut dyn Widget, input: ui::widget::PhysicalInput) -> bool {
-            if let Some(map) = widget
-                .as_any_mut()
-                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
-            {
-                map.observe_physical_input(input);
-                return true;
-            }
-            let mut visible = false;
-            for child in widget.children_mut() {
-                visible |= observe_map(child, input.clone());
-            }
-            visible
-        }
-        let visible = self.app.selected() == Category::Keyboard
-            && self
-                .shell
-                .as_mut()
-                .is_some_and(|shell| observe_map(shell, input.clone()));
-        if !visible {
-            self.app.keyboard_map_input().observe_configuration(&input);
-            self.app.keyboard_map_input().clear();
-        }
-        self.share_keyboard();
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        // Observe only the mounted foreground page, before its search/picker
-        // can consume editing events. This never changes handling or focus.
-        fn observe_map(widget: &mut dyn Widget, event: &winit::event::WindowEvent) {
-            if let Some(map) = widget
-                .as_any_mut()
-                .and_then(|widget| widget.downcast_mut::<ui::KeyboardMap>())
-            {
-                map.observe_foreground_event(event);
-                return;
-            }
-            for child in widget.children_mut() {
-                observe_map(child, event);
-            }
-        }
-        // The person acts: what they do decides what is in sight now.
-        if matches!(
-            event,
-            winit::event::WindowEvent::KeyboardInput { .. }
-                | winit::event::WindowEvent::MouseInput { .. }
-                | winit::event::WindowEvent::MouseWheel { .. }
-                | winit::event::WindowEvent::Touch(_)
-        ) {
-            self.revealed = None;
-        }
-        // The password prompt takes every event while it is open.
-        if let Some(shown) = &mut self.secret {
-            shown.dialog.handle_detached(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                &mut ctx.state,
-                ctx.path,
-            );
-            *ctx.handled = true;
-            if crate::secrets::ShownPrompt::answered(&mut self.secret, self.app.secrets()) {
-                self.structure_dirty = true;
-            }
-            return;
-        }
-        if self.app.selected() == Category::Keyboard
-            && let Some(shell) = &mut self.shell
-        {
-            observe_map(shell, event);
-        }
-        if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
-            && let Some(&shell_node) = children.first()
-        {
-            shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
-        }
-        self.share_keyboard();
-    }
-
-    /// The window's shell, or while it is open the password prompt alone:
-    /// nothing under it is reachable.
-    fn children(&self) -> Vec<&dyn Widget> {
-        if let Some(shown) = &self.secret {
-            return vec![&shown.dialog as &dyn Widget];
-        }
-        self.shell
-            .as_ref()
-            .map(|s| vec![s as &dyn Widget])
-            .unwrap_or_default()
-    }
-
-    /// The shell, laid out under the prompt too: the prompt is drawn over
-    /// it, outside the layout.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        if let Some(shell) = &self.shell {
-            visitor(shell);
-        }
-        true
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if let Some(shown) = &mut self.secret {
-            return vec![&mut shown.dialog as &mut (dyn Widget + '_)];
-        }
-        self.shell
-            .as_mut()
-            .map(|s| vec![s as &mut (dyn Widget + '_)])
-            .unwrap_or_default()
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(shell) = &mut self.shell {
-            shell.draw_overlay(scene, transform, text, theme, presence);
-        }
-        if let Some(shown) = &mut self.secret {
-            shown
-                .dialog
-                .draw_overlay(scene, transform, text, theme, presence);
-        }
-    }
-
-    fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
-        self.secret
-            .as_ref()
-            .and_then(|shown| shown.dialog.modal_capture())
-    }
-
-    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        // This root only delegates painting. Keep the shell's visual bounds
-        // instead of expanding every control hover to the whole app window.
-        if let Some(shell) = &self.shell {
-            shell.collect_damage(regions);
-            // The fading wash over a shown setting's row.
-            if let Some((setting, _)) = self.highlight
-                && let Some(row) = row_of(shell, setting)
-            {
-                regions.push(row.inflate(2.0, 2.0));
-            }
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "SettingsWindow"
-    }
-
-    /// While the page that changes the look is open, the window shows
-    /// itself in it the instant a control changes it: the host applies
-    /// what differs. The toolkit folds in the contrast, the interface
-    /// scale and the text scale.
-    fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
-        if self.app.selected() != Category::Appearance {
-            return None;
-        }
-        Some(match &self.look {
-            Some(look) => look.prefs.state().with(|prefs| {
-                look.device
-                    .state()
-                    .with(|device| crate::panes::appearance::intent(prefs, device))
-            }),
-            None => crate::panes::appearance::intent(
-                &self
-                    .app
-                    .storage()
-                    .settings::<crate::prefs::AppearancePrefs>()
-                    .get(),
-                &self
-                    .app
-                    .storage()
-                    .settings::<crate::prefs::AppearanceDevicePrefs>()
-                    .get(),
-            ),
-        })
-    }
-
-    /// Stable landmark for the responsive shell: the sidebar and pane subtree
-    /// may rebuild as a category changes, but the application surface itself
-    /// keeps one retained semantic identity.
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name("Settings")
-                .with_semantic_key("settings.app"),
-        )
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
-
-    /// Drains the selection-rebuild flag, bubbling the shell's own rebuild
-    /// signal (a narrow list↔content navigation or a breakpoint cross).
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .shell
-            .as_mut()
-            .is_some_and(ui::Widget::take_structure_dirty);
-        own || child
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.secret
-            .as_ref()
-            .is_some_and(|shown| shown.dialog.needs_animation_frame())
-            || self.highlight.is_some()
-            || self.app.areas().iter().any(crate::area::PaneArea::busy)
-            || self
-                .shell
-                .as_ref()
-                .is_some_and(ui::Widget::needs_animation_frame)
-    }
-
-    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let areas = self
-            .app
-            .areas()
-            .iter()
-            .filter_map(crate::area::PaneArea::next_wake)
-            .min();
-        let children = self
-            .children()
-            .into_iter()
-            .filter_map(Widget::next_wake_deadline)
-            .min();
-        match (areas, children) {
-            (Some(areas), Some(children)) => Some(areas.min(children)),
-            (areas, children) => areas.or(children),
-        }
-    }
-
-    fn has_pending_visual_work(&self) -> bool {
-        self.app.areas().iter().any(|area| {
-            crate::area::PaneArea::first_read(area)
-                || crate::area::PaneArea::pending_visual_work(area)
-        }) || self
-            .shell
-            .as_ref()
-            .is_some_and(Widget::has_pending_visual_work)
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.shell.as_ref().is_some_and(ui::Widget::needs_idle_sync)
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        self.shell
-            .as_ref()
-            .is_some_and(ui::Widget::layout_needs_measure)
-    }
-}
-
-impl AppWidget for SettingsWindow {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Settings
-    }
-
-    fn app_title(&self) -> &'static str {
-        "Settings"
-    }
-
-    fn app_icon(&self) -> IconDescriptor {
-        IconDescriptor::Glyph("\u{f0493}") // cog
-    }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        Some(AppKind::Settings)
-    }
-}
-
-impl SettingsWindow {
-    /// Scroll the pane so `setting`'s control is in sight, a little below
-    /// the top so its card's heading shows too.
-    fn scroll_to_control(&mut self, setting: &'static settings_store::index::Setting) {
-        fn control_rect(
-            widget: &dyn Widget,
-            setting: &settings_store::index::Setting,
-        ) -> Option<vello::kurbo::Rect> {
-            if widget.test_id().is_some_and(|id| setting.is_control(id)) {
-                return Some(widget.get_rect());
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| control_rect(child, setting))
-        }
-        /// Scroll the innermost scroller holding the control; whether one
-        /// did.
-        fn reveal(widget: &mut dyn Widget, setting: &settings_store::index::Setting) -> bool {
-            if widget
-                .children_mut()
-                .into_iter()
-                .any(|child| reveal(child, setting))
-            {
-                return true;
-            }
-            let Some(control) = control_rect(&*widget, setting) else {
-                return false;
-            };
-            let Some(scroll) = widget
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Scrollable>())
-            else {
-                return false;
-            };
-            let viewport = scroll.content_viewport_rect();
-            if control.y0 >= viewport.y0 && control.y1 <= viewport.y1 {
-                return true;
-            }
-            let context = (viewport.height() * 0.2).clamp(24.0, 120.0);
-            let top = control.y0 - viewport.y0 + f64::from(scroll.offset_y()) - context;
-            scroll.scroll_into_view(
-                ui::num::f32_of_f64(control.x0 - viewport.x0 + f64::from(scroll.offset_x())),
-                ui::num::f32_of_f64(top.max(0.0)),
-                1.0,
-                ui::num::f32_of_f64(viewport.height()),
-            );
-            true
-        }
-        if let Some(shell) = &mut self.shell {
-            reveal(shell, setting);
-        }
-    }
-
-    /// The row of the setting just shown, while it is marked.
-    fn highlighted_row(&self) -> Option<vello::kurbo::Rect> {
-        let (setting, since) = self.highlight?;
-        let elapsed = ui::time::now()
-            .saturating_duration_since(since)
-            .as_secs_f32();
-        if elapsed >= HIGHLIGHT_HOLD {
-            return None;
-        }
-        row_of(self.shell.as_ref()?, setting)
-    }
-}
-
-/// How long a shown setting's row stays marked, in seconds.
-const HIGHLIGHT_HOLD: f32 = 1.5;
-
-/// The row of `setting`'s control under `root`, within the scroller that
-/// holds it: the narrowest ancestor of the control at least as wide as most
-/// of that scroller, which is the settings row.
-fn row_of(
-    root: &dyn Widget,
-    setting: &settings_store::index::Setting,
-) -> Option<vello::kurbo::Rect> {
-    fn walk(
-        widget: &dyn Widget,
-        setting: &settings_store::index::Setting,
-        trail: &mut Vec<(vello::kurbo::Rect, bool)>,
-    ) -> Option<vello::kurbo::Rect> {
-        let rect = widget.get_rect();
-        if widget.test_id().is_some_and(|id| setting.is_control(id)) {
-            let (viewport, at) = trail
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, (_, scroller))| *scroller)
-                .map(|(at, (viewport, _))| (*viewport, at))?;
-            let row = trail
-                .get(at..)
-                .unwrap_or_default()
-                .iter()
-                .rev()
-                .map(|(rect, _)| *rect)
-                .find(|candidate| candidate.width() >= viewport.width() * 0.6)
-                .unwrap_or(rect);
-            return Some(row.intersect(viewport));
-        }
-        trail.push((rect, widget.name() == "Scrollable"));
-        let found = widget
-            .children()
-            .into_iter()
-            .find_map(|child| walk(child, setting, trail));
-        trail.pop();
-        found
-    }
-    walk(root, setting, &mut Vec::new())
-}
-
-/// The identity of the current keyboard control, before a pane rebuilds it.
-fn focused_control_id(widget: &dyn Widget) -> Option<&str> {
-    if widget.is_focusable()
-        && widget.is_focused()
-        && let Some(id) = widget.test_id()
-    {
-        return Some(id);
-    }
-    widget.children().into_iter().find_map(focused_control_id)
-}
-
-/// A reveal transfers the keyboard rather than leaving two focused controls.
-fn clear_control_focus(widget: &mut dyn Widget) {
-    if widget.is_focusable() && widget.is_focused() {
-        widget.set_focus(false);
-    }
-    for child in widget.children_mut() {
-        clear_control_focus(child);
-    }
-}
-
-/// Put the keyboard on the first matching control under `widget`;
-/// whether there was one.
-fn focus_control(widget: &mut dyn Widget, matches: &dyn Fn(&str) -> bool) -> bool {
-    fn first_focusable(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
-        if widget.is_focusable() {
-            return Some(widget);
-        }
-        widget.children_mut().into_iter().find_map(first_focusable)
-    }
-    if widget.test_id().is_some_and(matches) {
-        return match first_focusable(widget) {
-            Some(control) => {
-                control.set_focus(true);
-                true
-            }
-            None => false,
-        };
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| focus_control(child, matches))
-}
-
-/// The page shown, kept with the window: a reopened Settings window shows
-/// the page it showed.
-impl ui::application_view::ApplicationViewState for SettingsWindow {
-    fn capture_application_view(
-        &self,
-    ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
-        Ok(Some(ui::application_view::ApplicationLocalView {
-            app_id: <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID.into(),
-            version: 1,
-            payload: self.app.selected().slug().as_bytes().to_vec(),
-        }))
-    }
-
-    fn restore_application_view(
-        &mut self,
-        local: &ui::application_view::ApplicationLocalView,
-        _doc: &automerge::AutoCommit,
-    ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
-        let page = std::str::from_utf8(&local.payload)
-            .ok()
-            .and_then(Category::from_slug)
-            .ok_or_else(|| ui::view::ThawError::State("not a Settings page".into()))?;
-        // A link the window was opened with is already asked for and wins.
-        if !self.app.pane_requested() {
-            self.select(page);
-        }
-        Ok(ui::application_view::ApplicationFocusRestore::Generic)
     }
 }
 
@@ -1603,7 +972,7 @@ mod tests {
             f64::midpoint(bounds.y0, bounds.y1),
         ));
         let regions = app
-            .with_widget::<SettingsWindow, _>(|window| {
+            .with_widget::<Inspected, _>(|window| {
                 let mut regions = Vec::new();
                 window.collect_damage(&mut regions);
                 regions

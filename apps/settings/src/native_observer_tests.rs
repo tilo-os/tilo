@@ -5,7 +5,7 @@
 //! committing the document's pending changes: the observer is a witness, not
 //! a writer.
 
-use crate::SettingsWindow;
+use crate::Inspected;
 use crate::categories::Category;
 use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
@@ -154,7 +154,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let debug_before = format!("{doc:?}");
         let pending = doc.pending_ops();
         let (a, b) = h
-            .with_widget::<SettingsWindow, _>(|window| {
+            .with_widget::<Inspected, _>(|window| {
                 (
                     window
                         .native_input_snapshot(&doc, &automerge::ROOT)
@@ -268,8 +268,8 @@ fn native_observer_reports_the_selected_category_and_layout_class() {
 }
 
 /// `visit` the mounted window.
-fn window<O>(app: &mut App, visit: impl FnOnce(&mut SettingsWindow) -> O) -> O {
-    app.with_widget::<SettingsWindow, _>(visit)
+fn window<O>(app: &mut App, visit: impl FnOnce(&mut Inspected) -> O) -> O {
+    app.with_widget::<Inspected, _>(visit)
         .expect("the window is mounted")
 }
 

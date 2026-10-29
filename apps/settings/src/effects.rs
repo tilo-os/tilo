@@ -700,7 +700,7 @@ mod tests {
     fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let (rows, phases) = app
-            .with_widget::<crate::window::SettingsWindow, _>(|app| {
+            .with_widget::<crate::window::Inspected, _>(|app| {
                 ui::tilo_resource::profiling::observe(|| super::rows(app))
             })
             .unwrap();
@@ -720,7 +720,7 @@ mod tests {
     fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let rows = app
-            .with_widget::<crate::window::SettingsWindow, _>(|app| super::rows(app))
+            .with_widget::<crate::window::Inspected, _>(|app| super::rows(app))
             .unwrap();
         let row = rows
             .into_iter()
@@ -814,7 +814,7 @@ mod tests {
     fn mounted_live_row_bindings_preserve_flattened_metadata_and_payloads() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let resource_rows = app
-            .with_widget::<crate::window::SettingsWindow, _>(|app| rows(app))
+            .with_widget::<crate::window::Inspected, _>(|app| rows(app))
             .unwrap();
         let mut compared = 0;
         for row in resource_rows {

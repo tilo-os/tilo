@@ -2218,7 +2218,7 @@ mod tests {
 
     /// Change the window's Speakers model as `change` does.
     fn change_model(app: &mut App, change: impl FnOnce(&mut SpeakersModel) + 'static) {
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             change(&mut area(settings).unwrap().model().borrow_mut());
         })
         .expect("the Settings window is mounted");
@@ -2241,7 +2241,7 @@ mod tests {
 
     /// The step the window's flow is at.
     fn step(app: &mut App) -> Step {
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings)
                 .unwrap()
                 .model()

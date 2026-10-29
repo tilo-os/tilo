@@ -1,7 +1,7 @@
 //! Driven scrolling test for the settings content pane.
 //!
 //! A category whose section cards overflow a short window must scroll. This
-//! builds the *real* composed `SettingsWindow` tree, lays it out at a short
+//! builds the *real* composed Settings window tree, lays it out at a short
 //! viewport, then drives the genuine winit wheel + keyboard path and asserts
 //! the content pane's `Scrollable` actually moved its child. Geometry is read
 //! only through the public `Widget` trait (`name`, `get_rect`, `children`) so

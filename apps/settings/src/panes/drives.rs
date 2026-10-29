@@ -679,7 +679,7 @@ mod tests {
     /// model is `model`.
     fn texts(model: DrivesModel) -> Vec<String> {
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
-        app.with_widget::<crate::window::SettingsWindow, _>(move |app| {
+        app.with_widget::<crate::window::Inspected, _>(move |app| {
             let mut model = model;
             model.structure_dirty = true;
             *area(app).unwrap().model().borrow_mut() = model;
@@ -815,7 +815,7 @@ mod tests {
             grant("b2", "Stick", false, Mode::OpenSafely),
         ]);
         let service = running.service();
-        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+        app.with_widget::<crate::window::Inspected, _>(|app| {
             assert!(
                 crate::panes::drives::area(app).unwrap().rows().is_empty(),
                 "nothing read, nothing offered"
@@ -835,7 +835,7 @@ mod tests {
             &SettingsEffect::from(DrivesEffect::ForgetDrive { grant: "a1".into() }),
         )
         .unwrap();
-        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
+        app.with_widget::<crate::window::Inspected, _>(|app| {
             crate::panes::drives::area(app)
                 .unwrap()
                 .model()

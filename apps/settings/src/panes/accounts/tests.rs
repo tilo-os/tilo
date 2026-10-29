@@ -151,7 +151,7 @@ pub(super) fn change<T>(
     change: impl FnOnce(&mut AccountsPane) -> T,
 ) -> T {
     let changed = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             let mut pane = area(settings)
                 .expect("the window holds the area")
                 .model()
@@ -670,7 +670,7 @@ fn account_actions_include_sync_now_for_mounted_accounts() {
         let mut labels = Vec::new();
         actions_of(page_of(app.harness().root_widget()), &mut labels);
         let published: Vec<(String, Vec<String>)> = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 area(settings)
                     .unwrap()
                     .rows()
@@ -921,7 +921,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
     gate.assert_held("composing the accounts");
     assert!(!shown, "the grant is not known before the vault answers");
     assert!(
-        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             area(settings).unwrap().model().borrow().busy()
         })
         .unwrap(),

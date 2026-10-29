@@ -5,7 +5,7 @@
 //! control bound to the section's field edit. The pane builds its row with
 //! that function, and so does Settings' search: typing in the window bar
 //! lists the settings that match as those same rows, operable where they
-//! are found ([`Found`]), each page's group opening its page. A yes-or-no
+//! are found ([`found`]), each page's group opening its page. A yes-or-no
 //! that only the device can switch (a radio, the sound server) is the
 //! switch its pane shows once the window has read it can be switched. A
 //! setting whose pane draws it some other way (a layout, a schedule, a
@@ -22,14 +22,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use settings_store::index::{self, Setting};
+use ui::framework::{Actions, ViewCx};
 use ui::storage::SettingsCache;
-use ui::widget::{AppModel, Button, ButtonRole, ControlSize, ModelPath, Widget};
+use ui::widget::{Button, ButtonRole, ControlSize, Element};
 
 use crate::categories::Category;
 use crate::effects::{NavigationEffect, SettingsEffect};
 use crate::i18n::t;
 use crate::resource::Settings;
-use provider_settings_ui::widgets::{Item, SettingsSection, rows, section_action};
+use provider_settings_ui::widgets::{Item, rows, section_action};
 
 /// One setting, as search shows it.
 pub struct SettingEntry {
@@ -282,7 +283,7 @@ pub fn matching(query: &str) -> Vec<&'static Setting> {
 
 /// The rows of `settings` whose pages are view code, built in `cx`, by
 /// their place, `reads` saying which switches can be switched: what
-/// [`Found`] shows for them.
+/// [`found`] shows for them.
 #[must_use]
 pub fn bound_rows(
     cx: &ui::framework::ViewCx<crate::resource::Settings>,
@@ -303,152 +304,94 @@ pub fn bound_rows(
         .collect()
 }
 
-/// What Settings' search found: the matching settings, grouped by the page
-/// each is on, as the rows that change them.
-pub struct Found {
-    /// What its navigation buttons are bound through; `None` outside a
-    /// view, where they are unavailable.
-    actions: Option<ui::framework::Actions<Settings>>,
-    /// The rows of the settings found whose pages are view code, built by
-    /// the view that shows this list, by the setting's place in `settings`.
-    bound: RefCell<Vec<Option<Item>>>,
-    /// The settings found, best first, and what each shown by name or as a
-    /// switch of the device is set to ([`reads`]).
-    settings: Vec<&'static Setting>,
-    reads: Vec<Read>,
-    composed: ui::widget::Composed,
-}
-
-impl Found {
-    /// The settings found, `bound` holding the rows built as view code
-    /// for those whose pages are ([`bound_rows`]).
-    #[must_use]
-    pub fn new(
-        actions: Option<ui::framework::Actions<Settings>>,
-        settings: Vec<&'static Setting>,
-        reads: Vec<Read>,
-        bound: Vec<Option<Item>>,
-    ) -> Self {
-        Self {
-            actions,
-            bound: RefCell::new(bound),
-            settings,
-            reads,
-            composed: ui::widget::Composed::default(),
+/// What Settings' search found, as the view `cx` shows it in place of a
+/// pane: the matching settings, best first, grouped by the page each is on,
+/// as the rows that change them. A setting whose page is view code is its
+/// row ([`bound_rows`]); any other is listed by name with what `reads` says
+/// it is set to and a button showing it in its page. Each group's button
+/// opens its page, as an agent's `open` does.
+pub fn found(cx: &ViewCx<Settings>, settings: &[&'static Setting], reads: &[Read]) -> Element {
+    let mut bound = bound_rows(cx, settings, reads);
+    let actions = cx.actions();
+    // Each page with where its settings are in `settings`.
+    let mut pages: Vec<(&'static str, Vec<usize>)> = Vec::new();
+    for (at, setting) in settings.iter().enumerate() {
+        match pages.iter_mut().find(|(page, _)| *page == setting.page) {
+            Some((_, found)) => found.push(at),
+            None => pages.push((setting.page, vec![at])),
         }
     }
-
-    /// A button `id` reading `label`, running `effect`: Settings' own
-    /// navigation, as an agent's `open` runs it.
-    fn navigating(&self, id: &str, label: &str, effect: NavigationEffect) -> Button {
-        use ui::framework::ActionControl as _;
-        let button = Button::new(id, label)
-            .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small);
-        match &self.actions {
-            Some(actions) => actions.bind_effect_invocation(button, &SettingsEffect::from(effect)),
-            None => button.unavailable(),
-        }
-    }
-
-    /// One page's group: its name, a button opening it, and each setting
-    /// found there, `found` being where they are in its settings.
-    fn group(&self, page: &'static str, found: &[usize]) -> Option<SettingsSection> {
-        let category = Category::from_slug(page)?;
-        let items: Vec<Item> = found
+    provider_settings_ui::widgets::page(
+        pages
             .iter()
-            .filter_map(|&at| Some((at, *self.settings.get(at)?, self.reads.get(at))))
-            .map(|(at, setting, read)| {
-                if let Some(row) = self.bound.borrow_mut().get_mut(at).and_then(Option::take) {
-                    return row;
-                }
-                let value = match read {
-                    Some(Read::Value(value)) => value.as_deref(),
-                    _ => None,
-                };
-                let name = t(&setting.name_key());
-                let show = self
-                    .navigating(
-                        &format!("settings.found.show:{}", setting.id),
-                        &t("settings-found-show"),
-                        NavigationEffect::ShowSetting {
-                            setting: setting.id.to_owned(),
-                        },
-                    )
-                    .with_accessible_name(&format!("{}: {name}", t("settings-found-show")));
-                let row = ui::widget::ListRow::new(format!("settings.found:{}", setting.id), &name)
-                    .trailing(Box::new(show));
-                provider_settings_ui::widgets::row(Box::new(match value {
-                    Some(value) => row.value(value),
-                    None => row,
-                }))
+            .filter_map(|(page, found)| {
+                let category = Category::from_slug(page)?;
+                let items: Vec<Item> = found
+                    .iter()
+                    .filter_map(|&at| {
+                        if let Some(row) = bound.get_mut(at).and_then(Option::take) {
+                            return Some(row);
+                        }
+                        let setting = *settings.get(at)?;
+                        let value = match reads.get(at) {
+                            Some(Read::Value(value)) => value.as_deref(),
+                            _ => None,
+                        };
+                        Some(found_row(&actions, setting, value))
+                    })
+                    .collect();
+                let open = navigating(
+                    &actions,
+                    &format!("settings.found.open:{page}"),
+                    &t("settings-found-open"),
+                    NavigationEffect::OpenPane {
+                        pane: (*page).to_owned(),
+                    },
+                )
+                .with_accessible_name(&format!(
+                    "{}: {}",
+                    t("settings-found-open"),
+                    category.label()
+                ));
+                Some(section_action(&category.label(), open, rows(items)))
             })
-            .collect();
-        let open = self
-            .navigating(
-                &format!("settings.found.open:{page}"),
-                &t("settings-found-open"),
-                NavigationEffect::OpenPane {
-                    pane: page.to_owned(),
-                },
-            )
-            .with_accessible_name(&format!(
-                "{}: {}",
-                t("settings-found-open"),
-                category.label()
-            ));
-        Some(section_action(&category.label(), open, rows(items)))
-    }
-
-    fn build_composition(&self) -> Box<dyn Widget> {
-        // Each page with where its settings are in `settings`.
-        let mut pages: Vec<(&'static str, Vec<usize>)> = Vec::new();
-        for (at, setting) in self.settings.iter().enumerate() {
-            match pages.iter_mut().find(|(page, _)| *page == setting.page) {
-                Some((_, found)) => found.push(at),
-                None => pages.push((setting.page, vec![at])),
-            }
-        }
-        provider_settings_ui::widgets::page(
-            pages
-                .iter()
-                .filter_map(|(page, settings)| self.group(page, settings))
-                .collect(),
-        )
-    }
+            .collect(),
+    )
 }
 
-impl Widget for Found {
-    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.composed.sync(state, root);
-    }
+/// A setting found whose page draws it some other way: its name, what it is
+/// set to (`value`), and a button showing it in its page.
+fn found_row(actions: &Actions<Settings>, setting: &'static Setting, value: Option<&str>) -> Item {
+    let name = t(&setting.name_key());
+    let show = navigating(
+        actions,
+        &format!("settings.found.show:{}", setting.id),
+        &t("settings-found-show"),
+        NavigationEffect::ShowSetting {
+            setting: setting.id.to_owned(),
+        },
+    )
+    .with_accessible_name(&format!("{}: {name}", t("settings-found-show")));
+    let row = ui::widget::ListRow::new(format!("settings.found:{}", setting.id), &name)
+        .trailing(Box::new(show));
+    provider_settings_ui::widgets::row(Box::new(match value {
+        Some(value) => row.value(value),
+        None => row,
+    }))
+}
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let mut composed = std::mem::take(&mut self.composed);
-        let child = composed.build_layout_kept(|| self.build_composition(), taffy, theme, node_map);
-        self.composed = composed;
-        let style = ui::taffy::Style {
-            display: ui::taffy::Display::Flex,
-            flex_direction: ui::taffy::FlexDirection::Column,
-            size: ui::taffy::Size {
-                width: ui::taffy::Dimension::percent(1.0),
-                height: ui::taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        ui::widget::TaffyTreeExt::widget_node(taffy, style, &[child], node_map, self)
-    }
-
-    ui::forward_to_composed!(composed);
-
-    fn name(&self) -> &'static str {
-        "SettingsFound"
-    }
+/// A button `id` reading `label`, running `effect`: Settings' own
+/// navigation, as an agent's `open` runs it.
+fn navigating(
+    actions: &Actions<Settings>,
+    id: &str,
+    label: &str,
+    effect: NavigationEffect,
+) -> Button {
+    let button = Button::new(id, label)
+        .role(ButtonRole::Plain)
+        .control_size(ControlSize::Small);
+    actions.bind_effect_invocation(button, &SettingsEffect::from(effect))
 }
 
 #[cfg(test)]

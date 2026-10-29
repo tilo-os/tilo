@@ -714,12 +714,10 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
         app.settle();
         let intent = || {
-            |window: &mut crate::window::SettingsWindow| {
-                ui::widget::Widget::appearance_intent(window)
-            }
+            |window: &mut crate::window::Inspected| ui::widget::Widget::appearance_intent(window)
         };
         let shown = app
-            .with_widget::<crate::window::SettingsWindow, _>(intent())
+            .with_widget::<crate::window::Inspected, _>(intent())
             .flatten()
             .expect("the Appearance page expresses the look");
         assert_eq!(shown.base_theme.name, "Dark cool");
@@ -734,7 +732,7 @@ mod tests {
             .unwrap();
         app.settle();
         let shown = app
-            .with_widget::<crate::window::SettingsWindow, _>(intent())
+            .with_widget::<crate::window::Inspected, _>(intent())
             .flatten()
             .expect("the Appearance page expresses the look");
         assert_eq!(shown.base_theme.name, "Dark graphite");
@@ -905,7 +903,7 @@ mod tests {
         app.harness().send(&ui::synthetic_input::mouse_release());
         settle(&mut app);
         assert_eq!(
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Accessibility)
         );
         let accessibility = shown_ids(&mut app);

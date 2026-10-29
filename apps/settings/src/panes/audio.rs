@@ -1860,7 +1860,7 @@ mod tests {
     /// Change the window's Sound model as `change` does, for the page to
     /// show.
     fn change_model(app: &mut App, change: impl FnOnce(&mut AudioModel) + 'static) {
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             let mut model = area(settings).unwrap().model().borrow_mut();
             change(&mut model);
             model.changed = true;
@@ -2163,7 +2163,7 @@ mod tests {
                 })
         );
         let model = |app: &mut App, read: fn(&AudioModel) -> bool| {
-            app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+            app.with_widget::<crate::window::Inspected, _>(move |settings| {
                 read(&area(settings).unwrap().model().borrow())
             })
             .unwrap()
@@ -2795,7 +2795,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::audio::area(settings)
                 .unwrap()
                 .model()
@@ -2813,7 +2813,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the click");
         let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
                 (crate::panes::audio::area(settings)
                     .unwrap()
                     .model()

@@ -16,7 +16,7 @@ pub(super) fn on_displays() -> App {
 
 /// Change the window's display model as the displays or an effect would.
 pub(super) fn change_model(app: &mut App, change: impl FnOnce(&mut DisplayModel) + 'static) {
-    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+    app.with_widget::<crate::window::Inspected, _>(move |settings| {
         let mut model = area(settings).unwrap().model().borrow_mut();
         change(&mut model);
         model.changed = true;
@@ -29,7 +29,7 @@ pub(super) fn read_model<V: 'static>(
     app: &mut App,
     read: impl FnOnce(&DisplayModel) -> V + 'static,
 ) -> V {
-    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+    app.with_widget::<crate::window::Inspected, _>(move |settings| {
         read(&area(settings).unwrap().model().borrow())
     })
     .expect("the Settings window is mounted")
@@ -228,7 +228,7 @@ fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         }),
     )
     .unwrap();
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         crate::panes::display::area(settings)
             .unwrap()
             .model()
@@ -328,7 +328,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
             "{action} is published on the connected display: {surface}"
         );
         let bindings = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 ui::widget::controls::control_action_bindings(&*settings)
             })
             .expect("mounted Settings");
@@ -345,7 +345,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
         "place-display stays an action: {surface}"
     );
     let bindings = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        .with_widget::<crate::window::Inspected, _>(|settings| {
             ui::widget::controls::control_action_bindings(&*settings)
         })
         .expect("mounted Settings");

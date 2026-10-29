@@ -211,7 +211,7 @@ mod tests {
         let mut app = TestApp::<SettingsShell>::launched(&["settings://updates"])
             .expect("the actual framework launch");
         assert_eq!(
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Updates),
             "the launch link opens its named pane"
         );
@@ -222,7 +222,7 @@ mod tests {
         for _ in 0..3 {
             app.harness().relayout();
             assert_eq!(
-                app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+                app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
                 Some(Category::Power),
                 "later host frames must not replay the consumed Updates launch"
             );
@@ -231,21 +231,20 @@ mod tests {
             .reopen()
             .expect("reopen the same profile without arguments");
         assert_eq!(
-            reopened
-                .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            reopened.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Power),
             "the reopened window shows the page it showed, not the consumed launch's"
         );
         let mut other = TestApp::<SettingsShell>::new().expect("another ordinary window");
         assert_eq!(
-            other.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            other.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::DEFAULT),
             "a launch belongs to its window, not a global pane mailbox"
         );
         let mut invalid = TestApp::<SettingsShell>::launched(&["--shots"])
             .expect("an argument that is not a Settings link");
         assert_eq!(
-            invalid.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
+            invalid.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::DEFAULT),
             "the original non-link argument never selects a pane"
         );

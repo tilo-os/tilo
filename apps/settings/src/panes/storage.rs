@@ -1414,7 +1414,7 @@ mod tests {
     /// holding the person's devices of the storage fixture.
     fn window_over(device: DeviceStorage) -> ui::prelude::TestApp<crate::SettingsShell> {
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             let held = area(settings).unwrap();
             held.use_device(std::sync::Arc::new(device));
             let mut model = held.model().borrow_mut();
@@ -1498,7 +1498,7 @@ mod tests {
             reaches_shell: false,
         });
         let scanned = |app: &mut ui::prelude::TestApp<crate::SettingsShell>| {
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            app.with_widget::<crate::window::Inspected, _>(|settings| {
                 area(settings).unwrap().model().borrow().scan.clone()
             })
             .expect("the Settings window is mounted")
@@ -1693,7 +1693,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = std::sync::Arc::clone(&gate);
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()
@@ -1807,7 +1807,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = std::sync::Arc::clone(&asked);
-        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()

@@ -899,7 +899,7 @@ mod tests {
                 let mut live =
                     TestApp::<crate::resource::SettingsShell>::new().expect("live settings opens");
                 let status = codec_status(Some(scenario)).expect("formats fixture status");
-                live.with_widget::<crate::window::SettingsWindow, ()>(|settings| {
+                live.with_widget::<crate::window::Inspected, ()>(|settings| {
                     let model =
                         crate::panes::updates::UpdatesModel::sample(settings.sections().clone())
                             .with_codec_pack(
@@ -910,7 +910,7 @@ mod tests {
                         .unwrap()
                         .model()
                         .borrow_mut() = model;
-                    settings.stage_scene(Staged::Pane(Category::Updates));
+                    settings.stage(Staged::Pane(Category::Updates));
                 })
                 .expect("mounted Settings surface");
                 live.harness()
