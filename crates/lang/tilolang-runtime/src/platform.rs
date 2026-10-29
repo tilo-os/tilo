@@ -20,6 +20,8 @@ use crate::view_state::StateKey;
 /// The window the lenses on each resource are kept under, as view state of no window: set by
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
+/// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
+pub const DELIVERY_WINDOW: &str = "$delivery";
 
 /// The platform's phrases in the person's language, with their arguments.
 pub type Phrases = Box<dyn Fn(&str, &[(String, String)]) -> String>;
@@ -96,8 +98,66 @@ fn type_named<'m>(meta: &'m Meta, name: &str) -> Option<&'m TypeMeta> {
     meta.types.iter().find(|ty| ty.name == last)
 }
 
-fn all_defaulted(params: &[ParamMeta]) -> bool {
-    params.iter().all(|param| param.default.is_some())
+/// Whether an invocation can be offered with only its first parameters given: each of the rest
+/// has a default, or is a value its form asks the person for.
+fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
+    params
+        .iter()
+        .all(|param| param.default.is_some() || form_asks(meta, &param.ty))
+}
+
+/// Whether an action on a holder asks for one of the items it holds (`remove(tasks, t: Task)`):
+/// such an action is offered on each item, which gives it, rather than on the holder.
+fn asks_for_own_item(meta: &Meta, holder: &str, rest: &[ParamMeta]) -> bool {
+    let Some(holder) = meta.types.iter().find(|ty| ty.id == holder) else {
+        return false;
+    };
+    rest.iter()
+        .filter(|param| param.default.is_none())
+        .any(|param| {
+            let item = param.ty.trim();
+            holder.fields.iter().any(|field| {
+                field
+                    .ty
+                    .strip_prefix("Collection<")
+                    .and_then(|held| held.strip_suffix('>'))
+                    .is_some_and(|held| held.trim() == item)
+            })
+        })
+}
+
+/// Whether an action's form can ask the person for a value of the type `ty` (as metadata writes
+/// it): text, a number, a flag, a day or a moment, a person, a resource, or a case of the
+/// package's own plain enum, or none of one of those. What a form shows for each is the
+/// type's control (forms-and-diagrams.md §1).
+#[must_use]
+pub fn form_asks(meta: &Meta, ty: &str) -> bool {
+    use crate::meta::Ty;
+    fn plain(meta: &Meta, ty: &Ty) -> bool {
+        match ty {
+            Ty::Enum(key) => {
+                key.app == meta.app
+                    && meta.enums.iter().any(|declared| {
+                        declared.name == key.name
+                            && declared.variants.iter().all(|case| case.fields.is_empty())
+                    })
+            }
+            Ty::Option(inner) => plain(meta, inner),
+            _ => true,
+        }
+    }
+    crate::meta::parse_ty(ty.trim(), &meta.app)
+        .is_ok_and(|parsed| parsed.asked_by_form() && plain(meta, &parsed))
+}
+
+/// The state key `delivery(r)` reads for the resource `id`.
+#[must_use]
+pub fn delivery_key(id: &str) -> StateKey {
+    StateKey {
+        window: DELIVERY_WINDOW.to_owned(),
+        principal: None,
+        state: id.to_owned(),
+    }
 }
 
 /// The key of the lenses on the resource `id`.
@@ -122,6 +182,24 @@ struct Offered<'m> {
 }
 
 impl Core {
+    /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
+    /// last said; a view that read it runs again when that moves.
+    fn delivery_of(&self, doc: &str) -> HResult<Value> {
+        let key = delivery_key(doc);
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states
+                    .get(&key)
+                    .cloned()
+                    .map_or_else(Value::none, Value::some),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value)?;
+        Ok(value)
+    }
+
     /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
     /// person's zone, as a `host.Dated` tuple of the rest of the text, the day and the moment.
     fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -148,10 +226,16 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::EventValue => self.ret_h(Value::Event),
+            Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::Actions => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let offered = self.actions_on(&target)?;
                 self.ret_h(Value::List(offered))
+            }
+            Imp::Delivery => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.delivery_of(&target.target.doc)?;
+                self.ret_h(value)
             }
             Imp::Lenses => {
                 let target = self.ref_arg(a.h(0)?)?;
@@ -383,7 +467,8 @@ impl Core {
                 .offered_actions()
                 .filter(|action| {
                     action.params.split_first().is_some_and(|(first, rest)| {
-                        all_defaulted(rest)
+                        all_asked(&pkg.meta, rest)
+                            && !asks_for_own_item(&pkg.meta, info.id.as_str(), rest)
                             && type_named(&pkg.meta, &first.ty).is_some_and(|t| t.id == info.id)
                     })
                 })
@@ -410,7 +495,7 @@ impl Core {
                     let [first, second, rest @ ..] = action.params.as_slice() else {
                         continue;
                     };
-                    if !all_defaulted(rest) {
+                    if !all_asked(&pkg.meta, rest) {
                         continue;
                     }
                     let on_holder =
@@ -471,6 +556,11 @@ impl Core {
             if matches!(node.props.get("unavailable"), Some(Value::Text(why)) if !why.is_empty()) {
                 return Ok(None);
             }
+        }
+        // An action that still asks for something opens its form: its label says so, as a
+        // menu item that opens a dialog does.
+        if shown.rest.iter().any(|param| param.default.is_none()) && !label.ends_with('…') {
+            label.push('…');
         }
         let role = action.role.clone().unwrap_or_default();
         let params = shown

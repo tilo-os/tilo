@@ -40,3 +40,4 @@ tilolang-thread-replies = { $count ->
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+tilolang-form-cancel = Cancel

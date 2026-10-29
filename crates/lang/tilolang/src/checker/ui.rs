@@ -532,7 +532,7 @@ impl Checker<'_> {
 
     /// The people of a rich input's `@` drawer, which no view declares: the system gives them
     /// to every rich input as its `speakers` and `people`.
-    fn drawer_props(&mut self, n: LocalId) {
+    pub(super) fn drawer_props(&mut self, n: LocalId) {
         let subject = self
             .st
             .subject

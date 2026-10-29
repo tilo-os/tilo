@@ -510,6 +510,7 @@ fn parse_namespace(call: &[u8; 32], namespace: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut id = [0; 32];
+    // optional-decode: a namespace not shaped `<call>/<publisher>` is not a participation
     hex::decode_to_slice(publisher, &mut id).ok()?;
     Some(id)
 }

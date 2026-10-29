@@ -384,3 +384,179 @@ async fn route_private_refuses_an_agent_whose_delegation_expired() {
         assert!(bpr.try_recv().is_err(), "nothing reaches the target");
     }
 }
+
+/// A plane that leaves every request unanswered (`None`), or answers each
+/// with a `Pending` whose completer it drops.
+struct SilentPlane {
+    abandons: bool,
+}
+
+impl crate::app_serving::AppServingPlane for SilentPlane {
+    fn serve(
+        &self,
+        _workspace_id: u64,
+        _caller: &tilo_actions::remote::Caller,
+        _message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        self.abandons
+            .then(|| tilo_actions::remote::pending::<tilo_actions::remote::RemoteActionMessage>().1)
+    }
+
+    fn serve_host(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        _certificate: &tilo_user_identity::DeviceCert,
+        message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        self.serve(0, caller, message)
+    }
+}
+
+fn catalogue_request() -> Vec<u8> {
+    tilo_actions::remote::RemoteActionFrame::new(
+        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+            correlation: 7,
+            query: tilo_actions::remote::CatalogueQuery::default(),
+        },
+    )
+    .encode()
+    .unwrap()
+}
+
+/// The catalogue refusal a `HostAction` or `RemoteAction` answer carries.
+fn refusal(frame: &[u8]) -> tilo_actions::remote::ActionHostError {
+    match tilo_actions::remote::RemoteActionFrame::decode(frame)
+        .unwrap()
+        .message
+    {
+        tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+            correlation: 7,
+            result: Err(error),
+        } => error,
+        other => panic!("expected a refused catalogue answer, got {other:?}"),
+    }
+}
+
+/// Every request a host can read is answered: one the plane leaves
+/// unanswered, one it abandons, and a host operation it does not serve are
+/// refusals with a reason, never silence the asker waits on forever.
+#[tokio::test]
+async fn requests_the_plane_does_not_answer_are_refused() {
+    let (root, user) = UserIdentity::generate("alice", 1);
+    let (host, _) = certified_device(&root, user.public_key, "host");
+    let (a, _) = certified_device(&root, user.public_key, "a");
+    let id = 13;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut wr = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    wr.admit_device(a.device_public_key).unwrap();
+    let (atx, mut arx) = mpsc::channel(4);
+    let (ap, _apr) = mpsc::channel(2);
+    let (disconnect, _disconnect_rx) = mpsc::channel(1);
+    wr.add_subscriber(Subscriber {
+        device_public_key: a.device_public_key,
+        role: a.role,
+        tx: atx.clone(),
+        disconnect: disconnect.clone(),
+    });
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+        id,
+        Arc::new(AsyncMutex::new(wr)),
+    )])));
+    let trust = Arc::new(std::sync::RwLock::new(
+        crate::policy::TrustPolicy::AllowMatchingUser,
+    ));
+    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+    let metrics = Arc::new(crate::metrics::Metrics::default());
+    let silent: Arc<dyn crate::app_serving::AppServingPlane> =
+        Arc::new(SilentPlane { abandons: false });
+    let abandoning: Arc<dyn crate::app_serving::AppServingPlane> =
+        Arc::new(SilentPlane { abandons: true });
+    let session = SessionCtx {
+        workspaces: &registry,
+        autobind: None,
+        outbound: &atx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &user.public_key,
+        own_device_cert: &host.cert,
+        own_device_public_key: &host.cert.device_public_key,
+        app_serving: Some(&silent),
+        metrics: &metrics,
+        trust_policy: &trust,
+        disconnect: &disconnect,
+        presence: None,
+        private_tx: &ap,
+        revocations: &revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let route = || RemoteActionRoute {
+        workspace_id: id,
+        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+        to: host.device_public_key,
+    };
+
+    // A room request the plane leaves unanswered is undeliverable at once.
+    let answer = handle_remote_action(&a, &session, &[id], route(), catalogue_request()).await;
+    let Some(Envelope::RemoteActionUndeliverable { reason, .. }) = answer else {
+        panic!("an unanswered request is refused, got {answer:?}");
+    };
+    assert_eq!(
+        UnavailableReason::from_wire_reason(&reason),
+        Some(UnavailableReason::UnsupportedPeer),
+        "{reason}"
+    );
+
+    // A host operation the plane does not serve is refused at once.
+    let Some(Envelope::HostAction { frame }) =
+        handle_host_action(&a, &session, &catalogue_request())
+    else {
+        panic!("an unserved host operation is answered");
+    };
+    assert!(matches!(
+        refusal(&frame),
+        tilo_actions::remote::ActionHostError::Unavailable { .. }
+    ));
+
+    // An answer the plane abandons arrives as a refusal on the connection.
+    let abandoned = SessionCtx {
+        app_serving: Some(&abandoning),
+        ..session
+    };
+    assert_eq!(
+        handle_remote_action(&a, &abandoned, &[id], route(), catalogue_request()).await,
+        None
+    );
+    let Some(Envelope::RemoteAction { frame, .. }) = arx.recv().await else {
+        panic!("an abandoned room request is answered on the connection");
+    };
+    assert!(matches!(
+        refusal(&frame),
+        tilo_actions::remote::ActionHostError::Unavailable { .. }
+    ));
+    assert_eq!(
+        handle_host_action(&a, &abandoned, &catalogue_request()),
+        None
+    );
+    let Some(Envelope::HostAction { frame }) = arx.recv().await else {
+        panic!("an abandoned host operation is answered on the connection");
+    };
+    assert!(matches!(
+        refusal(&frame),
+        tilo_actions::remote::ActionHostError::Unavailable { .. }
+    ));
+
+    // A frame that does not decode names no request; nothing is answered.
+    assert_eq!(handle_host_action(&a, &session, b"not a frame"), None);
+}

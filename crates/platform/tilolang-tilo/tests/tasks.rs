@@ -302,3 +302,115 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
         assert_eq!(items(r).len(), 1, "one task on {}", r.name);
     }
 }
+
+/// The lanes of a board as its window shows them: each lane's title and its cards' tasks.
+fn lanes(view: &ViewInstance) -> Vec<(String, Vec<Option<String>>)> {
+    fn walk(node: &UiNode, out: &mut Vec<(String, Vec<Option<String>>)>) {
+        if node.kind == "ui.BoardLane" {
+            let title = match node.props.get("title") {
+                Some(Value::Text(title)) => title.clone(),
+                other => panic!("a lane's title: {other:?}"),
+            };
+            let mut cards = Vec::new();
+            let mut stack: Vec<&UiNode> = node.children.iter().rev().collect();
+            while let Some(n) = stack.pop() {
+                if n.kind == "ui.BoardCard" {
+                    cards.push(n.props.get("item").and_then(target));
+                } else {
+                    stack.extend(n.children.iter().rev());
+                }
+            }
+            out.push((title, cards));
+            return;
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// The key of the node of `kind` that `holds` holds of, in the window `view` shows.
+fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> String {
+    fn walk(node: &UiNode, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> Option<String> {
+        if node.kind == kind && holds(node) {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(|c| walk(c, kind, holds))
+    }
+    walk(view.tree(), kind, holds).unwrap_or_else(|| panic!("no {kind}"))
+}
+
+#[test]
+fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
+    let (mut ada, root) = room();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    ada.commit();
+    let doing = call(&ada, "new_section", vec![project.clone()]);
+    call(
+        &ada,
+        "rename_section",
+        vec![doing.clone(), Value::text("Doing")],
+    );
+    let mut made = Vec::new();
+    for title in [
+        "Order boxes",
+        "Book the van",
+        "Pack the books",
+        "Measure the bedroom",
+    ] {
+        let t = call(&ada, "add", vec![root.clone(), Value::text(title)]);
+        call(&ada, "file", vec![t.clone(), project.clone()]);
+        made.push(t);
+    }
+    ada.commit();
+    let [boxes, van, books, bedroom] = [0, 1, 2, 3].map(|i| made[i].clone());
+    let Value::Ref(at) = &project else {
+        panic!("a resource: {project:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    // The window opens as the project's list; its Board button switches it to the board.
+    let board = key_of(&view, "ui.Button", &|b| {
+        b.props.get("label") == Some(&Value::text("Board"))
+    });
+    view.press(&board).unwrap();
+    view.poll_patches().unwrap();
+    let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
+    assert_eq!(
+        lanes(&view),
+        [
+            (
+                "No section".to_owned(),
+                ids(&[&boxes, &van, &books, &bedroom])
+            ),
+            ("Doing".to_owned(), vec![]),
+        ]
+    );
+    let drop = |view: &mut ViewInstance, lane: &str, task: &Value, at: i64| {
+        let key = key_of(view, "ui.BoardLane", &|l| {
+            l.props.get("title") == Some(&Value::text(lane))
+        });
+        let carried = Value::List(vec![task.clone(), Value::Int(at)]);
+        view.fire_with(&key, "drop", Some(&carried)).unwrap();
+        view.poll_patches().unwrap();
+    };
+    // Into the empty lane, then a second card above it.
+    drop(&mut view, "Doing", &books, 0);
+    drop(&mut view, "Doing", &van, 0);
+    // Within a lane: the last card to the top.
+    drop(&mut view, "No section", &bedroom, 0);
+    // Below a lane's last card.
+    drop(&mut view, "Doing", &boxes, 2);
+    ada.commit();
+    assert_eq!(
+        lanes(&view),
+        [
+            ("No section".to_owned(), ids(&[&bedroom])),
+            ("Doing".to_owned(), ids(&[&van, &books, &boxes])),
+        ]
+    );
+    assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
+    assert_eq!(read(&ada, &bedroom, "section"), Value::none());
+}

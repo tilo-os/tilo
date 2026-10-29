@@ -35,6 +35,33 @@ pub(super) fn requires_store_witness(app: &str, action: &str) -> bool {
     app == "so.tilo.store" && matches!(action, "submit-report" | "appeal")
 }
 
+/// The Store disclosure `request` puts to the person, signed as `caller`'s
+/// person or this device's in `room`.
+///
+/// # Errors
+/// No identity to sign with, or an `operation` that does not decode: the
+/// request is refused with why.
+fn store_disclosure(
+    caller: &Caller,
+    room: &str,
+    request: &InvokeRequest,
+) -> Result<crate::app_actions::ModerationConsentPreview, ActionHostError> {
+    let signing_key = match caller.user_public_key() {
+        Some(key) => *key,
+        None => tilo_identity_host::broker::trusted_current_device(room)
+            .map(|(_, certificate)| certificate.user_public_key)
+            .map_err(|error| ActionHostError::Unavailable {
+                reason: format!("no identity to sign the Store disclosure with: {error}"),
+            })?,
+    };
+    crate::app_actions::ModerationConsentPreview::from_argument(
+        &request.target.address.action,
+        &request.argument,
+        &signing_key,
+    )
+    .map_err(|reason| ActionHostError::InvalidRequest { reason })
+}
+
 /// What the person is asked, and what their answer is bound to.
 pub(super) struct Question {
     pub(super) request: AppActionConsentRequest,
@@ -112,6 +139,7 @@ impl CapnpBrokerState {
                 })
             })
         } else {
+            // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
             provider.parse::<u64>().ok()
         };
         peer.and_then(|peer| {
@@ -220,8 +248,7 @@ impl CapnpBrokerState {
             &offered.action,
             &argument_value,
             &admitted.verified.user_public_key,
-        )
-        .ok_or("Store disclosure arguments are invalid")?;
+        )?;
         let question = Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", binding.invocation.0),
@@ -305,8 +332,7 @@ impl CapnpBrokerState {
             &offered.action,
             &argument_value,
             &current.verified.user_public_key,
-        )
-        .ok_or("Store disclosure arguments are invalid")?;
+        )?;
         let question = Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", uuid::Uuid::new_v4()),
@@ -381,12 +407,16 @@ impl CapnpBrokerState {
                 .own_device_witness(caller, &binding, request)
                 .map(|answer| answer.map(ConfirmedInvocation::unchanged));
         }
-        let Some(question) = self.witness_question(caller, &person, request) else {
-            return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
-                ActionHostError::ConfirmationRequired
-            } else {
-                ActionHostError::UnknownAction
-            }));
+        let question = match self.witness_question(caller, &person, request) {
+            Ok(Some(question)) => question,
+            Ok(None) => {
+                return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
+                    ActionHostError::ConfirmationRequired
+                } else {
+                    ActionHostError::UnknownAction
+                }));
+            }
+            Err(refused) => return Pending::ready(Err(refused)),
         };
         if question.actor.direct()
             && !requires_store_witness(&question.request.target_app, &question.request.action)
@@ -406,7 +436,16 @@ impl CapnpBrokerState {
         let spawned = std::thread::Builder::new()
             .name("confirmation".into())
             .spawn(move || {
-                let answer = answer.blocking_recv().unwrap_or(AppActionAnswer::DENY);
+                // Resolved by the sheet: the person's answer, or its sender
+                // dropped with the sheet, which answers the caller that no
+                // one answered rather than that the person declined.
+                let Ok(answer) = answer.blocking_recv() else {
+                    state.show_waiting(&question, &request, false);
+                    completer.complete(Err(ActionHostError::Unavailable {
+                        reason: "the confirmation sheet closed without the person's answer".into(),
+                    }));
+                    return;
+                };
                 if !answer.allowed() {
                     // Allowed, the invocation's own progress takes the
                     // waiting's place.
@@ -479,6 +518,7 @@ impl CapnpBrokerState {
         let directory = if provider.starts_with(super::canonical_route::PROVIDER_PREFIX) {
             self.canonical_token_directory(provider).ok()?
         } else {
+            // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
             let peer = provider.parse::<u64>().ok()?;
             self.action_directory_roots()
                 .into_iter()
@@ -488,14 +528,18 @@ impl CapnpBrokerState {
     }
 
     /// The question `request` puts to `person`: the action as the catalogue
-    /// offers it to `caller`. `None` for an action not offered.
+    /// offers it to `caller`. `Ok(None)` for an action not offered; an error
+    /// refuses a request the person cannot be asked about as sent (a Store
+    /// disclosure whose operation does not decode), with the reason.
     pub(super) fn witness_question(
         &self,
         caller: &Caller,
         person: &str,
         request: &InvokeRequest,
-    ) -> Option<Question> {
-        let room = caller.room()?;
+    ) -> Result<Option<Question>, ActionHostError> {
+        let Some(room) = caller.room() else {
+            return Ok(None);
+        };
         let actor = self.caller_actor(caller, room);
         let binding = self.witness_binding(actor.id(), room, request);
         let provider = request.target.provider.as_str();
@@ -514,7 +558,9 @@ impl CapnpBrokerState {
                         .is_some_and(|descriptor| &descriptor.address == address)
             });
         let (app_id, labels, risk, draft) = if let Some(row) = offered {
-            let descriptor = row.action?;
+            let Some(descriptor) = row.action else {
+                return Ok(None);
+            };
             // The invocation as the person reviews it, field by field: the
             // draft a run's question shows them, rendered the same way.
             let draft = match &request.argument {
@@ -531,7 +577,11 @@ impl CapnpBrokerState {
                 draft,
             )
         } else {
-            let directory = self.witness_directory(provider, room, request.revision.as_deref())?;
+            let Some(directory) =
+                self.witness_directory(provider, room, request.revision.as_deref())
+            else {
+                return Ok(None);
+            };
             (
                 directory.app_id,
                 (address.resource.clone(), address.action.clone()),
@@ -564,20 +614,11 @@ impl CapnpBrokerState {
         // Only the Store's typed external actions use this disclosure. A broken
         // payload or unavailable identity must not fall back to a generic prompt.
         let moderation = if requires_store_witness(&app_id, &address.action) {
-            let signing_root = caller.user_public_key().copied().or_else(|| {
-                tilo_identity_host::broker::trusted_current_device(room)
-                    .ok()
-                    .map(|(_, certificate)| certificate.user_public_key)
-            })?;
-            Some(crate::app_actions::ModerationConsentPreview::from_argument(
-                &address.action,
-                &request.argument,
-                &signing_root,
-            )?)
+            Some(store_disclosure(caller, room, request)?)
         } else {
             None
         };
-        Some(Question {
+        Ok(Some(Question {
             request: AppActionConsentRequest {
                 handle: format!("confirm:{}", request.invocation.0),
                 room: room.to_owned(),
@@ -599,7 +640,7 @@ impl CapnpBrokerState {
             binding,
             actor,
             shown,
-        })
+        }))
     }
 
     /// Put `question` to the person on their own device. `None` when nobody

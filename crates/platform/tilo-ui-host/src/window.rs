@@ -102,6 +102,8 @@ pub struct AppWindow {
     answers: Rc<RefCell<Vec<Answer>>>,
     /// The Ask bar shown, if one is.
     ask: Option<wire::Ask>,
+    /// The form shown, if one is: an action waiting for its arguments.
+    form: Option<crate::form::Shown>,
     out: Vec<ToApp>,
     structure_dirty: bool,
     /// Why the window shows the platform's error state: a batch it refused.
@@ -124,6 +126,11 @@ pub struct AppWindow {
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
+    /// One `rem` in logical pixels under the theme the window was last laid out in.
+    rem: f32,
+    /// The space last told the app each lane's view has, in rem.
+    root_space: Option<(f32, f32)>,
+    detail_space: Option<(f32, f32)>,
 }
 
 impl AppWindow {
@@ -139,6 +146,8 @@ impl AppWindow {
                 Box::new(Pane::new(Box::new(NavShell::new()))),
                 Fit::fill(1.0),
             ))
+            .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
+            // The form of an action waiting for its arguments: out of flow, over the window.
             .push_slot(slot(Box::new(Absent::new()), Fit::hug()));
         for element in beside {
             body = body.push_slot(slot(element, Fit::hug()));
@@ -173,6 +182,7 @@ impl AppWindow {
             body: Box::new(body),
             answers: Rc::default(),
             ask: None,
+            form: None,
             out: Vec::new(),
             structure_dirty: true,
             failed: None,
@@ -184,6 +194,9 @@ impl AppWindow {
             took: 0,
             typed: std::collections::VecDeque::new(),
             focus_request: None,
+            rem: 16.0,
+            root_space: None,
+            detail_space: None,
         }
     }
 
@@ -314,31 +327,10 @@ impl AppWindow {
                     value,
                     acked,
                 } => self.take_bound(lane, &key, value, acked),
-                ToUi::Rows {
-                    lane,
-                    list,
-                    len,
-                    start,
-                    keys,
-                    rows,
-                } => {
-                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
-                        held.borrow_mut()
-                            .rows(len as usize, start as usize, keys, rows);
-                    }
-                }
-                ToUi::RowsChanged {
-                    lane,
-                    list,
-                    len,
-                    changes,
-                } => {
-                    if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
-                        held.borrow_mut().changed(len as usize, changes);
-                    }
-                }
+                rows @ (ToUi::Rows { .. } | ToUi::RowsChanged { .. }) => self.take_rows(rows),
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
+                ToUi::Form(form) => self.show_form(form.as_deref()),
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before
@@ -362,6 +354,36 @@ impl AppWindow {
     }
 
     /// The window's trees within its budget: one window's nodes are its own to spend.
+    /// Rows of a virtual list, or what changed of them, into the list that shows them.
+    fn take_rows(&self, message: ToUi) {
+        match message {
+            ToUi::Rows {
+                lane,
+                list,
+                len,
+                start,
+                keys,
+                rows,
+            } => {
+                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                    held.borrow_mut()
+                        .rows(len as usize, start as usize, keys, rows);
+                }
+            }
+            ToUi::RowsChanged {
+                lane,
+                list,
+                len,
+                changes,
+            } => {
+                if let Some(held) = self.rows.borrow().get(&composed_key(lane, &list)) {
+                    held.borrow_mut().changed(len as usize, changes);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn check_budget(&self) -> Result<(), String> {
         let rows: usize = self
             .rows
@@ -651,6 +673,55 @@ impl AppWindow {
         self.set_body_slot(1, bar, Fit::hug());
     }
 
+    /// The body slot the form stands in.
+    const FORM_SLOT: usize = 2;
+
+    /// Show the form `form` of an action waiting for its arguments, or none. The form the
+    /// window shows already, sent again as it reads now, is reconciled in place.
+    fn show_form(&mut self, form: Option<&wire::Form>) {
+        let Some(form) = form else {
+            if self.form.take().is_some() {
+                self.set_body_slot(Self::FORM_SLOT, Box::new(Absent::new()), Fit::hug());
+            }
+            return;
+        };
+        let reconciler = Rc::clone(&self.reconciler);
+        if let Some(shown) = self.form.as_mut().filter(|shown| shown.id == form.id) {
+            let sheet = self
+                .body
+                .children_mut()
+                .into_iter()
+                .nth(Self::FORM_SLOT)
+                .and_then(crate::form::sheet_of);
+            if let Some(sheet) = sheet {
+                shown.update(form, sheet, &mut reconciler.borrow_mut());
+                self.structure_dirty = true;
+                return;
+            }
+        }
+        let (shown, mut sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
+        // A form of a field or two stands beside the control that ran it, as a popover.
+        if crate::form::fits_a_popover(form)
+            && let Some((lane, key)) = &form.from
+        {
+            sheet.set_anchor(rect_of(self.body.as_ref(), &composed_key(*lane, key)));
+        }
+        self.form = Some(shown);
+        self.set_body_slot(Self::FORM_SLOT, Box::new(sheet), Fit::hug());
+    }
+
+    /// What the person answered in the form's own controls since the last frame. Cancel closes
+    /// it at once; what they typed stays the app's.
+    fn take_form_answer(&mut self) {
+        let Some(answer) = self.form.as_ref().and_then(crate::form::Shown::take_answer) else {
+            return;
+        };
+        if matches!(answer, ToApp::FormCancel { .. }) {
+            self.show_form(None);
+        }
+        self.out.push(answer);
+    }
+
     // ----- what the person did -------------------------------------------------------------
 
     /// Send the app what the person did since the last frame: one batch.
@@ -659,6 +730,7 @@ impl AppWindow {
             self.out.push(ToApp::Answer(answer));
         }
         self.take_events();
+        self.take_form_answer();
         if self.shell().and_then(NavShell::take_toast_action).is_some() {
             self.out.push(ToApp::Undo);
         }
@@ -729,6 +801,12 @@ impl AppWindow {
     }
 
     fn event(&mut self, event: UiEvent) {
+        if crate::form::in_form(&event) {
+            if let Some(edit) = self.form.as_ref().and_then(|form| form.edit(&event)) {
+                self.out.push(edit);
+            }
+            return;
+        }
         if let UiEvent::Fire(key, name, _) = &event
             && *name == crate::shell::BACK
             && self.built.as_ref().is_some_and(|built| built.key == *key)
@@ -1134,6 +1212,18 @@ fn composed_key(lane: Lane, key: &str) -> String {
     }
 }
 
+/// Where the widget for the node `key` of the composed tree is drawn, when it is on screen.
+fn rect_of(widget: &dyn Widget, key: &str) -> Option<ui::kurbo::Rect> {
+    if widget.test_id() == Some(key) {
+        let rect = widget.get_rect();
+        return (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| rect_of(child, key))
+}
+
 /// The view a key of the composed tree is of, and the key in that view.
 fn lane_of(key: &str) -> (Lane, String) {
     match key.strip_prefix(DETAIL) {
@@ -1234,8 +1324,86 @@ pub fn show_bound<S: std::hash::BuildHasher>(
 /// The window stands for its body in the layout and in every walk of the widgets (it adds no
 /// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
 /// under it), taking the person's input and its own changes on the way.
+/// How much a view's size has to change, in rem, before the app is told: less moves no class
+/// boundary and no size a view would show differently.
+const SPACE_STEP_REM: f32 = 0.125;
+
+/// The widget keyed `key` at or under `widget`.
+fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
+    if widget.test_id() == Some(key) {
+        return Some(widget);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyed(child, key))
+}
+
+impl AppWindow {
+    /// Tell the app the space each view has where layout placed it, when it changed: a view
+    /// reads `space` from its own container (layout.md, "Responding to space"). The app
+    /// decides the classes, with their hysteresis, and runs a view again only when what it read
+    /// of it changed.
+    fn follow_spaces(&mut self) {
+        let keys = [
+            self.root.as_ref().map(|view| view.tree.key.clone()),
+            self.detail
+                .as_ref()
+                .map(|view| composed_key(Lane::Detail, &view.tree.key)),
+        ];
+        for (lane, key) in [Lane::Root, Lane::Detail].into_iter().zip(keys) {
+            let Some(rect) = key
+                .and_then(|key| keyed(self.body.as_ref(), &key).map(Widget::get_rect))
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            else {
+                continue;
+            };
+            let space = (
+                rect.width() as f32 / self.rem,
+                rect.height() as f32 / self.rem,
+            );
+            let told = match lane {
+                Lane::Root => &mut self.root_space,
+                Lane::Detail => &mut self.detail_space,
+            };
+            let moved = told.is_none_or(|(width, height)| {
+                (width - space.0).abs() >= SPACE_STEP_REM
+                    || (height - space.1).abs() >= SPACE_STEP_REM
+            });
+            if moved {
+                *told = Some(space);
+                self.out.push(ToApp::Space {
+                    lane,
+                    width: space.0,
+                    height: space.1,
+                });
+            }
+        }
+    }
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        node_map: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        self.rem = ui::widget::arrange::rem_of(theme);
+        self.body.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.body.apply_layout(taffy, node, origin);
+        self.follow_spaces();
+    }
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.body.as_ref()
@@ -1366,6 +1534,61 @@ mod tests {
                 acked: 0,
             },
         ]
+    }
+
+    /// The spaces the window told the app, as (lane, width, height) in rem.
+    fn spaces(app: &mut tilo_render_protocol::patch::local::End) -> Vec<(Lane, f32, f32)> {
+        sent(app)
+            .into_iter()
+            .filter_map(|message| match message {
+                ToApp::Space {
+                    lane,
+                    width,
+                    height,
+                } => Some((lane, width, height)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &titled_page());
+        window.receive();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (390, 844));
+        let flush = |harness: &mut ui::headless::FrameHarness| {
+            harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window")
+                .flush();
+        };
+        flush(&mut harness);
+        let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+        let told = spaces(&mut app);
+        let [(Lane::Root, width, height)] = told[..] else {
+            panic!("the root view is told its space once: {told:?}");
+        };
+        assert!(
+            (f64::from(width) * rem - 390.0).abs() < 1.0 && f64::from(height) * rem <= 844.0,
+            "the window's width, in rem: {width} × {height} at {rem} px"
+        );
+        // A pixel more moves nothing a view could read: nothing is said.
+        harness.resize((391, 844)).expect("lays out");
+        flush(&mut harness);
+        assert_eq!(spaces(&mut app), []);
+        // A desktop window is a new space.
+        harness.resize((1280, 800)).expect("lays out");
+        flush(&mut harness);
+        let told = spaces(&mut app);
+        assert!(
+            matches!(told[..], [(Lane::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
+            "{told:?}"
+        );
     }
 
     #[test]

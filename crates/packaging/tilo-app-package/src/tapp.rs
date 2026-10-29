@@ -37,13 +37,49 @@ use crate::package::{MetaError, PackageMeta};
 use crate::signed::SIGNED_ROOT_LEN;
 
 /// The store package format's one version: the archive layout, the
-/// manifest it signs, the signed root and the chunk list. A device reads
-/// only packages of exactly this version (docs/architecture/compatibility.md);
+/// manifest it signs, the signed root and the chunk list. A device installs
+/// apps of exactly this version, and reads images of every version in
+/// [`READABLE_FORMATS`] (docs/architecture/compatibility.md);
 /// `interface.toml` holds the manifest and header schema, and the repository
 /// policy fails a change to it that keeps the number. The binary layouts
 /// (signed root, chunk list) are not in that schema: a change to them bumps
 /// this by hand.
 pub const TAPP_FORMAT_VERSION: u32 = registry_types::PACKAGE_FORMAT_VERSION;
+
+/// Every package format a device reads an installed or fetched image of
+/// (`env-runtime`, `tool`), oldest first; the last is
+/// [`TAPP_FORMAT_VERSION`]. An image is named by the hash of its signed
+/// root, which includes the format, and environments name their images by
+/// that id: an image written at an earlier format cannot be rewritten at
+/// this one without becoming another image, so it is read as it is.
+///
+/// Format 2 changed only the registry catalogue; the archive, the signed
+/// root and the chunk list are byte for byte format 1's, so one reader
+/// reads both. A format that changes one of those layouts needs its reader
+/// here before images at it ship.
+///
+/// An app is different: one at an earlier format is behind and is updated
+/// (`package_store::interfaces::unmet_at`), and only an app at
+/// [`TAPP_FORMAT_VERSION`] is installed.
+pub const READABLE_FORMATS: [u32; 2] = [1, TAPP_FORMAT_VERSION];
+
+/// What a package at `format`, which this build does not read, means for
+/// the person holding it, and what to do.
+#[must_use]
+pub fn unreadable_format(format: u32) -> String {
+    let newest = TAPP_FORMAT_VERSION;
+    if format > newest {
+        format!(
+            "package format {format} is newer than this Tilo reads (up to {newest}): \
+             update Tilo (`tilo update`) to use this package"
+        )
+    } else {
+        format!(
+            "package format {format} is older than any Tilo reads: install the package \
+             again from its publisher, who must rebuild it at format {newest}"
+        )
+    }
+}
 
 const HEADER: &str = "tapp.toml";
 const SIGNED_ROOT: &str = "signed-root";
@@ -94,8 +130,15 @@ pub enum TappError {
     MissingEntry(&'static str),
     #[error("tapp.toml: {0}")]
     BadHeader(String),
-    #[error("unsupported tapp format {0}; expected {TAPP_FORMAT_VERSION}")]
+    #[error("{}", unreadable_format(*.0))]
     UnsupportedFormat(u32),
+    #[error(
+        "this app is at package format {0}, and this Tilo installs apps at format \
+         {TAPP_FORMAT_VERSION} only: its publisher must rebuild it"
+    )]
+    AppAtOlderFormat(u32),
+    #[error("the archive header says package format {header} but its signed root says {root}")]
+    HeaderFormatMismatch { header: u32, root: u32 },
     #[error("archive entry {name} exceeds {limit} bytes")]
     EntryTooLarge { name: String, limit: u64 },
     #[error("archive entry {0} appears twice")]
@@ -125,7 +168,7 @@ struct Pending {
 impl Pending {
     fn finish(self) -> Result<PackageMeta, TappError> {
         let header = self.header.ok_or(TappError::MissingEntry(HEADER))?;
-        if header.format != TAPP_FORMAT_VERSION {
+        if !READABLE_FORMATS.contains(&header.format) {
             return Err(TappError::UnsupportedFormat(header.format));
         }
         let header_id: PackageId = header
@@ -144,7 +187,17 @@ impl Pending {
                 root: root.package_id(),
             });
         }
-        Ok(PackageMeta::from_root(root, manifest, collection)?)
+        if root.format != header.format {
+            return Err(TappError::HeaderFormatMismatch {
+                header: header.format,
+                root: root.format,
+            });
+        }
+        let meta = PackageMeta::from_root(root, manifest, collection)?;
+        if header.format != TAPP_FORMAT_VERSION && !meta.manifest.package.kind.is_image() {
+            return Err(TappError::AppAtOlderFormat(header.format));
+        }
+        Ok(meta)
     }
 }
 
@@ -299,7 +352,9 @@ pub fn write<W: Write>(
     let mut tar = tar::Builder::new(out);
     let header = toml::to_string(&Header {
         package_id: meta.id.to_string(),
-        format: TAPP_FORMAT_VERSION,
+        // An image read at an earlier format is shared at it: its root, and
+        // so its id, are that format's.
+        format: meta.root.format,
     })
     .map_err(|error| TappError::BadHeader(error.to_string()))?;
     append(&mut tar, HEADER, header.len() as u64, header.as_bytes())?;
@@ -355,6 +410,26 @@ mod tests {
     use super::*;
     use crate::blobs::DiscardBlobs;
     use crate::{Manifest, SigningIdentity, pack};
+
+    /// `packed`'s package as it would have been written at `format`, signed
+    /// by a fresh publisher.
+    fn at_format(packed: &crate::Packed, format: u32) -> (SigningIdentity, PackageMeta) {
+        let identity = SigningIdentity::generate();
+        let mut root = crate::SignedRoot {
+            format,
+            publisher_identity: identity.public_key_bytes(),
+            signature: Some([0; 64]),
+            ..packed.meta.root.clone()
+        };
+        root.signature = Some(identity.sign_signed_root(&root).unwrap());
+        let meta = PackageMeta::from_root(
+            root,
+            packed.meta.manifest_bytes.clone(),
+            packed.meta.collection_bytes.clone(),
+        )
+        .unwrap();
+        (identity, meta)
+    }
 
     fn packed() -> (tempfile::TempDir, crate::Packed) {
         let identity = SigningIdentity::generate();
@@ -455,38 +530,6 @@ type = "gui"
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
             assert!(matches!(error, TappError::BlobHashMismatch(_)), "{error}");
         }
-        // phase: an_unsupported_format_fails_closed
-        {
-            let (_dir, packed) = packed();
-            let mut bytes = to_bytes(&packed.meta, None).unwrap();
-            let marker = b"format = 2\n";
-            let at = bytes
-                .windows(marker.len())
-                .position(|window| window == marker)
-                .unwrap();
-            bytes[at + marker.len() - 2] = b'1';
-            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::UnsupportedFormat(1)), "{error}");
-        }
-        // phase: a_full_archive_of_another_format_says_so
-        // A format-1 package carrying its blobs, in the right order, was
-        // reported as "metadata must precede payload blobs".
-        {
-            let (_dir, packed) = packed();
-            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
-            let marker = b"format = 2\n";
-            let at = bytes
-                .windows(marker.len())
-                .position(|window| window == marker)
-                .unwrap();
-            bytes[at + marker.len() - 2] = b'1';
-            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
-            assert!(matches!(error, TappError::UnsupportedFormat(1)), "{error}");
-            assert!(
-                error.to_string().contains("unsupported tapp format 1"),
-                "{error}"
-            );
-        }
         // phase: a_blob_before_the_metadata_is_out_of_order
         {
             let mut tar = tar::Builder::new(Vec::new());
@@ -500,6 +543,62 @@ type = "gui"
             let bytes = tar.into_inner().unwrap();
             let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
             assert!(matches!(error, TappError::MetadataAfterBlobs(_)), "{error}");
+        }
+    }
+
+    /// An archive is read at the format it names, when that is one a device
+    /// reads, and otherwise refused saying what to do.
+    #[test]
+    fn tapp_archives_are_read_or_refused_by_their_format() {
+        // phase: a_newer_format_fails_closed_and_says_to_update
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, None).unwrap();
+            let marker = b"format = 2\n";
+            let at = bytes
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            bytes[at + marker.len() - 2] = b'3';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::UnsupportedFormat(3)), "{error}");
+            assert!(error.to_string().contains("update Tilo"), "{error}");
+        }
+        // phase: a_full_archive_of_another_format_says_so
+        // A package of another format carrying its blobs, in the right
+        // order, was reported as "metadata must precede payload blobs".
+        {
+            let (_dir, packed) = packed();
+            let mut bytes = to_bytes(&packed.meta, Some(&packed)).unwrap();
+            let marker = b"format = 2\n";
+            let at = bytes
+                .windows(marker.len())
+                .position(|window| window == marker)
+                .unwrap();
+            bytes[at + marker.len() - 2] = b'1';
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    TappError::HeaderFormatMismatch { header: 1, root: 2 }
+                ),
+                "{error}"
+            );
+        }
+        // phase: an_app_at_an_earlier_format_is_not_installed
+        // It would be behind as soon as it was installed; images at it are
+        // read (tests/image.rs).
+        {
+            let (_dir, packed) = packed();
+            let (identity, meta) = at_format(&packed, 1);
+            assert_eq!(meta.root.publisher_identity, identity.public_key_bytes());
+            let bytes = to_bytes(&meta, Some(&packed)).unwrap();
+            let error = read(bytes.as_slice(), &mut DiscardBlobs).unwrap_err();
+            assert!(matches!(error, TappError::AppAtOlderFormat(1)), "{error}");
+            assert!(
+                error.to_string().contains("publisher must rebuild"),
+                "{error}"
+            );
         }
     }
 

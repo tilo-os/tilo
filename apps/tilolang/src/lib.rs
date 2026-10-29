@@ -120,10 +120,16 @@ pub fn definition() -> &'static ApplicationDefinition {
         }
         let Some(bundle) = installed_bundle() else {
             #[cfg(test)]
-            ui::app_surface::register_package(UNBUNDLED_ID, &packages::surface());
+            match packages::surface() {
+                Ok(surface) => ui::app_surface::register_package(UNBUNDLED_ID, &surface),
+                Err(error) => tracing::error!(error, "the built-in packages' surface is unusable"),
+            }
             return;
         };
-        ui::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        match bundle.surface() {
+            Ok(surface) => ui::app_surface::register_package(&bundle.meta.app, &surface),
+            Err(error) => tracing::error!(%error, "the package's surface is unusable"),
+        }
     });
     ui::framework::definition::<app::TlApp>()
 }

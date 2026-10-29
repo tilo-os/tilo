@@ -940,8 +940,11 @@ impl TiloStore {
     /// Wait for the commits to the indexes so far to reach the disk: when a window closes.
     pub fn persist_index(&self) {
         for held in self.inner.borrow().apps.values() {
-            if held.index.path().is_some() {
-                let _ = held.index.persist();
+            if held.index.path().is_some()
+                && let Err(error) = held.index.persist()
+            {
+                // The index is rebuilt from the record where the disk lost it.
+                tracing::warn!(%error, "an index did not reach the disk");
             }
         }
     }
@@ -1663,18 +1666,38 @@ impl Inner {
         let fresh = path
             .as_deref()
             .and_then(|path| {
+                // Absent already is as good as removed: the open below says what is wrong.
                 let _ = std::fs::remove_file(path);
-                Index::open(path, app, &schema).ok()
+                match Index::open(path, app, &schema) {
+                    Ok(opened) => Some(opened),
+                    Err(error) => {
+                        tracing::warn!(
+                            app,
+                            path = %path.display(),
+                            %error,
+                            "a broken index could not be made anew on disk: it is kept in memory"
+                        );
+                        None
+                    }
+                }
             })
             .map(|opened| match opened {
                 Opened::Ready(index, _) | Opened::Empty(index) => index,
             })
             .map_or_else(|| Index::in_memory(app, &schema), Ok);
-        let Ok(index) = fresh else {
-            return;
+        let index = match fresh {
+            Ok(index) => index,
+            Err(error) => {
+                tracing::error!(app, %error, "a broken index could not be made anew");
+                return;
+            }
         };
-        let Ok(snapshot) = index.snapshot() else {
-            return;
+        let snapshot = match index.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::error!(app, %error, "a fresh index could not be read");
+                return;
+            }
         };
         self.apps.insert(
             app.to_owned(),
@@ -1965,9 +1988,13 @@ impl Inner {
                     snapshot: Some(&held.snapshot),
                 };
                 let mut derive = Derive::new(&mirror, &self.index, &self.nested);
-                let _ = derive.changes(&mut sink, &write.app, &write.reached());
-                if let Some(ends) = &write.versions {
-                    let _ = derive.versions(&mut sink, &write.app, ends);
+                if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
+                    tracing::warn!(app = write.app, %error, "a change was not indexed");
+                }
+                if let Some(ends) = &write.versions
+                    && let Err(error) = derive.versions(&mut sink, &write.app, ends)
+                {
+                    tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
                 }
             }
         }
@@ -2026,7 +2053,9 @@ impl Inner {
                 snapshot: Some(&snapshot),
             };
             let mut derive = Derive::new(&mirror, &self.index, &self.nested);
-            let _ = derive.versions(&mut sink, app, &ends);
+            if let Err(error) = derive.versions(&mut sink, app, &ends) {
+                tracing::warn!(app, %error, "a change's versions were not indexed");
+            }
         }
         self.changed_within(&reached);
         reached
@@ -2117,7 +2146,9 @@ impl Inner {
             snapshot: Some(&snapshot),
         };
         let mut derive = Derive::new(&mirror, &self.index, &self.nested);
-        let _ = derive.changes(&mut sink, &write.app, &write.reached());
+        if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
+            tracing::warn!(app = write.app, %error, "a change was not indexed");
+        }
     }
 
     /// Drop the store's writes from the `start`th on (the caller applies the rest again).
@@ -2140,13 +2171,15 @@ impl Inner {
         let local = self.local.clone();
         if let Some(mirror) = self.mirror_mut() {
             for write in &local {
-                // Each applied once already, on this same base.
-                let _ = apply_edits(
+                // Each applied once already, on this same base: one that fails now is a fault.
+                if let Err(error) = apply_edits(
                     mirror,
                     &write.app,
                     std::slice::from_ref(&write.edit),
                     &write.seed,
-                );
+                ) {
+                    tracing::error!(app = write.app, %error, "a write did not apply again");
+                }
             }
         }
     }
@@ -2766,6 +2799,7 @@ impl Store for TiloStore {
                 if held.settled.is_none() && held.owner == inner.device {
                     out.push(OutboxEntry {
                         doc: doc.clone(),
+                        state: held.outbox_state(),
                         id: held.entry,
                         capability: held.capability,
                         payload: held.payload,
@@ -2776,7 +2810,86 @@ impl Store for TiloStore {
         out
     }
 
-    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError> {
+    fn outbox_mark(
+        &mut self,
+        entry: &OutboxEntry,
+        state: &tilolang_runtime::store::OutboxState,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        use tilolang_runtime::store::OutboxState;
+        let (word, detail) = match state {
+            OutboxState::Queued => ("", ""),
+            OutboxState::Sending { by } => ("sending", by.as_str()),
+            OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+        };
+        let edit = DynEdit::OutboxMark {
+            id: entry.doc.clone(),
+            entry: entry.id.clone(),
+            state: word.to_owned(),
+            detail: detail.to_owned(),
+        };
+        let seed = format!("{word}:{}:{}:{detail}", entry.doc, entry.id).into_bytes();
+        self.write_outbox(entry, edit, seed, note)
+    }
+
+    fn outbox_settle(
+        &mut self,
+        entry: &OutboxEntry,
+        outcome: &tilolang_runtime::store::Settled,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        let edit = DynEdit::OutboxSettle {
+            id: entry.doc.clone(),
+            entry: entry.id.clone(),
+            outcome: outcome.word().to_owned(),
+            reason: outcome.reason().to_owned(),
+        };
+        let seed = format!("settle:{}:{}", entry.doc, entry.id).into_bytes();
+        self.write_outbox(entry, edit, seed, note)
+    }
+
+    fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
+        let inner = self.inner.borrow();
+        let Some(mirror) = inner.mirror.as_deref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (doc, (app, _)) in &inner.index {
+            let entries = outbox_entries(mirror, app, doc);
+            // The one not settled when there is one, else the last.
+            let last = entries
+                .iter()
+                .find(|held| held.settled.is_none())
+                .or_else(|| entries.last());
+            if let Some(held) = last {
+                out.push((doc.clone(), held.delivery()));
+            }
+        }
+        out
+    }
+
+    fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {
+        self.inner
+            .borrow_mut()
+            .journals
+            .insert(run.clone(), journal.clone());
+        Ok(())
+    }
+
+    fn load_journal(&mut self, run: &RunId) -> Result<Option<Journal>, StoreError> {
+        Ok(self.inner.borrow().journals.get(run).cloned())
+    }
+}
+
+impl TiloStore {
+    /// Write `edit` of the outbox entry `entry` as a change of its own, noted as `note`.
+    fn write_outbox(
+        &self,
+        entry: &OutboxEntry,
+        edit: DynEdit,
+        seed: Vec<u8>,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
         self.load_record()?;
         let mut inner = self.mutate();
         let (app, ty) = inner
@@ -2784,12 +2897,6 @@ impl Store for TiloStore {
             .get(&entry.doc)
             .cloned()
             .ok_or_else(|| not_found(format!("resource {}", entry.doc)))?;
-        let edit = DynEdit::OutboxSettle {
-            id: entry.doc.clone(),
-            entry: entry.id.clone(),
-            outcome: "done".to_owned(),
-        };
-        let seed = format!("settle:{}:{}", entry.doc, entry.id).into_bytes();
         inner.write(
             &app,
             edit.clone(),
@@ -2813,17 +2920,5 @@ impl Store for TiloStore {
             edits: vec![edit],
         });
         Ok(())
-    }
-
-    fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {
-        self.inner
-            .borrow_mut()
-            .journals
-            .insert(run.clone(), journal.clone());
-        Ok(())
-    }
-
-    fn load_journal(&mut self, run: &RunId) -> Result<Option<Journal>, StoreError> {
-        Ok(self.inner.borrow().journals.get(run).cloned())
     }
 }

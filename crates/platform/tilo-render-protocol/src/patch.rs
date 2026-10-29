@@ -445,6 +445,37 @@ pub enum Answer {
     Always,
 }
 
+/// An action waiting for its arguments: the form the window shows for what the invocation still
+/// needs. The app derives its fields from the action's parameters (each control from the
+/// parameter's type), keeps what the person typed as their lens state, and checks each value as
+/// the action takes it; the window presents the fields (a sheet over the window, a popover at the
+/// control it came from, a sheet from the foot of a narrow window) with the title, submit and
+/// cancel, and reports edits by field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Form {
+    /// Which form: edits and answers name it, so ones for a form that closed are dropped.
+    pub id: u64,
+    /// The action, as its label names it ("Share…").
+    pub title: String,
+    /// The submit button's label: the action's label without its ellipsis ("Share").
+    pub submit: String,
+    /// The action takes something away: the submit button is destructive.
+    pub destructive: bool,
+    /// Every argument parses as its type: submit can be taken.
+    pub ready: bool,
+    /// Why the action refused the last submit, when that names no field.
+    pub error: Option<String>,
+    /// The control that ran the action, by lane and key: a popover form is anchored to it.
+    pub from: Option<(Lane, String)>,
+    /// Each field's control in `tree` by key, in order, with the text it holds now (what the
+    /// person typed, else the default): the window shows it when the form opens.
+    pub fields: Vec<(String, String)>,
+    /// Every field is short (one line, a switch or a choice): a popover can hold them.
+    pub short: bool,
+    /// The fields, laid out: a tree of the same components and content nodes views send.
+    pub tree: Node,
+}
+
 /// What an app sends its window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToUi {
@@ -498,6 +529,9 @@ pub enum ToUi {
     },
     /// The Ask bar, or none.
     Ask(Option<Ask>),
+    /// The form of an action waiting for its arguments, or none: it closed (submitted,
+    /// cancelled, or the action ran).
+    Form(Option<Box<Form>>),
     /// Someone asked to see the window ("Show this window"): it comes forward.
     Activate,
     /// The app ran the first `fired` presses the window sent (`ToApp::Fire`), and sent what
@@ -580,6 +614,21 @@ pub enum ToApp {
         end: u32,
     },
     Answer(Answer),
+    /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what
+    /// was typed, a case or a resource chosen by its name or id, `true` or `false`.
+    FormEdit {
+        form: u64,
+        field: String,
+        text: String,
+    },
+    /// The form `form` was submitted.
+    FormSubmit {
+        form: u64,
+    },
+    /// The form `form` was closed without submitting: what was typed stays for next time.
+    FormCancel {
+        form: u64,
+    },
     /// The person chose Undo on a notice.
     Undo,
     /// The keyboard focus is in the bound control `key` of `lane`, or in none.
@@ -594,6 +643,13 @@ pub enum ToApp {
     Names {
         me: String,
         others: Vec<(String, String)>,
+    },
+    /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
+    /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
+    Space {
+        lane: Lane,
+        width: f32,
+        height: f32,
     },
 }
 

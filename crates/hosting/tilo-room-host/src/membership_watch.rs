@@ -140,6 +140,7 @@ fn registry() -> &'static Mutex<Vec<Weak<MembershipWatch>>> {
 /// The generation of the room stored at `room_root`
 /// (`<state_root>/workspaces/<id>`), when a running watch covers it.
 pub(crate) fn attach(room_root: &Path) -> Option<DiskGeneration> {
+    // optional-decode: a path not named as a room's is not covered by a watch
     let workspace_id = room_root.file_name()?.to_str()?.parse().ok()?;
     let workspaces = room_root.parent()?;
     let watch = registry()
@@ -346,6 +347,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
             let Some(workspace_id) = entry
                 .file_name()
                 .to_str()
+                // optional-decode: an entry not named as a room's is not one
                 .and_then(|name| name.parse::<u64>().ok())
             else {
                 continue;
@@ -397,6 +399,7 @@ async fn establish(watch: &MembershipWatch) -> Option<Watches> {
 /// one.
 fn room_directory(path: &VPath) -> Option<u64> {
     let mut components = path.components();
+    // optional-decode: a change to an entry not named as a room's names none
     let workspace_id = components.next()?.parse().ok()?;
     components.next().is_none().then_some(workspace_id)
 }
