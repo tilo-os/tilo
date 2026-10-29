@@ -1,8 +1,12 @@
 //! The notes app's answers to [`NotesEffect`]: moving between notes, files
 //! through the host's chooser, links and the clipboard.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
 use ui::portal::{FileFilter, PickRequest};
+use ui::widget::toast::ToastKind;
 
 use super::NotesApp;
 use crate::actions;
@@ -10,11 +14,69 @@ use crate::effect::NotesEffect;
 use crate::model::{PageId, TagId, Workspace};
 use crate::resource::Notebook;
 
-type Cx = EffectCx<Notebook, NotesApp>;
+type Cx = EffectCx<Notebook>;
+
+/// What an effect's completion leaves for the window: a completion runs
+/// after the call that was lent the window (a file chosen, a link
+/// opened), so the window does it on its next sync.
+#[derive(Clone, Default)]
+pub(crate) struct Completions(Rc<RefCell<Vec<Completed>>>);
+
+/// One thing a completion left for the window.
+pub(crate) enum Completed {
+    /// Say this in the window's bar.
+    Notify(String, ToastKind),
+    /// Open the note once the notebook holds it.
+    Open(PageId),
+    /// Bind the open note's editor again: its blocks changed under it.
+    Rebind,
+}
+
+impl Completions {
+    fn push(&self, completed: Completed) {
+        self.0.borrow_mut().push(completed);
+    }
+
+    fn extend(&self, completed: impl IntoIterator<Item = Completed>) {
+        self.0.borrow_mut().extend(completed);
+    }
+
+    /// What was left since the last sync.
+    pub(crate) fn take(&self) -> Vec<Completed> {
+        std::mem::take(&mut self.0.borrow_mut())
+    }
+}
+
+/// Back and forward, offered only where they lead: `steps` says whether
+/// each does.
+pub(crate) fn navigation_statuses((back, forward): (bool, bool)) -> Vec<EffectStatus> {
+    let mut statuses = Vec::new();
+    if !back {
+        statuses.push(EffectStatus::unavailable(
+            NotesEffect::BACK,
+            "notes.no_previous_note",
+            ui::i18n!("notes-no-previous"),
+        ));
+    }
+    if !forward {
+        statuses.push(EffectStatus::unavailable(
+            NotesEffect::FORWARD,
+            "notes.no_next_note",
+            ui::i18n!("notes-no-next"),
+        ));
+    }
+    statuses
+}
 
 impl NotesApp {
     /// Answer `effect`, however it was invoked.
     pub(crate) fn answer_effect(&mut self, effect: NotesEffect, cx: &mut Cx) -> EffectAnswer {
+        let answer = self.answer(effect, cx);
+        self.note_steps();
+        answer
+    }
+
+    fn answer(&mut self, effect: NotesEffect, cx: &mut Cx) -> EffectAnswer {
         if effect == NotesEffect::InspectEditor {
             let document = cx.document().ok_or("the editor document is unavailable")?;
             return Ok(Effected::value(self.editor_observation(&document)));
@@ -32,14 +94,17 @@ impl NotesApp {
                 &state.data.pages,
                 &title,
             ))),
-            NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
-            NotesEffect::ImportNotionExport => Ok(Self::choose_notion_export(cx)),
+            NotesEffect::ImportMarkdownFile => Ok(self.choose_markdown(cx)),
+            NotesEffect::ImportNotionExport => Ok(self.choose_notion_export(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
                 let fallback = ui::i18n!("notes-imported-untitled");
                 let title = if title.is_empty() { &fallback } else { title };
                 let body = crate::markdown::strip_matching_title_heading(&body, title);
-                let page = self.import_note(title, &body, cx)?;
+                let mut done = Vec::new();
+                let page = import_note(title, &body, cx, &mut done);
+                self.complete(done);
+                let page = page?;
                 Ok(Effected::value(serde_json::json!({
                     "resource": actions::page_resource_id(page),
                 })))
@@ -50,9 +115,9 @@ impl NotesApp {
                 .map(Effected::value),
             NotesEffect::InsertImage { page } => {
                 state.get(page).ok_or("the note no longer exists")?;
-                Ok(Self::choose_image(page, cx))
+                Ok(self.choose_image(page, cx))
             }
-            NotesEffect::OpenLink { url } => Self::open_link(url, cx),
+            NotesEffect::OpenLink { url } => self.open_link(url, cx),
             NotesEffect::OpenResource { href } => Self::open_resource(&href, cx),
             NotesEffect::CopyLink { page } => {
                 self.copy_link(&state, page).map(|()| Effected::done())
@@ -75,24 +140,27 @@ impl NotesApp {
         }
     }
 
-    /// Back and forward, offered only where they lead.
-    pub(crate) fn navigation_statuses(&self) -> Vec<EffectStatus> {
-        let mut statuses = Vec::new();
-        if !self.route_history.can_go_back() {
-            statuses.push(EffectStatus::unavailable(
-                NotesEffect::BACK,
-                "notes.no_previous_note",
-                ui::i18n!("notes-no-previous"),
-            ));
+    /// Say whether Back and Forward lead anywhere now, for the effects'
+    /// statuses.
+    pub(super) fn note_steps(&self) {
+        self.steps.set((
+            self.route_history.can_go_back(),
+            self.route_history.can_go_forward(),
+        ));
+    }
+
+    /// Do what effects' completions left for the window.
+    pub(super) fn complete(&mut self, completed: Vec<Completed>) {
+        for completed in completed {
+            match completed {
+                Completed::Notify(text, kind) => self.notify(text, kind),
+                Completed::Open(page) => self.open_when_present(page),
+                Completed::Rebind => {
+                    self.bound_page = None;
+                    self.self_dirty = true;
+                }
+            }
         }
-        if !self.route_history.can_go_forward() {
-            statuses.push(EffectStatus::unavailable(
-                NotesEffect::FORWARD,
-                "notes.no_next_note",
-                ui::i18n!("notes-no-next"),
-            ));
-        }
-        statuses
     }
 
     /// Ask for `effect` as the window's own controls do: through the
@@ -229,19 +297,20 @@ impl NotesApp {
         Ok(())
     }
 
-    fn open_link(url: String, cx: &mut Cx) -> EffectAnswer {
+    fn open_link(&self, url: String, cx: &mut Cx) -> EffectAnswer {
         if !crate::markdown::safe_external_url(&url) {
             return Err(ui::i18n!("notes-link-unsafe"));
         }
+        let completions = self.completions.clone();
         Ok(cx.thread(
             move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
-            |app: &mut Self, opened, _| {
+            move |(), opened, _| {
                 if let Err(error) = &opened {
                     tracing::warn!(%error, "notes: the link did not open");
-                    app.notify(
+                    completions.push(Completed::Notify(
                         ui::i18n!("notes-link-open-failed"),
-                        ui::widget::toast::ToastKind::Error,
-                    );
+                        ToastKind::Error,
+                    ));
                 }
                 opened.map(|()| Effected::done())
             },
@@ -265,7 +334,7 @@ impl NotesApp {
 
     /// Add every page of the Notion export the person chooses, as one
     /// action: one undo takes the whole import back.
-    fn choose_notion_export(cx: &mut Cx) -> Effected {
+    fn choose_notion_export(&self, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
             &ui::i18n!("notes-notion-import-title"),
             &ui::i18n!("notes-import-accept"),
@@ -273,32 +342,34 @@ impl NotesApp {
         .filter(FileFilter::new(&ui::i18n!("notes-notion-files")).glob("*.zip"))
         .filter(FileFilter::new(&ui::i18n!("notes-notion-json-files")).glob("*.json"))
         .thread_name("notes-import-notion");
-        cx.choose_file(request, |app: &mut Self, chosen, cx| {
+        let completions = self.completions.clone();
+        cx.choose_file(request, move |(), chosen, cx| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
             };
             let pages = crate::notion::pages(&file.bytes)?;
             let imported = pages.len();
             cx.submit(crate::notion::import_action(&pages));
-            app.notify(
+            completions.push(Completed::Notify(
                 ui::i18n::I18nManager::format(
                     "notes-notion-imported",
                     &[("pages", ui::i18n::ArgValue::from(imported.to_string()))],
                 ),
-                ui::widget::toast::ToastKind::Success,
-            );
+                ToastKind::Success,
+            ));
             Ok(Effected::done())
         })
     }
 
-    fn choose_markdown(cx: &mut Cx) -> Effected {
+    fn choose_markdown(&self, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
             &ui::i18n!("notes-import-title"),
             &ui::i18n!("notes-import-accept"),
         )
         .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
         .thread_name("notes-import-markdown");
-        cx.choose_file(request, |app: &mut Self, chosen, cx| {
+        let completions = self.completions.clone();
+        cx.choose_file(request, move |(), chosen, cx| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
             };
@@ -309,53 +380,17 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .filter(|title| !title.trim().is_empty())
                 .map_or_else(|| ui::i18n!("notes-imported-untitled"), str::to_owned);
-            match markdown {
-                Ok(markdown) => app
-                    .import_note(&title, &markdown, cx)
-                    .map(|_| Effected::done()),
+            let mut done = Vec::new();
+            let imported = match markdown {
+                Ok(markdown) => import_note(&title, &markdown, cx, &mut done),
                 Err(error) => {
-                    app.import_failed(&error);
+                    done.push(import_failed(&error));
                     Err(error)
                 }
-            }
+            };
+            completions.extend(done);
+            imported.map(|_| Effected::done())
         })
-    }
-
-    /// Add `markdown` to the notebook as a note titled `title`, and show it.
-    fn import_note(&mut self, title: &str, markdown: &str, cx: &Cx) -> Result<PageId, String> {
-        if let Err(error) = crate::notebook::check_markdown_import(markdown) {
-            self.import_failed(&error);
-            return Err(error);
-        }
-        let (markdown, assets) = super::adopt_inline_images(markdown);
-        let page = PageId::new_v4();
-        cx.submit(
-            Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
-                title: title.to_owned(),
-                markdown,
-                images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
-                note: Some(crate::notebook::page_id(page)),
-            }),
-        );
-        self.open_when_present(page);
-        self.notify(
-            ui::i18n::I18nManager::format(
-                "notes-imported",
-                &[("title", ui::i18n::ArgValue::from(title.to_string()))],
-            ),
-            ui::widget::toast::ToastKind::Success,
-        );
-        Ok(page)
-    }
-
-    fn import_failed(&mut self, error: &str) {
-        self.notify(
-            ui::i18n::I18nManager::format(
-                "notes-import-failed",
-                &[("error", ui::i18n::ArgValue::from(error.to_string()))],
-            ),
-            ui::widget::toast::ToastKind::Error,
-        );
     }
 
     fn export_markdown(&self, state: &Workspace, page: PageId, cx: &mut Cx) -> EffectAnswer {
@@ -378,11 +413,9 @@ impl NotesApp {
         )
         .filter(FileFilter::new(&ui::i18n!("notes-markdown-files")).glob("*.md"))
         .thread_name("notes-export-markdown");
-        Ok(
-            cx.save_file(request, portable.into_bytes(), |_: &mut Self, _, _| {
-                Ok(Effected::done())
-            }),
-        )
+        Ok(cx.save_file(request, portable.into_bytes(), |(), _, _| {
+            Ok(Effected::done())
+        }))
     }
 
     /// A note, or every note in notebook order, as one portable Markdown
@@ -445,7 +478,7 @@ impl NotesApp {
         }))
     }
 
-    fn choose_image(page: PageId, cx: &mut Cx) -> Effected {
+    fn choose_image(&self, page: PageId, cx: &mut Cx) -> Effected {
         let request = PickRequest::open(
             &ui::i18n!("notes-insert-image-title"),
             &ui::i18n!("notes-insert-image-accept"),
@@ -458,15 +491,18 @@ impl NotesApp {
                 .glob("*.webp"),
         )
         .thread_name("notes-insert-image");
-        cx.choose_file(request, move |app: &mut Self, chosen, cx| {
+        // The picture goes where the caret is as it is asked for.
+        let after = self.image_anchor(page);
+        let completions = self.completions.clone();
+        cx.choose_file(request, move |(), chosen, cx| {
             let Some(file) = chosen else {
                 return Ok(Effected::done());
             };
             if let Err(error) = super::check_image(&file.bytes) {
-                app.notify(
+                completions.push(Completed::Notify(
                     format!("Image import failed: {error}"),
-                    ui::widget::toast::ToastKind::Error,
-                );
+                    ToastKind::Error,
+                ));
                 return Err(error);
             }
             let alt = std::path::Path::new(&file.name)
@@ -474,27 +510,20 @@ impl NotesApp {
                 .and_then(|stem| stem.to_str())
                 .map_or_else(|| ui::i18n!("notes-image-default-alt"), str::to_owned)
                 .replace([']', '[', '(', ')'], " ");
-            cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
-            app.bound_page = None;
-            app.self_dirty = true;
-            app.notify(
-                ui::i18n!("notes-image-inserted"),
-                ui::widget::toast::ToastKind::Success,
-            );
+            cx.submit(image_insertion(page, after, alt.trim(), file.bytes));
+            completions.extend([
+                Completed::Rebind,
+                Completed::Notify(ui::i18n!("notes-image-inserted"), ToastKind::Success),
+            ]);
             Ok(Effected::done())
         })
     }
 
-    /// The change adding image `bytes` to `page`, after the block the
-    /// caret is in when the note is the one shown, else at its end.
-    pub(super) fn image_insertion(
-        &self,
-        page: PageId,
-        alt: &str,
-        bytes: Vec<u8>,
-    ) -> ui::tilo_resource::Invoke<crate::notebook::Notebook> {
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        let after = (self.main.page_id() == Some(page))
+    /// The block a picture added to `page` goes after: the one the caret
+    /// is in when the note is the one shown, else its last; `None` puts it
+    /// at the end of a note not shown.
+    pub(super) fn image_anchor(&self, page: PageId) -> Option<String> {
+        (self.main.page_id() == Some(page))
             .then(|| {
                 let editor = self.main.editor();
                 editor
@@ -503,14 +532,69 @@ impl NotesApp {
                     .or_else(|| editor.blocks().last())
                     .map(|block| block.id.clone())
             })
-            .flatten();
-        let text = format!("![{alt}](asset:{digest})");
-        let edit = match after {
-            Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
-            None => tilo_document::RichTextAction::AppendParagraph { text },
-        };
-        actions::show_image(page, bytes, edit)
+            .flatten()
     }
+}
+
+/// The change adding image `bytes` to `page`, after block `after`, else at
+/// its end ([`NotesApp::image_anchor`]).
+pub(super) fn image_insertion(
+    page: PageId,
+    after: Option<String>,
+    alt: &str,
+    bytes: Vec<u8>,
+) -> ui::tilo_resource::Invoke<crate::notebook::Notebook> {
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let text = format!("![{alt}](asset:{digest})");
+    let edit = match after {
+        Some(after) => tilo_document::RichTextAction::InsertParagraph { after, text },
+        None => tilo_document::RichTextAction::AppendParagraph { text },
+    };
+    actions::show_image(page, bytes, edit)
+}
+
+/// Add `markdown` to the notebook as a note titled `title`, leaving in
+/// `done` that the window shows it and says so, or that it was refused.
+fn import_note(
+    title: &str,
+    markdown: &str,
+    cx: &Cx,
+    done: &mut Vec<Completed>,
+) -> Result<PageId, String> {
+    if let Err(error) = crate::notebook::check_markdown_import(markdown) {
+        done.push(import_failed(&error));
+        return Err(error);
+    }
+    let (markdown, assets) = super::adopt_inline_images(markdown);
+    let page = PageId::new_v4();
+    cx.submit(
+        Notebook::IMPORT_MARKDOWN.with(crate::notebook::notebook::ImportMarkdown {
+            title: title.to_owned(),
+            markdown,
+            images: assets.into_iter().map(|(_, bytes)| bytes).collect(),
+            note: Some(crate::notebook::page_id(page)),
+        }),
+    );
+    done.push(Completed::Open(page));
+    done.push(Completed::Notify(
+        ui::i18n::I18nManager::format(
+            "notes-imported",
+            &[("title", ui::i18n::ArgValue::from(title.to_string()))],
+        ),
+        ToastKind::Success,
+    ));
+    Ok(page)
+}
+
+/// The window's word that an import failed with `error`.
+fn import_failed(error: &str) -> Completed {
+    Completed::Notify(
+        ui::i18n::I18nManager::format(
+            "notes-import-failed",
+            &[("error", ui::i18n::ArgValue::from(error.to_string()))],
+        ),
+        ToastKind::Error,
+    )
 }
 
 /// The file name a note titled `title` is offered to be saved as.
