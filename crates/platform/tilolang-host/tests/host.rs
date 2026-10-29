@@ -207,18 +207,21 @@ fn running_app(
     app: &str,
     bundle: Bundle,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
-    running_with(
-        person,
-        app,
-        bundle,
-        Rc::default(),
-        automerge::AutoCommit::new(),
-    )
+    running_with(person, app, bundle, Rc::default())
 }
 
-/// [`running_app`], the broker holding the instance's action directory in `directory`, the
-/// record holding `doc` as the room handed it.
+/// [`running_app`], the broker holding the instance's action directory in `directory`.
 fn running_with(
+    person: &str,
+    app: &str,
+    bundle: Bundle,
+    directory: Rc<RefCell<Directory>>,
+) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
+    running_on(person, app, bundle, directory, automerge::AutoCommit::new())
+}
+
+/// [`running_with`], the record holding `doc` as the room handed it.
+fn running_on(
     person: &str,
     app: &str,
     bundle: Bundle,
@@ -398,7 +401,7 @@ fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
 
     // A fresh host, opened on the room's copy as a reopen reads it, shows the press.
     let (mut reopened, mut window, _sent, _inbox, _route) =
-        running_with("ada", APP, counter(), Rc::default(), room);
+        running_on("ada", APP, counter(), Rc::default(), room);
     settle(&mut reopened, &mut window);
     assert_eq!(
         value_of(reopened.instances().next().unwrap()),
@@ -987,13 +990,8 @@ fn query() -> ActionDirectoryQuery {
 #[test]
 fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) = running_with(
-        "ada",
-        APP,
-        counter(),
-        Rc::clone(&directory),
-        automerge::AutoCommit::new(),
-    );
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     assert_eq!(
         directory.borrow().offered,
@@ -1159,13 +1157,8 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
 /// runs them.
 fn typing(held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, sent, inbox, _route) = running_with(
-        "ada",
-        NOTES,
-        notes(),
-        Rc::clone(&directory),
-        automerge::AutoCommit::new(),
-    );
+    let (mut host, mut window, sent, inbox, _route) =
+        running_with("ada", NOTES, notes(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
