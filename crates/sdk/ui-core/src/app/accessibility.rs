@@ -1110,18 +1110,6 @@ impl App {
         )
     }
 
-    /// Tab normally belongs to the host's focus order. A focused editor-like
-    /// widget may explicitly claim it first (for indentation or completion),
-    /// without broadening that exception to arbitrary widgets or escaping an
-    /// active focus trap.
-    #[cfg(feature = "native")]
-    fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused_node.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
-                .unwrap_or(false)
-        })
-    }
-
     /// Shared native Tab admission, preserving text-input and modal capture.
     #[cfg(feature = "native")]
     fn handle_tab_navigation(
@@ -1156,21 +1144,8 @@ impl App {
         if self.accessibility.focus_trap_active {
             return self.focusable_order.clone();
         }
-        let scopes: Vec<taffy::NodeId> = self
-            .layout
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .collect();
-        crate::focus_navigation::within_keyboard_scope(
-            self.focusable_order.clone(),
-            &scopes,
-            &self.layout.taffy,
-        )
+        self.tree()
+            .within_keyboard_scope(self.focusable_order.clone())
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -1558,6 +1533,30 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Activate the control whose test id is `test_id`, as an assistive
+    /// technology activates a hand-hit-tested control: the press a person
+    /// makes on it, through the window's own input path. Whether the window
+    /// shows such a control.
+    pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
+        fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
+            if widget.test_id() == Some(test_id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, test_id))
+        }
+        let Some(rect) = find(self.root_widget.as_ref(), test_id)
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        else {
+            return false;
+        };
+        let centre = rect.center();
+        self.dispatch_semantic_click(centre.x, centre.y);
+        true
     }
 
     /// Complete an accessibility activation for legacy hand-hit-tested

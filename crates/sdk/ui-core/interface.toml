@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 17
+version = 18
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -224,6 +224,8 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 "FloatingSurfaceClientMessage::window_resource" = "struct"
 "FloatingSurfaceClientMessage::window_resource.resource" = "Option<ActionResource> optional"
 "FloatingSurfaceHostMessage" = "enum internal tag=type"
+"FloatingSurfaceHostMessage::activate_test_id" = "struct"
+"FloatingSurfaceHostMessage::activate_test_id.test_id" = "String"
 "FloatingSurfaceHostMessage::adopted" = "struct"
 "FloatingSurfaceHostMessage::adopted.id" = "String"
 "FloatingSurfaceHostMessage::adopted.rect" = "[f64; 4]"

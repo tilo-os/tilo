@@ -38,6 +38,9 @@ tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
+# What a `write` or `append` names by reference is kept in Tilo's content
+# store, in a directory of the environment's own.
+tilo-content = { path = "../../system/content" }
 # A file's own history, read and restored through the same bounded attributes
 # the file manager's History view reads, so the two cannot disagree.
 fs-protocol = { path = "../../system/fs-protocol" }

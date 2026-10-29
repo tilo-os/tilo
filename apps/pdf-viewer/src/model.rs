@@ -325,27 +325,58 @@ pub enum GeomSpace {
     User,
 }
 
-#[derive(Clone, Debug)]
+/// One annotation: text markup, ink, a note or free text, stored under its
+/// id on a page occurrence.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = Annotation::valid)]
 pub struct Annotation {
+    #[model(atom, readonly)]
     pub id: String,
+    /// Page: the page occurrence it is on.
+    #[model(atom)]
+    pub page_id: String,
+    /// The page it is shown as, 1-based, resolved from `page_id` when it is
+    /// listed; 0 while its page is deleted. Not stored: page numbers change
+    /// whenever the plan does.
+    #[model(skip)]
     pub page: usize,
+    /// Mark: what it marks, and where.
+    #[model(rename = "mark")]
     pub kind: AnnoKind,
+    /// Colour
     pub color: HighlightColor,
+    /// Who made it.
+    #[model(readonly)]
     pub author: String,
-    /// The engine character range `[start, end)` the markup covers, for
-    /// text-anchored markup.
-    pub chars: Option<(u32, u32)>,
-    /// When it was authored (unix milliseconds; 0 when unknown).
+    /// The engine character range `[start, end)` text markup covers.
+    #[model(readonly)]
+    pub chars: Option<[u32; 2]>,
+    /// When it was made (unix milliseconds; 0 when unknown).
+    #[model(readonly)]
     pub created_ms: i64,
+    /// Which space its geometry is in.
     pub space: GeomSpace,
 }
 
-impl Annotation {
-    pub fn new_id() -> String {
-        Uuid::new_v4().to_string()
+impl Default for AnnoKind {
+    fn default() -> Self {
+        AnnoKind::Note { x: 0.0, y: 0.0 }
+    }
+}
+
+impl tilo_resource::Identified for Annotation {
+    fn id(&self) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(self.id.clone())
     }
 
-    /// An annotation in page-point space with no text anchor.
+    /// In the order they were made.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.created_ms.cmp(&other.created_ms)
+    }
+}
+
+impl Annotation {
+    /// An annotation on page `page` in page-point space with no text anchor.
     pub fn new(
         page: usize,
         kind: AnnoKind,
@@ -353,15 +384,35 @@ impl Annotation {
         author: impl Into<String>,
     ) -> Self {
         Self {
-            id: Self::new_id(),
+            id: new_id(),
             page,
             kind,
             color,
             author: author.into(),
-            chars: None,
-            created_ms: 0,
-            space: GeomSpace::Page,
+            ..Self::default()
         }
+    }
+
+    fn valid(&self) -> Result<(), tilo_resource::Refusal> {
+        let finite = |values: &[f64]| values.iter().all(|value| value.is_finite());
+        let ok = match &self.kind {
+            AnnoKind::Markup { quads, .. } => {
+                !quads.is_empty() && quads.iter().all(|q| finite(&[q.x, q.y, q.w, q.h]))
+            }
+            AnnoKind::Ink { strokes } => strokes
+                .iter()
+                .all(|stroke| stroke.iter().all(|(x, y)| finite(&[*x, *y]))),
+            AnnoKind::Note { x, y } => finite(&[*x, *y]),
+            AnnoKind::FreeText { rect, size, .. } => {
+                finite(&[rect.x, rect.y, rect.w, rect.h]) && size.is_finite() && *size > 0.0
+            }
+        };
+        if !ok || self.id.trim().is_empty() || self.page_id.is_empty() {
+            return Err(tilo_resource::Refusal::new(
+                "an annotation is on a page and has finite geometry",
+            ));
+        }
+        Ok(())
     }
 
     /// The anchor point (page-point space) used to position the comment
@@ -383,46 +434,75 @@ impl Annotation {
 // Comments (threaded)
 // ----------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-pub struct Reply {
-    /// Stable identity minted when the reply action is authored.  Replies are
-    /// first-class collaborative resources, not just an unaddressable string
-    /// in their parent comment's list.
-    pub id: String,
-    pub author: String,
-    /// The reply's plain text: what export, search and labels read.
-    pub body: String,
-    /// The reply as written, as the editor shows it.
-    pub blocks: Vec<ui::widget::BlockContent>,
+/// A comment thread: free on a page, or pinned to an annotation.
+pub type Comment = tilo_document::annotation::Comment<PdfAnchor>;
+pub use tilo_document::annotation::Reply;
+
+/// What a comment thread is about: the page occurrence it is on and,
+/// when it is pinned to one, the annotation there.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct PdfAnchor {
+    /// The page occurrence it is on.
+    #[model(atom)]
+    pub page_id: String,
+    /// The annotation it is pinned to; empty for a comment free on a page.
+    #[model(atom, readonly)]
+    pub annotation: String,
 }
 
-impl Reply {
-    pub fn new_id() -> String {
-        Uuid::new_v4().to_string()
+impl PdfAnchor {
+    /// The annotation it is pinned to.
+    pub fn pinned(&self) -> Option<&str> {
+        (!self.annotation.is_empty()).then_some(self.annotation.as_str())
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Comment {
+/// A comment thread as the reader lists it: the stored thread, the id it
+/// is stored under and the page it is shown as now.
+#[derive(Clone, Debug, Default)]
+pub struct Thread {
     pub id: String,
-    /// The annotation this comment is pinned to, if any.
-    pub anno_id: Option<String>,
     pub page: usize,
-    pub author: String,
-    /// The comment's plain text: what export, search and labels read.
-    pub body: String,
-    /// Monotonic ordinal for stable sort (seed time / creation order).
-    pub created: i64,
-    pub resolved: bool,
-    pub replies: Vec<Reply>,
-    /// The comment as written, as the editor shows it.
-    pub blocks: Vec<ui::widget::BlockContent>,
+    pub comment: Comment,
 }
 
-impl Comment {
-    pub fn new_id() -> String {
-        Uuid::new_v4().to_string()
+impl Thread {
+    /// The annotation it is pinned to.
+    pub fn pinned(&self) -> Option<&str> {
+        self.comment.anchor.pinned()
     }
+
+    /// The answers, each under its id, in the order they were written.
+    pub fn replies(&self) -> impl Iterator<Item = (&str, &Reply)> {
+        self.comment
+            .replies
+            .iter()
+            .map(|(id, reply)| (id.as_str(), reply))
+    }
+
+    /// The comment's paragraphs as the editor shows them.
+    pub fn blocks(&self) -> Vec<ui::widget::BlockContent> {
+        blocks_of(&self.comment.text, &self.comment.body)
+    }
+}
+
+/// A reply's paragraphs as the editor shows them.
+pub fn reply_blocks(reply: &Reply) -> Vec<ui::widget::BlockContent> {
+    blocks_of(&reply.text, &reply.body)
+}
+
+/// Paragraphs as the editor shows them: as written, or the plain text.
+fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::BlockContent> {
+    if rich.is_empty() {
+        tilo_rich_text::plain_blocks(text)
+    } else {
+        rich.iter().map(tilo_rich_text::content_of_clip).collect()
+    }
+}
+
+/// A fresh id for an annotation, comment, reply or signature.
+pub fn new_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 // ----------------------------------------------------------------------
@@ -464,12 +544,6 @@ pub struct Signature {
     pub ink: SignatureInk,
     /// Which space `rect` is in (see [`GeomSpace`]).
     pub space: GeomSpace,
-}
-
-impl Signature {
-    pub fn new_id() -> String {
-        Uuid::new_v4().to_string()
-    }
 }
 
 /// The scale that fits a `w` × `h` page into a `card_w` × `card_h` slot.

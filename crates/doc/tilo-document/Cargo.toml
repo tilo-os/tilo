@@ -18,6 +18,8 @@ tilo-content = { path = "../../system/content", default-features = false }
 # Ordering keys, batched writes, deterministic ids and the resource contract rich text implements.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-actions = { path = "../../collab/actions" }
+# Comment and reply dates as ISO-8601 times.
+chrono = { workspace = true, features = ["alloc"] }
 # Hyperlink targets a rich-text action may carry.
 url.workspace = true
 

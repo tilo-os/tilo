@@ -17,6 +17,12 @@
 //! grants. Each must be allowed to the writer, and together they must give
 //! exactly the membership the batch wrote. Anything else the batch changes in
 //! governance is the owner's.
+//!
+//! An admission through an invitation is the inviter's: any participant that
+//! may invite writes it, with the joiner's device and the redemption receipt
+//! carrying the signed invitation, and every receiver checks that invitation
+//! itself ([`invitation_admits`]). A device certified by a member's root is
+//! that member's device: any participant writes it in.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +32,12 @@ use tilo_action_policy::{
 };
 
 use super::{RoomGovernance, governance_of};
-use crate::state::GovernedIdentity;
+use crate::state::{GovernedIdentity, RedemptionReceipt};
+
+/// How far ahead of a receiver's clock an admission may say it was made:
+/// devices' clocks differ, and a receiver judges an invitation's expiry at
+/// the admission's own time so every receiver, early or late, agrees.
+const ADMISSION_CLOCK_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
 /// Why a member's membership batch was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,8 +125,18 @@ pub fn authorize(
     let bound = roles::foreign_device_bound();
     let authority = held.person_on_device(&actor, foreign, &bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
+    let invited = redemptions(room, &held, &wanted, &before, &written, now_ns)?;
+    if !invited.is_empty() {
+        held.check_action(&authority, governance::INVITE, &cx, false)
+            .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
+    }
+    // What the invitations admit is the inviters'; the rest is the writer's.
     let mut replay = held.clone();
-    for change in changes(&held, &wanted) {
+    for (person, (role, _)) in &invited {
+        replay.members.insert(person.clone(), *role);
+    }
+    let base = replay.clone();
+    for change in changes(&base, &wanted) {
         replay
             .apply(&actor, &authority, change, &cx, false)
             .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
@@ -123,7 +144,156 @@ pub fn authorize(
     if replay.members != wanted.members || sorted(&replay.grants) != sorted(&wanted.grants) {
         return Err(MembershipRefusal::Mismatch);
     }
-    identities(&held, &wanted, &actor, &authority, &cx, &before, &written)
+    identities(
+        &held,
+        &wanted,
+        &invited,
+        (&actor, &authority, &cx),
+        (&before, &written),
+    )
+}
+
+/// The invitation `signed`, redeemed by `joiner` at `at_ns`, when it admits
+/// them to `room` as `policy` stands: it verifies and has not expired then,
+/// names this room and, when narrowed, the joiner, and its issuer is a member
+/// who may invite with its role.
+///
+/// # Errors
+/// The first of those that does not hold.
+pub fn invitation_admits(
+    policy: &tilo_action_policy::RoomPolicy,
+    room: &str,
+    signed: &[u8],
+    joiner: [u8; 32],
+    at_ns: u64,
+) -> Result<crate::join::InviteGrant, MembershipRefusal> {
+    let refused = |error: String| MembershipRefusal::Refused(format!("invitation: {error}"));
+    let join = crate::join::decode_and_verify_invitation(
+        signed,
+        Some(joiner),
+        &tilo_user_identity::RevocationList::new(),
+        at_ns,
+    )
+    .map_err(refused)?;
+    let grant = join.grant().clone();
+    if grant.room != room {
+        return Err(refused("it is for another room".into()));
+    }
+    let issuer = hex::encode(grant.issuer.user_public_key);
+    let bound = roles::foreign_device_bound();
+    let authority = policy.person_on_device(&issuer, grant.issuer.capabilities.foreign, &bound);
+    policy
+        .check_invite(
+            &issuer,
+            &authority,
+            grant.role.into(),
+            &Context::at_secs(at_ns / 1_000_000_000),
+            false,
+        )
+        .map_err(|refusal| refused(format!("its issuer may not invite: {refusal}")))?;
+    Ok(grant)
+}
+
+/// The people the batch admits through invitations, each with the role
+/// their invitation gives and the device that redeemed it. Every receipt
+/// the batch adds to the room's ledger must be one: the invitation it
+/// carries admits its joiner at the time the room records them joining
+/// ([`invitation_admits`]), the joiner's device row holds the receipt, and
+/// the room gives them its role. A receipt the room holds stays as it is,
+/// so a spent invitation stays spent.
+fn redemptions(
+    room: &str,
+    held: &RoomPolicy,
+    wanted: &RoomPolicy,
+    before: &RoomGovernance,
+    written: &RoomGovernance,
+    now_ns: u64,
+) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
+    let malformed = |error: String| MembershipRefusal::Malformed(error);
+    for (invite, values) in &before.invitation_receipts {
+        let kept = written.invitation_receipts.get(invite);
+        if values
+            .iter()
+            .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
+        {
+            return Err(MembershipRefusal::Refused(format!(
+                "the redemption of invitation {invite} is the room's record"
+            )));
+        }
+    }
+    let mut invited = BTreeMap::new();
+    for (invite, values) in &written.invitation_receipts {
+        let held_values = before.invitation_receipts.get(invite);
+        for value in values {
+            if held_values.is_some_and(|held| held.contains(value)) {
+                continue;
+            }
+            let receipt: RedemptionReceipt =
+                serde_json::from_slice(value).map_err(|error| malformed(error.to_string()))?;
+            if *invite != hex::encode(receipt.invite_id) {
+                return Err(malformed("an invitation receipt under another key".into()));
+            }
+            let signed = receipt
+                .invitation
+                .as_deref()
+                .ok_or_else(|| malformed("an invitation receipt without its invitation".into()))
+                .and_then(|text| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(text)
+                        .map_err(|error| malformed(error.to_string()))
+                })?;
+            if *blake3::hash(&signed).as_bytes() != receipt.invite_id {
+                return Err(malformed(
+                    "an invitation receipt names another invitation".into(),
+                ));
+            }
+            let person = hex::encode(receipt.user_public_key);
+            let joined_ms = wanted.joined_at(&person).ok_or_else(|| {
+                MembershipRefusal::Refused(format!("{person} is admitted at no recorded time"))
+            })?;
+            let at_ns = joined_ms.saturating_mul(1_000_000);
+            if at_ns > now_ns.saturating_add(ADMISSION_CLOCK_SKEW_NS) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "{person} is admitted in the future"
+                )));
+            }
+            let grant = invitation_admits(held, room, &signed, receipt.user_public_key, at_ns)?;
+            let role: Role = grant.role.into();
+            if grant.role != receipt.role || wanted.role_of(&person) != Some(role) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "{person} does not take the role their invitation gives"
+                )));
+            }
+            if held.is_banned(&person) || held.is_owner(&person) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "{person} is not admitted through an invitation"
+                )));
+            }
+            let device = hex::encode(receipt.device_public_key);
+            let row = written
+                .identities
+                .get(&device)
+                .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
+                .transpose()
+                .map_err(|error| malformed(error.to_string()))?;
+            let on_row = receipt.on_row();
+            if !row.is_some_and(|row| {
+                row.device_cert.user_public_key == receipt.user_public_key
+                    && row
+                        .admission
+                        .iter()
+                        .chain(&row.admissions)
+                        .any(|kept| *kept == on_row)
+            }) {
+                return Err(MembershipRefusal::Refused(format!(
+                    "device {device} does not hold its redemption"
+                )));
+            }
+            invited.insert(person, (role, device));
+        }
+    }
+    Ok(invited)
 }
 
 /// Every governance part but membership is the same in both.
@@ -233,15 +403,14 @@ fn sorted(grants: &[Grant]) -> Vec<&Grant> {
 }
 
 /// The devices the batch admits or removes: each a device of a member of
-/// the room as written, and the writer's own or one they may admit.
+/// the room as written, and the writer's own, one an invitation admits, a
+/// further device of someone already a member, or one they may admit.
 fn identities(
     held: &RoomPolicy,
     wanted: &RoomPolicy,
-    actor: &str,
-    authority: &tilo_action_policy::Authority<'_>,
-    cx: &Context<'_>,
-    before: &RoomGovernance,
-    written: &RoomGovernance,
+    invited: &BTreeMap<String, (Role, String)>,
+    (actor, authority, cx): (&str, &tilo_action_policy::Authority<'_>, &Context<'_>),
+    (before, written): (&RoomGovernance, &RoomGovernance),
 ) -> Result<(), MembershipRefusal> {
     let person_of = |bytes: &[u8]| {
         serde_json::from_slice::<GovernedIdentity>(bytes)
@@ -263,7 +432,23 @@ fn identities(
                 "device {device} is not of a member"
             )));
         }
-        if person != actor && !may(governance::ADD_MEMBER) && !may(governance::INVITE) {
+        let redeemed = invited
+            .get(&person)
+            .is_some_and(|(_, redeemer)| redeemer == device);
+        // A device certified by a member's root is that member's: any
+        // participant writes it in when it first asks.
+        let further = !before.identities.contains_key(device)
+            && held.role_of(&person).is_some()
+            && identity.admission.is_none()
+            && identity.admissions.is_empty()
+            && identity.delegate.is_none()
+            && identity.workspace_delegations.is_empty();
+        if person != actor
+            && !redeemed
+            && !further
+            && !may(governance::ADD_MEMBER)
+            && !may(governance::INVITE)
+        {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not the writer's to admit"
             )));

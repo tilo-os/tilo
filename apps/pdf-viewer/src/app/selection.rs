@@ -952,7 +952,7 @@ impl PdfApp {
                 layer.source_range(a, b)
             });
             made.push(Annotation {
-                chars,
+                chars: chars.map(|(start, end)| [start, end]),
                 ..Annotation::new(
                     page,
                     AnnoKind::Markup {

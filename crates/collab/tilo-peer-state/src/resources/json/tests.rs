@@ -49,6 +49,7 @@ fn guarded_json_actual_receipt_array_exact_limit_and_next_seed_refusal() {
         device_public_key: [3; 32],
         request_id: [4; 32],
         role: crate::join::MemberRole::Editor,
+        invitation: None,
     };
     let wire = serde_json::to_vec(&receipt).unwrap();
     let exact = JsonLimits {

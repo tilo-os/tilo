@@ -1264,8 +1264,8 @@ pub struct ComponentBehaviour {
     /// remote viewers, as [`crate::App::set_capture_protected`] does: for
     /// apps that show secrets, such as a password manager.
     pub capture_protected: bool,
-    /// What the window is to the session: an ordinary app window, or the
-    /// session's on-screen input surface.
+    /// What the window is to the session: an ordinary app window, the
+    /// session's on-screen input surface, or a sheet over the desktop.
     pub window: WindowRole,
 }
 
@@ -1283,6 +1283,10 @@ pub enum WindowRole {
     /// attaches to no workspace runtime. Its controls type into other apps'
     /// fields, so no headless drive may operate it.
     InputSurface,
+    /// A sheet the shell shows over the desktop (the power menu). It stands
+    /// on no ground of its own: what it does not paint shows the desktop
+    /// under it.
+    Sheet,
 }
 
 impl ComponentBehaviour {

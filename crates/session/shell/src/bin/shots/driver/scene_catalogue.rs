@@ -75,7 +75,6 @@ impl ShellDriver {
         "qs-clipboard",
         "qs-clipboard-paste",
         "power-menu",
-        "power-menu-keyboard",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",

@@ -493,6 +493,7 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
             "tilo_read",
             "tilo_do",
             "tilo_find",
+            "tilo",
             "tilo_status",
             "tilo_put_begin",
             "tilo_put_append",

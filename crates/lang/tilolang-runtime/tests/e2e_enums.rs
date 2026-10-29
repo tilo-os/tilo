@@ -227,4 +227,88 @@ view drawing(c: Canvas) {
             "view state is not resource state"
         );
     }
+
+    const PRESSED: &str = r#"app so.tilo.pressed "Pressed"
+
+type Talk {
+    said: Text
+}
+
+root Talk
+
+default view talk for Talk
+
+action say(t: Talk, s: Text) {
+    t.said = s
+}
+
+view talk(t: Talk) {
+    lens open: Bool = false
+    lens draft: Text
+    window n: Int = 0
+    page {
+        text(if open { "open" } else { "shut" })
+        text("{n} more")
+        button("Toggle", on: set(open, not open))
+        button("More", on: set(n, n + 1))
+        input(bind: draft)
+        button("Send", on: say(t, "{draft}!"))
+    }
+}
+"#;
+
+    fn pressed() -> (Runtime, App, ResourceRef, tilolang_runtime::ViewInstance) {
+        let app = App::compile(PRESSED, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let talk = rt.create("Talk").unwrap();
+        let view = rt
+            .open_view(&me(), &app.view("talk"), vec![Value::resource(&talk)])
+            .unwrap();
+        (rt, app, talk, view)
+    }
+
+    fn button(view: &tilolang_runtime::ViewInstance, label: &str) -> String {
+        of_kind(view.tree(), "ui.Button")
+            .into_iter()
+            .find(|b| b.props.get("label") == Some(&Value::text(label)))
+            .unwrap_or_else(|| panic!("no button `{label}` in\n{}", dump(view.tree())))
+            .key
+            .clone()
+    }
+
+    // An argument computed from view state is evaluated when the control is pressed, on the
+    // view state as it is then: a second press before the view draws again sees the first.
+    #[test]
+    fn a_toggle_pressed_twice_before_the_view_draws_again_toggles_twice() {
+        let (_rt, _app, _talk, mut view) = pressed();
+        let (toggle, more) = (button(&view, "Toggle"), button(&view, "More"));
+        assert_eq!(texts(&view)[..2], ["shut", "0 more"]);
+        view.press(&toggle).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(texts(&view)[0], "open");
+        // Both presses arrive in one frame: the view has not drawn between them.
+        view.press(&toggle).unwrap();
+        view.press(&toggle).unwrap();
+        view.press(&more).unwrap();
+        view.press(&more).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(texts(&view)[..2], ["open", "2 more"]);
+        view.press(&toggle).unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(texts(&view)[0], "shut");
+    }
+
+    #[test]
+    fn an_argument_computed_from_a_draft_sends_the_last_keystroke() {
+        let (rt, _app, talk, mut view) = pressed();
+        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+        let send = button(&view, "Send");
+        view.edit(&draft, &Value::text("on my wa")).unwrap();
+        view.poll_patches().unwrap();
+        // The last keystroke and the press arrive together: the view has not drawn since.
+        view.edit(&draft, &Value::text("on my way")).unwrap();
+        view.press(&send).unwrap();
+        assert_eq!(rt.read(&talk, "said").unwrap(), Value::text("on my way!"));
+    }
 }

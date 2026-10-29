@@ -54,8 +54,8 @@ impl Harness {
         // No persistence dir / home so the test never touches the real user's
         // favourites or config.
         pin_locale();
-        let mut w = FileExplorerWidget::with_persistence(None, None);
-        w.navigate(start_dir.to_path_buf());
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(start_dir.to_path_buf());
         // Take the double-click window out of play. These tests drive two
         // presses around a full relayout, and on a loaded machine that costs
         // more than the real 450 ms — at which point a deliberate double-click
@@ -120,7 +120,11 @@ pub fn row_center(dir: &Path, index: usize) -> Point {
         h.move_cursor(Point::new(x, y));
         h.press();
         h.release();
-        if h.w.selected_indices() == vec![index] && h.w.current_path() == dir {
+        let (selected, shown) = {
+            let state = h.w.state();
+            (state.selected_indices(), state.current_path())
+        };
+        if selected == vec![index] && shown == dir {
             hits.push(y);
         } else if !hits.is_empty() {
             break;

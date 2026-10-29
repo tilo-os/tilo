@@ -39,6 +39,8 @@ pub enum UiEvent {
     Press(String),
     /// The input `key` now holds `text`.
     Edit(String, String),
+    /// The rich-text input `key` now holds `rich`.
+    EditRich(String, tilo_render_protocol::patch::rich::RichText),
     /// The checkbox `key` is now `checked`.
     Toggle(String, bool),
     /// The suggestion in the invocation card `key` was allowed or declined.
@@ -70,6 +72,7 @@ pub struct Reconciler {
     sink: EventSink,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
+    riches: HashMap<String, LocalState<tilo_render_protocol::patch::rich::RichText>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
     /// What the components it builds report, shared with every reconciler of the same view.
@@ -385,6 +388,7 @@ impl Reconciler {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
+            riches: HashMap::new(),
             navigation: None,
             adapter: Adapter::default(),
             rows: None,
@@ -399,6 +403,7 @@ impl Reconciler {
             sink: Rc::clone(&other.sink),
             texts: HashMap::new(),
             flags: HashMap::new(),
+            riches: HashMap::new(),
             navigation: None,
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
@@ -443,6 +448,28 @@ impl Reconciler {
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(false))
             .clone()
+    }
+
+    /// The rich text the rich input `key` shows, kept in step with what it is bound to.
+    pub fn rich_state(
+        &mut self,
+        key: &str,
+    ) -> LocalState<tilo_render_protocol::patch::rich::RichText> {
+        self.riches
+            .entry(key.to_owned())
+            .or_insert_with(|| {
+                LocalState::new(tilo_render_protocol::patch::rich::RichText::default())
+            })
+            .clone()
+    }
+
+    /// Show `rich` in the rich input `key`.
+    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) {
+        if let Some(state) = self.riches.get(key)
+            && state.with(|shown| shown != rich)
+        {
+            state.set(rich.clone());
+        }
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.

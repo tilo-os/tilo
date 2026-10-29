@@ -539,6 +539,8 @@ impl<T: Clone + 'static> Bound<T> {
 pub enum BoundValue {
     Text(Bound<String>),
     Bool(Bound<bool>),
+    /// Rich text, edited by its paragraphs and marks.
+    Rich(Bound<tilo_ui_graph::rich::RichText>),
 }
 
 /// A Rust type a binding may have.
@@ -558,7 +560,9 @@ impl BindType for Bound<String> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Text(bound) => Ok(bound),
-            BoundValue::Bool(_) => Err("binds Text, not a Bool".to_owned()),
+            BoundValue::Bool(_) | BoundValue::Rich(_) => {
+                Err("binds Text, not a Bool or RichText".to_owned())
+            }
         }
     }
 }
@@ -571,7 +575,24 @@ impl BindType for Bound<bool> {
     fn from_bound(bound: BoundValue) -> Result<Self, String> {
         match bound {
             BoundValue::Bool(bound) => Ok(bound),
-            BoundValue::Text(_) => Err("binds a Bool, not Text".to_owned()),
+            BoundValue::Text(_) | BoundValue::Rich(_) => {
+                Err("binds a Bool, not Text or RichText".to_owned())
+            }
+        }
+    }
+}
+
+impl BindType for Bound<tilo_ui_graph::rich::RichText> {
+    fn ty() -> Type {
+        Type::RichText
+    }
+
+    fn from_bound(bound: BoundValue) -> Result<Self, String> {
+        match bound {
+            BoundValue::Rich(bound) => Ok(bound),
+            BoundValue::Text(_) | BoundValue::Bool(_) => {
+                Err("binds RichText, not Text or a Bool".to_owned())
+            }
         }
     }
 }
@@ -878,6 +899,10 @@ pub fn registry() -> &'static [Entry] {
             entry::<crate::widget::Scrollable>(),
             entry::<crate::widget::Docked>(),
             entry::<TextInput>(),
+            entry::<crate::widget::RichInput>(),
+            entry::<crate::widget::ReactionStripWidget>(),
+            entry::<crate::widget::EmojiPickerButton>(),
+            entry::<crate::widget::Quote>(),
             entry::<ListRow>(),
             entry::<crate::widget::virtual_list::DescribedList>(),
             entry::<NavShell>(),

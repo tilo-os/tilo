@@ -165,6 +165,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
         device_public_key: row.device_cert.device_public_key,
         request_id: [2; 32],
         role: crate::join::MemberRole::Editor,
+        invitation: None,
     };
     row.admission = Some(proof.clone());
     row.admissions = vec![proof.clone(), proof];

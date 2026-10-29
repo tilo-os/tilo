@@ -204,16 +204,20 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             .clone();
         let thread = comments
             .iter()
-            .find(|c| c.anno_id.as_deref() == Some(note_id.as_str()))
+            .find(|c| c.pinned() == Some(note_id.as_str()))
             .expect("the note's thread");
-        assert_eq!(thread.body, "Check this");
-        assert_eq!(thread.replies.len(), 1, "the reply joined the thread");
-        assert_eq!(thread.replies[0].body, "Agreed");
-        assert_eq!(thread.replies[0].author, "Bo");
+        assert_eq!(thread.comment.text, "Check this");
+        assert_eq!(
+            thread.comment.replies.len(),
+            1,
+            "the reply joined the thread"
+        );
+        assert_eq!(thread.comment.replies.at(0).unwrap().1.text, "Agreed");
+        assert_eq!(thread.comment.replies.at(0).unwrap().1.author, "Bo");
         assert!(
-            comments.iter().any(
-                |c| c.anno_id.as_deref() == Some(highlight.id.as_str()) && c.body == "Original"
-            ),
+            comments
+                .iter()
+                .any(|c| c.pinned() == Some(highlight.id.as_str()) && c.comment.text == "Original"),
             "a markup annotation's text became its comment"
         );
         assert!(
@@ -290,9 +294,9 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let threads = PdfMarkup::of(&state2.doc).list_comments();
         let note_thread = threads
             .iter()
-            .find(|c| c.body == "Check this again")
+            .find(|c| c.comment.text == "Check this again")
             .expect("the note's thread");
-        assert_eq!(note_thread.replies.len(), 2);
+        assert_eq!(note_thread.comment.replies.len(), 2);
     }
 
     eprintln!("phase form_values_in_the_file_become_records_and_only_changes_are_written");
@@ -337,19 +341,17 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
     {
         let hash = "ab".repeat(32);
         let mut plan = crate::adopt::ImportPlan::default();
-        plan.annotations.push((
-            Annotation {
-                id: crate::adopt::imported_id(&hash, 0, 3),
-                space: crate::model::GeomSpace::User,
-                ..Annotation::new(
-                    1,
-                    AnnoKind::Note { x: 1.0, y: 2.0 },
-                    HighlightColor::Yellow,
-                    "Ada",
-                )
-            },
-            "source-1".into(),
-        ));
+        plan.annotations.push(Annotation {
+            id: crate::adopt::imported_id(&hash, 0, 3),
+            page_id: "source-1".into(),
+            space: crate::model::GeomSpace::User,
+            ..Annotation::new(
+                1,
+                AnnoKind::Note { x: 1.0, y: 2.0 },
+                HighlightColor::Yellow,
+                "Ada",
+            )
+        });
         let bytes = PdfMarkup::planned(2);
         let mut left = AutoCommit::load(&bytes).unwrap();
         let mut right = AutoCommit::load(&bytes).unwrap();
@@ -485,7 +487,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         let doc = &mut state.doc;
         let signature = Signature {
-            id: Signature::new_id(),
+            id: new_id(),
             page: 1,
             rect: PtRect::new(40.0, 60.0, 200.0, 60.0),
             signer: "محمد 李小龍".into(),

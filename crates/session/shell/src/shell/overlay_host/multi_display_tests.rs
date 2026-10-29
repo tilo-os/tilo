@@ -214,8 +214,10 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
     desk.on_each_display(|desk, display, name| {
+        desk.fb.host_mut().force_power_menu_for_visual_test();
+        desk.settle();
+        desk.settle();
         let host = desk.fb.host_mut();
-        host.layers.power_menu.open();
         let rows = host.power_menu_semantic_rects();
         assert!(!rows.is_empty(), "the power menu has rows");
         for (row, rect) in rows {
@@ -1319,15 +1321,18 @@ impl Desk {
     /// Three fingers swiping up on the touchpad: toward the strip below.
     fn swipe_to_strip_below(&mut self) {
         let t0 = ui::time::now();
-        let ms = |n: u64| std::time::Duration::from_millis(n);
+        let ms = |n: u64| {
+            t0.checked_add(std::time::Duration::from_millis(n))
+                .expect("a swipe a few milliseconds long stays in range")
+        };
         let host = self.fb.host_mut();
         for (step, (travel, at)) in [(200.0, 8), (400.0, 16), (600.0, 24), (800.0, 32)]
             .into_iter()
             .enumerate()
         {
-            let _ = host.update_strip_deck_drag(travel, step == 0, t0 + ms(at));
+            let _ = host.update_strip_deck_drag(travel, step == 0, ms(at));
         }
-        assert!(host.end_strip_deck_drag(t0 + ms(40), false));
+        assert!(host.end_strip_deck_drag(ms(40), false));
         self.settle();
     }
 }

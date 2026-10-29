@@ -12,10 +12,13 @@
 //! (`crate::PdfApp::stage`).
 
 use ui::framework::Fixture;
-use ui::tilo_resource::{Collection, Edit, Id, Invoke};
+use ui::tilo_resource::{Edit, Id, Invoke};
 
-use crate::markup::{PdfMarkup, StoredAnnotation, StoredComment, StoredReply, StoredSignature};
-use crate::model::{AnnoKind, GeomSpace, HighlightColor, PtRect, SignatureInk};
+use crate::markup::{PdfMarkup, StoredSignature};
+use crate::model::{
+    AnnoKind, Annotation, Comment, GeomSpace, HighlightColor, PdfAnchor, PtRect, Reply,
+    SignatureInk,
+};
 
 /// Every named scenario `--shots --scenario NAME` captures.
 pub const SCENARIOS: &[&str] = &[
@@ -119,46 +122,38 @@ pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
 pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
     let paths = PdfMarkup::paths();
     let markup = |id: &str, mark: AnnoKind, color: HighlightColor, author: &str| {
-        paths.annotations.insert(&StoredAnnotation {
+        paths.annotations.insert(&Annotation {
             id: id.into(),
             page_id: "source-1".into(),
-            mark,
+            kind: mark,
             color,
             author: author.into(),
-            chars: None,
-            created_ms: 0,
-            space: GeomSpace::Page,
+            ..Annotation::default()
         })
     };
     let comment = |id: &str,
                    anno: Option<&str>,
                    author: &str,
-                   created: i64,
                    body: &str,
                    resolved: bool,
                    replies: &[(&str, &str, &str)]| {
-        let mut thread = Collection::new();
+        let anchor = PdfAnchor {
+            page_id: "source-1".into(),
+            annotation: anno.unwrap_or_default().into(),
+        };
+        let mut thread = Comment {
+            resolved,
+            ..Comment::new(anchor, author.into(), String::new(), body.into())
+        };
         for (id, author, body) in replies {
-            thread.push(
+            thread.replies.push(
                 Id::from_raw(*id),
-                StoredReply {
-                    author: (*author).into(),
-                    text: (*body).into(),
-                    rich: Vec::new(),
-                },
+                Reply::new((*author).into(), String::new(), (*body).into()),
             );
         }
-        paths.comments.insert(&StoredComment {
-            id: id.into(),
-            anno: anno.unwrap_or_default().into(),
-            page_id: "source-1".into(),
-            author: author.into(),
-            text: body.into(),
-            rich: Vec::new(),
-            created,
-            resolved,
-            replies: thread,
-        })
+        paths
+            .comments
+            .insert_as(&Id::from_raw(id), usize::MAX, &thread)
     };
     vec![
         // The lines of 11 pt Helvetica sit on baselines 16 pt apart; the
@@ -197,7 +192,6 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             NOTE_COMMENT,
             Some(NOTE),
             "Alice",
-            1,
             NOTE_COMMENT_BODY,
             false,
             &[
@@ -213,7 +207,6 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             "sample-highlight-comment",
             Some(HIGHLIGHT),
             "Bob",
-            2,
             "This sentence is the thesis of the whole notebook — let's keep it verbatim.",
             false,
             &[],
@@ -222,7 +215,6 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
             "sample-page-comment",
             None,
             "Carol",
-            3,
             "Typography reads cleanly at fit-page zoom. Approved.",
             true,
             &[],

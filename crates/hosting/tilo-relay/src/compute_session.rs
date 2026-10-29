@@ -487,10 +487,14 @@ async fn attach_workspace(
         Ok(()) => {
             // The backlog is a directory scan: blocking I/O, so it runs on
             // the blocking pool. The workspace lock moves with it, so nothing
-            // is queued between the scan and the attach below.
+            // is queued between the scan and the attach below. The compute
+            // state is made first: making it ends the jobs an earlier run
+            // left unfinished, which queues their failures and withdraws
+            // their requests, and the backlog must include that.
             let device = peer.device_public_key;
-            let workspace = workspace.lock_owned().await;
+            let mut workspace = workspace.lock_owned().await;
             let (mut workspace, pending) = tokio::task::spawn_blocking(move || {
+                crate::compute_transport::compute_state(&mut workspace);
                 let pending = workspace.store.load_compute_pending(&device);
                 (workspace, pending)
             })

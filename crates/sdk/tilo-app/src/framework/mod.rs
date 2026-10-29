@@ -249,8 +249,8 @@
 //! * **Files of the mounted filesystem** an app shows (a file manager's
 //!   selected file) have a history of their own, kept by the filesystem's
 //!   projection rather than the app's document. The app declares it
-//!   ([`ResourceApp::FILE_HISTORY`]) and its surface names the file
-//!   ([`SurfaceCx::file_history`]); History offers it beside the resource's.
+//!   ([`ResourceApp::FILE_HISTORY`]) and its view names the file
+//!   ([`RecordEnv::file_history`]); History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`RecordEnv::mode`]). Only a live view starts work that reaches outside
 //!   the process (a mail engine, a socket, a journal reader, a hardware

@@ -106,7 +106,7 @@ fn what_a_task_does_through_the_door_is_its_own_for_the_person_and_grouped_under
     settle(&mut app);
     // The task adds one by a block, and one by the published verb.
     let (agent, ambient) = task();
-    let block = format!("notes.new_note(@notes.Notebook:{root})");
+    let block = format!("notes.new_note(@notes.Notes:{root})");
     let run_block = action_id(&mut app, HOST, "Run a block");
     let answer = app
         .invoke(
@@ -308,15 +308,13 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
         .map(ui::history_source::sentence::sentence)
         .collect();
     assert!(
-        sentences
-            .iter()
-            .any(|sentence| sentence == "Created Notebook"),
+        sentences.iter().any(|sentence| sentence == "Created Notes"),
         "the notebook the window made reads as native history's creation: {sentences:?}"
     );
     assert!(
         sentences
             .iter()
-            .any(|sentence| sentence == "New note: Notebook"),
+            .any(|sentence| sentence == "New note: Notes"),
         "the person's action reads by its label: {sentences:?}"
     );
     for sentence in &sentences {
@@ -364,7 +362,7 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
     let read = |app: &mut HostedApp, resource: &str| read_at(app, resource, None);
     let content = read(&mut app, &notebook);
     assert_eq!(content["item"], json!(notebook));
-    assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Notebook")));
+    assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Notes")));
     let resources = app.harness().resources();
     let published = flattened(&resources)
         .into_iter()
@@ -375,7 +373,7 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
         published.as_deref(),
         "named as the window publishes it: {content:#}"
     );
-    let notes = &content["fields"]["notes"];
+    let notes = &content["fields"]["items"];
     assert_eq!(notes["count"], json!(1), "{content:#}");
     let note = notes["items"][0]["item"]
         .as_str()
@@ -393,10 +391,10 @@ fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
     // A version of the past is read as it was, and the window's runtime stays where it is.
     let past = read_at(&mut app, &notebook, Some(&before.join("+")));
     assert_eq!(
-        past["content"]["fields"]["notes"]["count"],
+        past["content"]["fields"]["items"]["count"],
         json!(0),
         "{past:#}"
     );
     let now = read(&mut app, &notebook);
-    assert_eq!(now["fields"]["notes"]["count"], json!(1), "{now:#}");
+    assert_eq!(now["fields"]["items"]["count"], json!(1), "{now:#}");
 }

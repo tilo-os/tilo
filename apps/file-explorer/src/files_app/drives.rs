@@ -108,7 +108,7 @@ pub(super) fn drive_place(drive: &DriveEntry) -> places_sidebar::DrivePlace {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Show `drives` and stop asking the shell: the scenario and test seam.
     /// The live window never starts with drives of its own.
     #[doc(hidden)]

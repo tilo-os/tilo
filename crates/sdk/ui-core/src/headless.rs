@@ -1317,77 +1317,6 @@ impl FrameHarness {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    fn inspect_node<R>(
-        &self,
-        node: NodeId,
-        callback: impl FnOnce(&dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
-        unsafe {
-            crate::bound_dispatch::inspect_bound_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                callback,
-            )
-        }
-    }
-    fn mutate_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // Whatever reaches a widget through the map may change what the
-        // next frame reads, wherever it is called from.
-        self.invalidate_local();
-        // SAFETY: exclusive FrameHarness access prevents overlapping target references.
-        unsafe {
-            crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
-        }
-    }
-    fn dispatch_semantic_node<R>(
-        &mut self,
-        node: NodeId,
-        action: &crate::a11y::Action,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, String> {
-        self.invalidate_local();
-        let author = self.author.clone();
-        // SAFETY: the runner exclusively owns the unchanged admitted tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_semantic_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                action,
-                &mut self.state,
-                crate::bound_dispatch::SemanticCaller {
-                    authority: &self.permissions,
-                    author: &author,
-                },
-                callback,
-            )
-        }
-    }
-    fn dispatch_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        self.invalidate_local();
-        // SAFETY: exclusive FrameHarness owns both maps and the stable live tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                &mut self.state.doc,
-                &self.state.root,
-                callback,
-            )
-        }
-    }
-
     /// Mirror the live host's focused-control fallback for Enter and Space.
     /// Widgets that consume the press keep ownership; releases never activate.
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
@@ -4688,16 +4617,7 @@ impl FrameHarness {
         {
             return order;
         }
-        let scopes: Vec<NodeId> = self
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .collect();
-        crate::focus_navigation::within_keyboard_scope(order, &scopes, &self.taffy)
+        self.tree().within_keyboard_scope(order)
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -5156,15 +5076,6 @@ impl FrameHarness {
     pub fn focused(&self) -> Option<NodeId> {
         self.drain_component_wakes();
         self.focused
-    }
-
-    /// Mirrors [`crate::app::App`]: an explicitly opted-in focused widget
-    /// receives Tab before the host considers focus traversal.
-    fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
-                .unwrap_or(false)
-        })
     }
 
     /// Move keyboard focus to the widget at `node`, toggling `set_focus` on
@@ -8447,24 +8358,7 @@ impl FrameHarness {
             .history
             .as_mut()?
             .prepare_pending_control(token, confirmed)?;
-        let id = prepared.id;
-        let result = self.dispatch_prepared_history_control(prepared);
-        let history = self.history.as_mut()?;
-        match result {
-            Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                history.pending_control_needs_confirmation(id);
-                Some(crate::history_mode::pending_controls::PendingControlStatus::NeedsConfirmation)
-            }
-            Ok(_) => {
-                history.pending_control_consumed(id);
-                Some(crate::history_mode::pending_controls::PendingControlStatus::Consumed)
-            }
-            Err(error) => {
-                let reason = error.to_string();
-                history.pending_control_refused(id, reason.clone());
-                Some(crate::history_mode::pending_controls::PendingControlStatus::Refused(reason))
-            }
-        }
+        self.settle_history_control(prepared, confirmed)
     }
 
     fn service_pending_history_commands(&mut self) -> bool {
@@ -8487,16 +8381,7 @@ impl FrameHarness {
                         .as_mut()
                         .and_then(|history| history.prepare_pending_control_typed(&token, &value));
                     if let Some(prepared) = prepared {
-                        let id = prepared.id;
-                        let outcome = self.dispatch_prepared_history_control(prepared);
-                        if let Some(history) = self.history.as_mut() {
-                            match outcome {
-                                Ok(_) => history.pending_control_consumed(id),
-                                Err(error) => {
-                                    history.pending_control_refused(id, error.to_string())
-                                }
-                            }
-                        }
+                        self.settle_history_control(prepared, true);
                     }
                 }
                 crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
@@ -9086,42 +8971,6 @@ impl FrameHarness {
             self.send(&pointer_event.window_event(device_id));
         }
         self.dispatching_touch_pointer = nested;
-    }
-
-    /// Whether a laid-out widget claims raw per-finger touch at `point`
-    /// (logical coords); see [`Widget::claims_raw_touch`].
-    fn claims_raw_touch_at(&self, point: Point) -> bool {
-        self.node_map.keys().any(|&node| {
-            self.inspect_node(node, |widget| {
-                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
-            })
-            .unwrap_or(false)
-        })
-    }
-
-    /// What a contact beginning at `point` (logical coords) means: raw for a
-    /// widget that reads fingers itself, else what the widget under it
-    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
-    /// emulation.
-    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
-        use crate::interaction::TouchClaim;
-        if self.claims_raw_touch_at(point) {
-            return TouchClaim::Raw;
-        }
-        self.node_map
-            .keys()
-            .find_map(|&node| {
-                self.inspect_node(node, |widget| {
-                    if widget.get_rect().contains(point) {
-                        widget.touch_claim(point)
-                    } else {
-                        TouchClaim::Pointer
-                    }
-                })
-                .ok()
-                .filter(|claim| *claim != TouchClaim::Pointer)
-            })
-            .unwrap_or(TouchClaim::Pointer)
     }
 
     /// Fire a touch long-press whose hold deadline passed at `now`.
@@ -10180,6 +10029,7 @@ impl crate::host_core::HostCore for FrameHarness {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root.as_ref(),
+            history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.node_map,
             taffy: &self.taffy,
@@ -10201,6 +10051,7 @@ impl crate::host_core::HostCore for FrameHarness {
             crate::host_core::HostTree {
                 state: &self.state,
                 root: self.root.as_ref(),
+                history: self.history.as_deref(),
                 bindings: &self.bindings,
                 node_map: &self.node_map,
                 taffy: &self.taffy,
@@ -10212,8 +10063,26 @@ impl crate::host_core::HostCore for FrameHarness {
         )
     }
 
+    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
+        crate::host_core::HostDocument {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            permissions: &self.permissions,
+            author: &self.author,
+        }
+    }
+
+    fn widget_reached(&mut self) {
+        self.invalidate_local();
+    }
+
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root.as_mut()
+    }
+
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+        self.history.as_mut()
     }
 
     fn dispatch_current_history_control(

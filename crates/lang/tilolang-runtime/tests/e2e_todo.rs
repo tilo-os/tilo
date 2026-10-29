@@ -105,7 +105,7 @@ mod cases {
         let b = t.add("b");
         let view = t.view();
         let keys: Vec<&String> = rows(view.tree()).iter().map(|r| &r.key).collect();
-        let item_id = |r: &ResourceRef| r.path.last().unwrap().item.clone();
+        let item_id = |r: &ResourceRef| r.item.clone().unwrap();
         assert!(keys[0].contains(&item_id(&a)), "{keys:?}");
         assert!(keys[1].contains(&item_id(&b)), "{keys:?}");
         assert_ne!(keys[0], keys[1]);

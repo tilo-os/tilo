@@ -279,6 +279,138 @@
       }
     },
     {
+      "name": "RichInput",
+      "doc": "A field to type rich text into, bound to the rich text it edits: each reference a completion picks is written as a reference, which every reader sees as their own inline view of what it names.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be typed into now.",
+          "type": "bool"
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The rich text it edits.",
+          "type": "rich_text",
+          "merge": "rich"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "Reactions",
+      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
+      "props": [
+        {
+          "name": "emoji",
+          "doc": "The emoji reacted with, in the order they were first used.",
+          "type": {
+            "list": "text"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who reacted with each, in the same order.",
+          "type": {
+            "list": {
+              "list": "principal"
+            }
+          }
+        },
+        {
+          "name": "can_react",
+          "doc": "Whether the person may react; they may unless it says not.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "toggle",
+          "doc": "An emoji was pressed or picked: carries it. Your reaction with it is added, or taken back when you had reacted with it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
+      "name": "EmojiPicker",
+      "doc": "A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the button is called; \"Add reaction\" unless it says.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pick",
+          "doc": "An emoji was picked: carries it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Quote",
+      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a close button (the banner: \"stop replying\").",
+      "props": [
+        {
+          "name": "excerpt",
+          "doc": "The start of what the quoted message says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "caption",
+          "doc": "What the quote is to the message (`Replying to`), shown before the author.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "dismiss",
+          "doc": "The close button was pressed. Without it there is no close button."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "excerpt"
+      }
+    },
+    {
       "name": "ListRow",
       "doc": "A row of a list: what an item is, in one line, with the start of its content under it and a quiet fact on its trailing edge. Pressing it activates it: a list opens what it shows.",
       "props": [
@@ -1198,7 +1330,7 @@
     },
     {
       "name": "ContextMenu",
-      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place, a typing field to filter them, and asks before a destructive one.",
+      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place and a typing field to filter them. A destructive command runs at once and is undone afterwards, never confirmed first.",
       "slots": [
         {
           "name": "items",

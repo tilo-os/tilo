@@ -1024,7 +1024,6 @@ impl Workbook {
         let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
         let text = annotation(&text)?;
-        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
         let area = self
             .sheet_mut(sheet)?
@@ -1034,8 +1033,7 @@ impl Workbook {
             sheet: sheet.clone(),
             area,
         };
-        self.comments
-            .push(id, Comment::new(cells, author, String::new(), text));
+        self.comments.push(id, Comment::written(cx, cells, text));
         Ok(())
     }
 
@@ -1048,13 +1046,13 @@ impl Workbook {
         #[param("Reply")] text: String,
     ) -> Result<(), Refusal> {
         let text = annotation(&text)?;
-        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
+        let reply = Reply::written(cx, text);
         self.comments
             .get_mut(comment)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))?
             .replies
-            .push(id, Reply::new(author, String::new(), text));
+            .push(id, reply);
         Ok(())
     }
 

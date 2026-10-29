@@ -3,6 +3,7 @@
 //! the native `App` drives, fed from host input and drawn into the frame's
 //! scene over everything but other people's pointers.
 
+use crate::host_core::HostCore as _;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 

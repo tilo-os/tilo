@@ -100,6 +100,7 @@ impl Adapter {
                     return match fired.value {
                         Some(Prop::Text(text)) => Some(UiEvent::Edit(fired.key, text)),
                         Some(Prop::Bool(checked)) => Some(UiEvent::Toggle(fired.key, checked)),
+                        Some(Prop::Rich(rich)) => Some(UiEvent::EditRich(fired.key, rich)),
                         _ => None,
                     };
                 }
@@ -356,6 +357,12 @@ impl Source for NodeSource<'_> {
             }),
             Type::Bool => BoundValue::Bool(Bound {
                 state: self.reconciler.flag_state(&self.node.key),
+                edits,
+                name: called,
+                path,
+            }),
+            Type::RichText => BoundValue::Rich(Bound {
+                state: self.reconciler.rich_state(&self.node.key),
                 edits,
                 name: called,
                 path,

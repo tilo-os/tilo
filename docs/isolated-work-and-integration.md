@@ -38,8 +38,8 @@ Everything below is in the tree; each line names the owner.
 | Need | Today | Owner |
 |---|---|---|
 | Work from a known state | Checkpoints name a version; historical typed reads reconstruct it in place | `history_source::steps::checkpoint`, framework `read({version, item})` |
-| Compare without touching the live resource | `diff` returns differing exact paths and both full head arrays; History renders typed before/after | `framework::history`, `history_source::steps::changed_items` |
-| Bring selected work in | `review-restore` pins target and live heads; `restore-reviewed` applies only if the live frontier still matches, as one attributed, undoable change | `framework::history::review` |
+| Compare without touching the live resource | `diff` returns differing exact paths and both full head arrays; History renders typed before/after | `collaboration::history_source::verbs`, `history_source::steps::changed_items` |
+| Bring selected work in | `review-restore` pins target and live heads; `restore-reviewed` applies only if the live frontier still matches, as one attributed, undoable change | `collaboration::history_source::verbs::review` |
 | Keep concurrent work | reviewed restore patches only the selected paths; a peer's unrelated change survives | `history_source::steps::restore_paths` |
 | Attribution | every change carries actor, time and the action's context (app, resource, item, work group, invoker, cause); agent steps are grouped by run | `tilo_actions::ActionContext`, `executor` |
 | Undo without rewriting | undo appends the inverse change; a run's steps are named and taken back together | `history_source::steps::undo`, `Scope::Run` |

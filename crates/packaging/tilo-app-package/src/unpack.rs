@@ -48,9 +48,25 @@ pub enum UnpackError {
 pub fn validate_materialized_payload(
     manifest: &Manifest,
     collection: &Collection,
+    len_of: impl FnMut(&BlobHash) -> Option<u64>,
+) -> Result<(), UnpackError> {
+    validate_materialized_payload_within(crate::app_size_limit(manifest), collection, len_of)
+}
+
+/// [`validate_materialized_payload`] against the application budget `limit`
+/// the caller chose for the package (its [`crate::app_size_limit`], or a
+/// development store's [`crate::local_build_size_limit`]); `None`, a
+/// non-app bundle, is not bounded here.
+///
+/// # Errors
+///
+/// As [`validate_materialized_payload`].
+pub fn validate_materialized_payload_within(
+    limit: Option<u64>,
+    collection: &Collection,
     mut len_of: impl FnMut(&BlobHash) -> Option<u64>,
 ) -> Result<(), UnpackError> {
-    let Some(limit) = crate::app_size_limit(manifest) else {
+    let Some(limit) = limit else {
         return Ok(());
     };
     if collection.entries.len() > crate::MAX_APP_PAYLOAD_ENTRIES {

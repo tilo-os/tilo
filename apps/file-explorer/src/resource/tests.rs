@@ -185,7 +185,9 @@ fn pinning_a_folder_is_a_bookmark_action() {
     let mut app = TestApp::<FileExplorerShell>::new().unwrap();
     assert_eq!(app.state().bookmarks(), crate::places::DEFAULT_PLACES);
     app.with_surface(|files: &mut FileExplorerWidget| {
-        files.apply_command(crate::FileCommand::AddFavorite(folder.path().to_path_buf()))
+        files
+            .state()
+            .apply_command(crate::FileCommand::AddFavorite(folder.path().to_path_buf()))
     })
     .unwrap();
     app.settle();
@@ -200,7 +202,11 @@ fn pinning_a_folder_is_a_bookmark_action() {
     assert!(!app.state().bookmarks().contains(&place));
     let shown = app
         .with_surface(|files: &mut FileExplorerWidget| {
-            files.favorites().iter().any(|f| f.path == folder.path())
+            files
+                .state()
+                .favorites()
+                .iter()
+                .any(|f| f.path == folder.path())
         })
         .unwrap();
     assert!(!shown, "the sidebar shows the stored places");
@@ -208,7 +214,11 @@ fn pinning_a_folder_is_a_bookmark_action() {
     app.invoke(pin(&place, None)).unwrap();
     let shown = app
         .with_surface(|files: &mut FileExplorerWidget| {
-            files.favorites().iter().any(|f| f.path == folder.path())
+            files
+                .state()
+                .favorites()
+                .iter()
+                .any(|f| f.path == folder.path())
         })
         .unwrap();
     assert!(shown, "an agent's pin reaches the sidebar");
@@ -220,8 +230,8 @@ fn view_preferences_are_personal_settings() {
     let mut app = TestApp::<FileExplorerShell>::new().unwrap();
     let before = app.peer_document().get_heads();
     app.with_surface(|files: &mut FileExplorerWidget| {
-        files.set_view_mode(crate::model::ViewMode::Grid);
-        files.apply_command(crate::FileCommand::ZoomIn);
+        files.state().set_view_mode(crate::model::ViewMode::Grid);
+        files.state().apply_command(crate::FileCommand::ZoomIn);
     })
     .unwrap();
     app.settle();
@@ -336,7 +346,7 @@ fn published_selection_capture_observes_the_real_selected_rows() {
     let guard = crate::model::fixture_io_guard::DenyAmbientIo::new();
     let mut app = TestApp::<FileExplorerShell>::capture(Some("selection-actions")).unwrap();
     assert_eq!(
-        app.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+        app.with_surface(|files: &mut FileExplorerWidget| files.state().selected_indices().len()),
         Some(2)
     );
     let frame = app.harness().inspection_json().unwrap();
@@ -363,20 +373,22 @@ fn published_selection_changes_stay_in_the_addressed_files_window() {
         })
         .unwrap();
     assert_eq!(
-        source.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+        source
+            .with_surface(|files: &mut FileExplorerWidget| files.state().selected_indices().len()),
         Some(2)
     );
     assert_eq!(
-        other.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+        other.with_surface(|files: &mut FileExplorerWidget| files.state().selected_indices().len()),
         Some(1)
     );
     source.effect(&FilesEffect::ClearSelection).unwrap();
     assert_eq!(
-        source.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+        source
+            .with_surface(|files: &mut FileExplorerWidget| files.state().selected_indices().len()),
         Some(0)
     );
     assert_eq!(
-        other.with_surface(|files: &mut FileExplorerWidget| files.selected_indices().len()),
+        other.with_surface(|files: &mut FileExplorerWidget| files.state().selected_indices().len()),
         Some(1)
     );
     assert!(source.state().ops.is_empty());
