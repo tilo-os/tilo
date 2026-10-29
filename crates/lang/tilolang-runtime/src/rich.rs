@@ -9,8 +9,13 @@
 //! A reference inside the text is a run marked `mention`, as native apps mark one: the run is
 //! what the text says (`@Ada`, `#general`), the mark's value names what it refers to. A person
 //! is named by their participant id, as native Chat always named one; any other resource by
-//! its reference ([`REFERENCE_SCHEME`]). Search, notifications and backlinks read the marks,
+//! its reference ([`Reference`]). Search, notifications and backlinks read the marks,
 //! never the prose.
+//!
+//! The run keeps the title its resource had when the text was written. Plain text shown to a
+//! reader is read for them ([`RichValue::read_text`]): a resource they hold by its title now,
+//! one they cannot read as only being there, as the reference's chip reads; the run as written
+//! ([`RichValue::written_text`]) is never shown.
 //!
 //! Paragraphs are cited by anchor, `¶2`, or `¶2.1` for the first item of the list that is the
 //! second top-level paragraph ([`RichValue::anchors`]).
@@ -29,6 +34,9 @@ pub const MENTION: &str = tilo_reference::embed::MARK;
 /// What a `mention` mark refers to: a person, or a resource by the catalogue's reference
 /// (`tilo_reference::embed`), the one form native apps write too.
 pub use tilo_reference::Embed as Reference;
+
+/// How a reference reads in plain text for one reader (`tilo_reference::embed::Reading`).
+pub use tilo_reference::embed::{Reading, UNSHARED, UNSHARED_PHRASE};
 
 /// The catalogue's id of the tilolang resource `id` of `app`, as its app publishes it
 /// (`tilolang_tilo::publish::resource_id`).
@@ -85,6 +93,19 @@ fn paragraph(text: &str) -> BlockView {
     }
 }
 
+/// The paragraph `b` as one reader reads it ([`RichValue::read_text`]).
+fn read_block(
+    b: &BlockView,
+    read: &mut dyn FnMut(&Reference) -> Reading,
+    unshared: &str,
+) -> String {
+    let runs = b.marks.iter().filter_map(|m| match &m.value {
+        MarkValue::Str(value) if m.name == MENTION => Some((m.start, m.end, value.as_str())),
+        _ => None,
+    });
+    tilo_reference::embed::read_text(&b.text, runs, read, unshared)
+}
+
 impl RichValue {
     /// `RichText("…")`: the text, a paragraph per line, unformatted.
     #[must_use]
@@ -106,10 +127,11 @@ impl RichValue {
             .all(|b| b.text.trim().is_empty() && b.kind == "paragraph" && b.children.is_empty())
     }
 
-    /// The text, a line per paragraph: what search indexes and a plain-text reader reads. A
-    /// reference reads as its run (`@Ada`).
+    /// The text as written, a line per paragraph: each reference as its run, which keeps the
+    /// title its resource had when it was written. Never what a reader is shown: they read
+    /// [`Self::read_text`].
     #[must_use]
-    pub fn plain_text(&self) -> String {
+    pub fn written_text(&self) -> String {
         self.blocks
             .iter()
             .map(|b| b.text.as_str())
@@ -117,16 +139,37 @@ impl RichValue {
             .join("\n")
     }
 
-    /// What a row shows of it: its first line with text, as plain text.
+    /// The text as one reader reads it, a line per paragraph: each reference as `read` says it
+    /// reads for them (a resource they hold by its title now, one they cannot read as
+    /// `unshared`), as its chip does (`tilo_reference::embed::read_text`). What search, rows,
+    /// notifications and agents read of it.
     #[must_use]
-    pub fn excerpt(&self) -> String {
+    pub fn read_text(&self, read: &mut dyn FnMut(&Reference) -> Reading, unshared: &str) -> String {
         self.blocks
             .iter()
-            .flat_map(|b| b.text.lines())
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or_default()
-            .to_owned()
+            .map(|b| read_block(b, read, unshared))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// What a row shows of it to one reader: the first line with text of
+    /// [`Self::read_text`].
+    #[must_use]
+    pub fn read_excerpt(
+        &self,
+        read: &mut dyn FnMut(&Reference) -> Reading,
+        unshared: &str,
+    ) -> String {
+        for b in &self.blocks {
+            if b.text.trim().is_empty() {
+                continue;
+            }
+            let text = read_block(b, read, unshared);
+            if let Some(line) = text.lines().map(str::trim).find(|line| !line.is_empty()) {
+                return line.to_owned();
+            }
+        }
+        String::new()
     }
 
     /// Every reference it holds, in the order the text says them, each once.
@@ -353,7 +396,8 @@ mod tests {
     #[test]
     fn the_excerpt_is_the_first_line_with_text() {
         assert_eq!(
-            RichValue::from_text("\n  \nHello there\nmore").excerpt(),
+            RichValue::from_text("\n  \nHello there\nmore")
+                .read_excerpt(&mut |_| Reading::AsWritten, ""),
             "Hello there"
         );
         assert!(RichValue::from_text("\n  ").is_empty());
@@ -370,7 +414,19 @@ mod tests {
         v.push_reference("#general", &ch);
         v.push_text(", thanks ");
         v.push_reference("@Ada", &ada);
-        assert_eq!(v.references(), [ada, ch]);
-        assert_eq!(v.plain_text(), "Ask @Ada in #general, thanks @Ada");
+        assert_eq!(v.references(), [ada, ch.clone()]);
+        assert_eq!(v.written_text(), "Ask @Ada in #general, thanks @Ada");
+        // A reader reads each reference as it reads for them, never by the run alone.
+        let mut read = |r: &Reference| {
+            if *r == ch {
+                Reading::Unshared
+            } else {
+                Reading::Title("@Ada Lovelace".into())
+            }
+        };
+        assert_eq!(
+            v.read_text(&mut read, "Not shared with you"),
+            "Ask @Ada Lovelace in Not shared with you, thanks @Ada Lovelace"
+        );
     }
 }

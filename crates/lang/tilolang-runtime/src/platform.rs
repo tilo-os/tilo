@@ -243,7 +243,10 @@ impl Core {
     }
 
     /// Take `(resource, field)` reads into the running view's reads, when a view runs.
-    fn note_reads(&self, reads: impl IntoIterator<Item = (String, String)>) -> HResult<()> {
+    pub(crate) fn note_reads(
+        &self,
+        reads: impl IntoIterator<Item = (String, String)>,
+    ) -> HResult<()> {
         let mut frames = self.frames.borrow_mut();
         if let FrameKind::View(vs) = &mut frames.top_mut()?.kind {
             vs.reads.extend(reads);

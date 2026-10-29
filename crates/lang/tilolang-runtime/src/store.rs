@@ -87,7 +87,8 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
         FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
         FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
         FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
-        FieldValue::Rich(r) => Ok(Lit::Text(r.plain_text())),
+        // What rich text says depends on who reads it (its references): a filter compares none.
+        FieldValue::Rich(_) => Err(invalid(&"rich text")),
         FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
         FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
         FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
@@ -561,6 +562,18 @@ pub trait Store {
     ///
     /// `NotFound` when the document or item does not exist.
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
+
+    /// How a reference in rich text reads for the person this store holds resources for: a
+    /// resource they hold by what it is called now, one they cannot read as only being there.
+    /// A store that cannot tell what its reader holds reads every resource as not shared: a
+    /// reference never grants a read.
+    fn reading(&self, reference: &crate::rich::Reference) -> crate::rich::Reading {
+        if reference.as_person().is_some() {
+            crate::rich::Reading::AsWritten
+        } else {
+            crate::rich::Reading::Unshared
+        }
+    }
 
     /// Open a transaction. Documents join it when first mutated.
     ///

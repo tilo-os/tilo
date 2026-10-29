@@ -100,7 +100,8 @@ pub fn display(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
-        Value::Rich(rich) => rich.plain_text(),
+        // As the person reading reads it: each reference as its chip reads for them.
+        Value::Rich(rich) => ui::widget::rich_doc::plain_text(rich),
         _ => String::new(),
     }
 }
@@ -1560,5 +1561,43 @@ mod tests {
         assert_eq!(display(&Value::Int(-2)), "-2");
         assert_eq!(display(&Value::some(Value::Int(3))), "3");
         assert_eq!(display(&Value::Unit), "");
+    }
+
+    #[test]
+    fn rich_text_reads_as_its_reader_reads_each_reference() {
+        use tilo_render_protocol::patch::rich::{Attr, Block, Embed, InlineView, Mark, RichText};
+        const TASK: &str =
+            r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
+        // Written while the task was called "Acquisition plan"; the window is told how the
+        // reference reads for the person it shows the text to.
+        let read_as = |view: InlineView| {
+            Value::Rich(RichText {
+                blocks: vec![Block {
+                    kind: "paragraph".into(),
+                    text: "Notes in Acquisition plan".into(),
+                    marks: vec![Mark {
+                        start: 9,
+                        end: 25,
+                        name: "mention".into(),
+                        value: Attr::Text(TASK.into()),
+                    }],
+                    attrs: BTreeMap::new(),
+                }],
+                embeds: vec![Embed {
+                    reference: TASK.into(),
+                    view,
+                }],
+            })
+        };
+        let holder = read_as(InlineView::Resource {
+            title: "Merger timeline".into(),
+            icon: None,
+            detail: None,
+        });
+        assert_eq!(display(&holder), "Notes in Merger timeline");
+        assert_eq!(
+            display(&read_as(InlineView::Unreadable)),
+            "Notes in Not shared with you"
+        );
     }
 }

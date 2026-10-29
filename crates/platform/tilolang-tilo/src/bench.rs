@@ -1607,7 +1607,12 @@ fn index_everything(sized: &Sized<'_>, room: &Room) -> [Record; 2] {
         let start = Instant::now();
         for (package, _, doc) in room.host.records() {
             if let Ok(record) = room.host.store().record(&doc) {
-                std::hint::black_box(crate::search::hits(&package.meta, &record, &doc));
+                std::hint::black_box(crate::search::hits(
+                    &package.meta,
+                    &record,
+                    &doc,
+                    room.host.store(),
+                ));
             }
         }
         search.push(ms(start.elapsed()));
