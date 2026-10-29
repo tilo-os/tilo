@@ -195,7 +195,7 @@ view voice(v: VoiceChannel) {
 
 ## Completion drawers
 
-The view picks triggers and sources (`complete "@" from: [in.members, workspace.members]`);
+The view picks triggers and sources (`ui.Completion(trigger: "@", from: [in.members, workspace.members])`);
 everything below is the system's drawer, the same in every input.
 
 - **The query is the token.** What's typed after the trigger stays in the input as a tinted
