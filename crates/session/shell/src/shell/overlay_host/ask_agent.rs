@@ -91,7 +91,7 @@ impl ShellOverlayHost {
         let label = self.app_label(app_id);
         let mut seed = SelectionSeed::new(app_id, label, selection).drawn_at(area);
         if let Some(text) = ask {
-            seed = seed.asking(text);
+            seed = seed.asking(&text);
         }
         seed.draft = draft.map(|text| {
             text.chars()
@@ -115,7 +115,7 @@ impl ShellOverlayHost {
         let seed = SelectionSeed::new(app_id, label, None)
             .drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))));
         let seed = match ask {
-            Some(text) => seed.asking(text),
+            Some(text) => seed.asking(&text),
             None => seed,
         };
         let seed = match self.selection_requests.window_of(app_id) {
