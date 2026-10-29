@@ -15770,6 +15770,7 @@ dependencies = [
  "tilo-secret-service",
  "tilo-secret-vault",
  "tilo-secrets",
+ "tilo-sheets",
  "tilo-startup-metrics",
  "tilo-system-stats",
  "tilo-test-env",
@@ -18714,6 +18715,7 @@ dependencies = [
 name = "tilo-document"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -21165,6 +21167,14 @@ dependencies = [
  "tilo-lock",
  "tilo-rt",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-sheets"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
  "workspace-hack",
 ]
 
@@ -27557,6 +27567,7 @@ dependencies = [
  "tilo-selector",
  "tilo-session-record",
  "tilo-settings-records",
+ "tilo-sheets",
  "tilo-sibling-unlock",
  "tilo-sort",
  "tilo-spellcheck",

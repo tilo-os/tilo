@@ -20,7 +20,7 @@ struct CommentMetrics {
 /// was measured with and the width of its text column.
 struct CommentCard<'a> {
     rect: Rect,
-    comment: &'a Comment,
+    comment: &'a Thread,
     metrics: &'a CommentMetrics,
     text_w: f64,
 }
@@ -1474,7 +1474,7 @@ impl PdfApp {
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
-        cm: &Comment,
+        cm: &Thread,
         card_w: f64,
     ) -> CommentMetrics {
         let rhythm = &theme.tokens.spacing.rhythm;
@@ -1486,21 +1486,21 @@ impl PdfApp {
         // text as written (a line's height when empty, for the hint).
         let bh = match self.editing_field(&EditTarget::CommentBody(cm.id.clone())) {
             Some(field) => field.rect().height().max(line),
-            None if cm.body.is_empty() => line,
+            None if cm.comment.text.is_empty() => line,
             None => {
-                self.comment_view_height(tr, comment_view_key(&cm.id, None), &cm.blocks, text_w)
+                self.comment_view_height(tr, comment_view_key(&cm.id, None), &cm.blocks(), text_w)
             }
         };
         let mut inner = row_h + f64::from(rhythm.tight) + bh;
-        let mut reply_heights = Vec::with_capacity(cm.replies.len());
-        for r in &cm.replies {
-            let rh = if r.body.is_empty() {
+        let mut reply_heights = Vec::with_capacity(cm.comment.replies.len());
+        for (rid, r) in cm.replies() {
+            let rh = if r.text.is_empty() {
                 line
             } else {
                 self.comment_view_height(
                     tr,
-                    comment_view_key(&cm.id, Some(&r.id)),
-                    &r.blocks,
+                    comment_view_key(&cm.id, Some(rid)),
+                    &reply_blocks(r),
                     text_w,
                 )
             };
@@ -1708,7 +1708,7 @@ impl PdfApp {
         let comments = self.comments.clone();
 
         let total = comments.len();
-        let open = comments.iter().filter(|c| !c.resolved).count();
+        let open = comments.iter().filter(|c| !c.comment.resolved).count();
         if total == 0 {
             EmptyState::paint(
                 &mut PaintCtx::new(scene, base, tr, theme),
@@ -1748,7 +1748,7 @@ impl PdfApp {
             let selected = self
                 .selected_anno
                 .as_deref()
-                .is_some_and(|sa| cm.anno_id.as_deref() == Some(sa));
+                .is_some_and(|sa| cm.pinned() == Some(sa));
             let m = self.comment_metrics(tr, theme, cm, card_w);
             let card = Rect::new(body.x0 + inset, y, body.x0 + inset + card_w, y + m.card_h);
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
@@ -1791,16 +1791,16 @@ impl PdfApp {
     fn draw_comment_header_row(
         &self,
         ctx: &mut PaintCtx<'_>,
-        cm: &Comment,
+        cm: &Thread,
         hdr: &CommentHeader,
         out: &mut SidebarHits,
     ) {
         let theme = ctx.theme;
-        AvatarFace::new(&cm.author, &cm.author).paint(ctx, hdr.avatar);
+        AvatarFace::new(&cm.comment.author, &cm.comment.author).paint(ctx, hdr.avatar);
         let style = theme.text(TextRole::Label).strong();
         let name = ctx
             .text
-            .elide_to_width_style(&cm.author, hdr.name.width() as f32, &style);
+            .elide_to_width_style(&cm.comment.author, hdr.name.width() as f32, &style);
         let (_, h) = ctx.text.measure_style(&name, None, &style);
         ctx.text(
             &name,
@@ -1810,7 +1810,7 @@ impl PdfApp {
             None,
         );
 
-        let resolve = ButtonFace::new(hdr.resolve, if cm.resolved { "Reopen" } else { "Resolve" })
+        let resolve = ButtonFace::new(hdr.resolve, if cm.comment.resolved { "Reopen" } else { "Resolve" })
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small)
             .hovered(hdr.resolve.contains(self.last_mouse));
@@ -1879,7 +1879,7 @@ impl PdfApp {
                 field.layout(text_rect, theme, tr);
                 field.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
-        } else if cm.body.is_empty() {
+        } else if cm.comment.text.is_empty() {
             tr.draw_style(
                 scene,
                 "Write a comment…",
@@ -1893,8 +1893,8 @@ impl PdfApp {
             let view = views.entry(comment_view_key(&cm.id, None)).or_default();
             view.editor_mut()
                 .set_body_size(Self::comment_body_size(theme));
-            view.show(&cm.blocks);
-            view.set_text_color(cm.resolved.then_some(theme.text_dim));
+            view.show(&cm.blocks());
+            view.set_text_color(cm.comment.resolved.then_some(theme.text_dim));
             view.layout(text_rect, theme, tr);
             view.draw(scene, base, tr, theme);
         }
@@ -1923,7 +1923,7 @@ impl PdfApp {
         let author_style = theme.text(TextRole::Label).strong();
         let label_h = f64::from(author_style.line_height_px());
         let x0 = hdr.text_x;
-        for (r, reply_h) in cm.replies.iter().zip(m.reply_heights.iter()) {
+        for ((rid, r), reply_h) in cm.replies().zip(m.reply_heights.iter()) {
             yy += f64::from(rhythm.sibling);
             tr.draw_style(
                 scene,
@@ -1937,12 +1937,12 @@ impl PdfApp {
             let rect = self.rich_text_rect(tr, x0, yy, text_w);
             let mut views = self.comment_views.borrow_mut();
             let view = views
-                .entry(comment_view_key(&cm.id, Some(&r.id)))
+                .entry(comment_view_key(&cm.id, Some(rid)))
                 .or_default();
             view.editor_mut()
                 .set_body_size(Self::comment_body_size(theme));
-            view.show(&r.blocks);
-            view.set_text_color(cm.resolved.then_some(theme.text_dim));
+            view.show(&reply_blocks(r));
+            view.set_text_color(cm.comment.resolved.then_some(theme.text_dim));
             view.layout(rect, theme, tr);
             view.draw(scene, base, tr, theme);
             yy += reply_h;
