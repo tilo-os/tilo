@@ -5,17 +5,16 @@
 //! the owner's group ([`CommitGroup::defer`]). Nothing reads it there: every
 //! listing skips dot-files, and the tail index alone tells the next append
 //! of its lineage which ordinal comes next. [`CommitGroup::flush`] then
-//! syncs every staged record at once, renames them into place in append
-//! order and syncs each generation directory once: one round of file
-//! barriers, issued together so they share the file system's journal
-//! commit, and one directory barrier per generation, however many records
-//! the group holds. A crash before the renames leaves only dot-files no
-//! reader sees; after them, every record is whole.
+//! appends every staged record to its generation's journal and syncs it
+//! once, and only then renames the records into place in append order: one
+//! barrier per generation, however many records the group holds, and none
+//! for the records' own files or the directory entries their renames add.
+//! The journal holds them through a crash ([`super::journal`]).
 //!
 //! The owner flushes before it acknowledges or fans out any record of the
 //! group, and before any other barrier ([`tilo_relay_store::with_barrier_hook`]):
 //! nothing made durable later can depend on a record that is not.
-use super::{StoreError, generation_stamp, remember_digest, sync_dir, tail_index};
+use super::{StoreError, generation_stamp, journal, remember_digest, tail_index};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -23,14 +22,11 @@ use std::{
 };
 use tilo_lock::MutexRecover as _;
 
-/// Most file barriers one flush issues at once.
-const PARALLEL_BARRIERS: usize = 8;
-
 /// One staged record.
 struct Staged {
     /// Where it is written, unsynced: a dot-file no listing reads.
     staging: PathBuf,
-    file: fs::File,
+    bytes: Vec<u8>,
     /// Its name once durable.
     path: PathBuf,
     lineage: PathBuf,
@@ -98,7 +94,7 @@ impl SharedGroup {
         file.write_all(bytes)?;
         self.0.lock_recover().staged.push(Staged {
             staging,
-            file,
+            bytes: bytes.to_vec(),
             path,
             lineage: lineage.to_owned(),
             generation: generation.to_owned(),
@@ -107,15 +103,16 @@ impl SharedGroup {
         Ok(())
     }
 
-    /// Make every staged record durable under its name: sync the staged
-    /// files together, rename them in append order, then sync each
-    /// generation directory once.
+    /// Make every staged record durable under its name: append them to
+    /// their generations' journals, sync each journal once, then rename the
+    /// records into place in append order.
     ///
     /// # Errors
     ///
     /// Returns the first barrier or rename that failed. Records not yet
-    /// renamed are removed; what was renamed stays, as a record whose
-    /// directory barrier failed always did.
+    /// renamed are removed; what a journal already holds may still be
+    /// restored after a crash, as a record whose barrier failed after its
+    /// rename always could be.
     pub(crate) fn flush(&self) -> Result<(), StoreError> {
         let staged = {
             let mut group = self.0.lock_recover();
@@ -140,7 +137,6 @@ impl SharedGroup {
 }
 
 fn publish(staged: &[Staged]) -> Result<(), StoreError> {
-    sync_files(staged)?;
     let mut generations: Vec<(&Path, &Path, Option<tail_index::Stamp>)> = Vec::new();
     for record in staged {
         if !generations
@@ -154,40 +150,51 @@ fn publish(staged: &[Staged]) -> Result<(), StoreError> {
             ));
         }
     }
+    journal_all(staged, &generations)?;
     for record in staged {
         fs::rename(&record.staging, &record.path)?;
         remember_digest(&record.path, &record.digest);
+        tilo_relay_store::durable::journaled(&record.path);
     }
-    // The index followed each staged append; it follows the renames too.
+    // The index followed each staged append; it follows the renames and a
+    // journal's creation too.
     for (generation, lineage, before) in &generations {
         match (before, generation_stamp(generation)) {
             (Some(before), Some(after)) => tail_index::restamp(lineage, before, after),
             _ => tail_index::forget(lineage),
         }
     }
-    let mut directories: Vec<&mut (dyn FnMut() -> Result<(), StoreError> + Send)> = Vec::new();
-    let mut syncs: Vec<_> = generations
-        .iter()
-        .map(|(generation, ..)| move || sync_dir(generation))
-        .collect();
-    for sync in &mut syncs {
-        directories.push(sync);
-    }
-    super::barriers(&mut directories)
+    Ok(())
 }
 
-/// Sync every staged file, at most [`PARALLEL_BARRIERS`] at a time.
-fn sync_files(staged: &[Staged]) -> Result<(), StoreError> {
-    let sync = |record: &Staged| -> Result<(), StoreError> {
-        #[cfg(test)]
-        super::super::test_barrier::check(&record.lineage, "group-sync-file")?;
-        crate::store::fsync(&record.file)?;
-        Ok(())
-    };
-    let chunk = staged.len().div_ceil(PARALLEL_BARRIERS).max(1);
-    let mut work: Vec<_> = staged
-        .chunks(chunk)
-        .map(|records| move || records.iter().try_for_each(sync))
+/// Append each generation's staged records to its journal, the journals'
+/// barriers issued together.
+fn journal_all(
+    staged: &[Staged],
+    generations: &[(&Path, &Path, Option<tail_index::Stamp>)],
+) -> Result<(), StoreError> {
+    let mut appends = Vec::new();
+    for (generation, ..) in generations {
+        let mut entries = Vec::new();
+        for record in staged
+            .iter()
+            .filter(|record| record.generation == *generation)
+        {
+            entries.push(journal::Entry {
+                name: record
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| StoreError::Io(std::io::Error::other("retained record name")))?,
+                bytes: &record.bytes,
+                digest: &record.digest,
+            });
+        }
+        appends.push((*generation, journal::encode(&entries)?));
+    }
+    let mut work: Vec<_> = appends
+        .iter()
+        .map(|(generation, bytes)| move || journal::append(generation, bytes))
         .collect();
     let mut barriers: Vec<&mut (dyn FnMut() -> Result<(), StoreError> + Send)> = Vec::new();
     for barrier in &mut work {
