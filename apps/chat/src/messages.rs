@@ -19,7 +19,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, Refusal, Segment};
+use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, Segment};
 
 use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
@@ -453,19 +453,17 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         #[param("The channel")] channel: Id,
-        #[param("Who wrote it: the name every reader sees")] author: String,
-        #[param("The message")] body: String,
+        #[param("Who wrote it: the name every reader sees")] author: NonBlank,
+        #[param("The message")] body: NonBlank,
         #[param("When it was written, in Unix seconds; now when absent")] ts: Option<i64>,
     ) -> Result<(), Refusal> {
-        let shown = author.trim().to_owned();
-        if shown.is_empty() || shown.len() > MAX_SHOWN_NAME_BYTES {
+        let shown = author.into_string();
+        if shown.len() > MAX_SHOWN_NAME_BYTES {
             return Err(Refusal::new(
                 "a delivered message names its author, in a short name",
             ));
         }
-        if body.trim().is_empty() {
-            return Err(Refusal::new("a message says something"));
-        }
+        let body = body.into_string();
         let id = match ts {
             Some(ts) => crate::transcript::delivered_id(&channel, &shown, ts, &body),
             None => cx.id(),
@@ -679,7 +677,7 @@ impl ChatPart {
         cx: &mut ActionCx,
         #[param("The channel")] channel: Id,
         reply: String,
-        name: Option<String>,
+        name: Option<NonBlank>,
         event: serde_json::Value,
     ) -> Result<(), Refusal> {
         use crate::agent_stream::{AgentOutput, AgentStream, AgentStreamEvent};
@@ -687,9 +685,9 @@ impl ChatPart {
             .map_err(|_| Refusal::new("invalid provider output event"))?;
         if name
             .as_ref()
-            .is_some_and(|name| name.trim().is_empty() || name.len() > MAX_AGENT_NAME_BYTES)
+            .is_some_and(|name| name.len() > MAX_AGENT_NAME_BYTES)
         {
-            return Err(Refusal::new("provider display name is empty or too long"));
+            return Err(Refusal::new("provider display name is too long"));
         }
         let me = author(cx)?;
         let id = Id::from_raw(reply);
@@ -719,7 +717,7 @@ impl ChatPart {
                 seconds(cx),
                 Posting {
                     appearance: name.map(|name| tilo_actions::Appearance {
-                        name,
+                        name: name.into_string(),
                         avatar: None,
                         persona: None,
                     }),

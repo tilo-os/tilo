@@ -1,6 +1,5 @@
 use super::super::{CallPhaseV1, CallV1, DirectionsV1, MediaPolicyError};
 use super::*;
-use crate::resources::native::{NativeBatch, NativeDocument};
 use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
@@ -19,15 +18,12 @@ fn fixture() -> AutoCommit {
     doc.commit();
     doc
 }
-fn stored(doc: &mut AutoCommit) -> NativeDocument {
-    NativeBatch::new(8 * 1024 * 1024).load(&doc.save()).unwrap()
-}
 #[test]
 fn media_binding_retains_exact_object_strings_after_document_drop() {
-    let mut doc = fixture();
+    let doc = fixture();
     let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
-    let native = stored(&mut doc);
-    let binding = resolve_native("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
+    let native = doc.clone();
+    let binding = resolve_legacy("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
     assert!(binding.matches(&expected));
     drop(native);
     drop(doc);
@@ -75,11 +71,11 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
             "so.tilo.chat"
         };
         let expected = historical_resolve(app, "", "voice", &doc);
-        let native = stored(&mut doc);
-        let actual = resolve_native(app, "", "voice", &native);
+        let native = doc.clone();
+        let actual = resolve_legacy(app, "", "voice", &native);
         match expected {
             Ok(expected) => assert!(actual.unwrap().matches(&expected)),
-            Err(error) => assert!(matches!(actual,Err(Error::Policy(actual)) if actual==error)),
+            Err(error) => assert!(matches!(actual, Err(actual) if actual == error)),
         }
     }
 }
@@ -121,26 +117,26 @@ fn a_call_stays_its_channels_when_the_channel_is_remade_but_not_when_it_stops_be
     };
     doc.put(&voice, "kind", "voice").unwrap();
     doc.commit();
-    let native = stored(&mut doc);
+    let native = doc.clone();
     assert_eq!(
-        validate_native(&policy, "so.tilo.chat", "", &native),
+        validate_legacy(&policy, "so.tilo.chat", "", &native),
         Ok(()),
         "the channel id names the call's channel, whatever object holds it"
     );
     doc.put(&voice, "kind", "text").unwrap();
     doc.commit();
-    let native = stored(&mut doc);
+    let native = doc.clone();
     assert_eq!(
-        validate_native(&policy, "so.tilo.chat", "", &native),
-        Err(Error::Policy(MediaPolicyError::Binding))
+        validate_legacy(&policy, "so.tilo.chat", "", &native),
+        Err(MediaPolicyError::Binding)
     );
     assert_eq!(
-        validate_native(&policy, "so.tilo.chat", "other", &native),
+        validate_legacy(&policy, "so.tilo.chat", "other", &native),
         Ok(())
     );
     policy.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
     assert_eq!(
-        validate_native(&policy, "so.tilo.chat", "", &native),
+        validate_legacy(&policy, "so.tilo.chat", "", &native),
         Ok(())
     );
 }
@@ -155,12 +151,12 @@ fn a_chat_without_workspaces_binds_its_voice_channels_and_keeps_its_earlier_call
     let voice = voice_value(&doc);
     doc.delete(&voice, "workspace").unwrap();
     doc.commit();
-    let native = stored(&mut doc);
+    let native = doc.clone();
     assert_eq!(
-        validate_native(&policy, "so.tilo.chat", "", &native),
+        validate_legacy(&policy, "so.tilo.chat", "", &native),
         Ok(())
     );
-    let now = resolve_native("so.tilo.chat", "", "voice", &native).unwrap();
+    let now = resolve_legacy("so.tilo.chat", "", "voice", &native).unwrap();
     assert!(now.matches(&earlier));
     let fresh = now.into_legacy();
     assert_eq!(fresh.chat_workspace_id, "");
@@ -185,10 +181,10 @@ fn a_voice_channel_two_devices_made_binds_the_same_on_both() {
     merged_first.merge_incoming(&mut second.fork()).unwrap();
     let mut merged_second = second.fork();
     merged_second.merge_incoming(&mut first.fork()).unwrap();
-    let on_first = resolve_native("so.tilo.chat", "", "voice", &stored(&mut merged_first))
+    let on_first = resolve_legacy("so.tilo.chat", "", "voice", &merged_first)
         .unwrap()
         .into_legacy();
-    let on_second = resolve_native("so.tilo.chat", "", "voice", &stored(&mut merged_second))
+    let on_second = resolve_legacy("so.tilo.chat", "", "voice", &merged_second)
         .unwrap()
         .into_legacy();
     assert_eq!(on_first, on_second);
@@ -198,7 +194,7 @@ fn a_voice_channel_two_devices_made_binds_the_same_on_both() {
     );
 }
 #[test]
-fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
+fn media_binding_rejects_orphan_history_before_channel_lookup() {
     let mut doc = fixture();
     let before = doc.get_heads();
     let channels = doc.get(ROOT, "channels").unwrap().unwrap().1;
@@ -216,11 +212,11 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
         historical_resolve("so.tilo.chat", "", "voice", &orphan),
         Err(MediaPolicyError::Binding)
     );
-    let native = stored(&mut orphan);
-    assert!(native.has_missing_dependencies());
+    let native = orphan.clone();
+    assert!(!native.get_missing_deps(&[]).is_empty());
     assert!(matches!(
-        resolve_native("so.tilo.chat", "", "voice", &native),
-        Err(Error::Policy(MediaPolicyError::Binding))
+        resolve_legacy("so.tilo.chat", "", "voice", &native),
+        Err(MediaPolicyError::Binding)
     ));
 }
 #[test]
@@ -241,8 +237,8 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
         }
         doc.commit();
         let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
-        let native = stored(&mut doc);
-        let actual = resolve_native("so.tilo.chat", "", "voice", &native);
+        let native = doc.clone();
+        let actual = resolve_legacy("so.tilo.chat", "", "voice", &native);
         match expected {
             Ok(expected) => {
                 assert_eq!(expected.channel_object.len(), 256);
@@ -257,7 +253,7 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
                         MediaPolicyError::Binding
                     }
                 );
-                assert!(matches!(actual,Err(Error::Policy(actual)) if actual==error));
+                assert!(matches!(actual, Err(actual) if actual == error));
             }
         }
     }

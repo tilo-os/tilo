@@ -833,6 +833,99 @@ mod tests {
             .unwrap();
     }
 
+    /// The Music app's player, published the way the sandboxed app publishes
+    /// it: by the toolkit's media session, launched as `so.tilo.music`, on a
+    /// session bus the launcher's filtered proxy stands in front of. It
+    /// reaches the now-playing card, its changes follow, and it leaves with
+    /// the app. While the proxy refused the player its name, no sandboxed
+    /// app ever appeared here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sandboxed_apps_player_reaches_the_now_playing_card() {
+        use launcher::dbus_proxy;
+        use ui::mpris::{MprisConfig, MprisHandle, PlaybackStatus as AppStatus, PlayerSnapshot};
+
+        let bus = PrivateBus::start();
+        let granted = dbus_proxy::media_player_name("so.tilo.music").unwrap();
+        let filter = dbus_proxy::session_filter_args(true, true, Some(&granted));
+        let filter: Vec<&str> = filter.iter().map(String::as_str).collect();
+        let proxy = dbus_proxy::spawn_filtered_proxy(
+            &dbus_proxy::find_proxy_binary().expect("the builder image installs xdg-dbus-proxy"),
+            &bus.address,
+            &bus._directory.path().join("app-proxy"),
+            &filter,
+        )
+        .expect("the launcher's proxy starts");
+
+        let state: &'static Mutex<ObserverState> = Box::leak(Box::default());
+        state.lock().unwrap().seed.send_replace(Seed::Pending);
+        let (connection, listener) = (bus.connect().await, bus.connect().await);
+        let observer = tokio::spawn(async move { observe(&connection, &listener, state).await });
+        assert!(seeded(state, tilo_test_env::hang_bound()).await);
+
+        // What the launcher puts in the sandbox: the proxy as the session
+        // bus, and the package the app runs as.
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", proxy.socket_path().display()),
+        )
+        .set("TILO_PACKAGE_ID", "so.tilo.music");
+        let host = ui::host::HostServices {
+            media_session: ui::host::native::services(None).media_session,
+            ..ui::host::HostServices::null()
+        };
+        // Music's own identity (`apps/music/src/mpris.rs`).
+        let mut config = MprisConfig::new("tilo-music", "Tilo Music");
+        config.desktop_entry = "music".into();
+        assert_eq!(config.bus_name, granted);
+        let playing = PlayerSnapshot {
+            status: AppStatus::Playing,
+            track_id: "tk_harbour".into(),
+            title: "Harbour".into(),
+            artist: "Ada".into(),
+            length_us: 180_000_000,
+            can_pause: true,
+            ..PlayerSnapshot::default()
+        };
+        let mut player = ui::host::scoped(&host, || MprisHandle::spawn(config, playing.clone()));
+        assert!(player.is_active());
+
+        eventually("Music's player reaching the card", || {
+            state.lock().unwrap().now_playing.iter().any(|seen| {
+                seen.bus_name == granted
+                    && seen.identity == "Tilo Music"
+                    && seen.title.as_deref() == Some("Harbour")
+                    && seen.artist.as_deref() == Some("Ada")
+                    && seen.status == PlaybackStatus::Playing
+            })
+        })
+        .await;
+
+        player.publish(PlayerSnapshot {
+            status: AppStatus::Paused,
+            can_play: true,
+            can_pause: false,
+            ..playing
+        });
+        eventually("the pause reaching the card", || {
+            state
+                .lock()
+                .unwrap()
+                .now_playing
+                .iter()
+                .any(|seen| seen.bus_name == granted && seen.status == PlaybackStatus::Paused)
+        })
+        .await;
+
+        drop(player);
+        eventually("the player leaving the card with the app", || {
+            state.lock().unwrap().now_playing.is_empty()
+        })
+        .await;
+        drop(env);
+        observer.abort();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn signals_update_players_and_an_idle_player_costs_no_calls() {
         let bus = PrivateBus::start();

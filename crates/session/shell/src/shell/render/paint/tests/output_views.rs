@@ -440,6 +440,7 @@ fn pan_layers(size: (u32, u32), scroll_x: u32) -> crate::shell::frame::FrameCach
             dest_w: size.0,
             dest_h: size.1.saturating_mul(2).checked_div(3).unwrap_or(0),
             scroll_x,
+            scroll_y: 0,
         }],
         generation: 1,
         chrome_damage: None,

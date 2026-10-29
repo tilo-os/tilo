@@ -40,6 +40,17 @@ Every link, lazy libraries or not, also sheds code no app can reach:
   so syn, quote and proc-macro2 (linked because zvariant_utils carries macro
   helpers) were exported and kept. Only proc macros use them, never an app;
   they leave the list, and with it the file.
+
+The runtime's engine libraries (crates/runtime/engines/*) link through this
+script too (`TILO_LAZY_LINK_ROLE`), without the lazy libraries:
+
+- `engine`: an engine that apps or other engines compile against as a crate.
+  Like the runtime, it keeps rustc's export list (a dependant may name any
+  item of the crates in it) and sheds the code nothing exported reaches;
+- `entry-engine`: an engine no crate compiles against, only reached through
+  its unmangled entry points (Settings' app binary, the toolkit's `dlopen`,
+  its own check binary). It exports only those, so the code of every crate in
+  it that they do not reach goes too, with the symbol tables that named it.
 """
 
 from __future__ import annotations
@@ -74,8 +85,12 @@ COMPILE_TIME_ONLY = re.compile(r"C(?:s[0-9A-Za-z]*_)?(?:3syn|11proc_macro2|5quot
 # crate id, which can be a compile-time-only crate. Such an instance belongs
 # to `alloc` (or wherever its path starts), not to that crate.
 CRATE_ROOT = re.compile(r"C(?:s[0-9A-Za-z]*_)?([0-9]+)")
+# Rust's mangled names, v0 and legacy. Everything else rustc exports is
+# unmangled: `#[no_mangle]` items and the crate's metadata symbol.
+MANGLED = re.compile(r"_R|_ZN")
 NM_BATCH = 64
 PROGRAM = "runtime-dylib-lazy-link"
+ROLES = ("runtime", "engine", "entry-engine")
 
 
 class LinkError(Exception):
@@ -581,8 +596,16 @@ def compile_time_only(line: str) -> bool:
     return bool(COMPILE_TIME_ONLY.search(symbol))
 
 
-def narrow_exports(arguments: list[str]) -> int:
-    """Leave the compile-time-only crates out of rustc's export list; how many were left out."""
+def mangled(line: str) -> bool:
+    """Whether a version-script line exports an item by its Rust (mangled) name."""
+    return bool(MANGLED.match(line.strip()))
+
+
+def narrow_exports(arguments: list[str], role: str = "runtime") -> int:
+    """Leave out of rustc's export list what no dependant links; how many were left out.
+
+    That is the compile-time-only crates, and for an `entry-engine` every
+    mangled name: nothing compiles against it, so nothing names one."""
     removed = 0
     for argument in arguments:
         for option in argument.split(","):
@@ -590,7 +613,8 @@ def narrow_exports(arguments: list[str]) -> int:
                 continue
             script = pathlib.Path(option.removeprefix("--version-script="))
             lines = script.read_text(encoding="utf-8").splitlines(keepends=True)
-            kept = [line for line in lines if not compile_time_only(line)]
+            kept = [line for line in lines
+                    if not compile_time_only(line) and not (role == "entry-engine" and mangled(line))]
             removed += len(lines) - len(kept)
             script.write_text("".join(kept), encoding="utf-8")
     return removed
@@ -609,12 +633,17 @@ def link(linker: str, arguments: list[str], response: bool, directory: pathlib.P
 def main(argv: list[str]) -> int:
     linker = os.environ.get("TILO_LAZY_LINK_CC") or "cc"
     compiler = os.environ.get("TILO_LAZY_LINK_COMPILER") or "cc"
+    role = os.environ.get("TILO_LAZY_LINK_ROLE") or "runtime"
+    if role not in ROLES:
+        print(f"{PROGRAM}: TILO_LAZY_LINK_ROLE must be one of {', '.join(ROLES)}, not {role!r}",
+              file=sys.stderr)
+        return 1
     arguments, response = expand(argv)
-    hidden = narrow_exports(arguments)
+    hidden = narrow_exports(arguments, role)
     if os.environ.get("TILO_LAZY_LINK_VERBOSE"):
-        print(f"{PROGRAM}: {hidden} compile-time-only symbols not exported", file=sys.stderr)
+        print(f"{PROGRAM}: {hidden} symbols not exported", file=sys.stderr)
     kept, names = split_libraries(arguments)
-    if not names:
+    if role != "runtime" or not names:
         return subprocess.run([linker, *argv, *GC]).returncode
     try:
         directories = search_directories(arguments)

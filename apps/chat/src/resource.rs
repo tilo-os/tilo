@@ -7,16 +7,16 @@
 //! join a voice channel's call), as live rows merged into the item
 //! resources the record publishes ([`crate::effects`]).
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tilo_content::ContentStore;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, RunMode, SeedCx,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{EffectAnswer, EffectCx, Publishes, ResourceApp, RunMode, SeedCx, ViewCx};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
 use ui::tilo_resource::{Id, Invoke, SearchEntry};
 use ui::widget::Element;
 
-use crate::app::{ChatApp, ChatRuntime};
+use crate::app::{ChatApp, ChatRuntime, ChatWindow, SharedChat};
 use crate::effects::ChatEffect;
 use crate::identity::LocalIdentity;
 #[cfg(feature = "samples")]
@@ -30,7 +30,7 @@ impl Chat {
     /// What search finds in the chat record: the room's channels,
     /// categories, reviewed reports and people, each opening the item it
     /// names. The messages are the window's to offer
-    /// (`ResourceSurface::search_entries`): they are kept in parts the record
+    /// (`ChatApp::search_entries`): they are kept in parts the record
     /// does not hold.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
@@ -98,7 +98,7 @@ impl Chat {
     }
 }
 
-/// Chat as every host runs and mounts it: the chat widget is the surface
+/// Chat as every host runs and mounts it: the chat widget is the window
 /// over [`Chat`], kept by the room as its own record.
 pub struct ChatShell;
 
@@ -212,15 +212,43 @@ impl ResourceApp for ChatShell {
             .content_kind(ui::widget::ContentKind::Reading)
             .with_window_toolbar();
         let app = app.in_shell(&places, shell.window_bar_link());
-        let app = if live && ui::local_identity::bound().is_some() {
+        let mut app = if live && ui::local_identity::bound().is_some() {
             app.announcing()
         } else {
             app
         };
+        app.attach_framework(cx.dispatcher());
+        if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
+            app.attach_chain(chain);
+        }
+        if live {
+            app.follow_preferences(cx.settings());
+        }
+        let chat: SharedChat = Rc::new(RefCell::new(app));
+        let window = ChatWindow::new(Rc::clone(&chat));
+        #[cfg(feature = "samples")]
+        cx.on_stage(window.stager());
+        let answering = Rc::clone(&chat);
+        let statuses = Rc::clone(&chat);
+        cx.effects(move |effect: ChatEffect, cx| answer(&answering, effect, cx))
+            .status(move || statuses.borrow().effect_statuses());
+        let rows = Rc::clone(&chat);
+        let row = Rc::clone(&chat);
+        let entries = chat;
+        let window = cx.publishing(
+            Publishes::new()
+                // The effects offered on the channels, categories, messages,
+                // reports and people the window shows: merged into the item
+                // resources the record publishes.
+                .live_rows(move || rows.borrow().published_rows())
+                .live_row(move |id| row.borrow().published_row(id))
+                .search_entries(move || entries.borrow().search_entries()),
+            Box::new(window),
+        );
         Box::new(
             shell
                 .sidebar(crate::sidebar::sidebar(&places))
-                .content(cx.surface(app)),
+                .content(window),
         )
     }
 
@@ -463,7 +491,7 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
             ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
                 channel: Id::from_raw("c_crit"),
                 reply: "shot_agent_stream".into(),
-                name: Some(crate::i18n::t("chat-model-author")),
+                name: ui::tilo_resource::NonBlank::parse(&crate::i18n::t("chat-model-author")),
                 event: serde_json::to_value(AgentStreamEvent {
                     run: "shot_run".into(),
                     sequence: index as u64 + 1,
@@ -535,23 +563,24 @@ pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
     let me = crate::model::ME;
-    vec![
-        (
-            DEMO_AGENT,
-            Chat::INTRODUCE.with(chat::Introduce {
-                name: "Tide".into(),
-                initials: "TI".into(),
-                color: 6,
-            }),
-        ),
-        (
+    let mut steps = vec![(
+        DEMO_AGENT,
+        Chat::INTRODUCE.with(chat::Introduce {
+            name: "Tide".into(),
+            initials: "TI".into(),
+            color: 6,
+        }),
+    )];
+    if let Some(name) = ui::tilo_resource::NonBlank::parse("Tide") {
+        steps.push((
             me,
             Chat::NAME_AGENT.with(chat::NameAgent {
                 participant: DEMO_AGENT.into(),
-                name: "Tide".into(),
+                name,
             }),
-        ),
-    ]
+        ));
+    }
+    steps
 }
 
 /// In the demo conversation: the reader summoning the agent, under the id
@@ -609,120 +638,91 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
     })
 }
 
-impl ResourceSurface<Chat, ChatEffect> for ChatApp {
-    fn present(&mut self, _state: &std::rc::Rc<Chat>) {
-        // The surface reads the document it syncs with, and reloads when its
-        // heads move.
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Chat>) {
-        self.attach_framework(cx.dispatcher());
-        if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
-            self.attach_chain(chain);
+/// Answer one of the chat's effects, invoked by a control, the palette, an
+/// agent or a script, from and on the window `chat`.
+fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> EffectAnswer {
+    match &effect {
+        ChatEffect::AdoptPrivateDraft { token } => {
+            let invocation = cx
+                .invocation()
+                .ok_or("private draft requires original person invocation")?;
+            return ui::person_chat::with_invocation(Some(invocation), || {
+                chat.borrow_mut().adopt_private_draft(token, invocation)
+            });
         }
-        if cx.mode().is_live() {
-            self.follow_preferences(cx.settings());
+        ChatEffect::OpenDirectConversation { .. } => {
+            return ui::person_chat::with_invocation(cx.invocation(), || {
+                chat.borrow_mut().answer_effect(effect)
+            });
         }
-    }
-
-    #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_parts(scenario);
-        self.stage_scenario(scenario.unwrap_or_default());
-    }
-
-    fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
-        match &effect {
-            ChatEffect::AdoptPrivateDraft { token } => {
-                let invocation = cx
-                    .invocation()
-                    .ok_or("private draft requires original person invocation")?;
-                return ui::person_chat::with_invocation(Some(invocation), || {
-                    self.adopt_private_draft(token, invocation)
-                });
-            }
-            ChatEffect::OpenDirectConversation { .. } => {
-                return ui::person_chat::with_invocation(cx.invocation(), || {
-                    self.answer_effect(effect)
-                });
-            }
-            // The room answers these: at once from the native host, later in
-            // a page. Either way the effect answers when it has.
-            ChatEffect::SendDirectMessage { public_key, text } => {
-                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
-                    self.send_person_message(public_key, text)
-                })?;
-                let public_key = public_key.clone();
-                return Ok(cx.spawn(
-                    |_| reply,
-                    move |chat: &mut Self, answer, _| chat.sent_person_answer(&public_key, answer),
-                ));
-            }
-            ChatEffect::ReadDirectConversation { public_key } => {
-                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
-                    self.read_person_conversation(public_key)
-                })?;
-                let public_key = public_key.clone();
-                return Ok(cx.spawn(
-                    |_| reply,
-                    move |chat: &mut Self, answer, _| chat.read_person_answer(&public_key, answer),
-                ));
-            }
-            _ => {}
-        }
-        if let ChatEffect::ReadMessages {
-            channel,
-            page_size,
-            cursor,
-        } = &effect
-        {
-            return crate::effects::read_messages(
-                &self.held_messages(),
-                (channel, &|id| self.display_name(id)),
-                *page_size,
-                cursor.as_deref(),
-            )
-            .map(ui::framework::Effected::value);
-        }
-        if let ChatEffect::ExportContent { channel, format } = &effect {
-            return self.export_transcript(&cx.live().get(), channel, format.as_deref());
-        }
-        if let ChatEffect::ReadRoom { message, channel } = &effect {
-            let chat = cx.live().get();
-            return Ok(ui::framework::Effected::value(crate::effects::read_room(
-                &chat,
-                &self.held_messages(),
-                message.as_deref(),
-                channel.as_deref(),
-            )));
-        }
-        if let Some(url) = crate::external::browser_destination(&effect)? {
-            return Ok(cx.thread(
-                move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
-                |_: &mut Self, opened, _| opened.map(|()| ui::framework::Effected::done()),
+        // The room answers these: at once from the native host, later in
+        // a page. Either way the effect answers when it has.
+        ChatEffect::SendDirectMessage { public_key, text } => {
+            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                chat.borrow_mut().send_person_message(public_key, text)
+            })?;
+            let public_key = public_key.clone();
+            let chat = Rc::clone(chat);
+            return Ok(cx.spawn(
+                |_| reply,
+                move |(), answer, _| chat.borrow_mut().sent_person_answer(&public_key, answer),
             ));
         }
-        self.answer_effect(effect)
+        ChatEffect::ReadDirectConversation { public_key } => {
+            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                chat.borrow_mut().read_person_conversation(public_key)
+            })?;
+            let public_key = public_key.clone();
+            let chat = Rc::clone(chat);
+            return Ok(cx.spawn(
+                |_| reply,
+                move |(), answer, _| chat.borrow_mut().read_person_answer(&public_key, answer),
+            ));
+        }
+        _ => {}
     }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
+    if let ChatEffect::ReadMessages {
+        channel,
+        page_size,
+        cursor,
+    } = &effect
+    {
+        let chat = chat.borrow();
+        return crate::effects::read_messages(
+            &chat.held_messages(),
+            (channel, &|id| chat.display_name(id)),
+            *page_size,
+            cursor.as_deref(),
+        )
+        .map(ui::framework::Effected::value);
     }
-
-    /// The effects offered on the channels, categories,
-    /// messages, reports and people the window shows: merged into the item
-    /// resources the record publishes.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_rows()
+    if let ChatEffect::ExportContent { channel, format } = &effect {
+        return chat
+            .borrow()
+            .export_transcript(&cx.live().get(), channel, format.as_deref());
     }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.published_row(id)
+    if let ChatEffect::ReadRoom { message, channel } = &effect {
+        let state = cx.live().get();
+        return Ok(ui::framework::Effected::value(crate::effects::read_room(
+            &state,
+            &chat.borrow().held_messages(),
+            message.as_deref(),
+            channel.as_deref(),
+        )));
     }
+    if let Some(url) = crate::external::browser_destination(&effect)? {
+        return Ok(cx.thread(
+            move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
+            |(), opened, _| opened.map(|()| ui::framework::Effected::done()),
+        ));
+    }
+    chat.borrow_mut().answer_effect(effect)
+}
 
+impl ChatApp {
     /// The messages this window holds, across the parts of the chat it
     /// has: each hit reveals the message it names.
-    fn search_entries(&self) -> Vec<SearchEntry> {
+    pub(crate) fn search_entries(&self) -> Vec<SearchEntry> {
         self.search_messages
             .iter()
             .map(|message| {

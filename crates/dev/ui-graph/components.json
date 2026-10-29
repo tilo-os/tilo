@@ -272,6 +272,12 @@
           "type": "bool"
         }
       ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line."
+        }
+      ],
       "bindings": [
         {
           "name": "value",
@@ -772,9 +778,12 @@
       "slots": [
         {
           "name": "items",
-          "doc": "The places, in order.",
+          "doc": "The places, in order: places, and sections of them under a heading.",
           "accepts": {
-            "component": "NavItem"
+            "one_of": [
+              "NavItem",
+              "NavSection"
+            ]
           },
           "many": true,
           "default": true
@@ -1167,6 +1176,39 @@
       "semantics": {
         "role": "TreeItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "NavSection",
+      "doc": "A group of places under a heading in a navigation list: a category of channels, a folder of notebooks. A collapsible one folds away under its heading.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the places are, as the heading over them.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "collapsible",
+          "doc": "Whether its heading folds it away.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The places, in order.",
+          "accepts": {
+            "component": "NavItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title"
       }
     },
     {

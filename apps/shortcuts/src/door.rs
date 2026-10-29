@@ -25,6 +25,7 @@ use ui::tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, MAX_CATALOGUE_PAGE, RemoteActionTarget,
 };
 use ui::tilo_actions::{ActionOutput, InvocationUpdate};
+use ui::tilo_resource::NonBlank;
 use ui::widget::Decorator;
 use ui::{Arrival, CatalogueCall, InvocationCall, LocalState, RemoteActions};
 
@@ -63,7 +64,7 @@ pub enum DoorEffect {
     #[effect(job)]
     Describe {
         #[param("What the shortcut should do, in your words")]
-        description: String,
+        description: NonBlank,
     },
     /// Say what the last run of a shortcut should do differently, and have
     /// the agent propose the change.
@@ -72,7 +73,7 @@ pub enum DoorEffect {
         #[param("The shortcut program as it is, as JSON")]
         program: String,
         #[param("What should be different next time, in your words")]
-        comment: String,
+        comment: NonBlank,
     },
 }
 
@@ -469,11 +470,7 @@ impl DoorCore {
     /// # Errors
     ///
     /// Why no draft can be asked for now; nothing was sent.
-    pub fn describe(&mut self, description: &str, reply: Option<Reply>) -> Result<(), String> {
-        let description = description.trim();
-        if description.is_empty() {
-            return Err("describe what the shortcut should do".to_owned());
-        }
+    pub fn describe(&mut self, description: &NonBlank, reply: Option<Reply>) -> Result<(), String> {
         let catalog = self
             .state
             .with(|state| state.catalogue.ready().cloned())
@@ -496,13 +493,9 @@ impl DoorCore {
     pub fn refine(
         &mut self,
         before: crate::drafting::Drafted,
-        comment: &str,
+        comment: &NonBlank,
         reply: Option<Reply>,
     ) -> Result<(), String> {
-        let comment = comment.trim();
-        if comment.is_empty() {
-            return Err("Say what should be different next time".to_owned());
-        }
         let catalog = self
             .state
             .with(|state| state.catalogue.ready().cloned())

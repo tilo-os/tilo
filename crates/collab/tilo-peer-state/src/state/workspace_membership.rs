@@ -72,7 +72,7 @@ impl StatePeer {
     /// own device: what it writes is admitted as far as the caller's grants
     /// reach where they made it (`room::membership`), here as on every
     /// device that receives it.
-    fn apply_member_change(
+    pub(super) fn apply_member_change(
         &mut self,
         caller: &DeviceCert,
         change: &Change,
@@ -257,6 +257,9 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Member { change } = command {
             return self.peer.apply_member_change(caller, change, key, now);
         }
+        if let WorkspaceMembershipCommand::Settings(change) = command {
+            return self.peer.apply_settings_change(caller, change, key, now);
+        }
         self.peer
             .workspace()
             .check_workspace_administration(caller.device_public_key, now)?;
@@ -314,7 +317,8 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::WithdrawBotRequest { .. }
             | WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. }
-            | WorkspaceMembershipCommand::Member { .. } => {
+            | WorkspaceMembershipCommand::Member { .. }
+            | WorkspaceMembershipCommand::Settings(_) => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

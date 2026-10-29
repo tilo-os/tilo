@@ -78,6 +78,8 @@ features = ["ui/gpu-video"]
 [uses."media.session"]
 features = ["ui/mpris", "ui/media-session"]
 paths = ["ui::mpris"]
+# `VideoPlayer::enable_mpris` registers the widget's player.
+methods = ["enable_mpris"]
 
 # tilo-capture also scans documents (`tilo_capture::scanner`), which is not
 # the camera: only its capture backends and devices are evidence.

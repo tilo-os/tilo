@@ -194,53 +194,56 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
     tilo_test_env::within("the actor answers", tally)
         .await
         .expect("the actor is running");
-    cmd_a
-        .send(NetCmd::Publish {
-            at: tokio::time::Instant::now(),
-            ws: 42,
-            msg: NeighbourMsg::SyncReq {
-                since: vec![],
-                room: String::new(),
-                invite_id: None,
-                nonce: 1,
-            },
-        })
-        .await
-        .unwrap();
-    cmd_a
-        .send(NetCmd::Publish {
-            at: tokio::time::Instant::now(),
-            ws: 42,
-            msg: NeighbourMsg::PresenceMoved {
-                peer: 1,
-                user: "a".into(),
-                key: "cursor".into(),
-                point: (1.0, 2.0),
-                ts: 1,
-                colour: None,
-            },
-        })
-        .await
-        .unwrap();
     let (mut published, mut presence) = (false, false);
-    while !(published && presence) {
-        match tilo_test_env::within("room 42's messages", rx_b.recv())
-            .await
-            .unwrap()
-        {
-            NetEvent::Msg {
-                ws: 42,
-                msg: NeighbourMsg::SyncReq { nonce: 1, .. },
-                ..
-            } => published = true,
-            NetEvent::Msg {
-                ws: 42,
-                msg: NeighbourMsg::PresenceMoved { .. },
-                ..
-            } => presence = true,
-            _ => {}
-        }
-    }
+    crate::tests::publish_until_heard(
+        "room 42's messages",
+        &mut rx_a,
+        &mut rx_b,
+        || async {
+            for msg in [
+                NeighbourMsg::SyncReq {
+                    since: vec![],
+                    room: String::new(),
+                    invite_id: None,
+                    nonce: 1,
+                },
+                NeighbourMsg::PresenceMoved {
+                    peer: 1,
+                    user: "a".into(),
+                    key: "cursor".into(),
+                    point: (1.0, 2.0),
+                    ts: 1,
+                    colour: None,
+                },
+            ] {
+                cmd_a
+                    .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
+                        ws: 42,
+                        msg,
+                    })
+                    .await
+                    .unwrap();
+            }
+        },
+        |event| {
+            match event {
+                NetEvent::Msg {
+                    ws: 42,
+                    msg: NeighbourMsg::SyncReq { nonce: 1, .. },
+                    ..
+                } => published = true,
+                NetEvent::Msg {
+                    ws: 42,
+                    msg: NeighbourMsg::PresenceMoved { .. },
+                    ..
+                } => presence = true,
+                _ => {}
+            }
+            published && presence
+        },
+    )
+    .await;
     assert!(
         opened.0.load(Ordering::SeqCst) < STALLED_SENDS,
         "room 42 waited for every one of room 7's stalled sends"

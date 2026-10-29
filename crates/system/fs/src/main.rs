@@ -1235,6 +1235,18 @@ fn spawn_document_media(
     }
 }
 
+/// The path of a socket this daemon serves, removed when the daemon stops
+/// serving it: a socket file left behind reads as a daemon that answers no
+/// one (`refresh-public-content` takes the blob socket's presence for a
+/// running daemon).
+struct ServedSocket(PathBuf);
+
+impl Drop for ServedSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// An owner-only socket at `path` for the tokio runtime, replacing a stale one.
 fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
     let listener = tilo_files::native::private::bind_socket(path)?;
@@ -2144,6 +2156,10 @@ async fn serve(
         }
         _ => None,
     };
+    let _authority_socket = authority_socket_task
+        .as_ref()
+        .and(authority_socket)
+        .map(ServedSocket);
     // Content discovery registration is useful to a read-only recipient too;
     // it must not depend on that recipient owning the workspace authority.
     let content_socket = record_services
@@ -2164,6 +2180,10 @@ async fn serve(
         )?),
         None => None,
     };
+    let _content_socket = content_socket_task
+        .as_ref()
+        .and(content_socket)
+        .map(ServedSocket);
     // A discovered NAS ticket changes the namespace and record-plane UUID.
     // FUSE/router state cannot safely swap that identity in place, so the
     // managed mount receives a clean rebind outcome after acknowledging the
@@ -2180,7 +2200,7 @@ async fn serve(
     // The session names the agent behind writes it runs for, over the same
     // session-only socket; the mount attributes its versions accordingly.
     let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
-    let _media = blob_sock.as_deref().and_then(|socket| {
+    let media = blob_sock.as_deref().and_then(|socket| {
         spawn_document_media(
             socket,
             &store,
@@ -2188,6 +2208,10 @@ async fn serve(
             (Arc::clone(&write_attributions), mount_point.clone()),
         )
     });
+    let _media = media
+        .as_ref()
+        .and_then(|_| blob_sock.clone())
+        .map(ServedSocket);
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2351,6 +2375,10 @@ async fn serve(
         })
     });
 
+    let _share_socket = share_task
+        .as_ref()
+        .and_then(|_| share_socket.clone())
+        .map(ServedSocket);
     let _control = control_sock
         .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
@@ -2400,17 +2428,8 @@ async fn serve(
     if let Some(task) = content_socket_task {
         task.abort();
     }
-    if let Some(socket) = authority_socket {
-        let _ = std::fs::remove_file(socket);
-    }
-    if let Some(socket) = content_socket {
-        let _ = std::fs::remove_file(socket);
-    }
     if let Some(task) = share_task {
         task.abort();
-    }
-    if let Some(socket) = share_socket {
-        let _ = std::fs::remove_file(socket);
     }
     drop(workspace);
     match mount_outcome {
@@ -2551,7 +2570,7 @@ async fn mount(
     // The session names the agent behind writes it runs for, over the same
     // session-only socket; the mount attributes its versions accordingly.
     let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
-    let _media = blob_sock.as_deref().and_then(|socket| {
+    let media = blob_sock.as_deref().and_then(|socket| {
         spawn_document_media(
             socket,
             &store,
@@ -2559,6 +2578,10 @@ async fn mount(
             (Arc::clone(&write_attributions), mount_point.clone()),
         )
     });
+    let _media = media
+        .as_ref()
+        .and_then(|_| blob_sock.clone())
+        .map(ServedSocket);
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -3949,18 +3972,19 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
 
     let _storage = storage_sock
         .zip(storage_authority)
-        .map(|(sock, authority)| {
+        .and_then(|(sock, authority)| {
             let _ = std::fs::remove_file(&sock);
             match tokio::net::UnixListener::bind(&sock) {
                 Ok(listener) => {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660));
                     println!("Storage accounting socket at {}", sock.display());
-                    tokio::spawn(fs::storage::serve(listener, authority))
+                    tokio::spawn(fs::storage::serve(listener, authority));
+                    Some(ServedSocket(sock))
                 }
                 Err(error) => {
                     eprintln!("could not bind storage socket {}: {error}", sock.display());
-                    tokio::spawn(async {})
+                    None
                 }
             }
         });
@@ -4076,6 +4100,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);
             std::io::stdout().flush()?;
         }
+        let session = session_supervisor::MountedSession {
+            session,
+            mount_point: mp,
+        };
         session_supervisor::supervise(session, &session_events, session_ended)
     });
     println!("Mounting QuickFS at {}", mount_point.display());

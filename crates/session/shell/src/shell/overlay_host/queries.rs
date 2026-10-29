@@ -348,6 +348,9 @@ impl ShellOverlayHost {
     /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
+        // The desk widgets read the pointer's path over the windows too:
+        // reaching for an edge, resting on a glance, dragging one.
+        self.desk_pointer(p, ui::time::now());
         // Resting on the banner stack holds its banners; leaving it into the
         // window under it lets them go, though that window takes the motion.
         if let Some(chrome) = self.chrome.clone()

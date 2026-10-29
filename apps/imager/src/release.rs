@@ -543,7 +543,7 @@ fn is_thirty_two_bit(architecture: &str) -> bool {
 fn is_big_endian(architecture: &str) -> bool {
     matches!(
         architecture,
-        "s390" | "s390x" | "ppc" | "powerpc" | "mips" | "mips64"
+        "s390" | "s390x" | "ppc" | "powerpc" | "ppc64" | "mips" | "mips64"
     )
 }
 
@@ -1286,7 +1286,10 @@ mod tests {
         // when this build runs elsewhere.
         assert!(bundled_releases_for_arch("aarch64").is_ok());
         assert!(bundled_releases_for_arch("x86_64").is_ok());
-        assert!(bundled_releases_for_arch("riscv64").is_err());
+        // An architecture Tilo cannot run on is refused; one it has not built
+        // for yet has no entry.
+        assert!(bundled_releases_for_arch("i686").is_err());
+        assert!(bundled_releases_for_arch("riscv64").unwrap().is_empty());
 
         // A missing target payload stays empty rather than falling back to
         // the preparation host's architecture.
@@ -1342,7 +1345,12 @@ mod tests {
         let x86 = bundled_internal_releases_for_arch("x86_64").unwrap();
         assert_eq!(x86.len(), 1);
         assert_eq!(x86[0].architecture(), "x86_64");
-        assert!(bundled_internal_releases_for_arch("riscv64").is_err());
+        assert!(bundled_internal_releases_for_arch("i686").is_err());
+        assert!(
+            bundled_internal_releases_for_arch("riscv64")
+                .unwrap()
+                .is_empty()
+        );
         assert!(
             bundled_internal_releases_for_arch(if std::env::consts::ARCH == "aarch64" {
                 "x86_64"
@@ -1356,7 +1364,8 @@ mod tests {
     #[test]
     fn target_policy_selection_is_architecture_bound_and_absent_until_published() {
         assert_eq!(bundled_target_policy_for_arch("x86_64").unwrap(), None);
-        assert!(bundled_target_policy_for_arch("riscv64").is_err());
+        assert!(bundled_target_policy_for_arch("i686").is_err());
+        assert_eq!(bundled_target_policy_for_arch("riscv64").unwrap(), None);
         let entry = |arch: &str| {
             serde_json::json!({
                 "purpose": "tilo-target-policy",

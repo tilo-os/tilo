@@ -1,9 +1,10 @@
-//! Membership changes a member's device writes itself.
+//! Governance changes a member's device writes itself.
 //!
-//! A room's members, their roles, the grants on it and the devices each
-//! member holds it on are changed by actions, under the action policy
-//! (`tilo_action_policy::RoomPolicy`). The owner's devices write every part
-//! of the room's governance; anyone else writes only its membership, and
+//! A room's members, their roles, the grants on it, the devices each member
+//! holds it on and its own settings (its name, saved grant sets and its
+//! apps' sandbox capabilities) are changed by actions, under the action
+//! policy (`tilo_action_policy::RoomPolicy`). The owner's devices write
+//! every part of the room's governance; anyone else writes only these, and
 //! only what their own grants let them.
 //!
 //! A batch is judged where its writer made it: against the room as it stood
@@ -15,7 +16,10 @@
 //! The batch's membership effect is replayed as the policy's own changes
 //! (`Change`): removals and bans first, then admissions and roles, then
 //! grants. Each must be allowed to the writer, and together they must give
-//! exactly the membership the batch wrote. Anything else the batch changes in
+//! exactly the membership the batch wrote. Grants a saved grant set expands
+//! to are its assigner's when they may assign that set ([`assignments`]).
+//! The room's settings are checked each by the action that governs it
+//! ([`settings`], [`sandbox`]). Anything else the batch changes in
 //! governance is the owner's.
 //!
 //! An admission through an invitation is the inviter's: any participant that
@@ -39,10 +43,10 @@ use crate::state::{GovernedIdentity, RedemptionReceipt};
 /// the admission's own time so every receiver, early or late, agrees.
 const ADMISSION_CLOCK_SKEW_NS: u64 = 5 * 60 * 1_000_000_000;
 
-/// Why a member's membership batch was refused.
+/// Why a member's governance batch was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MembershipRefusal {
-    /// The batch changes more of governance than membership.
+    /// The batch changes more of governance than a member writes.
     NotMembership,
     /// Its dependencies are not all held, or it does not apply on them.
     Position(String),
@@ -97,7 +101,7 @@ pub fn position(
 }
 
 /// Whether `person`, from a device of theirs (`foreign` when it is not),
-/// may make the membership change from `at` to `after` in `room`.
+/// may make the governance change from `at` to `after` in `room`.
 ///
 /// # Errors
 /// The first refusal that applies.
@@ -115,7 +119,6 @@ pub fn authorize(
         || crate::durability::governed_bytes(at) != crate::durability::governed_bytes(after)
         || crate::document_import::governed_bytes(Some(at))
             != crate::document_import::governed_bytes(Some(after))
-        || super::settings_of(Some(at)) != super::settings_of(Some(after))
     {
         return Err(MembershipRefusal::NotMembership);
     }
@@ -125,16 +128,22 @@ pub fn authorize(
     let bound = roles::foreign_device_bound();
     let authority = held.person_on_device(&actor, foreign, &bound);
     let cx = Context::at_secs(now_ns / 1_000_000_000);
+    let writer = (actor.as_str(), &authority, &cx);
+    settings(room, at, after, &held, writer)?;
+    sandbox(&before, &written, &held, writer)?;
     let invited = redemptions(room, &held, &wanted, &before, &written, now_ns)?;
     if !invited.is_empty() {
         held.check_action(&authority, governance::INVITE, &cx, false)
             .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
     }
-    // What the invitations admit is the inviters'; the rest is the writer's.
+    let assigned = assignments(room, at, &held, &wanted, writer)?;
+    // What the invitations admit is the inviters', and a set's grants its
+    // assigner's; the rest is the writer's.
     let mut replay = held.clone();
     for (person, (role, _)) in &invited {
         replay.members.insert(person.clone(), *role);
     }
+    replay.grants.extend(assigned);
     let base = replay.clone();
     for change in changes(&base, &wanted) {
         replay
@@ -299,12 +308,179 @@ fn redemptions(
     Ok(invited)
 }
 
-/// Every governance part but membership is the same in both.
+/// Every governance part a member never writes is the same in both.
 fn only_membership_differs(before: &RoomGovernance, written: &RoomGovernance) -> bool {
     before.owner == written.owner
-        && before.sandbox == written.sandbox
         && before.coverage == written.coverage
         && before.media == written.media
+}
+
+/// The writer of a batch: their person, their authority on the device that
+/// wrote it, and when.
+type Writer<'a> = (
+    &'a str,
+    &'a tilo_action_policy::Authority<'a>,
+    &'a Context<'a>,
+);
+
+/// The room's name and saved grant sets, as the batch changes them: the name
+/// a valid one, given by someone who governs the room (a Moderator or above,
+/// or one granted its settings) when it shares its members' layout, as a room
+/// behind a public door does not; the grant sets by one granted its settings.
+fn settings(
+    room: &str,
+    at: &AutoCommit,
+    after: &AutoCommit,
+    held: &RoomPolicy,
+    (actor, authority, cx): Writer<'_>,
+) -> Result<(), MembershipRefusal> {
+    use tilo_desktop_model::projection::{ROOM_NAME_KEY, RoomLayout, room_layout};
+    let parts = |doc: &AutoCommit| {
+        super::settings_of(Some(doc))
+            .into_iter()
+            .partition::<Vec<_>, _>(|(key, _)| key == ROOM_NAME_KEY)
+    };
+    let (held_name, held_presets) = parts(at);
+    let (name, presets) = parts(after);
+    let settles = held
+        .check_action(authority, governance::SETTINGS, cx, false)
+        .is_ok();
+    if held_name != name {
+        let governs = held
+            .active_role(actor)
+            .is_some_and(|role| role >= Role::Moderator);
+        if !(governs || settles) || room_layout(at) == RoomLayout::Personal {
+            return Err(MembershipRefusal::Refused(format!(
+                "renaming room {room} is not the writer's"
+            )));
+        }
+        let named = match automerge::ReadDoc::get(after, automerge::ROOT, ROOM_NAME_KEY) {
+            Ok(Some((automerge::Value::Scalar(value), _))) => match value.as_ref() {
+                automerge::ScalarValue::Str(name) => Some(name.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        named
+            .as_deref()
+            .ok_or_else(|| "the room's name is not text".to_owned())
+            .and_then(|name| crate::workspace_membership::valid_room_name(name).map(drop))
+            .map_err(MembershipRefusal::Malformed)?;
+    }
+    if held_presets != presets && !settles {
+        return Err(MembershipRefusal::Refused(
+            "the room's grant sets are not the writer's to change".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The sandbox capabilities the batch records or takes back: each recorded
+/// one lasting past a restart and recorded as the writer's, who may grant in
+/// the room; each taken back by one who may revoke there.
+fn sandbox(
+    before: &RoomGovernance,
+    written: &RoomGovernance,
+    held: &RoomPolicy,
+    (actor, authority, cx): Writer<'_>,
+) -> Result<(), MembershipRefusal> {
+    let may = |action: &str| {
+        held.check_action(authority, action, cx, false)
+            .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))
+    };
+    for (id, bytes) in &written.sandbox {
+        if before.sandbox.get(id) == Some(bytes) {
+            continue;
+        }
+        may(governance::GRANT)?;
+        let capability: collab_types::caps::CapOverride = serde_json::from_slice(bytes)
+            .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
+        if !capability.persists_across_restart() {
+            return Err(MembershipRefusal::Refused(format!(
+                "sandbox capability {id} ends with a session or a single use"
+            )));
+        }
+        if capability.granted_by != Some(collab_types::caps::Principal::Person(actor.to_owned())) {
+            return Err(MembershipRefusal::Refused(format!(
+                "sandbox capability {id} is not recorded as the writer's"
+            )));
+        }
+    }
+    if before
+        .sandbox
+        .keys()
+        .any(|id| !written.sandbox.contains_key(id))
+    {
+        may(governance::REVOKE)?;
+    }
+    Ok(())
+}
+
+/// The grants the batch adds that assign one of the room's saved grant sets
+/// (`preset:<id>:<set>:<rule>`), written by someone who may assign that set
+/// by a grant on it ([`tilo_desktop_model::preset_assign_node`]) and given
+/// by them: each one of the set's rules placed in this room, no more than
+/// they hold. Any other grant is left to the room's grant rule.
+fn assignments(
+    room: &str,
+    at: &AutoCommit,
+    held: &RoomPolicy,
+    wanted: &RoomPolicy,
+    (actor, authority, cx): Writer<'_>,
+) -> Result<Vec<Grant>, MembershipRefusal> {
+    let presets = tilo_desktop_model::projection::workspace_presets_of(at);
+    let room_node = tilo_action_policy::TreePath::room(room);
+    let mut assigned = Vec::new();
+    for grant in &wanted.grants {
+        if held.grants.iter().any(|kept| kept.id == grant.id) {
+            continue;
+        }
+        let Some((set, index)) = grant
+            .id
+            .as_str()
+            .strip_prefix("preset:")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(_, rest)| rest.rsplit_once(':'))
+        else {
+            continue;
+        };
+        let Some(preset) = presets
+            .iter()
+            .find(|preset| preset.name.trim().to_lowercase() == set)
+        else {
+            continue;
+        };
+        let on_set = authority
+            .decide(
+                &tilo_desktop_model::preset_assign_node(room, &preset.name),
+                roles::GOVERNANCE_KIND,
+                cx,
+            )
+            .answer
+            == tilo_action_policy::Answer::Allow;
+        if !on_set {
+            continue;
+        }
+        let rule = index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| preset.rules.get(index));
+        if !rule.is_some_and(|rule| {
+            grant.node == room_node.join(&rule.node)
+                && grant.kinds == rule.kinds
+                && grant.answer == rule.answer
+        }) || grant.granted_by != tilo_action_policy::Subject::Person(actor.to_owned())
+        {
+            return Err(MembershipRefusal::Refused(format!(
+                "grant {} is not of the set it names",
+                grant.id.as_str()
+            )));
+        }
+        RoomPolicy::check_within(authority, grant, cx)
+            .map_err(|refusal| MembershipRefusal::Refused(refusal.to_string()))?;
+        assigned.push(grant.clone());
+    }
+    Ok(assigned)
 }
 
 /// The policy changes that take `held` to `wanted`, in the order they apply:

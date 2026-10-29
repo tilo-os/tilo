@@ -204,6 +204,7 @@ pub const BUILTINS: &[&str] = &[
     "run_block",
     "invoker",
     "now",
+    "dated",
     "open",
     "set",
 ];

@@ -572,11 +572,14 @@ impl PeopleController {
     /// refuses unnamed/rejected clusters and intentionally carries only photo
     /// ids and the chosen label — never the local clustering evidence.
     #[must_use]
-    pub fn approve_membership(&self, id: &str) -> Option<(String, Vec<String>)> {
+    pub fn approve_membership(
+        &self,
+        id: &str,
+    ) -> Option<(ui::tilo_resource::NonBlank, Vec<String>)> {
         let cluster = self.clusters.get(id)?;
-        let person = cluster.display_name.as_ref()?.trim();
-        (!cluster.rejected && valid_person_name(person))
-            .then(|| (person.to_owned(), cluster.visible_photo_ids()))
+        let person = ui::tilo_resource::NonBlank::parse(cluster.display_name.as_ref()?)?;
+        (!cluster.rejected && valid_person_name(&person))
+            .then(|| (person, cluster.visible_photo_ids()))
     }
 
     /// Delete every device-local face cluster and capability identity. This
@@ -773,7 +776,7 @@ mod tests {
         );
         assert_eq!(
             people.approve_membership("manual"),
-            Some(("Sam".to_owned(), vec![A.to_owned(), B.to_owned()]))
+            Some(("Sam".parse().unwrap(), vec![A.to_owned(), B.to_owned()]))
         );
 
         let mut library = PhotoLibrary::default();

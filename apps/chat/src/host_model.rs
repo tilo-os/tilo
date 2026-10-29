@@ -391,7 +391,7 @@ impl ChatApp {
                 crate::messages::chat_part::StreamOutput {
                     channel: ui::tilo_resource::Id::from_raw(&attempt.channel),
                     reply: attempt.reply.clone(),
-                    name: Some(crate::i18n::t("chat-model-author")),
+                    name: ui::tilo_resource::NonBlank::parse(&crate::i18n::t("chat-model-author")),
                     event: serde_json::to_value(event).unwrap_or_default(),
                 },
             ));

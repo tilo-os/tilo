@@ -7,7 +7,7 @@
 
 use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
-use super::{Action, MusicApp, View};
+use super::{Action, Music, View};
 
 /// What an entry of the window's bar asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,7 +19,7 @@ pub(super) enum BarCommand {
     Run(Action),
 }
 
-impl MusicApp {
+impl Music {
     /// The window bar's slots for what the window shows now.
     fn window_toolbar(&self) -> WindowToolbar {
         // The shell's own: the sidebar's toggle, Back in a narrow window.
@@ -83,11 +83,11 @@ impl MusicApp {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Action, MusicApp, NamePrompt, View};
+    use super::super::{Action, Music, NamePrompt, View};
 
     #[test]
     fn new_playlist_is_the_window_bars_action_on_playlists() {
-        let mut app = MusicApp::new();
+        let mut app = Music::new();
         let mut doc = crate::seed::sample_document();
         app.reload(&doc);
         app.dispatch(

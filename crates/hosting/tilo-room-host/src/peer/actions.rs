@@ -120,6 +120,45 @@ pub(super) async fn handle_remote_action(
     }
 }
 
+/// Handle an inbound `HostAction`: one of this host's own operations
+/// (`tilo.host`), asked over the caller's authenticated connection with no
+/// workspace. The host's governance decides who may, as for every door:
+/// only the devices of the host's own person, speaking for themselves.
+pub(super) fn handle_host_action(peer: &AuthenticatedPeer, session: &SessionCtx<'_>, frame: &[u8]) {
+    use tilo_actions::remote::RemoteActionFrame;
+    if !super::session_peer_authorized(peer, session)
+        || frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES
+    {
+        return;
+    }
+    let Some(plane) = session.app_serving else {
+        return;
+    };
+    let Ok(request) = RemoteActionFrame::decode(frame) else {
+        return;
+    };
+    let Ok(caller) = session_caller(peer, session) else {
+        return;
+    };
+    let Some(reply) = plane.serve_host(&caller, &peer.cert, request.message) else {
+        return;
+    };
+    let outbound = session.outbound.clone();
+    let runtime = tokio::runtime::Handle::current();
+    reply.then(move |reply| {
+        let Some(frame) = reply.and_then(|reply| RemoteActionFrame::new(reply).encode().ok())
+        else {
+            return;
+        };
+        let answer = Envelope::HostAction { frame };
+        if let Err(mpsc::error::TrySendError::Full(answer)) = outbound.try_send(answer) {
+            runtime.spawn(async move {
+                let _ = outbound.send(answer).await;
+            });
+        }
+    });
+}
+
 /// Answer a frame addressed to this relay through its app-serving plane,
 /// with the caller the connection authenticated. The answer is written to
 /// the connection whenever the plane has it, so a request that needs an
@@ -133,32 +172,14 @@ fn serve_locally(
     workspace_id: u64,
     frame: &[u8],
 ) -> Result<Option<Envelope>, (UnavailableReason, &'static str)> {
-    use tilo_actions::remote::{Caller, RemoteActionFrame};
+    use tilo_actions::remote::RemoteActionFrame;
     let request = RemoteActionFrame::decode(frame).map_err(|_| {
         (
             UnavailableReason::InvalidRequest,
             "malformed remote action frame",
         )
     })?;
-    let agent = session
-        .agents
-        .read_recover()
-        .get(&peer.device_public_key)
-        .cloned();
-    let caller = match agent {
-        Some(Some(delegation)) => match delegation.delegate {
-            tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
-                Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
-            }
-            tilo_relay_protocol::delegation::Delegate::Bot { installation } => {
-                Caller::bot(installation, peer.user_public_key, peer.device_public_key)
-            }
-        },
-        Some(None) => {
-            return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
-        }
-        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
-    };
+    let caller = session_caller(peer, session)?;
     if !plane.answers(&caller, &request.message) {
         return Err((
             UnavailableReason::UnsupportedPeer,
@@ -214,6 +235,34 @@ fn serve_locally(
         }
     });
     Ok(None)
+}
+
+/// Who `peer` acts as: the person on their own device, or the agent or bot
+/// whose live delegation that device carries.
+fn session_caller(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<tilo_actions::remote::Caller, (UnavailableReason, &'static str)> {
+    use tilo_actions::remote::Caller;
+    let agent = session
+        .agents
+        .read_recover()
+        .get(&peer.device_public_key)
+        .cloned();
+    Ok(match agent {
+        Some(Some(delegation)) => match delegation.delegate {
+            tilo_relay_protocol::delegation::Delegate::Agent { agent_id } => {
+                Caller::delegated_agent(agent_id, peer.user_public_key, peer.device_public_key)
+            }
+            tilo_relay_protocol::delegation::Delegate::Bot { installation } => {
+                Caller::bot(installation, peer.user_public_key, peer.device_public_key)
+            }
+        },
+        Some(None) => {
+            return Err((UnavailableReason::NotAuthorised, "the agent was withdrawn"));
+        }
+        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
+    })
 }
 
 /// A private queue belongs to one authenticated state session and exact room.

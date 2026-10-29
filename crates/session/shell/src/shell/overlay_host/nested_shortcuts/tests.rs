@@ -1,11 +1,18 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, SearchScope};
-use crate::shell::overlay_host::shortcuts::shortcut_reference_rows;
+use crate::shell::overlay_host::shortcut_guide_sheet::binding_of;
+use crate::shell::overlay_host::shortcuts::shortcut_reference_groups;
 use crate::shell::state::WorkspaceTree;
-use ui::Widget;
 use ui::widget::Container;
 use winit::event::Modifiers;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+fn reference_rows(shortcuts: &settings_store::hardware::ShortcutConfig) -> Vec<(String, String)> {
+    shortcut_reference_groups(shortcuts)
+        .into_iter()
+        .flatten()
+        .collect()
+}
 
 fn host() -> ShellOverlayHost {
     ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
@@ -45,7 +52,7 @@ fn nested_entry_points_dispatch_and_advertise_the_same_chords() {
     assert!(host.overlay_flags().overview);
     assert!(press(&mut host, NamedKey::Space, overview));
     assert!(!host.overlay_flags().overview);
-    let rows = shortcut_reference_rows(host.shortcut_config());
+    let rows = reference_rows(host.shortcut_config());
     assert!(rows.iter().any(|(_, keys)| keys.contains("Ctrl+Space")));
     assert!(
         rows.iter()
@@ -65,10 +72,17 @@ fn nested_entry_points_dispatch_and_advertise_the_same_chords() {
     assert!(press(&mut host, NamedKey::Tab, ModifiersState::SUPER));
     assert!(press(&mut host, NamedKey::F1, ModifiersState::empty()));
     assert!(host.overlay_flags().shortcut_help);
-    let accessibility = host.accessibility();
-    let description = format!("{accessibility:?}");
-    assert!(description.contains("Ctrl+Space"));
-    assert!(description.contains("Ctrl+Shift+Space"));
+    let advertised: Vec<_> = host
+        .shortcut_guide()
+        .essentials
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, alternatives)| alternatives)
+        .collect();
+    let keys =
+        |keys: &[&str]| binding_of(&keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
+    assert!(advertised.contains(&keys(&["Ctrl", "Space"])));
+    assert!(advertised.contains(&keys(&["Ctrl", "Shift", "Space"])));
     assert_eq!(
         host.shortcut_config, saved,
         "session defaults are not preferences"

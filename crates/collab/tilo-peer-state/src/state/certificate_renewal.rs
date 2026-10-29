@@ -89,9 +89,7 @@ impl PeerGovernanceMut<'_> {
             .map_err(err)?
             .ok_or("governed identities missing")?
             .1;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         let mut changed = false;
         for (id, bytes) in rows {
             let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;

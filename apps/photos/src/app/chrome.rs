@@ -20,7 +20,7 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToo
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use super::{Hit, LibraryDestination, PhotosApp, SelectionHit};
+use super::{Hit, LibraryDestination, Photos, SelectionHit};
 use crate::strings::{tr, tr_count, tr_with};
 
 use ui::widget::{
@@ -157,14 +157,12 @@ pub(super) struct InspectorFrame {
     pub footer: Rect,
 }
 
-impl PhotosApp {
-    /// This window in a shell: its sidebar shows what `places` shows, and
+impl Photos {
+    /// The window in a shell: its sidebar shows what `places` shows, and
     /// the shell's own buttons join the window bar through `bar`.
-    #[must_use]
-    pub fn in_shell(mut self, places: &NavFeed, bar: WindowBarLink) -> Self {
+    pub(super) fn join_shell(&mut self, places: &NavFeed, bar: WindowBarLink) {
         self.chrome.places = places.clone();
         self.chrome.bar = Some(bar);
-        self
     }
 
     /// The library's destinations in sidebar order.
@@ -622,7 +620,7 @@ impl PhotosApp {
         // What is open, else (no photograph) the app's name.
         toolbar.location = Some(ToolbarLocation {
             label: if self.chrome.title.is_empty() {
-                ui::widget::AppWidget::app_title(self).to_owned()
+                self.title().to_owned()
             } else {
                 self.chrome.title.clone()
             },

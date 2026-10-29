@@ -445,17 +445,6 @@ mod imp {
         }
     }
 
-    /// Serve both interfaces on `connection` at [`OBJECT_PATH`].
-    pub(super) async fn serve(
-        connection: &zbus::Connection,
-        player: PlayerIface,
-        root: RootIface,
-    ) -> zbus::Result<()> {
-        connection.object_server().at(OBJECT_PATH, player).await?;
-        connection.object_server().at(OBJECT_PATH, root).await?;
-        Ok(())
-    }
-
     /// Emit `PropertiesChanged` for whichever served properties changed between
     /// `old` and `new`, then store `new` as the served snapshot.
     #[allow(
@@ -531,28 +520,33 @@ mod imp {
 
         runtime.spawn(async move {
             let bus_name = config.bus_name.clone();
+            let root = RootIface::new(config, cmd_tx.clone());
+            let player = PlayerIface {
+                snap: initial.clone(),
+                cmd: cmd_tx,
+            };
+            // Both interfaces are served before the name is claimed: a
+            // desktop reads a player's properties the moment its name
+            // appears, and a player that cannot answer then is not shown.
             let connected = async {
                 zbus::connection::Builder::session()?
-                    .name(bus_name)?
+                    .serve_at(OBJECT_PATH, player)?
+                    .serve_at(OBJECT_PATH, root)?
+                    .name(bus_name.clone())?
                     .build()
                     .await
             };
             let connection = match connected.await {
                 Ok(connection) => connection,
                 Err(error) => {
-                    tracing::debug!(%error, "MPRIS: no session bus; media controls are off");
+                    tracing::warn!(
+                        %error,
+                        %bus_name,
+                        "MPRIS: could not register the player; media controls are off"
+                    );
                     return;
                 }
             };
-            let root = RootIface::new(config, cmd_tx.clone());
-            let player = PlayerIface {
-                snap: initial.clone(),
-                cmd: cmd_tx,
-            };
-            if let Err(error) = serve(&connection, player, root).await {
-                tracing::debug!(%error, "MPRIS: could not serve the player; media controls are off");
-                return;
-            }
             let mut last = initial;
             while let Some(snap) = pub_rx.recv().await {
                 if apply_update(&connection, &last, &snap).await.is_ok() {

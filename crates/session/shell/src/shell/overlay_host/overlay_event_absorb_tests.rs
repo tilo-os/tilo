@@ -2488,110 +2488,6 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
 }
 
-#[test]
-fn the_shortcut_guide_done_button_is_as_wide_as_its_label_at_large_text() {
-    let (vw, vh) = (1600.0, 900.0);
-    for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
-        let mut h = build_harness_sized(vw, vh);
-        h.chrome.borrow_mut().overlays.shortcut_help = true;
-        settle_with_theme(&mut h, vw, vh, &theme);
-        let done = h.host.shortcut_help_done_rect();
-        let label = crate::shell::i18n::t("guide-done");
-        let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
-            .role(ui::widget::ButtonRole::Primary)
-            .intrinsic_width(&mut TextRenderer::new(), &theme);
-        assert!(
-            done.width() + 0.5 >= needed,
-            "Done is {} wide, its label needs {needed} (text scale {})",
-            done.width(),
-            theme.text_scale
-        );
-        let panel = h.host.shortcut_help_panel_rect();
-        assert!(done.x1 <= panel.x1 - 16.0 && done.x0 > panel.x0);
-    }
-}
-
-#[test]
-fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
-    let (vw, vh) = (800.0, 600.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-    let panel = h.host.shortcut_help_panel_rect();
-    let done = h.host.shortcut_help_done_rect();
-    assert_eq!(panel.x0, 32.0);
-    assert_eq!(panel.x1, 768.0);
-    assert_eq!(panel.y0, 32.0);
-    assert_eq!(panel.y1, 568.0);
-    assert!(done.y0 >= panel.y0 + 16.0);
-    assert!(done.y1 <= panel.y1 - 18.0);
-    // The content is taller than an 800x600 window, so the body scrolls
-    // instead of overflowing its panel.
-    assert!(h.host.shortcut_guide_max_scroll > 0.0);
-    // Everything is reachable by scrolling: the scroll range is exactly
-    // the content that does not fit, so the last row ends at the body's
-    // bottom edge when scrolled to the end, and scrolling past it is
-    // clamped rather than leaving blank space or clipping a row.
-    let body_h = panel.height() - 98.0 - 22.0;
-    let note_lines = shortcut_note_lines(
-        shortcut_action_summary(&h.host.shortcut_config).is_some(),
-        h.host.desktop_controls.config().vim_mode,
-    );
-    let content_h = shortcut_guide_content_height(
-        panel.width() - 48.0,
-        SHORTCUT_GUIDE_ROWS.len(),
-        note_lines,
-        h.host.shortcut_navigation_step,
-    );
-    assert!(
-        (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,
-        "scroll range {} must equal the overflow {}",
-        h.host.shortcut_guide_max_scroll,
-        content_h - body_h
-    );
-    h.host.shortcut_guide_scroll = f64::MAX;
-    settle(&mut h, vw, vh);
-    assert_eq!(
-        h.host.shortcut_guide_scroll, h.host.shortcut_guide_max_scroll,
-        "scrolling past the end clamps to the last row"
-    );
-    h.host.shortcut_guide_scroll = 0.0;
-    settle(&mut h, vw, vh);
-    let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
-    let body = Rect::new(
-        panel.x0 + 24.0,
-        panel.y0 + 98.0,
-        panel.x1 - 24.0,
-        panel.y1 - 22.0,
-    );
-    assert!(
-        painted
-            .iter()
-            .all(|(_, rect)| rect.y0 >= body.y0 - 6.0 && rect.y1 <= body.y1 + 6.0),
-        "pointer targets stay inside the visible body"
-    );
-}
-
-#[test]
-fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
-    let (vw, vh) = (1280.0, 1000.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-    let panel = h.host.shortcut_help_panel_rect();
-    assert_eq!(panel.width(), 960.0);
-    assert!(
-        panel.height() < vh - 64.0,
-        "a tall window keeps the card intrinsic"
-    );
-    assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
-    assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
-    assert_eq!(
-        h.host.shortcut_guide_max_scroll, 0.0,
-        "nothing to scroll when the whole guide fits"
-    );
-}
-
 /// The window sizes every overlay is checked at: a phone-class portrait
 /// window, the small landscape ones, a laptop, and the user's 2944x1840
 /// panel at scale 2 (1472x920 logical).
@@ -2623,7 +2519,7 @@ fn overlay_cases() -> [OverlayCase; 5] {
                 st.overlays.shortcut_help = true;
                 st.bump();
             },
-            rect: |h| h.host.shortcut_help_panel_rect(),
+            rect: |h| h.host.layers.shortcut_guide.area(),
             modal: true,
         },
         OverlayCase {
@@ -2854,51 +2750,6 @@ fn overlays_render_inside_the_window_at_the_users_scale_and_small_sizes() {
             );
         }
     }
-}
-
-#[test]
-fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
-    let (vw, vh) = (1280.0, 800.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-    let painted: Vec<settings_store::hardware::ShortcutAction> = h
-        .host
-        .shortcut_binding_rects
-        .iter()
-        .map(|(action, _)| *action)
-        .collect();
-    assert!(!painted.is_empty(), "the guide paints its bindings");
-
-    let mut focused = Vec::new();
-    for _ in 0..64 {
-        let mut handled = false;
-        assert!(h.host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Tab),
-            winit::event::Modifiers::default(),
-            false,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        match h.host.shortcut_guide_focus {
-            Some(ShortcutGuideFocus::Binding(action)) => focused.push(action),
-            Some(ShortcutGuideFocus::Done) => break,
-            _ => {}
-        }
-    }
-    let hidden: Vec<_> = focused
-        .iter()
-        .filter(|action| !painted.contains(action))
-        .collect();
-    assert!(
-        hidden.is_empty(),
-        "Tab must never focus a binding the guide does not draw: {hidden:?}"
-    );
-    assert_eq!(
-        focused, painted,
-        "Tab walks the painted bindings in painted order"
-    );
 }
 
 #[test]
@@ -4108,77 +3959,4 @@ fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
             );
         }
     }
-}
-
-/// The guide's rows are rebind targets for the pointer and the keyboard, so
-/// a reader gets them too: one button per row and the Done, and activating
-/// one starts the same rebind the pointer starts.
-#[test]
-fn a_reader_reaches_every_guide_row_and_its_done() {
-    let (vw, vh) = (1600.0, 900.0);
-    let mut h = build_harness_sized(vw, vh);
-    h.chrome.borrow_mut().overlays.shortcut_help = true;
-    settle(&mut h, vw, vh);
-
-    let semantics = h.host.accessibility().expect("shell semantics");
-    let guide = semantics
-        .children
-        .iter()
-        .find(|node| node.name.as_deref() == Some(&crate::shell::i18n::t("guide-a11y-name")))
-        .expect("the guide is published");
-    assert_eq!(
-        guide.children.len(),
-        h.host.shortcut_binding_rects.len() + 1,
-        "one button per rebindable row, plus Done"
-    );
-
-    // The first row is where it is drawn, and activating it starts the
-    // rebind exactly as a click on that row does.
-    let (action, rect) = h.host.shortcut_binding_rects[0];
-    let row = guide
-        .children
-        .iter()
-        .find(|node| node.semantic_key.as_deref() == Some("guide:chord:0"))
-        .expect("the first row is published");
-    assert_eq!(
-        row.bounds.map(ui::a11y::AccessBounds::to_rect),
-        Some(rect),
-        "a reader's row is the painted one"
-    );
-    assert!(
-        row.description
-            .as_deref()
-            .is_some_and(|description| description.contains('+') || !description.is_empty()),
-        "the row says which chord it holds"
-    );
-    assert!(h.host.perform_semantic_action(
-        "guide:chord:0",
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
-        &automerge::ROOT,
-    ));
-    assert_eq!(h.host.shortcut_rebind, Some(action));
-
-    // Done leaves the guide, as pressing it does.
-    let done = guide
-        .children
-        .iter()
-        .find(|node| node.semantic_key.as_deref() == Some("guide:done"))
-        .expect("Done is published");
-    assert_eq!(
-        done.name.as_deref(),
-        Some(crate::shell::i18n::t("guide-done").as_str())
-    );
-    assert_eq!(
-        done.bounds.map(ui::a11y::AccessBounds::to_rect),
-        Some(h.host.shortcut_help_done_rect())
-    );
-    assert!(h.host.perform_semantic_action(
-        "guide:done",
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
-        &automerge::ROOT,
-    ));
-    assert!(!h.chrome.borrow().overlays.shortcut_help, "Done closes it");
-    assert_eq!(h.host.shortcut_rebind, None, "and abandons the rebind");
 }

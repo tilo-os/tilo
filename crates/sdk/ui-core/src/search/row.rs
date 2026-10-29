@@ -9,6 +9,8 @@
 
 use std::ops::Range;
 
+use vello::peniko::Color;
+
 use crate::icons::AppImage;
 
 /// The shape of one search hit's row.
@@ -39,6 +41,106 @@ pub enum SearchRow {
         snippet: String,
         matched: Option<Range<usize>>,
     },
+    /// A command, place or person: the title over an optional description
+    /// (the result's subtitle), with what leads and trails it.
+    Command(Box<CommandRow>),
+}
+
+/// The slots of a [`SearchRow::Command`] row beyond its title, subtitle and
+/// icon.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommandRow {
+    /// The description is a path, so it loses its middle rather than its
+    /// end when it doesn't fit. Prose loses its end.
+    pub description_is_path: bool,
+    /// The description (the result's subtitle) as separate facts, drawn as
+    /// runs of their own with space between them. Empty: one run.
+    pub facts: Vec<String>,
+    /// The application's own artwork, painted in place of the icon when it
+    /// decodes.
+    pub image: Option<AppImage>,
+    /// A person as `(name, key)`: their avatar in place of the icon.
+    pub avatar: Option<(String, String)>,
+    /// A short status, as a trailing pill.
+    pub badge: Option<String>,
+    /// A shortcut's keycap legends, as a trailing chip.
+    pub keycaps: Option<Vec<String>>,
+    /// The people the row is about, as a stack of faces at its end.
+    pub faces: Vec<RowFace>,
+    /// What choosing the row does, as a button at its end ("Join").
+    pub outcome: Option<String>,
+    /// Other activations behind a held modifier; the selected row shows the
+    /// one whose modifier is down, else the first as a hint.
+    pub alternates: Vec<Alternate>,
+}
+
+impl CommandRow {
+    /// The alternative the selected row shows: the one whose modifier is
+    /// `held`, else the first it offers.
+    #[must_use]
+    pub fn shown_alternate(&self, held: Option<ActivationModifier>) -> Option<&Alternate> {
+        self.alternates
+            .iter()
+            .find(|alternate| Some(alternate.modifier) == held)
+            .or_else(|| self.alternates.first())
+    }
+}
+
+/// One person in a row's face stack ([`CommandRow::faces`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RowFace {
+    pub name: String,
+    /// Their stable id: picks their picture.
+    pub identity: String,
+    /// Their presence colour, as every other surface draws them.
+    pub colour: Color,
+    pub is_agent: bool,
+    /// Idle or away: the face dims.
+    pub dimmed: bool,
+}
+
+/// A modifier held while a row is activated, choosing an alternative
+/// activation the row offers ([`CommandRow::alternates`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ActivationModifier {
+    Shift,
+    Ctrl,
+    Alt,
+}
+
+impl ActivationModifier {
+    /// The one modifier `state` holds, or `None` for none or a mix: a chord
+    /// of two is not one of the alternatives.
+    pub fn of(state: winit::keyboard::ModifiersState) -> Option<Self> {
+        match (
+            state.shift_key(),
+            state.control_key() || state.super_key(),
+            state.alt_key(),
+        ) {
+            (true, false, false) => Some(Self::Shift),
+            (false, true, false) => Some(Self::Ctrl),
+            (false, false, true) => Some(Self::Alt),
+            _ => None,
+        }
+    }
+
+    /// The key's name, as the shared keycap legends spell it.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Shift => "Shift",
+            Self::Ctrl => "Ctrl",
+            Self::Alt => "Alt",
+        }
+    }
+}
+
+/// What a row does when it is activated with `modifier` held, in the words
+/// the selected row shows while that modifier is down ("Opens as a tab
+/// here").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Alternate {
+    pub modifier: ActivationModifier,
+    pub label: String,
 }
 
 impl SearchRow {
@@ -78,7 +180,7 @@ impl SearchRow {
         match &mut self {
             Self::Message { snippet, .. } => *snippet = Some(text),
             Self::FileHit { snippet, .. } => *snippet = text,
-            Self::Media { .. } => {}
+            Self::Media { .. } | Self::Command(_) => {}
         }
         self
     }
@@ -192,6 +294,16 @@ impl SearchRow {
                 Some(line) => format!("{path}, line {line}, {}", snippet.trim()),
                 None => format!("{path}, {}", snippet.trim()),
             },
+            Self::Command(row) => {
+                let mut parts = Vec::new();
+                if !row.facts.is_empty() {
+                    parts.push(row.facts.join(", "));
+                }
+                if let Some(badge) = &row.badge {
+                    parts.push(format!("Status: {badge}"));
+                }
+                parts.join(". ")
+            }
         }
     }
 

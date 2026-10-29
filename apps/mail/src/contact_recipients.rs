@@ -6,7 +6,7 @@ use tilo_contact_directory::{ContactDirectory, EmailHint, canonical_email_hint};
 use ui::framework::LiveRow;
 use ui::tilo_resource::{Effect, SearchEntry};
 
-use super::MailApp;
+use super::{MailApp, Mailroom};
 use crate::actions::MailEffect;
 use crate::model::{Draft, DraftSender};
 
@@ -80,7 +80,7 @@ fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -
     choices
 }
 
-impl MailApp {
+impl Mailroom {
     fn contact_choices(&self) -> Vec<Choice> {
         self.contact_directory
             .as_ref()
@@ -137,7 +137,7 @@ impl MailApp {
         sender_account: &str,
         sender_email: &str,
     ) -> Result<Draft, String> {
-        if self.compose.open || self.has_contact_draft_conflict || !self.reveals.is_empty() {
+        if self.composing || self.has_contact_draft_conflict || !self.reveals.is_empty() {
             return Err(crate::i18n::t("mail-contact-existing-draft"));
         }
         let directory = self
@@ -175,7 +175,9 @@ impl MailApp {
             ..Draft::default()
         })
     }
+}
 
+impl MailApp {
     pub(crate) fn contact_sender_matches(&self, draft: &Draft) -> bool {
         draft.sender.as_ref().is_none_or(|sender| {
             let state = self.shared.borrow();
@@ -229,7 +231,7 @@ mod tests {
         }
         let mut mail = TestApp::<crate::MailShell>::new().unwrap();
         let app = mail.surface_mut::<MailApp>();
-        app.contact_directory = Some(directory);
+        app.state().contact_directory = Some(directory);
         app.shared.borrow_mut().accounts.accounts = ["work@example.test", "personal@example.test"]
             .into_iter()
             .map(|email| {
@@ -287,6 +289,7 @@ mod tests {
         assert_eq!(directory.get().people.get(&person).unwrap().label, "Morgan");
         assert_eq!(
             mail.surface_mut::<MailApp>()
+                .state()
                 .contact_directory
                 .as_ref()
                 .unwrap()
@@ -299,7 +302,7 @@ mod tests {
     #[test]
     fn contact_picker_requires_confirmation_and_preserves_person_and_sender_choice() {
         let (mut owner, mut mail) = fixture();
-        let choices = mail.surface_mut::<MailApp>().contact_choices();
+        let choices = mail.surface_mut::<MailApp>().state().contact_choices();
         assert_eq!(
             choices.len(),
             4,
@@ -415,6 +418,7 @@ mod tests {
         let (_, mut mail) = fixture();
         let choice = mail
             .surface_mut::<MailApp>()
+            .state()
             .contact_choices()
             .into_iter()
             .find(|choice| choice.sender_email == "work@example.test")
@@ -467,7 +471,7 @@ mod tests {
                 account
             })
             .collect();
-        let choices = app.contact_choices();
+        let choices = app.state().contact_choices();
         assert_eq!(choices.len(), 4);
         let selected = choices
             .iter()
@@ -485,7 +489,7 @@ mod tests {
         let outgoing = crate::actions::Outgoing::new("same@example.test", &draft);
         let (tx, rx) = std::sync::mpsc::channel();
         let (_incoming, incoming_rx) = std::sync::mpsc::channel();
-        app.engine = Some(super::super::EngineHandle {
+        app.state().engine = Some(super::super::EngineHandle {
             tx,
             rx: incoming_rx,
         });
@@ -518,7 +522,7 @@ mod tests {
     #[test]
     fn contact_picker_refuses_stale_address_deleted_person_and_replaced_sender() {
         let (mut owner, mut mail) = fixture();
-        let selected = mail.surface_mut::<MailApp>().contact_choices()[0].clone();
+        let selected = mail.surface_mut::<MailApp>().state().contact_choices()[0].clone();
         let record = owner.shared_person::<ContactDirectory>().unwrap();
         record
             .invoke(&ContactDirectory::PROJECT_EMAILS.with((
@@ -530,7 +534,7 @@ mod tests {
             mail.effect_on_confirmed(&selected.id(), &selected.effect())
                 .is_err()
         );
-        let selected = mail.surface_mut::<MailApp>().contact_choices()[0].clone();
+        let selected = mail.surface_mut::<MailApp>().state().contact_choices()[0].clone();
         record
             .invoke(&ContactDirectory::REMOVE_CONTACT.with(Id::from_raw(selected.person.clone())))
             .unwrap();
@@ -538,7 +542,7 @@ mod tests {
             mail.effect_on_confirmed(&selected.id(), &selected.effect())
                 .is_err()
         );
-        let selected = mail.surface_mut::<MailApp>().contact_choices()[0].clone();
+        let selected = mail.surface_mut::<MailApp>().state().contact_choices()[0].clone();
         let app = mail.surface_mut::<MailApp>();
         let mut state = app.shared.borrow_mut();
         let sender = state
@@ -560,7 +564,7 @@ mod tests {
     #[test]
     fn contact_picker_saved_draft_blocks_preparation_and_sender_survives_compose_save() {
         let (_, mut mail) = fixture();
-        let choice = mail.surface_mut::<MailApp>().contact_choices()[0].clone();
+        let choice = mail.surface_mut::<MailApp>().state().contact_choices()[0].clone();
         let existing = Draft {
             bcc: "existing@example.test".into(),
             ..Draft::default()

@@ -38,11 +38,16 @@ pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The map of the resource `id` of `app`.
+/// The map of the resource `id` of `app`: under the app's id, or under an id it was published as
+/// before (`previously:`), where its older records stay.
 pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     let records = map_at(doc, &automerge::ROOT, RECORDS_KEY)?;
-    let app = map_at(doc, &records, app)?;
-    map_at(doc, &app, id)
+    if let Some(found) = map_at(doc, &records, app).and_then(|held| map_at(doc, &held, id)) {
+        return Some(found);
+    }
+    crate::schema::previously(app)
+        .iter()
+        .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
 }
 
 /// The type stored in `$type` of the map `obj`.

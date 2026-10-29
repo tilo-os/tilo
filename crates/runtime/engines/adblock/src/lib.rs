@@ -29,7 +29,7 @@ use tilo_ui::webview::adblock::{AdblockError, ChunkedFilter, CompileFn, EngineEn
 /// against the toolkit's definition.
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
-pub fn tilo_adblock_engine_entry() -> CompileFn {
+pub extern "Rust" fn tilo_adblock_engine_entry() -> CompileFn {
     compile
 }
 
@@ -51,11 +51,30 @@ fn compile(lists: &[&str], max_rules_per_chunk: usize) -> Result<ChunkedFilter, 
     }
 }
 
+/// The engine's self-check ([`self_check`]) for its check binary, by the
+/// unmangled name the binary links, as the toolkit opens
+/// [`tilo_adblock_engine_entry`]: nothing compiles against this library, so
+/// it exports no Rust item. Prints the report; whether it passed.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_adblock_engine_check() -> bool {
+    match self_check() {
+        Ok(report) => {
+            println!("tilo-adblock-engine: {report}");
+            true
+        }
+        Err(error) => {
+            eprintln!("tilo-adblock-engine: {error}");
+            false
+        }
+    }
+}
+
 /// Run the engine's own code: compile a two-rule list through the entry the
 /// toolkit opens, and check what came out.
 ///
-/// The engine's check binary calls it, so a release proves the library loads
-/// and runs against the runtime it ships with.
+/// The check binary runs it through its unmangled entry, so a release proves
+/// the library loads and runs against the runtime it ships with.
 ///
 /// # Errors
 /// Names what the compiler produced wrongly.

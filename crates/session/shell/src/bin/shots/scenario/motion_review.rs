@@ -100,6 +100,7 @@ pub(super) fn all() -> Vec<Scenario> {
         sheets(),
         ribbon_and_rail(),
         launcher(),
+        super::desk_gestures::all(),
     ]
 }
 

@@ -61,7 +61,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         &mut doc,
         &writer,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,

@@ -342,6 +342,14 @@ impl<R: Resource> Live<R> {
         self.inner.borrow_mut().demand(doc, demand)
     }
 
+    /// Take `state` as the state now, read elsewhere than from a document
+    /// the framework syncs (a settings section, as the settings document
+    /// holds it): everything bound to it takes it again.
+    pub(crate) fn replace(&self, state: R::State) {
+        self.inner.borrow_mut().replace(state);
+        self.changes.borrow_mut().note(Delta::everything());
+    }
+
     /// Ask everything bound to the state to take it again, unchanged. After
     /// an edit was refused or is waiting for confirmation, a surface that
     /// previewed it optimistically is re-presented the stored state.

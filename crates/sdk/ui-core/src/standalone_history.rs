@@ -19,7 +19,7 @@ use crate::widget::{HistoryEntry, HistoryEntryId};
 #[derive(Clone)]
 pub(crate) enum HistoryTarget {
     Bound(Box<CallbackBinding>),
-    Legacy {
+    Outer {
         app_id: String,
         record: Option<RecordId>,
         /// Supplied by the host and replaced whenever it replaces the document,
@@ -243,7 +243,7 @@ impl HistoryTarget {
                 }
                 Ok(())
             }
-            Self::Legacy {
+            Self::Outer {
                 app_id,
                 record,
                 document_identity,
@@ -286,7 +286,7 @@ impl HistoryTarget {
                     .read_document(context.document, |doc, _| read(doc))
                     .map_err(|error| bound_error(&error))
             }
-            Self::Legacy {
+            Self::Outer {
                 app_id,
                 record,
                 document_identity,
@@ -579,7 +579,7 @@ mod tests {
     }
 
     fn target(record: Option<RecordId>, identity: uuid::Uuid) -> HistoryTarget {
-        HistoryTarget::Legacy {
+        HistoryTarget::Outer {
             app_id: "notes".into(),
             record,
             document_identity: identity,

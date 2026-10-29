@@ -92,6 +92,17 @@ XDG_SESSION_DESKTOP=tilo
 XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 
+# Neither PAM nor the user manager sets the XDG base directories, and the
+# compositor takes no home-directory fallback for the sealed collaboration
+# state it keeps under XDG_STATE_HOME: without it, that state lives in memory
+# only. Name them as tilo-seat-session does for a board session.
+: "${HOME:?}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+# A full disk must not stop the login.
+"$MKDIR" -p -m 0700 -- "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" 2>/dev/null || true
+
 # Fedora's glibc backs every malloc heap with transparent huge pages, so each
 # thread's 2 MiB malloc arena is resident the moment it allocates: an idle
 # compositor held 180 MiB for 34 MiB of live data. The compositor and every
@@ -220,7 +231,7 @@ target_started=1
 # the journal still gets it all, and keeps only the latest 4 MiB. One previous
 # compositor run is retained, with its per-frame trace: the previous login's,
 # or after a desktop restart, the run that was restarted.
-flight_dir="${XDG_STATE_HOME:-${HOME:?}/.local/state}/tilo/session-logs"
+flight_dir="$XDG_STATE_HOME/tilo/session-logs"
 # A full or failing disk must not stop the login: without the directory the
 # record only reaches the journal.
 { "$MKDIR" -p -- "$flight_dir" && "$CHMOD" 0700 "$flight_dir"; } 2>/dev/null || true

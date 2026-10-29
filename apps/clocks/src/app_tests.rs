@@ -8,7 +8,7 @@ use super::{
     timezone_results,
 };
 use crate::model::{Clocks, bounded_label};
-use crate::{ClocksShell, OnThisDevice, ShellSnapshot};
+use crate::{ClocksOnDevices, ClocksShell, ShellSnapshot};
 use std::collections::BTreeSet;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
@@ -314,8 +314,9 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
     app.settle();
     app.settle();
     assert!(
-        app.settings::<OnThisDevice>()
-            .get()
+        app.person::<ClocksOnDevices>()
+            .unwrap()
+            .with(|kept| kept.on("test-device"))
             .floating_timers
             .is_empty(),
         "close stops floating"
@@ -363,8 +364,9 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
         "the same notice, not a second one"
     );
     assert_eq!(
-        app.settings::<OnThisDevice>()
-            .get()
+        app.person::<ClocksOnDevices>()
+            .unwrap()
+            .with(|kept| kept.on("test-device"))
             .delivery
             .timers_rung
             .len(),

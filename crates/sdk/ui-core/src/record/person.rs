@@ -29,7 +29,7 @@ use super::{
     RecordStore,
 };
 use crate::history_mode::HistoryOwner;
-use crate::history_mode::owner::LegacyHistoryLifetime;
+use crate::history_mode::owner::RecordOwnerLifetime;
 use crate::permissions::UserId;
 
 #[cfg(test)]
@@ -345,7 +345,7 @@ pub struct StoredRecord {
     checkout: RecordCheckout,
     author: UserId,
     /// Keeps the record's route installed while the record is open.
-    lifetime: Rc<LegacyHistoryLifetime>,
+    lifetime: Rc<RecordOwnerLifetime>,
 }
 
 impl StoredRecord {
@@ -354,7 +354,7 @@ impl StoredRecord {
             store,
             checkout,
             author,
-            lifetime: LegacyHistoryLifetime::new(),
+            lifetime: RecordOwnerLifetime::new(),
         }
     }
 
@@ -485,7 +485,7 @@ impl StoredRecord {
     /// it is open.
     #[must_use]
     pub fn history_owner(&self) -> HistoryOwner {
-        HistoryOwner::legacy(self.store.clone(), self.checkout.clone(), &self.lifetime)
+        HistoryOwner::record(self.store.clone(), self.checkout.clone(), &self.lifetime)
     }
 
     /// Merge a whole document of this record another device holds, as its

@@ -2544,7 +2544,7 @@ impl ui::collaboration::participants::Participants for ChatApp {
                 .insert(participant.as_str().to_owned(), label.to_owned());
             // Every member names the agent's messages as the host labelled
             // the task.
-            if !label.is_empty()
+            if let Some(name) = ui::tilo_resource::NonBlank::parse(label)
                 && self
                     .agent_authors
                     .get(participant.as_str())
@@ -2554,7 +2554,7 @@ impl ui::collaboration::participants::Participants for ChatApp {
                 self.submit(crate::resource::Chat::NAME_AGENT.with(
                     crate::record::chat::NameAgent {
                         participant: participant.as_str().to_owned(),
-                        name: label.to_owned(),
+                        name,
                     },
                 ));
             }
@@ -2689,6 +2689,9 @@ mod room;
 #[cfg(feature = "samples")]
 mod scenarios;
 mod submission;
+mod window;
 pub(crate) use call_chrome_motion::CallChromeMotion;
 pub(crate) use hits::{Hit, PaintedMessage};
 pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};
+pub use window::ChatWindow;
+pub(crate) use window::SharedChat;

@@ -119,12 +119,31 @@ impl Surface {
             .update(&self.host, &self.planner);
     }
 
+    /// What [`Self::resources`] is built from, besides what never changes for this surface: the
+    /// published records' revision and the loaded packages.
+    fn inputs(&self) -> (u64, Vec<tilolang_tilo::runtime::PackageId>) {
+        (
+            self.publications.borrow().revision(),
+            self.host
+                .packages()
+                .into_iter()
+                .map(|package| package.id)
+                .collect(),
+        )
+    }
+
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record, the instance's own app's with what every
     /// app publishes. Built now, so an invocation resolves against what the record holds now.
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
-        out.extend(self.publications.borrow().trees().values().cloned());
+        out.extend(
+            self.publications
+                .borrow()
+                .trees()
+                .values()
+                .map(|tree| (**tree).clone()),
+        );
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner);
             if package.meta.app == self.app {
@@ -245,6 +264,9 @@ pub struct Hosted {
     /// The directory the instance answers its connection's directory requests from: what it
     /// last published, browsable by level and name, as the door and agents read it.
     directory: PublishedDirectory,
+    /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
+    /// they are the same, a turn publishes without building anything.
+    published_from: Option<(Rc<Surface>, (u64, Vec<tilolang_tilo::runtime::PackageId>))>,
     registry: ActionRegistry,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
@@ -305,10 +327,13 @@ impl Hosted {
                 me: spec.person.clone(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: kept
-                    .indexes
-                    .as_ref()
-                    .map(|indexes| tilolang_tilo::index::room_dir(indexes, &spec.room)),
+                index_dir: kept.indexes.as_ref().map(|indexes| {
+                    tilolang_tilo::index::record_dir(
+                        indexes,
+                        &spec.room,
+                        record.route().record.as_deref(),
+                    )
+                }),
                 record_loader: None,
                 sink: None,
             },
@@ -326,6 +351,7 @@ impl Hosted {
             surface,
             published: None,
             directory: PublishedDirectory::default(),
+            published_from: None,
             registry,
             identity: None,
         }
@@ -363,6 +389,12 @@ impl Hosted {
     #[must_use]
     pub fn record(&self) -> &RoomRecord {
         &self.record
+    }
+
+    /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
+    /// stages one: its changes are the person's steps on the instance's record.
+    pub fn stage(&mut self, scenario: &str) {
+        self.instance.stage(Some(scenario));
     }
 
     /// One frame: what the room sent taken in, the runtime brought up to date with the record,
@@ -424,6 +456,22 @@ impl Hosted {
         // The invoker is who the broker admitted, with the participant and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
+        // A member's own record is that person's alone: anyone else is refused before anything
+        // of it is read.
+        let person = match invoker.kind {
+            ActorKind::Person => Some(invoker.actor.as_str()),
+            _ => invoker.on_behalf_of.as_deref(),
+        };
+        if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
+            let update = failed(
+                invocation,
+                Refused::new("permission_denied", "this is another member's own record"),
+            );
+            self.record
+                .manager_mut()
+                .send(CollabRequest::UpdateInvocation { id, update });
+            return true;
+        }
         let attributed = context
             .as_deref()
             .map(|context| context.clone().with_invoker(invoker.clone()));
@@ -598,6 +646,18 @@ impl Hosted {
         let Some(surface) = self.surface.borrow().clone() else {
             return;
         };
+        // Nothing the surface is built from changed since the broker took it: a keystroke into
+        // a field nothing published reads, and every turn that changed nothing, cost no more
+        // with ten thousand records or items than with one.
+        let inputs = surface.inputs();
+        if self
+            .published_from
+            .as_ref()
+            .is_some_and(|(from, at)| Rc::ptr_eq(from, &surface) && *at == inputs)
+        {
+            return;
+        }
+        let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
         let resources = surface.resources();
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -646,6 +706,7 @@ impl Hosted {
             .as_ref()
             .is_some_and(|(held, _)| *held == descriptors)
         {
+            self.published_from = Some((surface, inputs));
             return;
         }
         let prior = self
@@ -664,6 +725,7 @@ impl Hosted {
                 })
         {
             self.published = Some((descriptors, state));
+            self.published_from = Some((surface, inputs));
         }
     }
 

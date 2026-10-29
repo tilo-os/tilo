@@ -68,26 +68,6 @@ pub(super) fn recover(source: &Path, destination: &Path, journal: &Path) -> io::
     review.validate()?;
     Ok(review)
 }
-pub(super) fn recover_adoption(
-    source: &Path,
-    destination: &Path,
-    journal: &Path,
-    witness: &super::super::promotion::AdoptionWitness,
-    prefix: &Path,
-) -> io::Result<HomeReview> {
-    let review = load(source, destination, journal)?;
-    let parent = prefix
-        .parent()
-        .ok_or_else(|| changed("Missing application subtree parent"))?;
-    let mapped = PinnedDirectory::open_absolute(&witness.mapped_path(parent)?)?;
-    if directory_identity(&mapped)? != review.parent_identity {
-        return Err(changed(
-            "Original application copy parent changed during adoption",
-        ));
-    }
-    review.validate_source()?;
-    Ok(review)
-}
 fn load(source: &Path, destination: &Path, journal: &Path) -> io::Result<HomeReview> {
     let path = journal.with_extension("home-intent");
     let parent = PinnedDirectory::open_absolute(

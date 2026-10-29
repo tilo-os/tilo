@@ -136,7 +136,7 @@ params = [
 id = "create-page"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "markdown", required = false, schema = { type = ["string", "null"] } },
 ]
 

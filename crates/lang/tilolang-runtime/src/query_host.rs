@@ -13,7 +13,8 @@ use crate::value::{RefValue, Value};
 
 impl Core {
     /// The clock queries are read against: the host's, to the minute, so a view that asks
-    /// `received: -7d` asks the same query on every frame of that minute.
+    /// `received: -7d` asks the same query on every frame of that minute, in the person's zone,
+    /// so `today` is their day.
     fn query_clock(&self) -> HResult<Clock> {
         let now = self
             .clock
@@ -21,7 +22,8 @@ impl Core {
             .as_ref()
             .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
         let minute = now.get(..17).map(|m| format!("{m}00Z")).unwrap_or(now);
-        Ok(Clock::at(&minute)?)
+        let zone = self.zone.borrow().as_ref().map_or(0, |zone| zone());
+        Ok(Clock::at(&minute)?.in_zone(zone))
     }
 
     /// `query(ty, scope, terms, text)`: the resources of the type `ty` that the query of the

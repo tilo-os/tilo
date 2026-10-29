@@ -730,7 +730,7 @@ pub struct ClipSettings {
 /// stays as it is (or as a new title's default).
 #[derive(Default)]
 pub(crate) struct TitleStyle {
-    pub text: Option<String>,
+    pub text: Option<tilo_resource::NonBlank>,
     pub colour: Option<String>,
     pub size: Option<f64>,
     pub align: Option<String>,
@@ -747,11 +747,7 @@ impl TitleStyle {
     /// Returns why a colour, size or alignment is not one a title takes.
     pub(crate) fn apply(&self, text: &mut crate::model::TextSource) -> Result<(), Refusal> {
         if let Some(words) = &self.text {
-            let words = words.trim();
-            if words.is_empty() {
-                return Err(Refusal::new("a title has words"));
-            }
-            words.clone_into(&mut text.content);
+            words.as_str().clone_into(&mut text.content);
         }
         if let Some(colour) = &self.colour {
             text.color = colour_named(colour)?;

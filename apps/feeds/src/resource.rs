@@ -18,7 +18,7 @@ use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
-use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, NonBlank, Refusal, resource};
 use ui::widget::Element;
 
 use crate::model::{Article, Feed, Fetched, Filter, Folder, Library, Outline, tag_key};
@@ -45,13 +45,10 @@ impl Library {
     pub fn add_subscription(
         &mut self,
         cx: &mut ActionCx,
-        #[param("Feed URL")] url: String,
+        #[param("Feed URL")] url: NonBlank,
         #[param("The folder to file it in; none for the top of the sidebar")] folder: Option<Id>,
     ) -> Result<(), Refusal> {
-        let url = url.trim();
-        if url.is_empty() {
-            return Err(Refusal::new("a subscription needs an address"));
-        }
+        let url = url.as_str();
         if self.feed_at(url).is_some() {
             return Err(Refusal::new("already subscribed to that address"));
         }
@@ -92,17 +89,8 @@ impl Library {
 
     /// New folder.
     #[action]
-    pub fn new_folder(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Name")] name: String,
-    ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a folder needs a name"));
-        }
+    pub fn new_folder(&mut self, cx: &mut ActionCx, #[param("Name")] name: NonBlank) {
         self.folders.push(cx.id(), Folder::named(name));
-        Ok(())
     }
 
     /// Delete folder.

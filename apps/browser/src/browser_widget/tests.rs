@@ -566,7 +566,7 @@ fn typing_in_the_address_bar_suggests_and_completes_visited_pages() {
         record
             .invoke(&crate::history::BrowsingHistory::VISIT.with(
                 crate::history::browsing_history::Visit {
-                    url: url.into(),
+                    url: url.parse().unwrap(),
                     title: title.into(),
                     at,
                 },

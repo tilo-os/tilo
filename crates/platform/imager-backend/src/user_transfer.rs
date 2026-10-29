@@ -68,3 +68,30 @@ pub fn publish_private_artifact(
         Err(error) => Err(error),
     }
 }
+/// Open an owner-only private workspace without following links.
+///
+/// # Errors
+/// Refuses nonprivate, redirected or unavailable workspaces.
+pub fn private_workspace(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
+    let pin = PinnedDirectory::open_absolute(path)?;
+    pin.validate_destination()?;
+    destination_security::check_private_file(&pin.file)?;
+    Ok(pin)
+}
+/// Remove whatever an interrupted attempt left in a private workspace.
+///
+/// # Errors
+/// Refuses a changed workspace and reports removal failures.
+pub fn clear_workspace(pin: &Arc<PinnedDirectory>, path: &Path) -> io::Result<()> {
+    let directory = cap_std::fs::Dir::from_std_file(durability::readable_directory(&pin.file)?);
+    for entry in directory.entries()? {
+        let entry = entry?;
+        let child = path.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(child)?;
+        } else {
+            std::fs::remove_file(child)?;
+        }
+    }
+    pin.validate_destination()
+}

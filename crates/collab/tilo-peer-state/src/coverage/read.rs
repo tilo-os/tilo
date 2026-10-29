@@ -1,5 +1,4 @@
-//! One governed-checkpoint coverage check for both storage modes.
-use crate::resources::{OuterLimits, PeerResourceError, outer};
+//! The governed-checkpoint coverage check.
 use crate::room::read::{ReadError, RoomRead, RoomValue, Selection};
 use std::collections::BTreeMap;
 
@@ -30,19 +29,6 @@ impl CoverageDecode for LegacyCoverage {
             Ok(value) => Ok(value),
             Err(_) => postcard::from_bytes(bytes),
         }
-    }
-}
-impl outer::EncodeSchema for super::RouteValue {}
-impl outer::Schema<'_> for super::RouteValue {}
-/// Coverage decoded within [`OuterLimits`].
-pub(crate) struct BoundedCoverage {
-    pub(crate) limits: OuterLimits,
-}
-impl CoverageDecode for BoundedCoverage {
-    type Error = PeerResourceError;
-    type Row = super::RouteValue;
-    fn decode_row(&self, bytes: &[u8]) -> Result<Self::Row, Self::Error> {
-        crate::resources::decode(bytes, self.limits)
     }
 }
 #[derive(Debug, PartialEq, Eq)]

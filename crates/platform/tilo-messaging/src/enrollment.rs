@@ -3,6 +3,7 @@
 use crate::{LinkedAccount, Pairing, PairingFuture, SendError, ServiceAccount};
 use std::{future::Future, pin::Pin, sync::Arc};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum EnrollmentPhase {
     Empty,
     Linking,
@@ -14,6 +15,7 @@ pub enum EnrollmentPhase {
 /// Ephemeral self-identity review. Neither provider proof nor credentials are
 /// serialized into the app's replicated resource or its action results.
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnrollmentReview {
     pub account: ServiceAccount,
     pub generation: u64,
@@ -32,6 +34,7 @@ pub type EnrollmentApprovalFuture =
 /// Private chooser projection. Selection is an opaque host token, never a bus
 /// path, phone number, ICCID, account editor right or modem permission.
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct SimChoice {
     pub selection: String,
     pub label: String,

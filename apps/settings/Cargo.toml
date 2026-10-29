@@ -19,14 +19,14 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Reach account custody and the IMAP client through their engine library in
-# the runtime bundle (libtilo_accounts_engine.so,
-# crates/runtime/engines/accounts) instead of the runtime. The release
-# collection enables it (dist/apps/app-collections.toml); a `thin` build
-# without it (`tilo-app dev`) links account-custody and async-imap
-# statically, because an engine library links only through
-# tools/ci/rustc-thin-app-wrapper.sh.
-runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-settings-engine/thin"]
+# Run the app from the Settings engine library in the runtime bundle
+# (libtilo_settings_engine.so, crates/runtime/engines/settings), which carries
+# this package's library and links account custody and the IMAP client from
+# their own engine library: the binary is one call into it (src/main.rs). The
+# release collection enables it (dist/apps/app-collections.toml); a `thin`
+# build without it (`tilo-app dev`) links the library statically, because an
+# engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin"]
 
 [dependencies]
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
@@ -127,8 +127,6 @@ quick-xml.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }
-tilo-settings-engine = { path = "../../crates/runtime/engines/settings", optional = true }
 # The installer service, for the language packs Region & formats offers.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }

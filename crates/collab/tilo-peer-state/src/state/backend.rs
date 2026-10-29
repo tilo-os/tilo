@@ -1,117 +1,32 @@
-//! One private peer representation; storage qualification cannot be copied.
+//! The peer's one in-memory representation.
 use super::{
-    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert, DurableV4,
-    DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg,
-    RedemptionReceipt, RevocationList, Role, Route, StatePeer, SystemTime, VecDeque,
-    VerifiedCertificate, err, now_ns, room,
+    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert,
+    ExactAdmissions, GovernedIdentity, NeighbourMsg, RedemptionReceipt, RevocationList, Role,
+    Route, StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, room,
 };
-use crate::resources::native::NativeDocument;
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
 pub(super) mod access;
-pub(super) mod delivery_policy;
-mod durable;
 pub(super) mod governed;
 pub(super) mod media;
 pub(super) mod member;
 mod pending;
 pub(super) mod private_policy;
-pub(super) mod restore;
 pub(super) use pending::validate as validate_pending;
 pub(super) mod revocations;
 pub(super) use revocations::restore_legacy as restore_revocation_union;
 mod roster;
 pub(super) use roster::restore_legacy as restore_certificate_roster;
 
-mod sealed {
-    pub trait Sealed {}
-}
-pub(super) trait Storage: sealed::Sealed {
-    type Room;
-    type Document;
-    type Checkpoint;
-    type Retention;
-    type CertificateRoster;
-    type RevocationUnion;
-    type ExactEvidence;
-    fn certificate<'a>(
-        roster: &'a Self::CertificateRoster,
-        key: &[u8; 32],
-    ) -> Option<&'a VerifiedCertificate>;
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool;
-    fn exact_admission<'a>(
-        exact: &'a Self::ExactEvidence,
-        key: &crate::admission::AdmissionKey,
-    ) -> Option<&'a [u8; 32]>;
-}
-pub(super) struct LegacyNative;
-pub(super) struct BoundedNative;
-impl sealed::Sealed for LegacyNative {}
-impl sealed::Sealed for BoundedNative {}
-impl Storage for LegacyNative {
-    type Room = CachedDocument;
-    type Document = CachedDocument;
-    type Checkpoint = AcceptedCheckpoint;
-    type Retention = ();
-    type CertificateRoster = Shared<BTreeMap<[u8; 32], VerifiedCertificate>>;
-    type RevocationUnion = RevocationList;
-    type ExactEvidence = ExactAdmissions;
-    fn certificate<'a>(
-        roster: &'a Self::CertificateRoster,
-        key: &[u8; 32],
-    ) -> Option<&'a VerifiedCertificate> {
-        roster.get(key)
-    }
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
-        revocations.is_revoked(key)
-    }
-    fn exact_admission<'a>(
-        exact: &'a Self::ExactEvidence,
-        key: &crate::admission::AdmissionKey,
-    ) -> Option<&'a [u8; 32]> {
-        exact.get(key)
-    }
-}
-impl Storage for BoundedNative {
-    type Room = NativeDocument;
-    type Document = NativeDocument;
-    type Checkpoint = NativeCheckpoint;
-    type Retention = ();
-    type CertificateRoster = roster::BoundedRoster;
-    type RevocationUnion = revocations::BoundedRevocations;
-    type ExactEvidence = Option<crate::admission::BoundedExactAdmissions>;
-    fn certificate<'a>(
-        roster: &'a Self::CertificateRoster,
-        key: &[u8; 32],
-    ) -> Option<&'a VerifiedCertificate> {
-        roster.verified(key)
-    }
-    fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
-        revocations.is_revoked(key)
-    }
-    fn exact_admission<'a>(
-        exact: &'a Self::ExactEvidence,
-        key: &crate::admission::AdmissionKey,
-    ) -> Option<&'a [u8; 32]> {
-        exact.as_ref()?.get(key)
-    }
-}
-
-// Historical restore keeps checkpoint bytes lazy. No eager load rejects
-// previously accepted opaque checkpoint bytes.
-pub(super) struct NativeCheckpoint {
-    pub(super) original: Vec<u8>,
-}
-
-pub(super) struct PeerDocument<S: Storage> {
-    pub(super) doc: S::Document,
+pub(super) struct PeerDocument {
+    pub(super) doc: CachedDocument,
     pub(super) channel: ChannelState,
     pub(super) encryption_required: bool,
     pub(super) covered: BTreeMap<String, u64>,
-    pub(super) covered_snapshot: Option<S::Checkpoint>,
+    pub(super) covered_snapshot: Option<AcceptedCheckpoint>,
     /// Sealed writes this replica admitted but holds no key to open, in
     /// admission order: the durable record of an encrypted document here.
-    /// Both restore paths validate every retained envelope before replay.
+    /// Restore validates every retained envelope before replay.
     pub(super) sealed: SealedLog,
 }
 
@@ -224,8 +139,8 @@ impl<'a> IntoIterator for &'a SealedLog {
 /// changes it, with its durable encoding made at most once per state of it.
 /// Mutable access (`DerefMut`) detaches a shared copy and drops the
 /// encoding, so no change outlives a stale one.
-pub(super) struct StoredDocument<S: Storage> {
-    document: Arc<PeerDocument<S>>,
+pub(super) struct StoredDocument {
+    document: Arc<PeerDocument>,
     encoded: Arc<OnceLock<EncodedDocument>>,
 }
 /// A record's part of a durable peer encoding.
@@ -237,7 +152,7 @@ pub(super) struct EncodedDocument {
     /// sealed writes.
     pub(super) sealed: Option<Arc<[u8]>>,
 }
-impl<S: Storage> Clone for StoredDocument<S> {
+impl Clone for StoredDocument {
     fn clone(&self) -> Self {
         Self {
             document: Arc::clone(&self.document),
@@ -245,27 +160,27 @@ impl<S: Storage> Clone for StoredDocument<S> {
         }
     }
 }
-impl<S: Storage> From<PeerDocument<S>> for StoredDocument<S> {
-    fn from(document: PeerDocument<S>) -> Self {
+impl From<PeerDocument> for StoredDocument {
+    fn from(document: PeerDocument) -> Self {
         Self {
             document: Arc::new(document),
             encoded: Arc::default(),
         }
     }
 }
-impl<S: Storage> std::ops::Deref for StoredDocument<S> {
-    type Target = PeerDocument<S>;
-    fn deref(&self) -> &PeerDocument<S> {
+impl std::ops::Deref for StoredDocument {
+    type Target = PeerDocument;
+    fn deref(&self) -> &PeerDocument {
         &self.document
     }
 }
-impl std::ops::DerefMut for StoredDocument<LegacyNative> {
-    fn deref_mut(&mut self) -> &mut PeerDocument<LegacyNative> {
+impl std::ops::DerefMut for StoredDocument {
+    fn deref_mut(&mut self) -> &mut PeerDocument {
         self.encoded = Arc::default();
         Arc::make_mut(&mut self.document)
     }
 }
-impl<S: Storage> StoredDocument<S> {
+impl StoredDocument {
     /// Whether `a` and `b` are copies of one record state no copy changed.
     pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.document, &b.document)
@@ -295,7 +210,7 @@ impl<S: Storage> StoredDocument<S> {
     }
 }
 
-impl Clone for PeerDocument<LegacyNative> {
+impl Clone for PeerDocument {
     fn clone(&self) -> Self {
         Self {
             doc: self.doc.clone(),
@@ -308,24 +223,23 @@ impl Clone for PeerDocument<LegacyNative> {
     }
 }
 
-pub(super) struct PeerCore<S: Storage> {
+pub(super) struct PeerCore {
     pub(super) room: String,
     pub(super) authority: DeviceCert,
-    pub(super) certificates: S::CertificateRoster,
-    pub(super) revocations: S::RevocationUnion,
+    pub(super) certificates: Shared<BTreeMap<[u8; 32], VerifiedCertificate>>,
+    pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
-    pub(super) room_doc: Option<S::Room>,
-    pub(super) documents: Shared<BTreeMap<Route, StoredDocument<S>>>,
+    pub(super) room_doc: Option<CachedDocument>,
+    pub(super) documents: Shared<BTreeMap<Route, StoredDocument>>,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
     pub(super) checkpoint_times: Shared<BTreeMap<Route, SystemTime>>,
-    pub(super) exact_admissions: S::ExactEvidence,
+    pub(super) exact_admissions: ExactAdmissions,
     pub(super) admission_v5: bool,
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
-    pub(super) _retention: S::Retention,
 }
-impl Clone for PeerCore<LegacyNative> {
+impl Clone for PeerCore {
     fn clone(&self) -> Self {
         Self {
             room: self.room.clone(),
@@ -341,7 +255,6 @@ impl Clone for PeerCore<LegacyNative> {
             exact_admissions: self.exact_admissions.clone(),
             admission_v5: self.admission_v5,
             native_cut_publisher: self.native_cut_publisher,
-            _retention: (),
         }
     }
 }
@@ -361,17 +274,19 @@ impl std::fmt::Display for CertificateLookupError {
         }
     }
 }
-impl<S: Storage> PeerCore<S> {
+impl PeerCore {
     pub(super) fn certificate_typed(
         &self,
         source: &[u8; 32],
         now: SystemTime,
     ) -> Result<&DeviceCert, CertificateLookupError> {
-        let certificate = S::certificate(&self.certificates, source)
+        let certificate = self
+            .certificates
+            .get(source)
             .ok_or(CertificateLookupError::Missing)?
             .current_typed(now_ns(now))
             .map_err(CertificateLookupError::Validity)?;
-        if S::is_revoked(&self.revocations, source) {
+        if self.revocations.is_revoked(source) {
             return Err(CertificateLookupError::Revoked);
         }
         Ok(certificate)
@@ -452,6 +367,3 @@ mod tests {
         assert_eq!(seqs, (1..=201).collect::<Vec<_>>());
     }
 }
-
-#[cfg(test)]
-mod storage_tests;

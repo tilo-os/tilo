@@ -32,7 +32,7 @@ use ui::widget::{Button, ButtonRole, ControlSize, Row, Toggle};
 use vello::kurbo::{Point, Rect};
 
 use super::{AlbumDisp, ArtistDisp, Look, PlaylistDisp, TrackTable};
-use crate::app::{Action, MusicApp, View};
+use crate::app::{Action, Music, View};
 use crate::search_type::{ALBUM_TYPE_ID, ARTIST_TYPE_ID, PLAYLIST_TYPE_ID, SONG_TYPE_ID};
 use crate::views::Fetched;
 
@@ -239,7 +239,7 @@ impl SearchView {
     }
 }
 
-impl MusicApp {
+impl Music {
     // ---- the view stack ------------------------------------------------------
 
     /// Where the person is in the view shown: how far it is scrolled and
@@ -248,6 +248,7 @@ impl MusicApp {
         ViewPlace {
             scroll: self.scroll_y(),
             selection: self
+                .page
                 .track_tables
                 .first()
                 .map(|slot| slot.table.selected_ids())
@@ -939,7 +940,7 @@ impl MusicApp {
             return;
         };
         let id = format!("view-chip:{key}");
-        if let Some(chip) = self.page_parts.iter().find_map(|part| part.find(&id)) {
+        if let Some(chip) = self.page.parts.iter().find_map(|part| part.find(&id)) {
             self.mouse = Point::new(chip.x0 + 12.0, chip.y1);
             self.open_facet(&key);
         }
@@ -1185,7 +1186,7 @@ impl MusicApp {
     /// A drag began on row `row` of the track list `table`: the selected
     /// songs go with it when the row is one of them, else the row's song.
     pub(in crate::app) fn begin_track_drag(&mut self, table: usize, row: usize) {
-        let Some(slot) = self.track_tables.get(table) else {
+        let Some(slot) = self.page.track_tables.get(table) else {
             return;
         };
         let selected = slot.table.selected_rows();
@@ -1352,7 +1353,7 @@ impl MusicApp {
     }
 }
 
-impl MusicApp {
+impl Music {
     /// Keep the person's views in `kept`, a setting that follows them, and
     /// wake the window through `wake` when the catalogue answers.
     pub(crate) fn attach_views(
@@ -1423,7 +1424,7 @@ impl MusicApp {
     }
 }
 
-impl ui::widget::Queryable for MusicApp {
+impl ui::widget::Queryable for Music {
     fn query_opened(&mut self) {
         self.search.open = true;
         self.search.engine.warm();

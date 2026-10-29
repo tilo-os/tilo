@@ -206,36 +206,6 @@ fn operation_id(value: &str) -> bool {
 }
 
 impl Plan {
-    /// Narrow an explicitly selected application transfer while retaining the
-    /// original operation, source identity and reviewed signed inventory.
-    #[cfg(target_os = "linux")]
-    pub fn applications_copy_plan(&self) -> io::Result<Self> {
-        self.validate()?;
-        if !self.categories.flatpak {
-            return Err(refusal("Application transfer was not selected"));
-        }
-        let inventory = self
-            .flatpak_inventory
-            .as_ref()
-            .ok_or_else(|| refusal("Reviewed application inventory is missing"))?;
-        let inventory = super::flatpak_transfer::HandoffInventory::parse(
-            &serde_json::to_vec(inventory).map_err(|error| refusal(error.to_string()))?,
-        )
-        .map_err(refusal)?;
-        inventory
-            .validate_operation(&self.operation_id)
-            .map_err(refusal)?;
-        let mut narrowed = self.clone();
-        narrowed.categories = Categories {
-            home: false,
-            flatpak: true,
-            accounts: false,
-        };
-        narrowed.home_policy = HomePolicy::Copy;
-        narrowed.validate()?;
-        Ok(narrowed)
-    }
-
     /// Decode the reviewed Home exclusions as normalized relative paths.
     ///
     /// # Errors

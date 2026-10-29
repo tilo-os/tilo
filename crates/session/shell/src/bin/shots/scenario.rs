@@ -32,6 +32,7 @@ use super::driver::ShellDriver;
 
 #[cfg(feature = "test-support")]
 mod catch_up;
+mod desk_gestures;
 mod file_chooser;
 pub mod film;
 mod keyboard;
@@ -2450,8 +2451,8 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
 }
 
 /// The desk widgets through a working minute: at rest, typing, a pause, a
-/// pass along the edge and a reach for it, the caret near a widget, and
-/// the Super surface tapped, typed into and held. A pause is three real
+/// pass along the edge and a reach for it, and the Super surface tapped,
+/// typed into and held. A pause is three real
 /// seconds of frames.
 fn desk_widgets_scenario() -> Scenario {
     use shell::shell::desk_widgets::GLANCE_AFTER_PAUSE;
@@ -2470,7 +2471,7 @@ fn desk_widgets_scenario() -> Scenario {
         .collect();
     Scenario {
         name: "desk_widgets",
-        description: "Desk widgets: glance at rest, away while typing, back after a pause, transit vs reach at the edge, the caret rule, and the Super surface tapped and held.",
+        description: "Desk widgets: glance at rest, away while typing, back after a pause, transit vs reach at the edge, and the Super surface tapped and held.",
         actions: vec![
             Action::SeedDesk,
             Action::MoveCursor(Point::new(700.0, 420.0)),
@@ -2501,11 +2502,6 @@ fn desk_widgets_scenario() -> Scenario {
             },
             Action::MoveCursor(Point::new(700.0, 420.0)),
             Action::Wait(pause_frames),
-            Action::SetTextCaret(Some(vello::kurbo::Rect::new(1440.0, 846.0, 1442.0, 866.0))),
-            Action::Wait(16),
-            Action::Snapshot("06-caret-near-music-keeps-it-away"),
-            Action::SetTextCaret(None),
-            Action::Wait(16),
             Action::Super(SuperGesture::Tap),
             Action::SnapshotSequence {
                 prefix: "07-super-tap",

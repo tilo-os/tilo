@@ -36,7 +36,7 @@ use std::fmt::Write as _;
 
 use ui::prelude::{Collection, Id, Model};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
-use ui::tilo_resource::{self, ActionCx, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, NonBlank, Refusal, resource};
 
 /// Bounds on what one message carries, so a hostile payload cannot grow the
 /// record without limit.
@@ -109,9 +109,9 @@ impl Messages {
     pub fn deliver_message(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The sender: a name or a phone number")] from: String,
+        #[param("The sender: a name or a phone number")] from: NonBlank,
         #[param("The recipient, when known")] to: Option<String>,
-        #[param("The message text")] body: String,
+        #[param("The message text")] body: NonBlank,
         #[param("When it was sent, RFC 3339 (2026-10-11T09:30:00Z); now when absent")] date: Option<
             String,
         >,
@@ -119,15 +119,9 @@ impl Messages {
             String,
         >,
     ) -> Result<(), Refusal> {
-        let from = from.trim().to_owned();
-        if from.is_empty() {
-            return Err(Refusal::new("`from` names the sender: a name or a number"));
-        }
+        let from = from.into_string();
         let to = to.map(|to| to.trim().to_owned()).unwrap_or_default();
-        let body = body.trim().to_owned();
-        if body.is_empty() {
-            return Err(Refusal::new("a message needs words"));
-        }
+        let body = body.into_string();
         check_message(&from, &to, &body)?;
         let at_ms = match date.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
             Some(date) => parse_date(date).ok_or_else(|| {
@@ -194,7 +188,7 @@ impl Messages {
         &mut self,
         cx: &mut ActionCx,
         #[param("Who it is to: a name or a phone number")] to: String,
-        #[param("The message text")] body: String,
+        #[param("The message text")] body: NonBlank,
         #[param("The conversation it belongs to; the recipient's when absent")]
         conversation: Option<String>,
     ) -> Result<(), Refusal> {
@@ -220,7 +214,7 @@ impl Messages {
         &mut self,
         cx: &mut ActionCx,
         conversation: &Id,
-        #[param("The reply text")] body: String,
+        #[param("The reply text")] body: NonBlank,
     ) -> Result<(), Refusal> {
         let key = conversation_key(conversation.as_str())
             .ok_or_else(|| Refusal::new(format!("`{conversation}` is not a conversation id")))?;
@@ -238,10 +232,6 @@ impl Messages {
         with: Option<String>,
         body: &str,
     ) -> Result<(), Refusal> {
-        let body = body.trim();
-        if body.is_empty() {
-            return Err(Refusal::new("a message needs words"));
-        }
         check_message(with.as_deref().unwrap_or_default(), "", body)?;
         if !self.conversations.contains(key) {
             let with = with.filter(|with| !with.is_empty()).ok_or_else(|| {

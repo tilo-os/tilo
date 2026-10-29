@@ -1564,7 +1564,7 @@ impl AudioModel {
     }
 
     /// Change this device's audio settings.
-    fn save_device(&mut self, change: impl FnOnce(&mut AudioDevicePrefs)) -> Result<(), String> {
+    fn save_device(&self, change: impl FnOnce(&mut AudioDevicePrefs)) -> Result<(), String> {
         self.cx
             .settings::<AudioDevicePrefs>()
             .update(change)

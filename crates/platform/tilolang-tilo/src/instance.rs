@@ -108,6 +108,12 @@ pub trait Platform {
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. UTC unless the platform knows the person's.
+    fn zone(&self) -> i64 {
+        0
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -264,6 +270,8 @@ pub struct Instance {
     started: bool,
     loading: bool,
     moved: bool,
+    /// Whether the package's migrations ran over the room record since the window opened.
+    migrated: bool,
     /// The later build this instance runs, 0 for the installed one.
     generation: u64,
     follows: bool,
@@ -324,6 +332,7 @@ impl Instance {
             started: false,
             loading: false,
             moved: false,
+            migrated: false,
             generation: 0,
             follows: false,
             taken_build: None,
@@ -552,6 +561,14 @@ impl Instance {
             if synced | host.poll_index() {
                 self.moved = true;
             }
+            // Opened on what an earlier version wrote, the package brings it to where it keeps
+            // it now, once the record is had; what they commit goes as any action does.
+            if doc.is_some() && !self.migrated && self.mode == Mode::Live {
+                self.migrated = true;
+                if host.migrate() > 0 {
+                    self.moved = true;
+                }
+            }
             return Some(host.clone());
         }
         let index_dir = if self.mode == Mode::Live {
@@ -591,6 +608,8 @@ impl Instance {
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {

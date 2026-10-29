@@ -1,5 +1,5 @@
-//! The toolkit traits: how the window syncs from its document, lays out,
-//! draws, handles input and presents itself as an app.
+//! How the shared state syncs from its document, lays out, draws and
+//! handles input for the window ([`PhotosApp`](super::PhotosApp)).
 
 use crate::model::{LibraryPhoto, PhotoLibrary};
 use crate::strings::{tr, tr_with};
@@ -7,102 +7,30 @@ use crate::timeline_projection::TimelinePhoto;
 use std::collections::{HashMap, HashSet};
 use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
-use ui::a11y::{AccessNode, Action as AccessAction};
+use ui::a11y::Action as AccessAction;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Id;
-use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{ModalHit, Widget};
+use ui::widget::{EmptyState, ModalHit, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{
     AlbumEditorHit, COLLECTION_PAGE_SIZE, LibraryDestination, LibraryItem, PeopleIntent,
-    PeopleSelection, PhotosApp, PlaceItem, PlacesHit, capture_day, card_action_controls,
-    wheel_pixels,
+    PeopleSelection, Photos, PlaceItem, PlacesHit, capture_day, card_action_controls, wheel_pixels,
 };
 
-/// The open photograph's own scale, for `Ctrl+=` / `Ctrl+-` / `Ctrl+0`,
-/// `Ctrl+scroll` and a pinch: the picture zooms, not the window's text. In the
-/// library the gesture is left to the window, which is what a grid wants.
-impl ui::content_zoom::ContentZoom for PhotosApp {
-    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
-        if self.library_mode || self.viewer.is_none() {
-            return None;
-        }
-        Some(self.zoom_photo(step))
-    }
-}
-
-/// Showing photographs to a room: the window goes full screen while the
-/// person presents, and leaving full screen any other way ends it.
-impl ui::widget::FullscreenProvider for PhotosApp {
-    fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.presenting)
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        if !active {
-            self.presenting = false;
-            self.slide_show = None;
-        }
-    }
-}
-
-impl Widget for PhotosApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::content_zoom::ContentZoom,
-        dyn ui::widget::FullscreenProvider
-    );
-
-    /// The system's back gesture lowers or puts away an editor's sheet
-    /// before anything navigates (`PhotosApp::sheet_back`).
-    fn on_nav_gesture(
-        &mut self,
-        dir: ui::gesture::NavDirection,
-        state: &AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        if dir == ui::gesture::NavDirection::Back && self.sheet_back() {
-            return true;
-        }
-        self.children_mut()
-            .into_iter()
-            .any(|child| child.on_nav_gesture(dir, state, path))
-    }
-
-    fn nav_availability(&self) -> ui::gesture::NavAvailability {
-        let own = ui::gesture::NavAvailability {
-            back: self.editor_sheet_shown(),
-            forward: false,
-        };
-        self.children()
-            .into_iter()
-            .fold(own, |seen, child| seen.or(child.nav_availability()))
-    }
-
-    /// Shared controls remain retained children even in the painted media
-    /// surface, with their own focus, action custody and accessibility.
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.empty_state
-            .as_ref()
-            .map(|empty| empty as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    /// Every widget the canvas may give a layout node: the empty state, the
-    /// photograph, and the People surface's name field and buttons. The
-    /// buttons live outside this widget, in a list, so the retained layout
-    /// check reaches them only through this walk.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        if let Some(empty) = &self.empty_state {
-            visitor(empty);
-        }
+/// The window's toolkit traits answered from the shared state: what each
+/// asks of the empty state, the window's own child, it is handed.
+impl Photos {
+    /// The widgets beside the empty state the canvas may give a layout
+    /// node: the photograph, and the People surface's name field and
+    /// buttons. The buttons live outside the window, in a list, so the
+    /// retained layout check reaches them only through this walk.
+    pub(super) fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(viewer) = &self.viewer {
             visitor(viewer);
         }
@@ -110,20 +38,9 @@ impl Widget for PhotosApp {
         for control in &self.people_controls {
             visitor(&control.button);
         }
-        true
     }
 
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        children.extend(
-            self.empty_state
-                .as_mut()
-                .map(|empty| empty as &mut (dyn Widget + '_)),
-        );
-        children
-    }
-
-    fn set_motion_reduced(&mut self, reduced: bool) {
+    pub(super) fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
             // Reduced motion keeps the camera operation immediate and every
@@ -134,7 +51,7 @@ impl Widget for PhotosApp {
 
     /// A preview of a photograph on screen is still being decoded: a capture
     /// waits for it rather than showing a placeholder.
-    fn has_pending_visual_work(&self) -> bool {
+    pub(super) fn has_pending_visual_work(&self) -> bool {
         self.staged.is_some()
             || !self.thumbnail_queued.is_empty()
             || (self.thumbnail_generation.is_some()
@@ -144,7 +61,7 @@ impl Widget for PhotosApp {
                 }))
     }
 
-    fn needs_animation_frame(&self) -> bool {
+    pub(super) fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
         self.chrome.inspector.is_animating()
             || (!self.places_motion_reduced
@@ -162,17 +79,12 @@ impl Widget for PhotosApp {
 
     /// The modal lists glide on after a flick, as the wheel scrolls them;
     /// that changes no model.
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+    pub(super) fn glide(&mut self) {
         self.directory_import_details_scroll.advance();
         self.selection_album_scroll.advance();
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.update(state, path);
-        }
-        changed
     }
 
-    fn take_structure_dirty(&mut self) -> bool {
+    pub(super) fn take_structure_dirty(&mut self) -> bool {
         // An editor opened or closed since the last frame: the inspector
         // follows it, and the layout makes room for it.
         let inspector = self.sync_inspector();
@@ -183,23 +95,11 @@ impl Widget for PhotosApp {
         std::mem::take(&mut self.structure_dirty) | viewer | inspector
     }
 
-    fn is_layout_dirty(&self) -> bool {
-        true
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        true
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
-    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+    pub(super) fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         if self.copy.failed() {
             self.notice = Some(tr("photos-copy-failed"));
         }
@@ -567,7 +467,6 @@ impl Widget for PhotosApp {
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
-        self.refresh_empty_state(doc);
         self.report_state_save_failure();
         self.publish_notice();
         // A narrow window shows the places on a screen of their own, where
@@ -578,29 +477,23 @@ impl Widget for PhotosApp {
 
     /// The slide show is a timed presentation: the window sleeps until the
     /// next photograph is due rather than repainting while it waits.
-    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.children()
+    pub(super) fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.notice_said
+            .deadline()
             .into_iter()
-            .filter_map(Widget::next_wake_deadline)
-            .chain(self.notice_said.deadline())
             .chain(self.slide_show)
             .min()
     }
 
-    fn composition_follows_allocation(&self) -> bool {
-        true
-    }
-
-    #[allow(
-        clippy::unwrap_used,
-        reason = "root's taffy node always builds from freshly-built children"
-    )]
-    fn build_layout(
+    /// The window's style and its two children, the canvas (holding
+    /// `empty` when the column shows it) and the status line.
+    pub(super) fn build_layout(
         &mut self,
+        empty: Option<&mut EmptyState>,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
+    ) -> (Style, [NodeId; 2]) {
         self.layout_theme = theme.clone();
         // A docked inspector takes its column beside the content; in a
         // narrow window it floats over it and takes nothing. The sidebar is
@@ -615,7 +508,7 @@ impl Widget for PhotosApp {
         // A panel floating over an empty view would hide what the empty
         // state offers (Open, on an empty library): it stands in the part
         // the panel leaves, where that still holds it.
-        if self.empty_state.is_some()
+        if empty.is_some()
             && self.chrome.inspector.is_overlay()
             && !self.chrome.inspector.rises_as_sheet()
             && self.chrome.inspector.is_open()
@@ -631,7 +524,7 @@ impl Widget for PhotosApp {
         // those pointers alive until the next tree replaces them.
         self.refresh_people_controls();
 
-        let canvas = self.build_canvas_node(taffy, theme, node_map);
+        let canvas = self.build_canvas_node(empty, taffy, theme, node_map);
         let status = self.build_status_node(taffy, theme);
 
         let style = Style {
@@ -646,11 +539,17 @@ impl Widget for PhotosApp {
             ..Default::default()
         };
         // The toolbar is the window bar's: the canvas starts at the top.
-        taffy.widget_node(style, &[canvas, status], node_map, self)
+        (style, [canvas, status])
     }
 
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+    pub(super) fn apply_layout(
+        &mut self,
+        empty: Option<&mut EmptyState>,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+        origin: Point,
+    ) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let here = self.rect.origin();
         let child_rect = |child: NodeId| ui::widget::layout_rect(taffy, child, here);
@@ -698,7 +597,7 @@ impl Widget for PhotosApp {
                     };
                     control.button.apply_layout_external(bounds);
                 }
-            } else if let Some(empty) = &mut self.empty_state {
+            } else if let Some(empty) = empty {
                 empty.apply_layout(taffy, canvas, here);
             } else if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
@@ -709,8 +608,9 @@ impl Widget for PhotosApp {
         }
     }
 
-    fn draw(
+    pub(super) fn draw(
         &mut self,
+        empty: Option<&mut EmptyState>,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -725,7 +625,7 @@ impl Widget for PhotosApp {
 
         if self.library_mode {
             if self.library_destination == LibraryDestination::Albums {
-                self.draw_albums(scene, transform, text_renderer, theme);
+                self.draw_albums(empty, scene, transform, text_renderer, theme);
             } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
                 if self.people_selection.is_some() && !self.people_merge_mode {
@@ -740,17 +640,17 @@ impl Widget for PhotosApp {
                     }
                 }
             } else if self.library_destination == LibraryDestination::Places {
-                self.draw_places(scene, transform, text_renderer, theme, presence);
+                self.draw_places(empty, scene, transform, text_renderer, theme, presence);
             } else if self.library_destination == LibraryDestination::Analysis {
                 self.draw_library_analysis(scene, transform, text_renderer, theme, presence);
             } else {
-                self.draw_library(scene, transform, text_renderer, theme);
+                self.draw_library(empty, scene, transform, text_renderer, theme);
             }
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
+            Self::draw_empty_state(empty, scene, transform, text_renderer, theme);
         }
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);
@@ -766,7 +666,7 @@ impl Widget for PhotosApp {
         }
     }
 
-    fn draw_overlay(
+    pub(super) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -784,8 +684,9 @@ impl Widget for PhotosApp {
         clippy::too_many_lines,
         reason = "the widget event entry point preserves explicit precedence between album chips, grid cards, toolbar, and viewer"
     )]
-    fn handle_event(
+    pub(super) fn handle_event(
         &mut self,
+        empty: Option<&mut EmptyState>,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
@@ -876,7 +777,7 @@ impl Widget for PhotosApp {
             self.drain_pending();
             return;
         }
-        if let Some(empty) = &mut self.empty_state {
+        if let Some(empty) = empty {
             empty.handle_event(event, ctx);
             if *ctx.handled {
                 return;
@@ -1609,39 +1510,13 @@ impl Widget for PhotosApp {
         self.drain_pending();
     }
 
-    fn name(&self) -> &'static str {
-        "PhotosApp"
-    }
-
-    /// Hand the concrete app back out of a `Box<dyn Widget>`.
-    ///
-    /// A compositor hosting this in a tab holds it as a trait object, so
-    /// "open this file in the photo viewer that is already on screen" has no
-    /// route in without it. Opening still goes through
-    /// [`PhotosApp::open_path`] — this only recovers the type, it does not add
-    /// a second way to change what is shown.
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        Some(self.accessibility_tree())
-    }
-
-    fn perform_semantic_action(
+    pub(super) fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &AccessAction,
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        if self
-            .empty_state
-            .as_mut()
-            .is_some_and(|empty| empty.perform_semantic_action(target, action, state, path))
-        {
-            return true;
-        }
         let motion = self.layout_theme.motion();
         if self
             .chrome
@@ -1656,52 +1531,19 @@ impl Widget for PhotosApp {
             || self.perform_library_semantic_action(target, action, state)
     }
 
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match path {
-            [0] => Some(self.canvas_rect),
-            _ => None,
-        }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-/// Lets the compositor host Photos in a tab directly, the same way it hosts
-/// the terminal, the file explorer and the word processor, rather than
-/// standing a placeholder card where the photograph should be.
-impl ui::widget::AppWidget for PhotosApp {
-    fn app_kind(&self) -> ui::widget::AppKind {
-        // The toolkit's tab vocabulary has no picture variant. Photos edits a
-        // file and writes the result back, which is what `Editor` names; the
-        // glyph below is what actually tells the two apart in a tab pill.
-        ui::widget::AppKind::Editor
-    }
-
-    fn app_title(&self) -> &str {
-        // The open file's own name, so two photographs open at once are two
-        // distinguishable tabs rather than two tabs called "Photos". Nothing
-        // open falls back to the app's name, which is the only true thing to
-        // say about an empty window.
+    /// The open file's own name, so two photographs open at once are two
+    /// distinguishable tabs rather than two tabs called "Photos". Nothing
+    /// open falls back to the app's name, which is the only true thing to
+    /// say about an empty window.
+    pub(super) fn title(&self) -> &str {
         self.open_image_path()
             .and_then(|p| p.rsplit('/').next())
             .filter(|n| !n.is_empty())
             .unwrap_or(&self.app_name)
     }
-
-    fn app_icon(&self) -> ui::widget::IconDescriptor {
-        // Nerd Font image glyph, matching the convention every other hosted
-        // app's tab pill uses.
-        ui::widget::IconDescriptor::Glyph("\u{F02E9}")
-    }
-
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        Some(ui::widget::AppKind::Editor)
-    }
 }
 
-impl PhotosApp {
+impl Photos {
     /// A new notice is said in the window's bar for a while.
     fn publish_notice(&mut self) {
         if self.notice != self.notice_last {

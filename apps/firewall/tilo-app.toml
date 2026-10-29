@@ -28,7 +28,7 @@ required = ["processes"]
 optional = []
 
 [resources]
-kinds = ["firewall.config"]
+kinds = ["firewall.config", "firewall.applied"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

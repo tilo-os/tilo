@@ -627,7 +627,7 @@ async fn live(token: String, guild_id: String) -> usize {
     room.act(
         &room.owner,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "made-in-tilo".into(),
+            name: "made-in-tilo".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,
