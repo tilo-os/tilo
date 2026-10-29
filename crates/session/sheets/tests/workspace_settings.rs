@@ -205,3 +205,103 @@ fn an_agent_changes_the_workspace_through_the_same_door() {
         [WorkspaceSettingsEffect::Move { step: -1 }]
     );
 }
+
+#[test]
+fn the_people_tab_lists_everyone_with_what_the_viewer_may_change() {
+    let mut owner = staged("people");
+    for text in [
+        "3 members",
+        "Bob Hellauer",
+        "Ada Lovelace-Byron",
+        "2 extra permissions",
+    ] {
+        assert!(says(&mut owner, text), "{text:?} is shown");
+    }
+    assert!(enabled(&mut owner, "Transfer ownership"));
+
+    let mut member = staged("people-member");
+    assert!(says(
+        &mut member,
+        "Only admins can change roles or remove people."
+    ));
+    assert!(!says(&mut member, "Transfer ownership"));
+}
+
+#[test]
+fn removing_someone_asks_first_and_keep_changes_nothing() {
+    let (mut app, seat) = seated("people");
+    press(&mut app, "ws-people-remove-ada");
+    assert!(says(&mut app, "Remove this person?"));
+    assert!(says(&mut app, "Ada Lovelace-Byron"));
+    assert!(
+        seat.take_asked().is_empty(),
+        "nothing is asked of the shell yet"
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(seat.take_asked().is_empty(), "keeping changes nothing");
+    assert!(says(&mut app, "3 members"), "the tab is back");
+    assert!(seat.presentation().is_open());
+}
+
+#[test]
+fn a_confirmed_removal_asks_the_shell_for_that_member() {
+    let (mut app, seat) = seated("people");
+    press(&mut app, "ws-people-remove-bo");
+    press(&mut app, "ws-settings-decision.primary");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::RemoveMember {
+            member: "bo".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn the_question_leads_to_the_activity_instead() {
+    let (mut app, seat) = seated("people");
+    press(&mut app, "ws-people-remove-bo");
+    press(&mut app, "ws-settings-decision.tertiary");
+    assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::ReviewActivity]);
+}
+
+#[test]
+fn the_removal_question_renders_for_captures() {
+    let mut app = staged("people-removing");
+    assert!(says(&mut app, "Remove this person?"));
+    assert!(says(&mut app, "Keep access"));
+}
+
+#[test]
+fn an_agent_changing_a_role_goes_through_the_door() {
+    let (mut app, seat) = seated("people");
+    app.effect(&WorkspaceSettingsEffect::SetRole {
+        member: "bo".to_owned(),
+        role: "editor".to_owned(),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::SetRole {
+            member: "bo".to_owned(),
+            role: "editor".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn switching_tabs_asks_the_shell() {
+    let (mut app, seat) = seated("general");
+    app.effect(&WorkspaceSettingsEffect::ShowTab {
+        tab: "people".to_owned(),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::ShowTab {
+            tab: "people".to_owned()
+        }]
+    );
+}

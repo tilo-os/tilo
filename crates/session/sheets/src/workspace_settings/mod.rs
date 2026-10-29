@@ -19,8 +19,10 @@ use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 use crate::presentation::Presentation;
 
 mod general;
+mod people;
 
 pub use general::{Archived, Device, General, Group, Public, PublicControls};
+pub use people::{Decision, Offers, People, Person, RoleChoice};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.workspace-settings";
@@ -98,6 +100,26 @@ pub enum WorkspaceSettingsEffect {
     /// Delete this workspace
     #[effect(destructive, attended)]
     Delete,
+    /// Give a member of the workspace another role
+    #[effect(attended)]
+    SetRole {
+        #[param("The member, by their key in the list")]
+        member: String,
+        #[param("viewer, commenter or editor")]
+        role: String,
+    },
+    /// Remove a member from the workspace
+    #[effect(destructive, attended)]
+    RemoveMember {
+        #[param("The member, by their key in the list")]
+        member: String,
+    },
+    /// Look at what was done in the workspace
+    #[effect(own_device, kind = "read")]
+    ReviewActivity,
+    /// Transfer the workspace's ownership, or answer a transfer
+    #[effect(own_device, kind = "read")]
+    Ownership,
 }
 
 /// A tab of the sheet.
@@ -105,16 +127,18 @@ pub enum WorkspaceSettingsEffect {
 pub enum Tab {
     #[default]
     General,
+    People,
 }
 
 impl Tab {
     /// Every tab, in the order the strip shows them.
-    pub const ALL: [Self; 1] = [Self::General];
+    pub const ALL: [Self; 2] = [Self::General, Self::People];
 
     /// What the tab is asked for by.
     pub fn key(self) -> &'static str {
         match self {
             Self::General => "general",
+            Self::People => "people",
         }
     }
 
@@ -147,6 +171,14 @@ pub struct Settings {
     /// The tab shown.
     pub tab: Tab,
     pub general: General,
+    pub people: People,
+}
+
+/// A change the sheet asks about before asking the shell for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Confirm {
+    /// Remove the member `member`, called `name`.
+    RemoveMember { member: String, name: String },
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -260,6 +292,8 @@ impl ResourceApp for WorkspaceSettingsApp {
         };
         let name = cx.local(initial.name.clone());
         let shown = cx.local(initial);
+        let asking_first = cx.fixture::<Confirm>().map(|confirm| (*confirm).clone());
+        let confirming = cx.local(asking_first);
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
             *seat.name.borrow_mut() = Some(name.clone());
@@ -277,19 +311,39 @@ impl ResourceApp for WorkspaceSettingsApp {
             dispatch: cx.dispatcher(),
             shown: shown.clone(),
             name,
+            confirming: confirming.clone(),
             seat,
         };
         let sheet_parts = parts.clone();
-        let content = cx.switch(&shown, move |_cx, settings| sheet(settings, &sheet_parts));
+        let content = cx.switch(&shown, move |cx, settings| {
+            let settings = settings.clone();
+            let parts = sheet_parts.clone();
+            cx.switch(&confirming, move |_cx, confirm| match confirm {
+                Some(confirm) => decision(&settings, confirm, &parts),
+                None => sheet(&settings, &parts),
+            })
+        });
         Box::new(Keys { content, parts })
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["general", "general-viewer"]
+        &[
+            "general",
+            "general-viewer",
+            "people",
+            "people-member",
+            "people-removing",
+        ]
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<WorkspaceSettings>) {
         let settings = scenario(fixture.scenario());
+        if fixture.scenario() == Some("people-removing") {
+            fixture.provide(Confirm::RemoveMember {
+                member: "ada".to_owned(),
+                name: "Ada Lovelace-Byron".to_owned(),
+            });
+        }
         fixture.provide(settings);
     }
 }
@@ -300,6 +354,16 @@ pub fn scenario(name: Option<&str>) -> Settings {
         Some("general-viewer") => Settings {
             role: "Viewer".to_owned(),
             general: general::sample_viewer(),
+            ..sample()
+        },
+        Some("people" | "people-removing") => Settings {
+            tab: Tab::People,
+            ..sample()
+        },
+        Some("people-member") => Settings {
+            tab: Tab::People,
+            role: "Editor".to_owned(),
+            people: people::sample_member(),
             ..sample()
         },
         _ => sample(),
@@ -318,9 +382,10 @@ fn sample() -> Settings {
         name: "Studio".to_owned(),
         role: "Owner".to_owned(),
         close: "Close".to_owned(),
-        tabs: vec![tab(Tab::General, "General")],
+        tabs: vec![tab(Tab::General, "General"), tab(Tab::People, "People")],
         tab: Tab::General,
         general: general::sample(),
+        people: people::sample(),
     }
 }
 
@@ -331,6 +396,8 @@ struct Parts {
     shown: LocalState<Settings>,
     /// The name as typed.
     name: LocalState<String>,
+    /// The change the sheet is asking about, while it asks.
+    confirming: LocalState<Option<Confirm>>,
     seat: Option<WorkspaceSettingsSeat>,
 }
 
@@ -372,6 +439,25 @@ impl Parts {
         self.ask(WorkspaceSettingsEffect::Close);
     }
 
+    /// Ask whether to make `change` before asking the shell for it.
+    fn confirm(&self, change: Confirm) {
+        self.confirming.set(Some(change));
+    }
+
+    /// The person answered the question: keep things as they are, look at
+    /// the workspace's activity, or go ahead.
+    fn decide(&self, answer: Answer) {
+        let Some(change) = self.confirming.get() else {
+            return;
+        };
+        self.confirming.set(None);
+        match answer {
+            Answer::Keep => {}
+            Answer::Review => self.ask(WorkspaceSettingsEffect::ReviewActivity),
+            Answer::Confirm => self.ask(change.effect()),
+        }
+    }
+
     /// Whether the person is part way through renaming the workspace.
     fn renaming(&self) -> bool {
         self.name.get() != self.shown.get().name
@@ -401,6 +487,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         });
     let pane = match settings.tab {
         Tab::General => general::pane(settings, parts),
+        Tab::People => people::pane(settings, parts),
     };
     let body = Column::new()
         .with_no_padding()
@@ -417,6 +504,57 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
             .with_max_width(WIDTH)
             .open(true)
             .secondary_action(settings.close.clone(), move || close.close()),
+    )
+}
+
+impl Confirm {
+    /// What the shell is asked for once the person confirms.
+    fn effect(&self) -> WorkspaceSettingsEffect {
+        match self {
+            Self::RemoveMember { member, .. } => WorkspaceSettingsEffect::RemoveMember {
+                member: member.clone(),
+            },
+        }
+    }
+
+    /// The question it asks, and whom or what it is about.
+    fn question<'a>(&self, settings: &'a Settings) -> (&'a Decision, String) {
+        match self {
+            Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
+        }
+    }
+}
+
+/// How the person answered a [`Confirm`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Answer {
+    Keep,
+    Review,
+    Confirm,
+}
+
+/// The question a change asks, over the desktop in the sheet's place: what
+/// it changes and for whom, with Keep (which Enter and Escape answer), the
+/// way to the workspace's activity, and the change itself, which takes a
+/// press of its own.
+fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
+    let (question, subject) = confirm.question(settings);
+    let body = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(general::caption(&subject));
+    let (keep, review, go) = (parts.clone(), parts.clone(), parts.clone());
+    Box::new(
+        ModalDialog::new(question.title.clone(), body)
+            .with_test_id("ws-settings-decision")
+            .with_description(question.description.clone())
+            .open(true)
+            .primary_action(question.confirm.clone(), move || go.decide(Answer::Confirm))
+            .with_destructive(true)
+            .secondary_action(question.keep.clone(), move || keep.decide(Answer::Keep))
+            .tertiary_action(question.review.clone(), move || {
+                review.decide(Answer::Review);
+            }),
     )
 }
 
