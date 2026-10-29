@@ -670,48 +670,13 @@ pub struct Banner {
     rect: Rect,
     layout_dirty: bool,
     dirty: bool,
-    /// How much of the banner is drawn while it arrives or leaves
-    /// (`motion::Disclosure`): its box opens or closes from the top, what
-    /// follows moving with its edge.
-    disclosure: crate::motion::Disclosure,
-    /// The motion the person allows, from the last theme seen.
-    motion: crate::tokens::EffectiveMotion,
-    /// Where the banner is drawn while it moves, and was last laid out at
-    /// rest: its slot and full height.
-    laid_rect: Rect,
-    /// Whether the layout gives the banner its place: shown and at rest. On
-    /// its way in or out it stands out of the layout, which keeps what
-    /// follows where it is (`widget::Disclosing`).
-    laid_in_flow: bool,
-    /// Whether the banner took up the motion of the one a rebuild dropped
-    /// from its place (`motion::keep`).
-    carry: Carry,
-    /// On its way out of the layout with no container to place it: it lands.
-    unplaced: bool,
-    /// Its layout must be built again: it took up a banner on its way, or
-    /// arrived, after its first layout.
-    structure_dirty: bool,
-    /// Its last paint at rest: what its column draws leaving when its view
-    /// stops building it (`widget::Disclosing`).
-    painted: Scene,
-    /// Where it stands in its column.
-    placement: Option<crate::widget::Placement>,
+    /// Its arriving and leaving (`motion::Disclosure`): its box opens or
+    /// closes from the top, what follows moving with its edge, and it
+    /// stands out of the layout while it moves (`widget::Disclosing`).
+    band: crate::widget::BandMotion,
     /// It is shown at rest from its first frame: what it stands in brings
     /// it in ([`Banner::arrives_in_place`]).
     arrives_in_place: bool,
-}
-
-/// How far a banner is in taking up the motion of the banner a rebuild
-/// dropped where it stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Carry {
-    /// Not laid out yet.
-    Fresh,
-    /// Its identity matched nothing: its place is looked up once it is
-    /// laid out.
-    Placing,
-    /// Settled: it leaves its motion when dropped.
-    Bound,
 }
 
 impl Banner {
@@ -719,26 +684,13 @@ impl Banner {
     /// way. A moving banner stands out of the layout, in the slot its
     /// container gives it ([`Widget::place_disclosing`]).
     fn in_flow(&self) -> bool {
-        self.visible() && !self.disclosure.is_sliding()
+        self.band.in_flow(self.visible())
     }
 
     /// Show or hide this node with the banner. True when the style changed.
     fn style_visibility(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        self.laid_in_flow = self.in_flow();
-        let display = if self.laid_in_flow {
-            taffy::Display::Flex
-        } else {
-            taffy::Display::None
-        };
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        if current.display == display {
-            return false;
-        }
-        let mut style = current.clone();
-        style.display = display;
-        taffy.set_style(node, style).is_ok()
+        let visible = self.visible();
+        self.band.style_display(taffy, node, visible)
     }
 
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
@@ -772,19 +724,7 @@ impl Banner {
             layout_dirty: true,
             dirty: true,
             // First paint shows the banner at rest; only a change moves it.
-            disclosure: if shown {
-                crate::motion::Disclosure::opened()
-            } else {
-                crate::motion::Disclosure::closed()
-            },
-            motion: crate::tokens::EffectiveMotion::default(),
-            laid_rect: Rect::ZERO,
-            laid_in_flow: shown,
-            carry: Carry::Fresh,
-            unplaced: false,
-            structure_dirty: false,
-            painted: Scene::new(),
-            placement: None,
+            band: crate::widget::BandMotion::new(shown),
             arrives_in_place: false,
         }
     }
@@ -938,12 +878,13 @@ impl Banner {
         self.body.dirty = true;
         // Arriving and leaving disclose, also when the person did nothing
         // (the window went offline); a key's result lands.
-        self.disclosure.show_change(self.visible(), self.motion);
+        let visible = self.visible();
+        self.band.disclosure.show_change(visible, self.band.motion);
     }
 
     /// Whether the banner is drawn on its way in or out.
     fn in_motion(&self) -> bool {
-        self.disclosure.is_moving()
+        self.band.in_motion()
     }
 
     /// Its identity across rebuilds: its id, else what it says.
@@ -952,26 +893,6 @@ impl Banner {
             let notice = &self.body.notice;
             format!("{:?}\u{1f}{}", notice.kind, notice.title)
         })
-    }
-
-    /// Go on from where the banner a rebuild dropped was: shown at rest
-    /// stays at rest, opening goes on opening, and a change of shown
-    /// against it moves from there.
-    fn take_up(&mut self, kept: crate::widget::KeptBand) {
-        self.disclosure = kept.disclosure;
-        self.laid_rect = kept.laid_rect;
-        if self.disclosure.is_open() != self.visible() {
-            self.disclosure.show_change(self.visible(), self.motion);
-        }
-    }
-
-    /// Nothing was here before: a shown banner moves in, unless its window
-    /// is showing its first frame.
-    fn arrive(&mut self) {
-        if self.visible() && !self.arrives_in_place && crate::motion::window_has_shown() {
-            self.disclosure = crate::motion::Disclosure::closed();
-            self.disclosure.show_change(true, self.motion);
-        }
     }
 
     fn dismiss_now(&mut self) {
@@ -1119,7 +1040,7 @@ impl Widget for Banner {
         changed |= before != self.visible();
         // A banner that has come to rest takes its place in the layout, and
         // one setting off leaves it.
-        if self.laid_in_flow != self.in_flow() {
+        if self.band.layout_moved(self.visible()) {
             crate::widget::note_layout_moved();
         }
         changed
@@ -1141,18 +1062,10 @@ impl Widget for Banner {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.motion = theme.motion();
-        if self.carry == Carry::Fresh {
-            // Built again by its view: go on from the banner it replaces.
-            if let Some(kept) =
-                crate::motion::take_kept::<crate::widget::KeptBand>(&self.carry_key())
-            {
-                self.take_up(kept);
-                self.carry = Carry::Bound;
-            } else {
-                self.carry = Carry::Placing;
-            }
-        }
+        self.band.motion = theme.motion();
+        // Built again by its view: go on from the banner it replaces.
+        let (key, visible) = (self.carry_key(), self.visible());
+        self.band.build(&key, visible);
         let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
         let mut buttons = Vec::new();
         for button in self.buttons_mut() {
@@ -1171,7 +1084,7 @@ impl Widget for Banner {
             }
         }
         nodes.extend(buttons);
-        self.laid_in_flow = self.in_flow();
+        self.band.laid_in_flow = self.in_flow();
         let node = taffy.parent_node(self.style(), &nodes);
         self.nodes = nodes;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -1201,7 +1114,7 @@ impl Widget for Banner {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = if self.laid_in_flow {
+        let rect = if self.band.laid_in_flow {
             layout_rect(taffy, node, origin)
         } else {
             Rect::ZERO
@@ -1211,29 +1124,18 @@ impl Widget for Banner {
             self.dirty = true;
         }
         self.layout_dirty = false;
-        if self.carry == Carry::Placing {
-            // Its identity matched nothing: it takes up the banner that
-            // stood here before (what it says changed), or it arrived.
-            self.carry = Carry::Bound;
-            match self
-                .laid_in_flow
-                .then(|| crate::motion::take_kept_at::<crate::widget::KeptBand>(self.rect))
-                .flatten()
-            {
-                Some(kept) => self.take_up(kept),
-                None => self.arrive(),
-            }
-            if self.laid_in_flow != self.in_flow() {
-                self.structure_dirty = true;
-            }
-        }
-        if !self.laid_in_flow {
+        // Its identity matched nothing: it takes up the banner that stood
+        // here before (what it says changed), or it arrived.
+        let visible = self.visible();
+        self.band
+            .place_first(self.rect, visible, self.arrives_in_place);
+        if !self.band.laid_in_flow {
             // On its way: its container puts it in its slot, and its
             // contents are placed there when it is drawn.
-            self.unplaced = true;
+            self.band.unplaced = true;
             return;
         }
-        self.laid_rect = self.rect;
+        self.band.laid_rect = self.rect;
         let origin = self.rect.origin();
         if let Some(&body) = self.nodes.first() {
             self.body.apply_layout(taffy, body, origin);
@@ -1248,71 +1150,49 @@ impl Widget for Banner {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.motion = theme.motion();
+        self.band.motion = theme.motion();
         if !self.in_motion() {
             if !self.visible() || self.rect.width() <= 0.0 {
                 return;
             }
             // Kept, so its column can draw it leaving when its view stops
             // building it.
-            let mut painted = std::mem::take(&mut self.painted);
-            painted.reset();
+            let mut painted = self.band.take_painted();
             self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
-            scene.append(&painted, Some(transform));
-            self.painted = painted;
+            self.band.show_at_rest(painted, scene, transform);
             return;
         }
-        if self.unplaced && !self.laid_in_flow {
+        if self.band.land_unplaced(self.visible()) {
             // Out of the layout with no container to put it in its slot:
             // it lands, and the next layout takes it in.
-            self.disclosure.snap(self.visible());
             self.layout_dirty = true;
             return;
         }
         // On its way, out of the layout: in its slot at its full height.
-        if !self.laid_in_flow && self.laid_rect.width() > 0.0 {
-            let slot = self.laid_rect;
+        if !self.band.laid_in_flow && self.band.laid_rect.width() > 0.0 {
+            let slot = self.band.laid_rect;
             let height = self.body.geometry(text, theme, slot.width()).height.ceil();
-            self.laid_rect = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
-            self.body.rect = self.laid_rect;
+            self.band.laid_rect = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
+            self.body.rect = self.band.laid_rect;
         }
-        // The box opens or closes from the top over its contents, which
-        // fade in over the second half.
-        let band = self.laid_rect;
-        if band.width() <= 0.0 {
+        if self.band.laid_rect.width() <= 0.0 {
             return;
         }
-        // Its contents at their full height, kept: dropped on its way, it
-        // leaves from where it is drawn with this paint, never blank.
-        let mut painted = std::mem::take(&mut self.painted);
-        painted.reset();
+        let mut painted = self.band.take_painted();
         self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
-        let reveal = self.disclosure.reveal(band.height());
-        if reveal.height > 0.0 && reveal.opacity > 0.0 {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                reveal.opacity,
-                transform,
-                &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
-            );
-            scene.append(&painted, Some(transform));
-            scene.pop_layer();
-        }
-        self.painted = painted;
+        self.band.show_moving(painted, scene, transform);
     }
 
     /// Frames while it moves, and one more to take it into the layout at
     /// rest.
     fn needs_animation_frame(&self) -> bool {
-        self.in_motion()
-            || self.laid_in_flow != self.in_flow()
+        self.band.needs_frame(self.visible())
             || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.in_motion() {
-            regions.push(self.laid_rect);
+            regions.push(self.band.laid_rect);
         } else if self.needs_redraw() {
             regions.push(self.rect);
         }
@@ -1323,35 +1203,19 @@ impl Widget for Banner {
     }
 
     fn note_placement(&mut self, placement: crate::widget::Placement) {
-        self.placement = Some(placement);
+        self.band.note_placement(placement);
     }
 
-    /// Its slot, where its container puts it while it is out of the
-    /// layout: the full height it was last measured at stays.
     fn place_disclosing(&mut self, slot: Rect) {
-        self.unplaced = false;
-        let height = self.laid_rect.height();
-        self.laid_rect = Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
+        self.band.place(slot);
     }
 
-    /// While it moves it has no box of its own, but is drawn in its slot.
     fn paint_bounds(&self) -> Rect {
-        if self.in_motion() {
-            self.laid_rect
-        } else {
-            self.rect
-        }
+        self.band.paint_bounds(self.rect)
     }
 
     fn disclosing(&self) -> Option<crate::widget::Disclosing> {
-        if self.laid_in_flow || !self.in_motion() {
-            return None;
-        }
-        let extent = self.laid_rect.height();
-        Some(crate::widget::Disclosing::Band {
-            extent,
-            drawn: self.disclosure.reveal(extent).height,
-        })
+        self.band.disclosing()
     }
 
     fn handle_event(
@@ -1397,8 +1261,8 @@ impl Widget for Banner {
     /// only while the layout places them.
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty
-            || self.laid_in_flow != self.in_flow()
-            || (self.laid_in_flow && self.body.is_layout_dirty())
+            || self.band.layout_moved(self.visible())
+            || (self.band.laid_in_flow && self.body.is_layout_dirty())
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -1406,7 +1270,7 @@ impl Widget for Banner {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
+        let own = std::mem::take(&mut self.band.structure_dirty);
         super::defaults::take_structure_dirty(self.children_mut()) || own
     }
 
@@ -1464,29 +1328,8 @@ impl Widget for Banner {
 /// A banner a rebuild drops leaves its motion for the one put in its place.
 impl Drop for Banner {
     fn drop(&mut self) {
-        if self.carry != Carry::Bound {
-            return;
-        }
-        let at = if self.laid_in_flow {
-            self.rect
-        } else {
-            self.laid_rect
-        };
-        crate::motion::keep(
-            self.carry_key(),
-            Some(at),
-            crate::widget::KeptBand {
-                disclosure: self.disclosure,
-                laid_rect: if self.laid_in_flow {
-                    self.rect
-                } else {
-                    self.laid_rect
-                },
-                placement: self.placement,
-                painted: std::mem::take(&mut self.painted),
-                shown: self.visible(),
-            },
-        );
+        let (key, visible) = (self.carry_key(), self.visible());
+        self.band.leave(key, self.rect, visible);
     }
 }
 
