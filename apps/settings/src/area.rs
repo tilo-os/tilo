@@ -43,6 +43,13 @@ pub trait PaneArea: Any {
         false
     }
 
+    /// Whether a read already under way will replace what the area's page
+    /// shows meanwhile (a "Scanning…" note): a still capture waits for it,
+    /// and a live window asks for no frames on its account.
+    fn pending_visual_work(&self) -> bool {
+        false
+    }
+
     /// When the area next wants to look at the device again while nothing
     /// else happens (a page that re-reads it on a timer).
     fn next_wake(&self) -> Option<ui::time::Instant> {

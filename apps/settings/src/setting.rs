@@ -13,8 +13,9 @@
 //! page; the row says what it is set to, read where its pane reads it.
 //!
 //! A pane brings its settings' rows in its [`crate::area::Part`] with
-//! [`setting_entry!`], its device switches with [`setting_switch!`], and
-//! what the others are set to with [`setting_value!`].
+//! [`setting_entry!`], its device switches with [`setting_switch!`] (or
+//! [`setting_view_switch!`] for a pane that is view code), and what the
+//! others are set to with [`setting_value!`].
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -62,6 +63,13 @@ pub enum Shown {
     BoundSwitch(
         fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
         fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>,
+    ),
+    /// [`Shown::Switch`] whose switch is view code: the second function
+    /// builds it in the window's view, showing whether it is on, bound to
+    /// the effect that switches the device ([`setting_view_switch!`]).
+    ViewSwitch(
+        fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
+        fn(&ui::framework::ViewCx<crate::resource::Settings>, bool) -> Item,
     ),
 }
 
@@ -161,6 +169,21 @@ macro_rules! setting_bound_switch {
 }
 pub use crate::setting_bound_switch;
 
+/// The [`SettingEntry`] of the setting `$id`, which search shows as the
+/// switch `$row(cx, on)` builds as view code while `$read(app, follows)`
+/// says it can be switched ([`Shown::ViewSwitch`]): a switch of the device,
+/// its pane's own.
+#[macro_export]
+macro_rules! setting_view_switch {
+    ($id:literal => $read:path, $row:path) => {
+        $crate::setting::SettingEntry {
+            id: $id,
+            shown: $crate::setting::Shown::ViewSwitch($read, $row),
+        }
+    };
+}
+pub use crate::setting_view_switch;
+
 /// A chooser of every value the field at `field` offers, by its label:
 /// `row` bound to it.
 pub fn choose<R, V>(
@@ -194,7 +217,11 @@ pub fn reads(
         .map(
             |setting| match entry(setting.id).map(|entry| &entry.shown) {
                 Some(Shown::Value(value)) => Read::Value(value(app, follows)),
-                Some(Shown::Switch(read, _) | Shown::BoundSwitch(read, _)) => read(app, follows),
+                Some(
+                    Shown::Switch(read, _)
+                    | Shown::BoundSwitch(read, _)
+                    | Shown::ViewSwitch(read, _),
+                ) => read(app, follows),
                 Some(Shown::Row(_) | Shown::Bound(_)) | None => Read::Value(None),
             },
         )
@@ -343,6 +370,7 @@ pub fn bound_rows(
             |(at, setting)| match (entry(setting.id).map(|entry| &entry.shown), reads.get(at)) {
                 (Some(Shown::Bound(row)), _) => row(cx),
                 (Some(Shown::BoundSwitch(_, row)), Some(Read::Switch(_))) => row(cx),
+                (Some(Shown::ViewSwitch(_, row)), Some(&Read::Switch(on))) => Some(row(cx, on)),
                 _ => None,
             },
         )

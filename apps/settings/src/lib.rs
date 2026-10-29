@@ -76,6 +76,7 @@ pub mod device_read;
 pub mod effects;
 pub mod host;
 pub mod i18n;
+pub mod on_row;
 pub mod pages;
 pub mod pane_model;
 pub mod prefs;

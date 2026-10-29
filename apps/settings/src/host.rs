@@ -454,72 +454,24 @@ impl PaneCx {
         Ok(())
     }
 
-    /// Bind to a published item operation rather than exporting a row effect
-    /// on the root resource. Bound item arguments remain inside the spec.
+    /// The binding of `effect` on `row`, which offers it
+    /// ([`crate::on_row::binding`]); `None` outside a host.
     pub fn row_binding<I: 'static>(
         &self,
         row: &ui::tilo_actions::ResourceSpec,
         effect: impl Binds<SettingsEffect, I>,
     ) -> Option<ui::tilo_actions::ActionBinding<I>> {
-        let door = self.door.as_ref()?;
-        let spec = row
-            .actions
-            .iter()
-            .find(|spec| spec.id == effect.action_id())?;
-        if !door.dispatcher.may(&spec.contract.need()) {
-            return None;
-        }
-        let asked: Vec<String> = spec
-            .params()
-            .iter()
-            .map(|param| param.name.to_string())
-            .collect();
-        ui::tilo_actions::ActionBinding::fallible(row, spec, move |input| {
-            let mut args = effect.arguments(input)?;
-            args.retain(|name, _| asked.contains(name));
-            Ok(args)
-        })
-        .ok()
+        crate::on_row::binding(&self.door.as_ref()?.dispatcher, row, effect)
     }
 
-    /// `control`, invoking `effect` with each committed value on `row`,
-    /// which offers it: a setting of one item (a saved network's priority)
-    /// on that item's page. Unavailable where the row does not offer it.
-    #[must_use]
-    pub fn bind_on_row<I: 'static, C: ActionControl<I>>(
-        &self,
-        row: &ui::tilo_actions::ResourceSpec,
-        control: C,
-        effect: impl Binds<SettingsEffect, I>,
-    ) -> C {
-        match self.row_binding(row, effect) {
-            Some(binding) => control.bind_action(binding),
-            None => control.unavailable(),
-        }
-    }
-
-    /// The binding of one fully specified `effect` that `row` offers, for a
-    /// button or a row menu entry acting on that row. `None` outside a host,
-    /// or where the row does not offer it now.
+    /// The binding of one fully specified `effect` that `row` offers
+    /// ([`crate::on_row::invocation`]); `None` outside a host.
     pub fn row_invocation(
         &self,
         row: &ui::tilo_actions::ResourceSpec,
         effect: impl Into<SettingsEffect>,
     ) -> Option<ui::tilo_actions::ActionBinding<()>> {
-        let effect = effect.into();
-        let door = self.door.as_ref()?;
-        let spec = row.actions.iter().find(|spec| spec.id == effect.id())?;
-        if !door.dispatcher.may(&spec.contract.need()) {
-            return None;
-        }
-        let mut args = effect.arguments();
-        let asked: Vec<String> = spec
-            .params()
-            .iter()
-            .map(|param| param.name.to_string())
-            .collect();
-        args.retain(|name, _| asked.contains(name));
-        ui::tilo_actions::ActionBinding::new(row, spec, move |()| args.clone()).ok()
+        crate::on_row::invocation(&self.door.as_ref()?.dispatcher, row, effect)
     }
 
     /// `control` (a button) invoking the fully specified `effect` on `row`;

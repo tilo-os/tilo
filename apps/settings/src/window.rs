@@ -1222,14 +1222,13 @@ impl Widget for SettingsWindow {
     }
 
     fn has_pending_visual_work(&self) -> bool {
-        self.app
-            .areas()
-            .iter()
-            .any(crate::area::PaneArea::first_read)
-            || self
-                .shell
-                .as_ref()
-                .is_some_and(Widget::has_pending_visual_work)
+        self.app.areas().iter().any(|area| {
+            crate::area::PaneArea::first_read(area)
+                || crate::area::PaneArea::pending_visual_work(area)
+        }) || self
+            .shell
+            .as_ref()
+            .is_some_and(Widget::has_pending_visual_work)
     }
 
     fn needs_idle_sync(&self) -> bool {
