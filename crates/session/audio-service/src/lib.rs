@@ -16,6 +16,7 @@
 //! on the same pipes, reading the graph again whenever a device arrives or
 //! leaves.
 
+pub mod client;
 pub mod handoff;
 #[cfg(feature = "service")]
 pub mod mpris;
