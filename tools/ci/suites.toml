@@ -1539,10 +1539,6 @@ suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
 
 [[unrequired]]
-suite = "os/tests/validation_drive_qemu.sh"
-reason = "requires a native ARM KVM host and QEMU"
-
-[[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
 reason = "boots the gated dev disk in a VM and signs in; t's os-acceptance-<arch> runs it"
 
@@ -1580,20 +1576,8 @@ suite = "os/dev/test-secureboot.sh"
 reason = "boots a VM with OVMF from a built image"
 
 [[unrequired]]
-suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
-reason = "needs a C toolchain and QEMU"
-
-[[unrequired]]
-suite = "os/kernel/tests/test-cn20k-debugfs.py"
-reason = "needs make and a kernel source tree"
-
-[[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
 reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
-
-[[unrequired]]
-suite = "os/containers/tilo-relay/test_probe_sccache.py"
-reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fails under CPU contention"
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"
@@ -1624,16 +1608,8 @@ suite = "os/tests/booted_flatpak_lifecycle.sh"
 reason = "drives a booted, signed-in dev VM or tilo-vm slot and installs a real Flathub app"
 
 [[unrequired]]
-suite = "os/tests/build-windows-dxvk-load.sh"
-reason = "build helper: needs a Windows guest SDK"
-
-[[unrequired]]
 suite = "os/tests/collaborative-files-image-contract.sh"
 reason = "needs an assembled image root (OS_ROOT); t's os-acceptance-<arch> runs it"
-
-[[unrequired]]
-suite = "os/tests/container_build_context.py"
-reason = "needs rootless Podman"
 
 [[unrequired]]
 suite = "os/tests/development_layer_audit_native.py"
@@ -1749,18 +1725,6 @@ suite = "os/tests/h264-boot-check.py"
 reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
 
 [[unrequired]]
-suite = "os/tests/prove_kernel_failure_cache.py"
-reason = "needs a live BuildKit daemon"
-
-[[unrequired]]
-suite = "os/tests/prove_kernel_failure_cache_local.py"
-reason = "needs rootful Podman with cached images"
-
-[[unrequired]]
-suite = "os/tests/rootfs_firmware_cache.py"
-reason = "needs rootful Podman to observe real firmware mount layer-cache reuse on the build host"
-
-[[unrequired]]
 suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
@@ -1811,20 +1775,8 @@ suite = "os/tests/staging_reclaim_loop.sh"
 reason = "destructive, root: loop devices; t.toml's staging-loop check runs it"
 
 [[unrequired]]
-suite = "os/tests/system_extension_boot_pack_stage.sh"
-reason = "needs a systemd system manager; skips without one"
-
-[[unrequired]]
-suite = "os/tests/test_direct_sparse_transfer.py"
-reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
-
-[[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
 reason = "needs a root-owned /usr/local/bin/tilo-crypto: t's development-signing-<arch> checks run it"
-
-[[unrequired]]
-suite = "os/tests/test_kernel_checkpoint_make.py"
-reason = "needs make, absent from the ci-fast image"
 
 [[unrequired]]
 suite = "os/tests/test_signing_spool.py"
@@ -1885,10 +1837,6 @@ reason = "drives distrobox and host GPU encoders"
 [[unrequired]]
 suite = "scripts/test-local.sh"
 reason = "developer entry point for the Rust suite, which CI runs with nextest's ci profile"
-
-[[unrequired]]
-suite = "scripts/two-host-sync-test.sh"
-reason = "manual smoke test across two hosts on a LAN"
 
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"

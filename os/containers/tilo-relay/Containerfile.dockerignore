@@ -46,4 +46,3 @@ os/containers/tilo-relay/README.md
 os/containers/tilo-relay/compose.yaml
 os/containers/tilo-relay/relay.toml.example
 os/containers/tilo-relay/test-contract.sh
-os/containers/tilo-relay/test_probe_sccache.py
