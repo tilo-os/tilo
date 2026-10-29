@@ -217,3 +217,18 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
         );
     }
 }
+
+#[test]
+fn a_refused_action_stops_the_program_unless_it_tries() {
+    let task = task(vec!["add"]);
+    let answer = task.run("todo.add(todo.tasks, \"milk\")\nprint(\"went on\")", true);
+    assert_eq!(answer["state"], "failed", "{answer:#}");
+    assert!(
+        answer["detail"].as_str().unwrap().contains("denied"),
+        "{answer:#}"
+    );
+    assert!(
+        answer["output"].as_array().unwrap().is_empty(),
+        "{answer:#}"
+    );
+}

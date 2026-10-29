@@ -856,6 +856,13 @@ impl Core {
             }
         };
         self.journal_push(entry)?;
+        // What did not run stops a program that does not `try` it: it never goes on as if it
+        // had.
+        if let Value::Error(reason) = &value
+            && !self.trying.get()
+        {
+            return trap(format!("{}: {reason}", invocation.name()));
+        }
         self.ret_h(boxed(value))
     }
 
@@ -956,7 +963,10 @@ impl Core {
     /// `try act(args)`: invokes like `invoke` and hands the guest a `Result`: `.ok` with the
     /// action's result (none for a unit action), or `.err` with the reason it failed.
     fn flow_try_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
-        let Some(Wasm::I32(raw)) = self.flow_invoke(h)? else {
+        let outer = self.trying.replace(true);
+        let invoked = self.flow_invoke(h);
+        self.trying.set(outer);
+        let Some(Wasm::I32(raw)) = invoked? else {
             return trap("invoke returned no handle");
         };
         let outcome = unboxed(self.val_whole(raw)?);

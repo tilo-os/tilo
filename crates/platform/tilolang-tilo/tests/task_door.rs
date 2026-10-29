@@ -110,7 +110,21 @@ impl TaskDoor for Apps {
         self.invoked.borrow_mut().push(call.clone());
         let app = call["app"].as_str().unwrap();
         let action = call["action"].as_str().unwrap();
-        if self.refused.contains(&action) {
+        // The policy names an action by what it is called.
+        let named = self
+            .replica(app)
+            .host
+            .package(app)
+            .and_then(|package| {
+                package
+                    .meta
+                    .actions
+                    .iter()
+                    .find(|declared| declared.id == action)
+                    .map(|declared| declared.name.clone())
+            })
+            .unwrap_or_else(|| action.to_owned());
+        if self.refused.contains(&named.as_str()) {
             return Answered::Refused(format!("{action}: denied by the workspace's policy"));
         }
         let mut replica = self.replica(app);

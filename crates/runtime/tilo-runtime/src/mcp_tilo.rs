@@ -748,32 +748,14 @@ fn history_text(programs: &Programs) -> String {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// The room resource of `app`, whose `undo` takes back this task's steps there.
-    async fn room_of(&self, app: &str) -> Result<String, String> {
-        let listed = Box::pin(self.agent_ls(LsArgs {
-            path: Some(app.to_owned()),
-            ..LsArgs::default()
-        }))
-        .await?;
-        listed
-            .text
-            .lines()
-            .find(|line| line.trim_end().ends_with("tilolang.room"))
-            .and_then(|line| line.split_whitespace().next())
-            .map(|room| room.trim_end_matches('/').to_owned())
-            .ok_or_else(|| format!("{app} offers no undo"))
-    }
-
     /// Take back this task's last step in each of `apps` (ids), the last changed first.
     async fn undo_in(&self, apps: &[String]) -> Result<(), String> {
         for app in apps.iter().rev() {
             let name = app_names(std::slice::from_ref(app)).join("");
-            let room = self.room_of(&name).await?;
             let mut arguments = Map::new();
             arguments.insert("steps".to_owned(), json!(1));
             let reply =
-                Box::pin(self.do_one(&format!("{name}/{room}#undo"), arguments, None, None))
-                    .await?;
+                Box::pin(self.do_one(&format!("{name}#undo"), arguments, None, None)).await?;
             if reply.failed {
                 return Err(format!("in {name}: {}", reply.text));
             }

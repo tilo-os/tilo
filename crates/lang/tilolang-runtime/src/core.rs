@@ -93,6 +93,8 @@ pub struct Core {
     /// `describe`), while they run: a host that holds no records; `None` where the runtime
     /// answers what it holds itself.
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
+    /// Whether the invocation being made is a `try`'s, whose failure the program handles.
+    pub trying: std::cell::Cell<bool>,
     /// The resources of apps this runtime does not hold that programs read, as they print.
     pub foreign: RefCell<crate::reads::Foreign>,
 }
@@ -197,6 +199,7 @@ impl Core {
             text_search: RefCell::new(None),
             invoker: RefCell::new(None),
             reader: RefCell::new(None),
+            trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::reads::Foreign::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
