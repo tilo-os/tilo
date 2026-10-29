@@ -816,16 +816,8 @@ impl Machine {
     }
 
     fn input_args(&self, run: &RunDir) -> Vec<String> {
-        match (self.input, self.arch) {
-            (Input::Touch, _) => vec![
-                "-device".into(),
-                "virtio-multitouch-pci".into(),
-                "-qmp".into(),
-                format!(
-                    "unix:{},server=on,wait=off",
-                    escape(&run.qmp().display().to_string())
-                ),
-            ],
+        let mut args: Vec<String> = match (self.input, self.arch) {
+            (Input::Touch, _) => vec!["-device".into(), "virtio-multitouch-pci".into()],
             // ARM virt has no implicit PC keyboard; monitor sendkey needs a
             // guest device.
             (Input::Keyboard, Arch::Aarch64) => [
@@ -841,8 +833,19 @@ impl Machine {
             (Input::Keyboard, Arch::X86_64) => {
                 ["-usb", "-device", "usb-tablet"].map(String::from).to_vec()
             }
-            (Input::None, _) => Vec::new(),
-        }
+            (Input::None, _) => return Vec::new(),
+        };
+        // QMP carries the absolute tablet's motion and buttons and the touch
+        // screen's fingers: HMP's mouse_move is relative, which an absolute
+        // tablet never sees.
+        args.extend([
+            "-qmp".into(),
+            format!(
+                "unix:{},server=on,wait=off",
+                escape(&run.qmp().display().to_string())
+            ),
+        ]);
+        args
     }
 
     /// The whole command line after the emulator.
@@ -1722,7 +1725,10 @@ mod tests {
             text.contains("-device virtio-vga,xres=1280,yres=800 -display none"),
             "{text}"
         );
-        assert!(text.contains("-usb -device usb-tablet"), "{text}");
+        assert!(
+            text.contains("-usb -device usb-tablet -qmp unix:/run/t/qmp.sock,server=on,wait=off"),
+            "the tablet is driven through QMP: {text}"
+        );
         assert!(text.contains(
             "-drive file=/d/disk.qcow2,format=qcow2,if=none,id=tilo-disk -device virtio-blk-pci,drive=tilo-disk"
         ));

@@ -39,9 +39,9 @@ else
 fi
 
 if grep -Fq 'cmd_pointer()' "$vm" \
-  && grep -Fq 'mouse_move $qx $qy 1' "$vm" \
-  && grep -Fq 'mouse_button $mask' "$vm" \
-  && grep -Fq 'mouse_button 0' "$vm" \
+  && grep -Fq '{"type":"abs","data":{"axis":"x","value":' "$vm" \
+  && grep -Fq '{"type":"btn","data":{"down":true,"button":' "$vm" \
+  && grep -Fq '{"type":"btn","data":{"down":false,"button":' "$vm" \
   && grep -Fq 'pointer coordinate ($x,$y) is outside' "$vm"; then
   ok 'VM interaction helper maps guest pixels to the absolute tablet and releases clicks'
 else
