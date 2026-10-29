@@ -959,17 +959,23 @@ mod tests {
 
     /// A host that refuses every catalogue read with one refusal and the
     /// detail it is given.
-    struct RefusingHost(app_host::client::WireCatalogueRefusal, &'static str);
-    impl app_host::app_host_capnp::app_host::Server for RefusingHost {
-        fn registry_catalogue(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::app_host_capnp::app_host::RegistryCatalogueParams,
-            mut results: app_host::app_host_capnp::app_host::RegistryCatalogueResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let mut out = results.get();
-            out.set_refusal(self.0);
-            out.set_detail(self.1);
-            std::future::ready(Ok(()))
+    struct RefusingHost(app_host::client::Refusal, &'static str);
+    impl app_host::wire::Host for RefusingHost {
+        fn handle(
+            self: std::rc::Rc<Self>,
+            request: app_host::wire::Operation,
+        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+        {
+            use app_host::wire::{Answer, Catalogue, Operation, Resource};
+            std::future::ready(match request {
+                Operation::Read(Resource::RegistryCatalogue { .. }) => {
+                    Ok(Answer::Catalogue(Catalogue::Refused {
+                        refusal: self.0,
+                        detail: self.1.into(),
+                    }))
+                }
+                other => app_host::testing::refuse(&other),
+            })
         }
     }
 
@@ -985,7 +991,7 @@ mod tests {
             "Failed: remote exception: timed out",
         ] {
             let (service, connection) = app_host::testing::ConnectedService::start(RefusingHost(
-                app_host::client::WireCatalogueRefusal::SystemUpdateNeeded,
+                app_host::client::Refusal::SystemUpdateNeeded,
                 detail,
             ))
             .unwrap();

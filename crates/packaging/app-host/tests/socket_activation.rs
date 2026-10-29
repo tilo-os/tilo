@@ -64,40 +64,8 @@ fn consumes_systemd_listener_without_rebinding_it() {
 
     // A request answered over the inherited listener: the daemon is past
     // its startup, so a rebind would have happened by now.
-    let stream = std::os::unix::net::UnixStream::connect(&socket)
-        .expect("connect through inherited listener");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let local = tokio::task::LocalSet::new();
-    local.block_on(&runtime, async {
-        use tokio::io::AsyncWriteExt as _;
-        stream.set_nonblocking(true).expect("nonblocking stream");
-        let mut stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
-        let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
-        stream.write_all(b"QAH1").await.expect("write magic");
-        stream
-            .write_all(
-                &u32::try_from(handoff.len())
-                    .expect("bounded handoff")
-                    .to_be_bytes(),
-            )
-            .await
-            .expect("write length");
-        stream.write_all(handoff).await.expect("write handoff");
-        let client: app_host::app_host_capnp::app_host::Client =
-            runtime_portal::CapnpClient::from_connected_io(
-                stream,
-                capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            )
-            .bootstrap();
-        tilo_test_env::within("the activated daemon to list packages", async {
-            client.list_request().send().promise.await
-        })
-        .await
-        .expect("list through the inherited listener");
-    });
+    let client = crate::common::store_client(&socket);
+    client.list().expect("list through the inherited listener");
     assert_eq!(child.try_wait().expect("poll child"), None);
     assert_eq!(
         std::fs::metadata(&socket)

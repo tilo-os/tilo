@@ -50,7 +50,7 @@ mode = "host"
 [sandbox.services]
 collab     = "optional@11"
 tilo-fs     = "optional@11"
-app-host   = "required@4"
+app-host   = "required@5"
 identity   = "optional@11"
 
 [entrypoint]

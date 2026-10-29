@@ -123,3 +123,27 @@ pub fn build_tapp_for(app_id: &str, payload_kib: usize) -> (Vec<u8>, PackageId) 
     let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).expect("write tapp");
     (bytes, packed.id())
 }
+
+/// The Store's connection to the host listening at `socket`, past the
+/// launcher's handoff, once the host accepts connections.
+pub fn store_client(socket: &std::path::Path) -> app_host::client::BlockingClient {
+    use std::io::Write as _;
+    let deadline = tilo_test_env::hang_deadline();
+    let mut stream = loop {
+        if let Ok(stream) = std::os::unix::net::UnixStream::connect(socket) {
+            break stream;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the app host never became ready"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
+    stream.write_all(b"QAH1").unwrap();
+    stream
+        .write_all(&u32::try_from(handoff.len()).unwrap().to_be_bytes())
+        .unwrap();
+    stream.write_all(handoff).unwrap();
+    app_host::client::BlockingClient::from_connected_fd(stream.into()).unwrap()
+}

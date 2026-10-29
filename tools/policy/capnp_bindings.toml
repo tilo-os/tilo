@@ -4,13 +4,6 @@
 # by the regeneration, never by hand.
 
 [[crate]]
-path = "crates/packaging/app-host"
-src_prefix = "schema"
-schemas = ["schema/app-host.capnp"]
-schema_sha256 = "34c916573dd7a7bbc3b947902d85dbde55130b31054f5be94d57036b63486afb"
-bindings_sha256 = "efda1d119557ae5c80d17a7b45c879606d0e5b20cb58878b4ec729cd9a6dabed"
-
-[[crate]]
 path = "crates/runtime/runtime-collab"
 src_prefix = "schema"
 schemas = ["schema/collab.capnp"]

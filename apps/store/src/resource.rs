@@ -1238,178 +1238,145 @@ mod tests {
         }
     }
 
-    impl app_host::app_host_capnp::app_host::Server for CatalogueHost {
-        fn flatpak(
-            self: capnp::capability::Rc<Self>,
-            params: app_host::app_host_capnp::app_host::FlatpakParams,
-            mut results: app_host::app_host_capnp::app_host::FlatpakResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let params = params.get().unwrap();
-            assert_eq!(
-                params.get_action().unwrap(),
-                app_host::app_host_capnp::FlatpakAction::Install
-            );
-            assert_eq!(
-                params.get_app_id().unwrap().to_str().unwrap(),
-                "org.example.Editor"
-            );
-            assert!(params.get_reference().unwrap().is_empty());
-            self.installs
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            results.get().set_status(
-                "Installing runtime/org.example.Runtime…\nInstalling app/org.example.Editor…",
-            );
-            std::future::ready(Ok(()))
-        }
-
-        fn list(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::app_host_capnp::app_host::ListParams,
-            mut results: app_host::app_host_capnp::app_host::ListResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            results.get().init_entries(0);
-            std::future::ready(Ok(()))
-        }
-
-        fn repositories(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::app_host_capnp::app_host::RepositoriesParams,
-            mut results: app_host::app_host_capnp::app_host::RepositoriesResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let json =
-                if let Some(gate) = &self.registry_gate {
-                    let count = gate.registry_count.max(1);
-                    let registries = (0..count).map(|index| serde_json::json!({
-                    "name": format!("slow-{index}"), "base_url": "https://registry.example",
-                    "owner_pubkey_hex": "11".repeat(32), "enabled": true
-                })).collect::<Vec<_>>();
-                    serde_json::json!({"registry": registries})
-                } else {
-                    serde_json::json!({"registry": []})
-                };
-            results.get().set_json(json.to_string());
-            std::future::ready(Ok(()))
-        }
-
-        fn registry_catalogue(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::app_host_capnp::app_host::RegistryCatalogueParams,
-            mut results: app_host::app_host_capnp::app_host::RegistryCatalogueResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            // Setting the result builder does not send a response: Cap'n
-            // Proto waits for the actual server future to finish. Keep its
-            // thread-affine builder out of the explicitly Send gate future.
-            results.get().set_entries("[]");
-            let gate = std::sync::Arc::clone(self.registry_gate.as_ref().unwrap());
-            let call = gate.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    impl app_host::wire::Host for CatalogueHost {
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one fake host answering every request the catalogue tests make"
+        )]
+        #[allow(
+            clippy::future_not_send,
+            reason = "the fake host serves its connection on a single-threaded LocalSet"
+        )]
+        fn handle(
+            self: std::rc::Rc<Self>,
+            request: app_host::wire::Operation,
+        ) -> impl core::future::Future<Output = Result<app_host::wire::Answer, String>> + 'static
+        {
+            use app_host::wire::{Action, Answer, Catalogue, Operation, Resource};
             async move {
-                if call >= gate.registry_count.max(1) {
-                    return Ok(());
-                }
-                let _pending = PendingCatalogue(std::sync::Arc::clone(&gate));
-                gate.entered
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                std::future::poll_fn(|cx| {
-                    let mut waker = gate.waker.lock().unwrap();
-                    if gate.released.load(std::sync::atomic::Ordering::SeqCst) {
-                        std::task::Poll::Ready(())
-                    } else {
-                        if !waker.iter().any(|waiting| waiting.will_wake(cx.waker())) {
-                            waker.push(cx.waker().clone());
-                        }
-                        std::task::Poll::Pending
+                match request {
+                    Operation::Invoke(Action::Flatpak {
+                        verb,
+                        app_id,
+                        reference,
+                    }) => {
+                        assert_eq!(verb, app_host::wire::FlatpakVerb::Install);
+                        assert_eq!(app_id, "org.example.Editor");
+                        assert!(reference.is_empty());
+                        self.installs
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(Answer::Text(
+                            "Installing runtime/org.example.Runtime…\nInstalling app/org.example.Editor…"
+                                .into(),
+                        ))
                     }
-                })
-                .await;
-                gate.completed
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
+                    Operation::Read(Resource::Packages) => Ok(Answer::Packages(Vec::new())),
+                    Operation::Read(Resource::Repositories) => {
+                        let json = if let Some(gate) = &self.registry_gate {
+                            let count = gate.registry_count.max(1);
+                            let registries = (0..count).map(|index| serde_json::json!({
+                                "name": format!("slow-{index}"), "base_url": "https://registry.example",
+                                "owner_pubkey_hex": "11".repeat(32), "enabled": true
+                            })).collect::<Vec<_>>();
+                            serde_json::json!({"registry": registries})
+                        } else {
+                            serde_json::json!({"registry": []})
+                        };
+                        Ok(Answer::Text(json.to_string()))
+                    }
+                    Operation::Read(Resource::RegistryCatalogue { .. }) => {
+                        let gate = std::sync::Arc::clone(self.registry_gate.as_ref().unwrap());
+                        let call = gate.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if call < gate.registry_count.max(1) {
+                            let _pending = PendingCatalogue(std::sync::Arc::clone(&gate));
+                            gate.entered
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            std::future::poll_fn(|cx| {
+                                let mut waker = gate.waker.lock().unwrap();
+                                if gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                                    std::task::Poll::Ready(())
+                                } else {
+                                    if !waker.iter().any(|waiting| waiting.will_wake(cx.waker())) {
+                                        waker.push(cx.waker().clone());
+                                    }
+                                    std::task::Poll::Pending
+                                }
+                            })
+                            .await;
+                            gate.completed
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Ok(Answer::Catalogue(Catalogue::Rows("[]".into())))
+                    }
+                    Operation::Read(Resource::FlatpakStatus) => {
+                        let installed =
+                            if self.installs.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                                "org.example.Editor\t2.0\tflathub\tuser\n"
+                            } else {
+                                ""
+                            };
+                        let mut row = if self.registry_gate.is_some() || self.failed_repository {
+                            let scope = if self.account { "user" } else { "system" };
+                            let disabled =
+                                if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
+                                    ",disabled"
+                                } else {
+                                    ""
+                                };
+                            format!(
+                                "flathub\thttps://dl.flathub.org/repo/\tFlathub\t{scope}{disabled}\n"
+                            )
+                        } else {
+                            "tools\thttps://tools.example/repo\tExample tools\tsystem\n".into()
+                        };
+                        if self.failed_repository {
+                            row.push_str(
+                                "fedora\thttps://registry.fedoraproject.org\tFedora Flatpaks\tsystem\n",
+                            );
+                        }
+                        Ok(Answer::FlatpakStatus {
+                            available: true,
+                            installed: installed.into(),
+                            remotes: row,
+                        })
+                    }
+                    Operation::Invoke(Action::Remote { verb, name, .. }) => {
+                        assert!(
+                            self.account,
+                            "the immutable device source cannot be changed"
+                        );
+                        assert_eq!(name, "flathub");
+                        assert_eq!(verb, app_host::wire::RemoteVerb::Disable);
+                        self.disabled
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(Answer::Text("Source disabled.".into()))
+                    }
+                    Operation::Read(Resource::FlatpakCatalogue {
+                        remote,
+                        user_managed,
+                    }) => {
+                        if self.failed_repository && remote == "fedora" {
+                            return Err("Unable to load summary".into());
+                        }
+                        let name = if self.registry_gate.is_some() || self.failed_repository {
+                            "flathub"
+                        } else {
+                            "tools"
+                        };
+                        assert_eq!(remote, name);
+                        assert!(
+                            user_managed == self.account,
+                            "the original source scope reaches the host"
+                        );
+                        self.browses
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(Answer::Catalogue(Catalogue::Rows(format!(
+                            "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
+                        ))))
+                    }
+                    other => app_host::testing::refuse(&other),
+                }
             }
-        }
-
-        fn flatpak_status(
-            self: capnp::capability::Rc<Self>,
-            _params: app_host::app_host_capnp::app_host::FlatpakStatusParams,
-            mut results: app_host::app_host_capnp::app_host::FlatpakStatusResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let mut result = results.get();
-            result.set_available(true);
-            result.set_installed(
-                if self.installs.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                    "org.example.Editor\t2.0\tflathub\tuser\n"
-                } else {
-                    ""
-                },
-            );
-            let mut row = if self.registry_gate.is_some() || self.failed_repository {
-                let scope = if self.account { "user" } else { "system" };
-                let disabled = if self.disabled.load(std::sync::atomic::Ordering::SeqCst) {
-                    ",disabled"
-                } else {
-                    ""
-                };
-                format!("flathub\thttps://dl.flathub.org/repo/\tFlathub\t{scope}{disabled}\n")
-            } else {
-                "tools\thttps://tools.example/repo\tExample tools\tsystem\n".into()
-            };
-            if self.failed_repository {
-                row.push_str(
-                    "fedora\thttps://registry.fedoraproject.org\tFedora Flatpaks\tsystem\n",
-                );
-            }
-            result.set_remotes(&row);
-            std::future::ready(Ok(()))
-        }
-
-        fn remote(
-            self: capnp::capability::Rc<Self>,
-            params: app_host::app_host_capnp::app_host::RemoteParams,
-            mut results: app_host::app_host_capnp::app_host::RemoteResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let params = params.get().unwrap();
-            assert!(
-                self.account,
-                "the immutable device source cannot be changed"
-            );
-            assert_eq!(params.get_name().unwrap().to_str().unwrap(), "flathub");
-            assert_eq!(
-                params.get_action().unwrap(),
-                app_host::app_host_capnp::RemoteAction::Disable
-            );
-            self.disabled
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            results.get().set_status("Source disabled.");
-            std::future::ready(Ok(()))
-        }
-
-        fn flatpak_catalogue(
-            self: capnp::capability::Rc<Self>,
-            params: app_host::app_host_capnp::app_host::FlatpakCatalogueParams,
-            mut results: app_host::app_host_capnp::app_host::FlatpakCatalogueResults,
-        ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
-            let params = params.get().unwrap();
-            if self.failed_repository && params.get_remote().unwrap().to_str().unwrap() == "fedora"
-            {
-                return std::future::ready(Err(capnp::Error::failed(
-                    "Unable to load summary".into(),
-                )));
-            }
-            let name = if self.registry_gate.is_some() || self.failed_repository {
-                "flathub"
-            } else {
-                "tools"
-            };
-            assert_eq!(params.get_remote().unwrap().to_str().unwrap(), name);
-            assert!(
-                params.get_user_managed() == self.account,
-                "the original source scope reaches the host"
-            );
-            self.browses
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            results.get().set_rows(format!(
-                "org.example.Editor\tEditor\tEdit local documents\t2.0\tstable\t{name}\n"
-            ));
-            std::future::ready(Ok(()))
         }
     }
 

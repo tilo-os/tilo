@@ -27,12 +27,12 @@ shell-ui = 18
 # (crates/runtime/runtime-portal/interface.toml).
 runtime = 11
 
-# App ↔ app host: the package-management door the Store holds, and the
+# App ↔ app host: the resources and actions the Store reads and invokes, and the
 # language-pack requests Settings makes, on the app-host service only those
 # two apps are handed (crates/packaging/app-host/interface.toml).
 # Its own interface, so a change to what the Store reads never versions the
 # apps that never talk to the app host.
-app-host = 4
+app-host = 5
 
 # App ↔ messaging service: the person's messaging accounts for Messages and
 # the service's permission requests for Passwords, on the messaging service
