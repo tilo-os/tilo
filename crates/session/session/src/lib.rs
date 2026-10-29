@@ -10,6 +10,11 @@
 //! an ordinary app hosted on a layer of its own: the notification banners
 //! and quick settings. What the chrome asks of its host comes back as
 //! [`DesktopAsk`]s, carried out here.
+//!
+//! The session also hosts the system services it was started with
+//! ([`Options::services`]): connectivity, audio and the rest publish their
+//! resources beside the desktop's, and [`Session::invoke`] reaches their
+//! actions as it reaches the desktop's, by address.
 
 #![cfg(target_os = "linux")]
 
@@ -30,6 +35,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_service::Started;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
@@ -37,6 +43,7 @@ use ui::host_operation::ResourceOperationStart;
 
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::host::PanelHost;
+pub use tilo_service::{Service, Services};
 
 use chrome::{SessionChrome, SessionRules};
 use panels::{Banners, Held, Popover};
@@ -66,6 +73,9 @@ pub struct Options {
     /// chosen in search runs by address. Without one, search finds the
     /// desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
+    /// The system services the session hosts: what they publish is the
+    /// session's, beside the desktop's.
+    pub services: Vec<Box<dyn Service>>,
 }
 
 impl Default for Options {
@@ -79,6 +89,7 @@ impl Default for Options {
             quick_settings: None,
             search: SearchOptions::default(),
             apps: None,
+            services: Vec::new(),
         }
     }
 }
@@ -133,6 +144,8 @@ struct Shared {
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether quick settings is open, when the session has it.
     quick_settings: Option<Rc<Cell<bool>>>,
+    /// The system services.
+    services: RefCell<Services>,
 }
 
 impl Shared {
@@ -166,7 +179,7 @@ impl Shared {
         });
         for choice in choices {
             self.search.perform(&room, choice, &mut |own| {
-                self.layers
+                self
                     .invoke(
                         own.address.resource.as_str(),
                         own.address.action.as_str(),
@@ -177,6 +190,38 @@ impl Shared {
         }
         // What the session's own actions asked of it.
         self.follow_asks();
+    }
+
+    /// Everything the session publishes: the desk's and the chrome's
+    /// resources, then the services'.
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut resources = self.layers.resources();
+        resources.extend(self.services.borrow().resources());
+        resources
+    }
+
+    /// Invoke the published action `action` of `resource` where it is
+    /// published: on the desk's or the chrome's layer, else at the service
+    /// publishing it.
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self.layers.invoke(resource, action, arguments) {
+            Err(DoorError::Unknown(address)) => {
+                match self.services.borrow_mut().invoke(resource, action, arguments) {
+                    Some(Ok(Started::Done(output))) => {
+                        Ok(ResourceOperationStart::Completed(output))
+                    }
+                    Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+                    Some(Err(error)) => Err(error),
+                    None => Err(DoorError::Unknown(address)),
+                }
+            }
+            other => other,
+        }
     }
 
     /// Read what the session publishes for search, after a frame.
@@ -190,7 +235,7 @@ impl Shared {
                 .map(|tab| tab.id)
                 .collect()
         });
-        self.search.observe(&self.layers.resources(), open_tabs);
+        self.search.observe(&self.resources(), open_tabs);
     }
 
     /// A card of the empty desk's launchpad: its app, else the desktop's
@@ -325,6 +370,10 @@ impl Session {
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
         handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
+        let mut services = Services::default();
+        for service in options.services {
+            services.add(service);
+        }
         let shared = Rc::new(Shared {
             layers: Layers { desktop, chrome },
             handle,
@@ -332,6 +381,7 @@ impl Session {
             asks,
             intents,
             quick_settings,
+            services: RefCell::new(services),
         });
         shared.observe();
         Ok(Self {
@@ -385,12 +435,25 @@ impl Session {
         &self.banners
     }
 
-    /// Everything the desktop publishes now: the desk's resource (its
-    /// windows and the open search among its children) and the chrome's,
-    /// with their actions.
+    /// Everything the session publishes now: the desk's resource (its
+    /// windows among its children) and the chrome's, with their actions,
+    /// then the services'.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.shared.layers.resources()
+        self.shared.resources()
+    }
+
+    /// What the service publishing `resource` reads of it now, as JSON;
+    /// `None` when no service publishes it.
+    #[must_use]
+    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.shared.services.borrow().read(resource)
+    }
+
+    /// Wait until every device call the services started has landed, and
+    /// take them in: what a headless run does before it reads.
+    pub fn settle_services(&self) {
+        self.shared.services.borrow_mut().settle();
     }
 
     /// A window was at `place`: where search's Continue reopens it.
@@ -400,19 +463,47 @@ impl Session {
 
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
-    /// of the session.
+    /// of the session. A service's action that runs on the device is
+    /// accepted at once; its result lands in the service's reading.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, or bad arguments.
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
     pub fn invoke(
         &mut self,
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        let started = self.shared.layers.invoke(resource, action, arguments)?;
+        let started = self.shared.invoke(resource, action, arguments)?;
         self.shared.follow_asks();
         Ok(started)
+    }
+
+    /// Invoke a service's action the person confirmed (restart, power
+    /// off): one [`Session::invoke`] refused with
+    /// [`DoorError::ConfirmationRequired`].
+    ///
+    /// # Errors
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
+    pub fn invoke_confirmed(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self
+            .shared
+            .services
+            .borrow_mut()
+            .invoke_confirmed(resource, action, arguments)
+        {
+            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
+            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+            Some(Err(error)) => Err(error),
+            None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+        }
     }
 
     /// The labels of the desktop's accessibility trees, the desk's and the
@@ -446,6 +537,7 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: std::time::Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
+        self.shared.services.borrow_mut().poll();
         self.shared.follow_asks();
         self.compositor.render()?;
         self.shared.follow_asks();
@@ -460,6 +552,7 @@ impl Session {
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         let shared = Rc::clone(&self.shared);
         self.compositor.run(|compositor| {
+            shared.services.borrow_mut().poll();
             shared.follow_asks();
             shared.observe();
             stop(compositor)
