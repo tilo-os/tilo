@@ -759,12 +759,6 @@ fn render_morning_matrix(app: &mut TestApp<App>, output: &std::path::Path, page:
             if page == "review" {
                 let snapshot = app.harness().inspection();
                 let paragraph = inspection_node(&snapshot.root, "shortcuts-grant-explain")
-                    .or_else(|| {
-                        snapshot
-                            .presentation
-                            .as_ref()
-                            .and_then(|root| inspection_node(root, "shortcuts-grant-explain"))
-                    })
                     .expect("the painted save review must expose its full explanation");
                 let body_width = ui::widget::modal_dialog::body_width(
                     ui::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
@@ -940,12 +934,6 @@ fn the_text_view_shows_the_same_steps_in_the_same_order() {
         .expect("the program text shows");
     let snapshot = app.harness().inspection();
     let text = inspection_node(&snapshot.root, "draft-text")
-        .or_else(|| {
-            snapshot
-                .presentation
-                .as_ref()
-                .and_then(|root| inspection_node(root, "draft-text"))
-        })
         .and_then(|node| node.semantics.as_ref())
         .and_then(|node| node.name.clone())
         .expect("the text view draws its text");

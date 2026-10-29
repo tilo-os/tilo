@@ -56,7 +56,7 @@ impl ShellOverlayHost {
     }
 
     /// Tell the app what to list now, or take it down once the sheet closed.
-    pub(super) fn follow_directory(&mut self) {
+    pub(super) fn follow_directory(&self) {
         if self.directory_sheet.is_open() {
             let view = self.directory_sheet.view(tilo_clock::unix_now_ms());
             self.layers.directory.seat().show(view);
