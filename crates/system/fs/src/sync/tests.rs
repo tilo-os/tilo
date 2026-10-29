@@ -640,7 +640,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             Some(authority.handle()),
             services,
         )
-        .await
         .unwrap();
         let grant = signed_read_authority(workspace_id, 1, owner, collaborator, false, &owner_root);
         publish_workspace_authority(
@@ -726,7 +725,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             auth_a,
             Some(policy),
         )
-        .await
         .unwrap();
 
         let result = fetch_remote_doc(
@@ -775,7 +773,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             auth_a,
             Some(policy),
         )
-        .await
         .unwrap();
 
         let document = fetch_remote_doc(
@@ -871,7 +868,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
             server_policy,
             server_services.clone(),
         )
-        .await
         .unwrap();
         assert_eq!(ticket.workspace_id(), workspace_id);
 
@@ -1003,7 +999,7 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
                 .hash,
         );
         let thumbnail = store
-            .ingest(Bytes::from_static(b"record thumbnail"))
+            .ingest(bytes::Bytes::from_static(b"record thumbnail"))
             .await
             .unwrap();
         let sibling_manifest = store
@@ -1292,7 +1288,7 @@ fn record_services(root: &std::path::Path) -> RecordServices {
 async fn structure_content_and_transactions_propagate_between_peers() {
     // Phase `structural_changes_propagate_both_ways`.
     // Two real nodes bootstrap, then structural changes propagate live over
-    // gossip in BOTH directions.
+    // authenticated sessions in BOTH directions.
     {
         // --- host A: seed a dir, then start hosting ---
         let (ep_a, look_a, auth_a) = bind_certified_endpoint().await;
@@ -1312,7 +1308,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             auth_a,
             None,
         )
-        .await
         .unwrap();
 
         // --- joiner B: bootstrap the doc, then join ---
@@ -1355,11 +1350,11 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 n.create_file(ROOT_INO, "from_a.txt", None, 0, 2).unwrap();
                 n.save_incremental()
             };
-            ws_a.sync.broadcast_delta(delta);
+            ws_a.sync.announce_delta(&delta);
         }
         assert!(
             wait_until(|| ns_b.lock().unwrap().entry_at("from_a.txt").is_some()).await,
-            "A's change must propagate to B over gossip"
+            "A's change must propagate to B"
         );
 
         // B -> A: joiner creates a file; host must see it.
@@ -1369,7 +1364,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 n.create_file(ROOT_INO, "from_b.txt", None, 0, 3).unwrap();
                 n.save_incremental()
             };
-            ws_b.sync.broadcast_delta(delta);
+            ws_b.sync.announce_delta(&delta);
         }
         assert!(
             wait_until(|| ns_a.lock().unwrap().entry_at("from_b.txt").is_some()).await,
@@ -1378,7 +1373,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
     }
     // Phase `content_written_on_one_peer_hydrates_on_another`.
     // The full collaborative read-write loop: A writes a file with real
-    // content; B's namespace syncs the entry over gossip; B then hydrates
+    // content; B's namespace syncs the entry; B then hydrates
     // the content over iroh-blobs and reads A's actual bytes.
     {
         // host A
@@ -1395,7 +1390,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             auth_a,
             None,
         )
-        .await
         .unwrap();
 
         // joiner B
@@ -1435,7 +1429,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                     .unwrap();
                 n.save_incremental()
             };
-            ws_a.sync.broadcast_delta(delta);
+            ws_a.sync.announce_delta(&delta);
         }
 
         assert!(
@@ -1495,7 +1489,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             server_policy,
             server_services,
         )
-        .await
         .unwrap();
 
         let document = fetch_remote_doc(
@@ -1882,7 +1875,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 server_policy,
                 server_services.clone(),
             )
-            .await
             .unwrap();
             assert_eq!(ticket.workspace_id(), workspace_id);
 
@@ -2704,7 +2696,6 @@ async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author
             auth_a,
             Some(policy_granting(&[someone_else])),
         )
-        .await
         .unwrap();
 
         let leaked = fetch_remote_doc(
@@ -2737,9 +2728,7 @@ async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author
             .create_dir(ROOT_INO, "private", 1)
             .unwrap();
         let (_ws_a, ticket) =
-            Workspace::host(ep_a.clone(), look_a, store_a, hyd_a, ns_a, auth_a, policy)
-                .await
-                .unwrap();
+            Workspace::host(ep_a.clone(), look_a, store_a, hyd_a, ns_a, auth_a, policy).unwrap();
 
         let leaked = fetch_remote_doc(
             &ep_b,
@@ -2773,7 +2762,6 @@ async fn namespace_documents_reach_only_entitled_peers_and_readers_cannot_author
             auth_a,
             policy.clone(),
         )
-        .await
         .unwrap();
 
         let doc = fetch_remote_doc(
@@ -2871,7 +2859,6 @@ async fn content_and_writes_reach_only_entitled_peers() {
             auth_a,
             Some(policy_granting(&[someone_else])),
         )
-        .await
         .unwrap();
 
         let store_b = Arc::new(ContentStore::memory());
@@ -2890,7 +2877,7 @@ async fn content_and_writes_reach_only_entitled_peers() {
         );
     }
     // Phase `an_entitled_peer_still_bootstraps_and_hydrates`.
-    // Same host, same policy, an invited peer: bootstrap, gossip and
+    // Same host, same policy, an invited peer: bootstrap, live sync and
     // hydration all still work — without this the negatives above would be
     // satisfied by a mount that serves nobody.
     {
@@ -2917,7 +2904,6 @@ async fn content_and_writes_reach_only_entitled_peers() {
             auth_a,
             Some(policy.clone()),
         )
-        .await
         .unwrap();
 
         let doc = fetch_remote_doc(
@@ -2957,7 +2943,7 @@ async fn content_and_writes_reach_only_entitled_peers() {
                     .unwrap();
                 n.save_incremental()
             };
-            ws_a.sync.broadcast_delta(delta);
+            ws_a.sync.announce_delta(&delta);
         }
         assert!(
             wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
@@ -2988,7 +2974,6 @@ async fn content_and_writes_reach_only_entitled_peers() {
             auth_a.clone(),
             policy.clone(),
         )
-        .await
         .unwrap();
 
         let doc = fetch_remote_doc(
@@ -3023,7 +3008,7 @@ async fn content_and_writes_reach_only_entitled_peers() {
                 .unwrap();
             namespace.save_incremental()
         };
-        ws_b.sync.broadcast_delta(from_b);
+        ws_b.sync.announce_delta(&from_b);
         assert!(
             wait_until(|| ns_a.lock().unwrap().entry_at("from-b").is_some()).await,
             "B's authenticated mutation wake must sync into A"
@@ -3036,7 +3021,7 @@ async fn content_and_writes_reach_only_entitled_peers() {
                 .unwrap();
             namespace.save_incremental()
         };
-        ws_a.sync.broadcast_delta(from_a);
+        ws_a.sync.announce_delta(&from_a);
         assert!(
             wait_until(|| ns_b.lock().unwrap().entry_at("from-a").is_some()).await,
             "A's authenticated mutation wake must sync into B"
@@ -3115,7 +3100,6 @@ async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles
         Some(policy_granting(&[client_identity.user_public_key()])),
         server_services,
     )
-    .await
     .unwrap();
 
     let client_services = record_services(client_temp.path());
@@ -3469,9 +3453,8 @@ async fn a_host_refuses_a_namespace_request_for_another_workspace() {
         .unwrap()
         .create_dir(ROOT_INO, "hosts-tree", 1)
         .unwrap();
-    let (_ws_a, ticket) = Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a, auth_a, None)
-        .await
-        .unwrap();
+    let (_ws_a, ticket) =
+        Workspace::host(ep_a, look_a, store_a, hyd_a, ns_a, auth_a, None).unwrap();
     let (ep_b, _look_b, auth_b) = bind_certified_endpoint().await;
     let other = uuid::Uuid::new_v4();
 
@@ -3601,7 +3584,6 @@ fn exchanges_for(
                 endpoint.clone(),
                 Arc::new(ContentStore::memory()),
             )),
-            sender: None,
             identity: identity.clone(),
             policy,
             records: None,
@@ -3984,11 +3966,11 @@ async fn revoked_writer_is_cut_off_with_persisted_state() {
 }
 
 /// #4113. The idle timer: three seconds after anything happens, doubling
-/// per quiet timer pass to thirty; a change, a pass something started, or
-/// activity outside a pass brings it back to three; a failing exchange
+/// per quiet timer pass to thirty; a change or a pass something started
+/// brings it back to three; a failing exchange
 /// holds three seconds for a minute, then backs off as well.
 #[test]
-fn idle_backoff_doubles_to_the_ceiling_and_resets_on_activity() {
+fn idle_backoff_doubles_to_the_ceiling_and_resets_on_change() {
     let quiet = PassOutcome::default();
     let changed = PassOutcome {
         changed: true,
@@ -4017,9 +3999,6 @@ fn idle_backoff_doubles_to_the_ceiling_and_resets_on_activity() {
         RECONCILE_INTERVAL,
         "a pass a local change or an announcement started resets"
     );
-    backoff.after_pass(true, quiet, start);
-    backoff.activity();
-    assert_eq!(backoff.interval(), RECONCILE_INTERVAL, "activity resets");
 
     // Phase `a_failing_exchange_holds_the_short_interval_for_a_minute`.
     for _ in 0..3 {
@@ -4516,7 +4495,7 @@ fn received_change_is_checked_for_conflict() {
     assert_eq!(checks, 51);
     assert_eq!(namespace.lock().unwrap().conflict_scans(), 1);
 
-    // What a gossip delta or an exchange delivers: the other writer's
+    // What an exchange delivers: the other writer's
     // concurrent edit, and a version concurrent with `left`.
     let delta = other.save_incremental();
     namespace
@@ -4648,7 +4627,6 @@ async fn idle_workspace_cost_measurement() {
         Some(policy_read_write(&writers, &[])),
         record_services(host_temp.path()),
     )
-    .await
     .unwrap();
     let device_store = Arc::new(ContentStore::memory());
     let _device = Workspace::join_with_records(

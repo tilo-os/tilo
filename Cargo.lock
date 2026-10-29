@@ -8044,31 +8044,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-gossip"
-version = "0.101.0"
-dependencies = [
- "blake3",
- "bytes",
- "data-encoding",
- "derive_more",
- "futures-concurrency",
- "hex",
- "indexmap",
- "iroh",
- "iroh-base",
- "iroh-metrics",
- "irpc",
- "n0-error",
- "n0-future",
- "postcard",
- "rand 0.10.3",
- "serde",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
 name = "iroh-io"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18996,7 +18971,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
- "iroh-gossip",
  "iroh-relay",
  "irpc",
  "libc",
@@ -26917,7 +26891,6 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-dns",
- "iroh-gossip",
  "iroh-io",
  "iroh-metrics",
  "iroh-metrics-derive",

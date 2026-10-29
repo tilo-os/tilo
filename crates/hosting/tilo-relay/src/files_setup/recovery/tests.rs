@@ -269,7 +269,6 @@ async fn serve_host(
         Some(authority.handle()),
         services,
     )
-    .await
     .unwrap();
     let registration = tilo_relay::transport::ContentPeerRegistration {
         endpoint: host.endpoint.addr(),

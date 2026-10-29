@@ -220,7 +220,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.broadcast_delta(delta);
+            sync.announce_delta(&delta);
         }
         projected?;
         // A pull may complete a multi-record transaction.
@@ -712,11 +712,11 @@ impl RecordMaterializer {
                         .map_err(|_| RecordMaterializerError::TransactionRecoveryUnavailable)?;
                 }
                 let sync = self.sync.clone();
-                let broadcast = move |delta| {
+                let broadcast = move |delta: Vec<u8>| {
                     if let Ok(current) = sync.read()
                         && let Some(current) = current.as_ref()
                     {
-                        current.broadcast_delta(delta);
+                        current.announce_delta(&delta);
                     }
                     Ok(())
                 };
@@ -837,7 +837,7 @@ impl RecordMaterializer {
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.broadcast_delta(delta);
+                    sync.announce_delta(&delta);
                 }
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
@@ -1100,7 +1100,7 @@ impl RecordMaterializer {
                 && let Ok(sync) = self.sync.read()
                 && let Some(sync) = sync.as_ref()
             {
-                sync.broadcast_delta(delta);
+                sync.announce_delta(&delta);
             }
             return Ok(());
         }
@@ -1166,7 +1166,7 @@ impl RecordMaterializer {
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.broadcast_delta(delta);
+                    sync.announce_delta(&delta);
                 }
             }
             RecordOperationV1::AppendVersion(version) => {
@@ -1211,7 +1211,7 @@ impl RecordMaterializer {
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.broadcast_delta(delta);
+                    sync.announce_delta(&delta);
                 }
             }
             RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. } => {

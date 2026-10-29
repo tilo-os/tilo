@@ -509,7 +509,7 @@ pub enum CollabRequest {
     ///
     /// Apps page by repeating with `before_seq` set to the lowest seq from
     /// the previous batch until `exhausted == true`, then fall back to the
-    /// cooperative path (broker queries gossip peers).
+    /// cooperative path (the broker asks the room's other members).
     FetchScrollback {
         artifact: collab_types::ArtifactId,
         /// Exclusive upper bound on `seq`.
