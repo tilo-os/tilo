@@ -129,6 +129,11 @@ impl Platform for InProcess {
             .to_string()
     }
 
+    /// The zone of the toolkit's clock: the person's, which "tomorrow 9am" is read in.
+    fn zone(&self) -> i64 {
+        i64::from(ui::clock::local_now().offset().local_minus_utc())
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         let wake = ui::wake::WakeHandle::new();
         Arc::new(move || wake.wake())

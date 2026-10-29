@@ -108,6 +108,12 @@ pub trait Platform {
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. UTC unless the platform knows the person's.
+    fn zone(&self) -> i64 {
+        0
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -591,6 +597,8 @@ impl Instance {
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
