@@ -1,5 +1,5 @@
 //! Personal dictation language intent; never a microphone permission.
-use serde::de::{self, IgnoredAny, Visitor};
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// A bounded stable language code understood by the local speech protocol.
@@ -14,12 +14,14 @@ impl Default for DictationLanguage {
     }
 }
 
-/// Any value reads: a code outside the list, or anything that is not a
-/// string, is automatic detection. Skipping a non-string rather than building
-/// it as a JSON value keeps each format's reader of this small.
+/// Only a code of the list reads, or nothing (`null`), which is automatic
+/// detection: a field edit with any other value is refused at the field.
+/// The section's reader keeps automatic detection for a stored value that
+/// does not read (`tilo_accessibility_settings`), so an unknown code
+/// written by another version still opens.
 impl<'de> Deserialize<'de> for DictationLanguage {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(LanguageVisitor)
+        deserializer.deserialize_option(LanguageVisitor)
     }
 }
 
@@ -33,23 +35,8 @@ impl<'de> Visitor<'de> for LanguageVisitor {
     }
 
     fn visit_str<E: de::Error>(self, code: &str) -> Result<Self::Value, E> {
-        Ok(DictationLanguage::from_code(code).unwrap_or_default())
-    }
-
-    fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
-        Ok(DictationLanguage::default())
-    }
-
-    fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self::Value, E> {
-        Ok(DictationLanguage::default())
-    }
-
-    fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self::Value, E> {
-        Ok(DictationLanguage::default())
-    }
-
-    fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self::Value, E> {
-        Ok(DictationLanguage::default())
+        DictationLanguage::from_code(code)
+            .ok_or_else(|| E::invalid_value(de::Unexpected::Str(code), &self))
     }
 
     fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
@@ -61,17 +48,7 @@ impl<'de> Visitor<'de> for LanguageVisitor {
     }
 
     fn visit_some<D: Deserializer<'de>>(self, inner: D) -> Result<Self::Value, D::Error> {
-        inner.deserialize_any(self)
-    }
-
-    fn visit_seq<A: de::SeqAccess<'de>>(self, mut items: A) -> Result<Self::Value, A::Error> {
-        while items.next_element::<IgnoredAny>()?.is_some() {}
-        Ok(DictationLanguage::default())
-    }
-
-    fn visit_map<A: de::MapAccess<'de>>(self, mut entries: A) -> Result<Self::Value, A::Error> {
-        while entries.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
-        Ok(DictationLanguage::default())
+        inner.deserialize_str(self)
     }
 }
 
@@ -134,7 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stable_codes_round_trip_and_unknown_preferences_are_forgiving() {
+    fn stable_codes_round_trip_and_anything_else_is_refused() {
         for language in DictationLanguage::ALL {
             let value = serde_json::to_value(language).unwrap();
             assert_eq!(value.as_str(), Some(language.code()));
@@ -145,27 +122,20 @@ mod tests {
         }
         for value in [
             serde_json::json!("future-language"),
+            serde_json::json!("Deutsch"),
             serde_json::json!(42),
-            serde_json::json!(-1.5),
             serde_json::json!(true),
             serde_json::json!(["en"]),
             serde_json::json!({ "code": "en" }),
-            serde_json::Value::Null,
         ] {
-            assert_eq!(
-                serde_json::from_value::<DictationLanguage>(value).unwrap(),
-                DictationLanguage::default()
+            assert!(
+                serde_json::from_value::<DictationLanguage>(value.clone()).is_err(),
+                "{value}"
             );
         }
         assert_eq!(
-            serde_json::from_str::<DictationLanguage>(r#"{"code": ["en", {"a": 1}]}"#).unwrap(),
+            serde_json::from_value::<DictationLanguage>(serde_json::Value::Null).unwrap(),
             DictationLanguage::default()
-        );
-        assert_eq!(
-            serde_json::from_str::<DictationLanguage>(r#""de""#)
-                .unwrap()
-                .code(),
-            "de"
         );
         assert!(DictationLanguage::from_code("en-US").is_none());
         assert!(DictationLanguage::from_code("../../path").is_none());

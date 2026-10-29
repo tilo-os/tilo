@@ -561,12 +561,11 @@ mod tests {
             "de"
         );
         assert!(preferences.get().sticky_keys);
-        // A code dictation does not know reads as automatic detection, as a
-        // stored one does; the other assists stay.
-        edit_field(&mut app, ACCESSIBILITY, "dictation_language", "Deutsch").unwrap();
-        let after = app.settings::<AccessibilitySettings>().get();
-        assert_eq!(after.dictation_language, DictationLanguage::default());
-        assert!(after.sticky_keys);
+        // A code dictation does not know is refused at the field, and
+        // nothing changes.
+        let before = app.settings::<AccessibilitySettings>().get();
+        assert!(edit_field(&mut app, ACCESSIBILITY, "dictation_language", "Deutsch").is_err());
+        assert_eq!(app.settings::<AccessibilitySettings>().get(), before);
         for language in DictationLanguage::ALL {
             assert_ne!(t(&language.label_key()), language.label_key());
         }
