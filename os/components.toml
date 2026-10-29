@@ -130,6 +130,20 @@ files = [
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
 ]
 
+# The native session, which replaces the shell: offered by the greeter beside
+# it (os/usr/share/wayland-sessions/tilo-session.desktop) and started by the
+# shell's session wrapper with `--native`.
+[[component]]
+name = "tilo-session"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-session"]
+bins = ["tilo-session"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+]
+
 # The network-answers helper: search's one door to the network (exchange
 # rates), run by the compositor, which never opens a socket itself. It
 # confines itself to reading the trust bundle and resolver files and to

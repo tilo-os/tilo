@@ -67,7 +67,8 @@ for path in /usr/bin/fs /usr/libexec/tilo/tilo-launcher \
             /usr/libexec/tilo/tilo-runtime-mcp \
             /usr/libexec/tilo/tilo-install /usr/libexec/tilo/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage \
-            /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
+            /usr/libexec/tilo-session /usr/bin/tilo-session \
+            /usr/libexec/tilo-account-credential \
             /usr/libexec/tilo-flight-recorder /usr/libexec/tilo-session-report \
             /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
@@ -87,12 +88,13 @@ require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
 require_file /usr/share/wayland-sessions/shell.desktop
-# The greeter offers a session picker only when there is a real choice, so the
-# image ships exactly one session. A second entry, from Tilo or from a package
-# the base pulls in, would put a picker back in front of every login.
+require_file /usr/share/wayland-sessions/tilo-session.desktop
+# The greeter offers the shell and the native session that replaces it. Any
+# other entry, from a package the base pulls in, would be offered at every
+# login too.
 sessions="$(cd "$(at /usr/share)" && find wayland-sessions xsessions -name '*.desktop' 2>/dev/null | sort | tr '\n' ' ')"
-[ "$sessions" = "wayland-sessions/shell.desktop " ] \
-  || die "login sessions are not exactly wayland-sessions/shell.desktop: ${sessions:-none}"
+[ "$sessions" = "wayland-sessions/shell.desktop wayland-sessions/tilo-session.desktop " ] \
+  || die "login sessions are not exactly the shell and native sessions: ${sessions:-none}"
 require_file /usr/lib/tmpfiles.d/tilo.conf
 require_file /usr/share/tilo/fs-capabilities.json
 
@@ -170,8 +172,10 @@ require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graph
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
+require_line /usr/share/wayland-sessions/tilo-session.desktop "Exec=/usr/libexec/tilo-session --native --backend drm"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
-require_text /usr/libexec/tilo-session 'run_managed "$SHELL_BIN" "$@"'
+require_text /usr/libexec/tilo-session 'readonly NATIVE_SESSION_BIN=/usr/bin/tilo-session'
+require_text /usr/libexec/tilo-session 'run_managed "$compositor_bin" "$@"'
 require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
 require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
