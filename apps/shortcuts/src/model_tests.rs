@@ -549,6 +549,76 @@ fn a_workbench_of_version_one_opens_with_every_draft_program() {
     assert!(draft.replaces_saved);
 }
 
+/// A workbench of version 3: each step's head stored with its fields flat
+/// beside its variant's name. Opened now, every draft's program is what it
+/// was, each head's fields stored by its variant.
+#[test]
+fn a_workbench_of_version_three_opens_with_its_heads_stored_by_variant() {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::{Model as _, Slot, evolution, read_key};
+
+    let mut replica = Replica::<Workbench>::new();
+    replica
+        .apply(Workbench::OPEN_SHORTCUT.with(json!({
+            "id": "s1", "name": "Receipts",
+            "steps": [
+                {"id": "list", "step": "invoke",
+                 "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": "notes.folder:inbox"}},
+                {"id": "any", "step": "if",
+                 "cond": {"truthy": {"var": "x"}},
+                 "then": [{"id": "make", "step": "invoke",
+                           "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                           "resource": {"fixed": "notes.folder:inbox"}}]}
+            ],
+            "output": {"step_output": {"step": "list"}},
+            "grant": [],
+            "triggers": [{"trigger": "keyboard", "chord": "Super+Shift+R"}]
+        })))
+        .unwrap();
+    let expected = program(&replica);
+
+    let doc = replica.doc_mut();
+    let mut flattened = Vec::new();
+    for draft in evolution::collection_items(doc, &ROOT, "drafts").unwrap() {
+        for step in evolution::collection_items(doc, &draft, "steps").unwrap() {
+            let Some(head) = read_key::<Option<Head>>(doc, &step, "head").unwrap() else {
+                continue;
+            };
+            Slot::Key(&step, "head").remove(doc).unwrap();
+            let map = Slot::Key(&step, "head").object(doc, ObjType::Map).unwrap();
+            evolution::fixture(doc, &map, &head.to_json()).unwrap();
+            flattened.push(step);
+        }
+    }
+    assert!(flattened.len() >= 2, "every step's head is stored flat");
+    Slot::Key(&ROOT, evolution::VERSION_KEY)
+        .put_scalar(doc, ScalarValue::Uint(3))
+        .unwrap();
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<Workbench>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<Workbench>(&mut old).unwrap());
+    let workbench = evolution::read_checked::<Workbench>(&old).unwrap();
+    assert_eq!(
+        workbench.drafts.values().next().unwrap().program(),
+        expected
+    );
+    for step in flattened {
+        let Some((Value::Object(ObjType::Map), head)) = old.get(&step, "head").unwrap() else {
+            panic!("a head is still stored");
+        };
+        assert!(
+            old.keys(&head)
+                .all(|key| key == "$variant" || key.starts_with("$field/")),
+            "a head's fields are stored by its variant"
+        );
+    }
+}
+
 /// New drafts that would share a name are numbered, as new layers and
 /// sheets are, so the list tells them apart.
 #[test]

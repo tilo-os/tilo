@@ -488,14 +488,18 @@ pub struct StoredZone {
     pub deleted_rules: Set<String>,
 }
 
-/// Bring a firewall configuration of version 1 up to this one: a rule's
-/// match was one JSON string, and is its variant and fields now.
+/// Bring a firewall configuration of an older version up to this one.
+/// Version 1 stored a rule's match as one JSON string; it is its variant and
+/// fields now. Versions 1 and 2 stored a match's fields flat, beside its
+/// variant's name; they are stored by their variant now.
 ///
 /// # Errors
 /// Returns why a stored match does not read as one.
 pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    use tilo_resource::evolution::{collection_items, map_values, retype_json};
-    if from != 1 {
+    use tilo_resource::evolution::{
+        collection_items, map_values, retype_json, retype_variant_fields,
+    };
+    if !(1..=2).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no firewall migration from {from}"
         )));
@@ -503,6 +507,7 @@ pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError
     for (_, zone) in map_values(doc, &ui::automerge::ROOT, "zones")? {
         for rule in collection_items(doc, &zone, "rules")? {
             retype_json::<Matcher>(doc, &rule, "matcher")?;
+            retype_variant_fields::<Matcher>(doc, &rule, "matcher")?;
         }
     }
     Ok(())

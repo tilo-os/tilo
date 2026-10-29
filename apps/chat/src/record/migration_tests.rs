@@ -454,3 +454,176 @@ fn two_devices_upgrading_the_same_chat_merge_into_one_copy_of_each_kept_message(
     let ids: Vec<String> = kept(&first).into_iter().map(|(id, ..)| id).collect();
     assert_eq!(ids, ["m1", "m3", "m2"]);
 }
+
+/// The keys of the map at `path` below the root, sorted.
+fn keys_at(doc: &ui::tilo_resource::Doc, path: &[&str]) -> Vec<String> {
+    use ui::automerge::ReadDoc as _;
+    let mut obj = ROOT;
+    for key in path {
+        obj = doc.get(&obj, *key).unwrap().unwrap().1;
+    }
+    let mut keys: Vec<String> = doc.keys(&obj).collect();
+    keys.sort();
+    keys
+}
+
+/// A chat record of version 6: a triage step's update stored with its
+/// fields flat beside its variant's name.
+#[test]
+fn a_chat_record_of_version_six_opens_with_its_triage_updates_stored_by_variant() {
+    let mut replica = Replica::<Chat>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "feedback": {
+                "f1": {
+                    "k": "a",
+                    "v": {
+                        "author": "ada",
+                        "ts": 1,
+                        "triage": {
+                            "t1": {
+                                "k": "a",
+                                "v": {
+                                    "author": "mod",
+                                    "ts": 2,
+                                    "update": {"$variant": "duplicate", "report": {"$text": "r9"}},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 6);
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(evolution::read_checked::<Chat>(&old).is_err(), "unmigrated");
+    assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+    let chat = evolution::read_checked::<Chat>(&old).unwrap();
+    let report = chat.feedback.values().next().unwrap();
+    assert_eq!(
+        report.triage.values().next().unwrap().update,
+        Some(crate::feedback::TriageUpdate::Duplicate {
+            report: "r9".into(),
+        })
+    );
+    assert_eq!(
+        keys_at(
+            &old,
+            &["feedback", "f1", "v", "triage", "t1", "v", "update"]
+        ),
+        ["$field/duplicate/report", "$variant"],
+        "the update's field is stored by its variant"
+    );
+}
+
+/// A part of the chat's messages of version 2: an attachment's, an agent's
+/// state's and an operation's outcome's fields flat beside their variant's
+/// name.
+#[test]
+fn a_message_part_of_version_two_opens_with_its_variants_stored_by_variant() {
+    let mut replica = Replica::<ChatPart>::new();
+    let doc = replica.doc_mut();
+    evolution::fixture(
+        doc,
+        &ROOT,
+        &json!({
+            "messages": {
+                "m1": {
+                    "k": "a",
+                    "v": {
+                        "channel": "c_general",
+                        "author": "ada",
+                        "ts": 10,
+                        "attachment": {
+                            "$variant": "image",
+                            "name": {"$text": "a.png"},
+                            "blob": {"$text": "ff"},
+                            "w": 2,
+                            "h": 3,
+                        },
+                        "work": {
+                            "state": {
+                                "state": {
+                                    "$variant": "doing",
+                                    "did": {"$text": "rename"},
+                                    "about": {"$text": "page"},
+                                },
+                                "since": 12,
+                            },
+                            "trace": {
+                                "s1": {
+                                    "id": "s1",
+                                    "sequence": 1,
+                                    "resource": "notes.page:1",
+                                    "label": "Rename",
+                                    "outcome": {"$variant": "refused", "why": {"$text": "no such page"}},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }),
+    )
+    .unwrap();
+    at_version(doc, 2);
+    doc.commit();
+    let mut old = doc.fork();
+    assert!(
+        evolution::read_checked::<ChatPart>(&old).is_err(),
+        "unmigrated"
+    );
+    assert!(evolution::migrate::<ChatPart>(&mut old).unwrap());
+    let part = evolution::read_checked::<ChatPart>(&old).unwrap();
+    let message = part.messages.values().next().unwrap();
+    assert_eq!(
+        message.attachment,
+        Some(Attachment::Image {
+            name: "a.png".into(),
+            blob: "ff".into(),
+            w: 2,
+            h: 3,
+        })
+    );
+    let work = message.work.as_ref().unwrap();
+    assert_eq!(
+        work.state,
+        Some(Transition {
+            state: AgentWorkState::Doing {
+                did: "rename".into(),
+                about: "page".into(),
+            },
+            since: 12,
+        })
+    );
+    assert_eq!(
+        work.trace.iter().next().unwrap().outcome,
+        Some(AgentStepOutcome::Refused {
+            why: "no such page".into(),
+        })
+    );
+    assert_eq!(
+        keys_at(&old, &["messages", "m1", "v", "attachment"]),
+        [
+            "$field/image/blob",
+            "$field/image/h",
+            "$field/image/name",
+            "$field/image/w",
+            "$variant"
+        ],
+        "the attachment's fields are stored by its variant"
+    );
+    assert_eq!(
+        keys_at(
+            &old,
+            &["messages", "m1", "v", "work", "trace", "s1", "outcome"]
+        ),
+        ["$field/refused/why", "$variant"]
+    );
+}
