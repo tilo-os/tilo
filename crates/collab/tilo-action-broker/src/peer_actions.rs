@@ -131,8 +131,6 @@ pub struct PeerActionQueue {
     permits: Arc<Semaphore>,
     transitions:
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
-    /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
-    policy_time: Option<PolicyTime>,
     /// Signed actions this broker admitted while still fresh, across every
     /// attachment and reconnect, so a relay cannot deliver one twice.
     replay: Arc<std::sync::Mutex<tilo_delivery_protocol::peer_actions::ActionReplayWindow>>,
@@ -143,13 +141,11 @@ impl std::fmt::Debug for PeerActionQueue {
             .field("sender", &self.sender)
             .field("permits", &self.permits)
             .field("transitions", &self.transitions)
-            .field("policy_time", &self.policy_time.is_some())
             .field("replay", &self.replay)
             .finish()
     }
 }
 pub struct Request {
-    policy_time: Option<PolicyTime>,
     pub deadline: tokio::time::Instant,
     pub evidence: Option<CertifiedAction>,
     pub poll: Option<tilo_actions::InvocationId>,
@@ -162,13 +158,6 @@ pub struct Request {
     pub _permit: Arc<OwnedSemaphorePermit>,
 }
 
-impl Request {
-    /// Required owner time on qualified private paths; None is legacy custody.
-    pub fn policy_time(&self) -> Option<&PolicyTime> {
-        self.policy_time.as_ref()
-    }
-}
-
 impl PeerActionQueue {
     pub fn channel() -> (Self, mpsc::Receiver<Request>) {
         let (sender, receiver) = mpsc::channel(CAPACITY);
@@ -177,20 +166,10 @@ impl PeerActionQueue {
                 sender,
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
-                policy_time: None,
                 replay: Arc::default(),
             },
             receiver,
         )
-    }
-    /// Serve relay-delivered requests under the owner's registered policy
-    /// time. A broker whose runtime registered an owner clock refuses requests
-    /// without the same time origin, so an attachment served for such an owner
-    /// must carry it; each request still samples the clock at admission.
-    #[must_use]
-    pub fn with_policy_time(mut self, time: PolicyTime) -> Self {
-        self.policy_time = Some(time);
-        self
     }
     async fn request(
         &self,
@@ -215,7 +194,6 @@ impl PeerActionQueue {
             let (reply, rx) = oneshot::channel();
             self.sender
                 .try_send(Request {
-                    policy_time: self.policy_time.clone(),
                     deadline,
                     evidence,
                     poll,
