@@ -21146,6 +21146,7 @@ version = "0.1.0"
 dependencies = [
  "provider-settings-ui",
  "runtime-dylib",
+ "settings-sections",
  "tilo-accessibility-settings",
  "tilo-accounts-engine",
  "tilo-ntfs-mount",
