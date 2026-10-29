@@ -257,7 +257,7 @@ impl ShellOverlayHost {
     pub(super) fn apply_qs_volume(
         &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        volume: Option<os_actions::VolumeState>,
+        volume: Option<media::audio::default_node::VolumeState>,
     ) {
         let Some(volume) = volume else {
             return;

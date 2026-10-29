@@ -2368,7 +2368,8 @@ const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 /// landed. A typo therefore shows up as a visibly empty tray in the
 /// capture rather than as a silently wrong one.
 fn status_preset(name: &str) -> tilo_quick_settings::SystemStatus {
-    use os_actions::{LinkKind, LinkStatus, VolumeState};
+    use media::audio::default_node::VolumeState;
+    use os_actions::{LinkKind, LinkStatus};
     use tilo_power_mgmt::{BatterySnapshot, BatteryState};
     use tilo_quick_settings::SystemStatus;
 

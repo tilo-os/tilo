@@ -215,7 +215,7 @@ impl QuickSettingsState {
             bluetooth_available: false,
             wired: None,
             status: crate::status::SystemStatus {
-                volume: Some(os_actions::VolumeState {
+                volume: Some(media::audio::default_node::VolumeState {
                     level: 0.4,
                     muted: false,
                 }),

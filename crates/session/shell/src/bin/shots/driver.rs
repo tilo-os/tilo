@@ -2651,7 +2651,7 @@ impl ShellDriver {
             state: tilo_power_mgmt::BatteryState::Discharging,
         });
         qs.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
-        qs.status.volume = Some(os_actions::VolumeState {
+        qs.status.volume = Some(media::audio::default_node::VolumeState {
             level: 0.45,
             muted: false,
         });
@@ -2715,7 +2715,7 @@ impl ShellDriver {
     fn scene_qs_muted(&mut self) {
         self.with_chrome(|st| {
             Self::seed_laptop_quick_settings(st);
-            st.quick_settings.status.volume = Some(os_actions::VolumeState {
+            st.quick_settings.status.volume = Some(media::audio::default_node::VolumeState {
                 level: 0.45,
                 muted: true,
             });

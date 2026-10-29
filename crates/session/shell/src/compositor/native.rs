@@ -15425,7 +15425,7 @@ fn sync_quick_settings_from_osd(
 ) {
     match osd.kind {
         crate::shell::osd::OsdKind::Volume { muted } => {
-            quick_settings.status.volume = Some(os_actions::VolumeState {
+            quick_settings.status.volume = Some(media::audio::default_node::VolumeState {
                 level: osd.level,
                 muted,
             });

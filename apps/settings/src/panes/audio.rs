@@ -4,8 +4,8 @@
 //! Every control drives real state through an [`AudioEffect`]:
 //! - **Volume / Mute** forward to `os_actions` (`wpctl` on the default
 //!   sink), the same bindings the compositor's quick-settings panel uses.
-//! - **Input level** forwards to the default *source* via `wpctl`
-//!   (`@DEFAULT_AUDIO_SOURCE@`) through [`InputControl`].
+//! - **Input level** forwards to the default *source* through
+//!   [`InputControl`].
 //! - **Device selection** enumerates the real sinks/sources and runs
 //!   `wpctl set-default <id>` through [`DeviceControl`], remembering the
 //!   choice in the person's `audio` settings. With no `PipeWire` nothing is
@@ -23,6 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use ui::time::{Duration, Instant};
 
+use media::audio::default_node::{self, DefaultNode, VolumeState};
 use media::audio::{
     AudioEnumerator, AudioGraph, AudioStream, GraphControl, NoopGraphControl, RealEnumerator,
     RealGraphControl,
@@ -414,34 +415,16 @@ pub trait InputControl: Send + Sync {
     fn set_input_volume(&self, pct: f32) -> Result<(), String>;
 }
 
-/// Production impl: `wpctl set-volume @DEFAULT_AUDIO_SOURCE@ <fraction>`.
+/// Production impl: the default source's level.
 pub struct RealInput;
 
 impl InputControl for RealInput {
     fn set_input_volume(&self, pct: f32) -> Result<(), String> {
-        let frac = (pct.clamp(0.0, 100.0) / 100.0).clamp(0.0, 1.0);
-        run_wpctl(&[
-            "set-volume",
-            "@DEFAULT_AUDIO_SOURCE@",
-            &format!("{frac:.2}"),
-        ])
+        default_node::set_volume(DefaultNode::Source, pct)
     }
 }
 
-/// Best-effort `wpctl` invocation. Returns the daemon's error string when
-/// the binary is missing or the call fails, mirroring `os_actions`.
-fn run_wpctl(args: &[&str]) -> Result<(), String> {
-    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
-        .map_err(|error| format!("wpctl control failed: {error}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(out.stderr_diagnostic())
-    }
-}
-
-/// One enumerated audio device (a sink or a source) as reported by
-/// `wpctl status`.
+/// One enumerated audio device (a sink or a source) as the graph lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioDevice {
     /// `PipeWire` node id — the handle `wpctl set-default <id>` takes.
@@ -481,106 +464,6 @@ impl AudioDevices {
     }
 }
 
-/// Trim the leading tree/box-drawing glyphs (and whitespace) `wpctl status`
-/// indents its rows with, leaving the row's content.
-fn strip_tree_prefix(line: &str) -> &str {
-    line.trim_start_matches(|c: char| {
-        c.is_whitespace() || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
-    })
-}
-
-/// Parse `wpctl status` into the enumerated sinks + sources. Robust against
-/// the surrounding tree layout: it tracks the current `Sinks:` / `Sources:`
-/// section and reads each `[*] <id>. <name> [vol: …]` row within it, ignoring
-/// the Devices/Filters/Streams/Video sections. The `*` marks the default.
-pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Section {
-        None,
-        Sinks,
-        Sources,
-    }
-    let mut section = Section::None;
-    let mut out = AudioDevices::default();
-    for raw in stdout.lines() {
-        let content = strip_tree_prefix(raw);
-        if content.is_empty() {
-            continue;
-        }
-        // Section headers.
-        if content == "Sinks:" {
-            section = Section::Sinks;
-            continue;
-        }
-        if content == "Sources:" {
-            section = Section::Sources;
-            continue;
-        }
-        // Any other header (Devices:/Filters:/Streams:/Clients:/Settings:) or a
-        // column-0 category ("Audio"/"Video"/"PipeWire …") ends the section.
-        let indented = raw.starts_with(|c: char| {
-            c.is_whitespace()
-                || matches!(c, '│' | '├' | '└' | '─' | '┌' | '┐' | '┘' | '┬' | '┴' | '┼')
-        });
-        if content.ends_with(':') || !indented {
-            section = Section::None;
-            continue;
-        }
-        if section == Section::None {
-            continue;
-        }
-        // Device row: optional '*' (default), then "<id>. <name> [vol: …]".
-        let (default, rest) = match content.strip_prefix('*') {
-            Some(r) => (true, r.trim_start()),
-            None => (false, content),
-        };
-        let Some((id_str, name_part)) = rest.split_once('.') else {
-            continue;
-        };
-        let Ok(id) = id_str.trim().parse::<u32>() else {
-            continue;
-        };
-        // Drop the trailing "[vol: …]" annotation.
-        let mut name = name_part.trim().to_string();
-        if let Some(idx) = name.rfind('[')
-            && let Some(head) = name.get(..idx)
-        {
-            name = head.trim().to_string();
-        }
-        if name.is_empty() {
-            continue;
-        }
-        let dev = AudioDevice { id, name, default };
-        match section {
-            Section::Sinks => out.sinks.push(dev),
-            Section::Sources => out.sources.push(dev),
-            Section::None => {}
-        }
-    }
-    out
-}
-
-/// Run `wpctl args…`, answering its standard output or why it failed.
-fn wpctl(args: &[&str]) -> Result<String, String> {
-    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
-        .map_err(|error| format!("wpctl: {error}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stderr = stderr.trim();
-        return Err(if stderr.is_empty() {
-            format!("wpctl exited with {}", out.status)
-        } else {
-            format!("wpctl: {stderr}")
-        });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Enumerate the audio devices via `wpctl status`, or why they could not be.
-fn list_audio_devices() -> Result<AudioDevices, String> {
-    wpctl(&["status"]).map(|out| parse_wpctl_status(&out))
-}
-
 /// Side-effect interface for switching the default audio device. Production
 /// runs `wpctl set-default <id>`; tests inject a recorder.
 pub trait DeviceControl: Send + Sync {
@@ -595,7 +478,7 @@ pub struct RealDevice;
 
 impl DeviceControl for RealDevice {
     fn set_default(&self, id: u32) -> Result<(), String> {
-        run_wpctl(&["set-default", &id.to_string()])
+        RealGraphControl.set_default_sink(id)
     }
 }
 
@@ -607,25 +490,6 @@ impl DeviceControl for NoopDevice {
     fn set_default(&self, _id: u32) -> Result<(), String> {
         Ok(())
     }
-}
-
-/// Read the default source gain as a `0.0..=1.0` fraction, so the input
-/// slider rests at the current source level, or why it could not be read.
-fn get_source_volume() -> Result<f32, String> {
-    let stdout = wpctl(&["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
-    parse_source_volume(&stdout)
-        .ok_or_else(|| format!("wpctl answered an unreadable volume: {}", stdout.trim()))
-}
-
-/// `Volume: 0.42` (optionally ` [MUTED]`) as a `0.0..=1.0` fraction.
-fn parse_source_volume(stdout: &str) -> Option<f32> {
-    let after = stdout.lines().next()?.split(':').nth(1)?.trim();
-    after
-        .split_whitespace()
-        .next()?
-        .parse::<f32>()
-        .ok()
-        .map(|v| v.clamp(0.0, 1.0))
 }
 
 /// A static [`AudioEnumerator`] that always yields the same graph — used by the
@@ -640,7 +504,7 @@ impl AudioEnumerator for StaticEnumerator {
 
 /// Map the media crate's graph devices into the pane's local [`AudioDevices`]
 /// view (id + human label + default flag) so a hotplug re-enumeration refreshes
-/// the sink/source pickers the same way the initial `wpctl` scan seeded them.
+/// the sink/source pickers the same way the first read seeded them.
 fn devices_from_graph(graph: &AudioGraph) -> AudioDevices {
     let map = |ds: &[media::audio::AudioDevice]| {
         ds.iter()
@@ -1020,7 +884,7 @@ fn moves_graph(update: &serde_json::Value, graph: &mut std::collections::HashSet
 /// themes. That is several `wpctl`/`pw-dump`/`pactl` runs, so the window's
 /// warm-up makes the read off the UI thread.
 struct AudioRead {
-    initial: os_actions::VolumeState,
+    initial: VolumeState,
     volume_error: Option<String>,
     input_volume: f32,
     input_error: Option<String>,
@@ -1038,25 +902,26 @@ impl AudioRead {
     /// present.
     fn of_device(output: Option<&str>, input: Option<&str>) -> Self {
         crate::device_read::off_ui_thread();
-        let (initial, volume_error) = match os_actions::get_volume_state() {
+        let (initial, volume_error) = match media::audio::default_node::volume_state(
+            media::audio::default_node::DefaultNode::Sink,
+        ) {
             Ok(state) => (state, None),
             Err(error) => (
-                os_actions::VolumeState {
+                VolumeState {
                     level: 0.0,
                     muted: false,
                 },
                 Some(error),
             ),
         };
-        let (input_volume, input_error) = match get_source_volume() {
-            Ok(level) => (level, None),
+        let (input_volume, input_error) = match default_node::volume_state(DefaultNode::Source) {
+            Ok(state) => (state.level, None),
             Err(error) => (0.0, Some(error)),
         };
-        let (mut devices, mut devices_error) = match list_audio_devices() {
-            Ok(devices) => (devices, None),
-            Err(error) => (AudioDevices::default(), Some(error)),
+        let (mut graph, devices_error) = match media::audio::try_enumerate() {
+            Ok(graph) => (graph, None),
+            Err(error) => (AudioGraph::default(), Some(error)),
         };
-        let mut graph = media::audio::enumerate();
         if let Some(name) = output
             && let Some(dev) = graph.sinks.iter().find(|d| d.description == name)
         {
@@ -1077,10 +942,7 @@ impl AudioRead {
                 }
             }
         }
-        if !graph.sinks.is_empty() || !graph.sources.is_empty() {
-            devices = devices_from_graph(&graph);
-            devices_error = None;
-        }
+        let devices = devices_from_graph(&graph);
         Self {
             initial,
             volume_error,
@@ -2557,7 +2419,6 @@ mod tests {
             !text.iter().any(|line| line == &t("sound-apps-empty")),
             "no list of apps that only looks silent: {text:#?}"
         );
-        assert_eq!(parse_source_volume("Volume: 0.42 [MUTED]"), Some(0.42));
     }
 
     struct FakeSession {
@@ -2666,30 +2527,22 @@ mod tests {
         }
     }
 
-    fn sample_status() -> &'static str {
-        "\
-PipeWire 'pipewire-0' [1.0.5, ada@host, cookie:1]
- └─ Clients:
-        32. WirePlumber
-
-Audio
- ├─ Devices:
- │      45. Built-in Audio               [alsa]
- │
- ├─ Sinks:
- │  *   51. Built-in Audio Analog Stereo [vol: 0.65]
- │      52. HDMI / DisplayPort           [vol: 1.00]
- │
- ├─ Sources:
- │  *   53. Built-in Audio Analog Stereo [vol: 0.80]
- │      54. USB Microphone               [vol: 0.90]
- │
- └─ Streams:
-
-Video
- ├─ Devices:
- │      60. Integrated Camera            [v4l2]
-"
+    fn sample_devices() -> AudioDevices {
+        let device = |id, name: &str, default| AudioDevice {
+            id,
+            name: name.into(),
+            default,
+        };
+        AudioDevices {
+            sinks: vec![
+                device(51, "Built-in Audio Analog Stereo", true),
+                device(52, "HDMI / DisplayPort", false),
+            ],
+            sources: vec![
+                device(53, "Built-in Audio Analog Stereo", true),
+                device(54, "USB Microphone", false),
+            ],
+        }
     }
 
     fn model() -> AudioModel {
@@ -2862,22 +2715,11 @@ Video
         assert!(model.muted);
     }
 
-    /// wpctl parsing, default sink/source switching, profiles and the
-    /// remembered default.
+    /// Default sink/source switching, profiles and the remembered default.
     #[test]
-    fn audio_devices_parse_and_default_selection_switches() {
-        let d = parse_wpctl_status(sample_status());
-        assert_eq!(d.sinks.len(), 2, "sinks: {:?}", d.sinks);
-        assert_eq!(d.sources.len(), 2, "sources: {:?}", d.sources);
-        assert_eq!(d.sinks[0].id, 51);
-        assert_eq!(d.sinks[0].name, "Built-in Audio Analog Stereo");
-        assert!(d.sinks[0].default, "the * marks the default sink");
-        assert_eq!(d.sinks[1].name, "HDMI / DisplayPort");
-        assert!(!d.sinks[1].default);
+    fn default_selection_switches() {
+        let d = sample_devices();
         assert_eq!(d.default_sink(), Some("Built-in Audio Analog Stereo"));
-        assert!(!d.sources.iter().any(|s| s.name.contains("Camera")));
-        assert_eq!(d.sources[1].id, 54);
-        assert_eq!(parse_wpctl_status(""), AudioDevices::default());
 
         let dev = Arc::new(RecordingDevice::default());
         let mut model = model();

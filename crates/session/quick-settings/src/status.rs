@@ -2,7 +2,8 @@
 //! link, volume and capture streams, as last read. The shell reads them
 //! (`shell::status`); this is the reading and what it says.
 
-use os_actions::{LinkKind, LinkStatus, VolumeState};
+use media::audio::default_node::VolumeState;
+use os_actions::{LinkKind, LinkStatus};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
 use crate::i18n::{t, t_args};

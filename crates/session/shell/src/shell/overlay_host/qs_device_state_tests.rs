@@ -67,7 +67,7 @@ impl tilo_quick_settings::actions::QsActions for Recorder {
 
 fn bridge_at(level: f32, muted: bool) -> StatusBridge {
     let bridge = StatusBridge::new();
-    bridge.set_volume(os_actions::VolumeState { level, muted });
+    bridge.set_volume(media::audio::default_node::VolumeState { level, muted });
     bridge
 }
 
@@ -160,7 +160,7 @@ fn slider_and_media_key_share_commit_volume() {
         },
     );
 
-    let expected = os_actions::VolumeState {
+    let expected = media::audio::default_node::VolumeState {
         level: 0.55,
         muted: false,
     };
@@ -197,7 +197,7 @@ fn qs_shows_the_tray_volume() {
 
     // A level that changes under the tray — another app, `wpctl` in a
     // terminal — moves the open panel's slider with it.
-    bridge.set_volume(os_actions::VolumeState {
+    bridge.set_volume(media::audio::default_node::VolumeState {
         level: 0.35,
         muted: false,
     });
@@ -223,7 +223,7 @@ fn a_panel_volume_reading_updates_the_tray() {
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
         .with_status_bridge(bridge.clone());
-    let read = os_actions::VolumeState {
+    let read = media::audio::default_node::VolumeState {
         level: 0.6,
         muted: true,
     };
@@ -318,7 +318,7 @@ fn a_backend_change_shows_in_the_bar_and_the_panel_in_one_update() {
         },
         None,
     );
-    bridge.set_volume(os_actions::VolumeState {
+    bridge.set_volume(media::audio::default_node::VolumeState {
         level: 0.4,
         muted: true,
     });
@@ -342,7 +342,7 @@ fn the_volume_icon_mutes_and_unmutes_in_the_bar_and_the_panel() {
 
     for muted in [true, false] {
         host.apply_quick_settings_root_action(RootAction::ToggleMute, &chrome);
-        let expected = os_actions::VolumeState { level: 0.4, muted };
+        let expected = media::audio::default_node::VolumeState { level: 0.4, muted };
         assert_eq!(bridge.snapshot().volume, Some(expected));
         assert_eq!(chrome.borrow().quick_settings.status.volume, Some(expected));
         assert_eq!(bar_status(&chrome).volume.map(|v| v.muted), Some(muted));
