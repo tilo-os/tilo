@@ -102,6 +102,23 @@ fn moved(rect: Rect, by: Vec2) -> Rect {
     }
 }
 
+/// What `shown` paints, shadows and antialiasing included, in the
+/// desktop's coordinates.
+fn painted_bounds(shown: &Shown, theme: &Theme) -> Vec<Rect> {
+    let shadow = &theme.tokens.elevation.floating;
+    let reach = f64::from(shadow.blur) * 2.0 + f64::from(shadow.offset_y).abs();
+    let mut bounds = Vec::new();
+    if !shown.stack.is_zero_area() {
+        // A card slides in from up to its own width to the right.
+        let rest = shown.stack;
+        let travel = Rect::new(rest.x0, rest.y0, rest.x1 + rest.width(), rest.y1);
+        bounds.push(travel.inflate(reach, reach));
+    }
+    bounds.extend(shown.machine.iter().map(|rect| rect.inflate(reach, reach)));
+    bounds.extend(shown.call_edges.iter().map(|rect| rect.inflate(1.0, 1.0)));
+    bounds
+}
+
 /// `node` and everything in it moved by `by`.
 fn moved_node(mut node: AccessNode, by: Vec2) -> AccessNode {
     if let Some(bounds) = node.bounds.as_mut() {
@@ -280,11 +297,40 @@ impl ShellOverlayHost {
         self.mount_banners();
         self.feed_banners(theme);
         let region = self.rect;
-        let Some(app) = self.banners.app.as_mut() else {
+        let banners = &mut self.banners;
+        let Some(mut app) = banners.app.take() else {
             return;
         };
-        place(app.as_mut(), region, theme);
-        app.draw(scene, transform, text_renderer, theme, presence);
+        // One damage-tracked part bounded by what the banners say they
+        // cover, so a banner arriving repaints its card, not the desktop.
+        ui::scene_parts::part_drawn(
+            scene,
+            ui::scene_parts::PartKey::new("shell.notifications", ()),
+            |scene| {
+                place(app.as_mut(), region, theme);
+                // Drawn apart and appended whole: the app's own part spans its
+                // whole area, the desktop; this part claims only what the
+                // banners cover.
+                // The banners stand on the desktop, not on a ground of their
+                // own: they hand out no scroll copies, which would need one.
+                let mut drawn = Scene::new();
+                {
+                    let _no_copies = ui::scroll_copy::HostCopies::begin(false);
+                    app.draw(&mut drawn, transform, text_renderer, theme, presence);
+                }
+                banners.refresh_shown();
+                let bounds: Vec<Rect> = painted_bounds(&banners.shown, theme)
+                    .into_iter()
+                    .map(|rect| transform.transform_rect_bbox(rect))
+                    .collect();
+                // With nothing on screen the app paints nothing to see.
+                if !bounds.is_empty() {
+                    scene.append(&drawn, None);
+                }
+                bounds
+            },
+        );
+        self.banners.app = Some(app);
         self.banners.focus_sent = false;
         self.answer_banners();
     }
@@ -342,6 +388,27 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        // The pointer, and what ends a press on a banner (the window losing
+        // focus, Escape while a press is held). Other keys reach the banners
+        // as commands while they hold the keyboard, and never otherwise.
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::Focused(_)
+        );
+        let ends_press = self.banners.shown.captures_pointer
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.logical_key == Key::Named(NamedKey::Escape)
+            );
+        if !pointer && !ends_press {
+            return false;
+        }
         let Some(app) = self.banners.app.as_mut() else {
             return false;
         };

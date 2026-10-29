@@ -98,6 +98,11 @@ impl ResourceApp for NotificationBanners {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = "Notifications";
     const ICON: Option<&'static str> = Some("bell");
+    // Over the desktop: what is not a banner shows the desktop under it.
+    const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
+        window: ui::application::WindowRole::Sheet,
+        ..ui::application::ComponentBehaviour::DEFAULT
+    };
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
