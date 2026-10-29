@@ -1,12 +1,15 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, prints its
-//! name and starts `command` with `WAYLAND_DISPLAY` set to it; with a
-//! command, the session lasts as long as it does.
+//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none] [-- command
+//! args...]`. Listens on a fresh `wayland-N` socket, prints its name and
+//! starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
+//! session lasts as long as it does. The desktop services serve on the
+//! buses the environment names unless a flag names another (or none).
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use tilo_compositor::{DisplayConfig, OutputConfig};
+    use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Options, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,7 +31,26 @@ fn main() -> std::process::ExitCode {
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
 
-    let (services, _following) = services();
+    let bus = |flag: &str| match value(flag).map(String::as_str) {
+        None => Bus::Default,
+        Some("none") => Bus::None,
+        Some(address) => Bus::Address(address.to_owned()),
+    };
+    let buses = Buses {
+        session: bus("--session-bus"),
+        system: bus("--system-bus"),
+    };
+    let (mut services, _following) = services();
+    let _desktop = match DesktopServices::start(&buses) {
+        Ok(desktop) => {
+            services.extend(desktop.services());
+            Some(desktop)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the desktop services did not start");
+            None
+        }
+    };
     let options = Options {
         search: search_options(),
         services,

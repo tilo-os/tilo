@@ -19,6 +19,7 @@
 #![cfg(target_os = "linux")]
 
 mod chrome;
+pub mod desktop_services;
 mod panels;
 mod search;
 

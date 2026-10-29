@@ -33,12 +33,23 @@ tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 # The sound resource's specs, for the audio service the session starts.
 tilo-audio-service = { path = "../audio-service", default-features = false }
+# The desktop services the session starts on the buses.
+tilo-portal = { path = "../portal" }
+tilo-notifications-service = { path = "../notifications-service" }
+tilo-polkit-agent = { path = "../polkit-agent" }
+tilo-network-secret-agent = { path = "../network-secret-agent" }
+tilo-bluetooth-agent = { path = "../bluetooth-agent" }
+tilo-bluez = { path = "../../system/tilo-bluez" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing.workspace = true
+zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true
+url.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }

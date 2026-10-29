@@ -297,7 +297,19 @@ async fn session_id(system: &zbus::Connection) -> zbus::Result<String> {
 ///
 /// When the system bus, logind or polkit cannot be reached.
 pub async fn serve(sheets: Arc<dyn Sheets>) -> zbus::Result<AgentHandle> {
-    let connection = zbus::Connection::system().await?;
+    serve_on(zbus::Connection::system().await?, sheets).await
+}
+
+/// [`serve`] on `connection`: logind and polkit are asked there.
+///
+/// # Errors
+///
+/// When the object cannot be served, or logind or polkit cannot be reached
+/// on `connection`.
+pub async fn serve_on(
+    connection: zbus::Connection,
+    sheets: Arc<dyn Sheets>,
+) -> zbus::Result<AgentHandle> {
     connection
         .object_server()
         .at(AGENT_PATH, AuthenticationAgent::new(sheets))

@@ -17858,6 +17858,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-bluetooth-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-bluez",
+ "tilo-copy-lint",
+ "tilo-service",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
@@ -19936,6 +19954,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "os-actions",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-copy-lint",
@@ -19943,6 +19962,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-secret-vault",
+ "tilo-service",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -19977,6 +19997,26 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-notifications-service"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-copy-lint",
+ "tilo-desktop-entry",
+ "tilo-lock",
+ "tilo-resource",
+ "tilo-service",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -20322,13 +20362,46 @@ dependencies = [
 name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-service",
  "tokio",
  "tokio-util",
  "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-portal"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-accessibility-settings",
+ "tilo-actions",
+ "tilo-dialogs",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-lockdown-policy",
+ "tilo-paths",
+ "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-ui",
+ "tokio",
+ "tracing",
+ "url",
  "workspace-hack",
  "zbus",
 ]
@@ -21226,9 +21299,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-lock",
  "tilo-resource",
+ "tokio",
  "tracing",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -21239,9 +21315,12 @@ dependencies = [
  "rustix 1.1.4",
  "serde_json",
  "settings-store",
+ "tempfile",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-audio-service",
+ "tilo-bluetooth-agent",
+ "tilo-bluez",
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-desktop",
@@ -21251,17 +21330,24 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-installed-apps",
  "tilo-media",
+ "tilo-network-secret-agent",
  "tilo-notification-banners",
+ "tilo-notifications-service",
  "tilo-paths",
+ "tilo-polkit-agent",
+ "tilo-portal",
  "tilo-quick-settings",
  "tilo-service",
  "tilo-surface-host",
  "tilo-system-service",
  "tilo-ui",
+ "tokio",
  "tracing",
+ "url",
  "wayland-client",
  "wayland-protocols",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
