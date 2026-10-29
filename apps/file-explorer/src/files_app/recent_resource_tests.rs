@@ -140,8 +140,9 @@ fn recent_resource_reveals_and_forgets_without_changing_files() {
         "shared bookmarks and file operations stay unchanged"
     );
     assert_eq!(
-        app.settings::<crate::recent::RecentFiles>()
-            .get()
+        app.person::<crate::recent::RecentRecord>()
+            .unwrap()
+            .with(|recent| recent.on("test-device"))
             .items()
             .len(),
         1
@@ -183,8 +184,9 @@ fn retained_recent_actions_refuse_other_views_and_deleted_rows() {
         );
     }
     assert_eq!(
-        app.settings::<crate::recent::RecentFiles>()
-            .get()
+        app.person::<crate::recent::RecentRecord>()
+            .unwrap()
+            .with(|recent| recent.on("test-device"))
             .items()
             .len(),
         1

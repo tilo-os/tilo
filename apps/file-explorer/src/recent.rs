@@ -1,13 +1,16 @@
 //! Recent files: what you opened or changed through Files, newest first.
 //!
-//! The list is a setting of this device: it holds this device's paths only,
-//! and the Recent listing skips entries whose file has gone. The Recent place
-//! in the sidebar lists it in recency order rather than by the folder sort.
+//! The lists are a record beside the folder ([`RecentRecord`]), one per
+//! device: a device's list holds its own paths only, and the Recent listing
+//! skips entries whose file has gone. The Recent place in the sidebar lists
+//! it in recency order rather than by the folder sort.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use ui::prelude::{Model, resource, tilo_resource};
+use ui::tilo_resource::{AbsolutePath, JsonSchema};
 
 /// The pseudo-location the Recent place navigates to. It is relative and
 /// scheme-like so it can never name a real directory Files would list or
@@ -22,7 +25,7 @@ pub fn is_location(path: &Path) -> bool {
     path.as_os_str() == RECENT_LOCATION
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RecentUse {
     Opened,
@@ -84,9 +87,51 @@ impl RecentFiles {
     }
 }
 
-/// Paths name files on this device, so the list stays on it.
-impl SettingsSchema for RecentFiles {
-    const SCOPE: Scope = Scope::DeviceLocal;
+tilo_resource::json_model!(RecentFiles);
+
+/// Every device's Recent list, by device id: a record Files keeps beside its
+/// own in the workspace, synced with it. Paths name files on one device, so
+/// each device reads and writes only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct RecentRecord {
+    pub devices: BTreeMap<String, RecentFiles>,
+}
+
+#[resource(kind = "files.recent", label = "Recent files")]
+impl RecentRecord {
+    /// `path` on `device` was opened or changed at `at_ms`: it moves to the
+    /// front.
+    #[action(housekeeping)]
+    pub fn note(&mut self, device: String, path: AbsolutePath, last_use: RecentUse, at_ms: u64) {
+        self.devices
+            .entry(device)
+            .or_default()
+            .note(path.as_path(), last_use, at_ms);
+    }
+
+    /// `from` on `device` was renamed or moved to `to`: its entries follow.
+    #[action(housekeeping)]
+    pub fn moved(&mut self, device: String, from: AbsolutePath, to: AbsolutePath) {
+        if let Some(recent) = self.devices.get_mut(&device) {
+            recent.moved(from.as_path(), to.as_path());
+        }
+    }
+
+    /// Forget `path` on `device`; the file is untouched.
+    #[action]
+    pub fn forget(&mut self, device: String, path: AbsolutePath) {
+        if let Some(recent) = self.devices.get_mut(&device) {
+            recent.forget(path.as_path());
+        }
+    }
+}
+
+impl RecentRecord {
+    /// `device`'s Recent list.
+    #[must_use]
+    pub fn on(&self, device: &str) -> RecentFiles {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
