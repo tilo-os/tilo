@@ -15,11 +15,12 @@ firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
 autologin_cleanup="$repo_root/os/usr/libexec/tilo-firstboot-autologin-cleanup"
 autologin_cleanup_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
-installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
-installer_disks="$repo_root/crates/session/installer/src/disks.rs"
+installer_app="$repo_root/apps/imager/src/setup/destination/installer_app.rs"
+installer_disks="$repo_root/crates/platform/imager-backend/src/destination/disks.rs"
 block_devices_lsblk="$repo_root/crates/system/block-devices/src/lsblk.rs"
-installer_timezones="$repo_root/crates/session/installer/src/timezones.rs"
-media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
+installer_timezones="$repo_root/crates/platform/imager-backend/src/destination/timezones.rs"
+media_profile="$repo_root/crates/platform/imager-backend/src/destination/media_profile.rs"
+installer_probes="$repo_root/crates/platform/imager-backend/src/destination/probes.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
 secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
@@ -33,9 +34,9 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 if grep -Fq 'use block_devices::' "$installer_disks" \
    && grep -Fq 'bounded_command::run(' "$block_devices_lsblk" \
    && grep -Fq 'bounded_command::run(' "$installer_timezones" \
-   && grep -Fq 'bounded_command::run(' "$installer_app" \
+   && grep -Fq 'bounded_command::run(' "$installer_probes" \
    && ! grep -Eq 'Command::new\("(lsblk|timedatectl|/usr/libexec/tilo-verified-boot-install-preflight)"\)' \
-      "$installer_disks" "$block_devices_lsblk" "$installer_timezones" "$installer_app"; then
+      "$installer_disks" "$block_devices_lsblk" "$installer_timezones" "$installer_probes"; then
   ok "installer discovery and verified-boot preflight have bounded subprocesses"
 else
   bad "installer trusts an unbounded discovery or verified-boot subprocess"

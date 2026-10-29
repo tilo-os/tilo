@@ -12,7 +12,7 @@ capture-worker-applications = ["capture-worker"]
 host-media-writer = []
 native-slack-qualification = ["installation", "dep:zbus"]
 native-capture-qualification = ["installation", "flatpak-media-writer", "launcher/native-home-alias-qualification"]
-test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env"]
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "dep:tilo-oauth"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # The guided installation's capture of the old system's Discord session from
 # its Chromium Local Storage, the only reader of LevelDB. LevelDB is C++, so it
@@ -20,6 +20,18 @@ flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # (the image writer, imager's default build) must not link it. imager's
 # `installation` feature enables this one.
 installation = ["dep:leveldb-sys"]
+# The guided setup's destination side on the live installer medium
+# (`destination`): disks, the privileged install, network, power, online
+# accounts and the medium's profile. imager's `destination` feature enables it.
+destination = [
+    "dep:calendar",
+    "dep:os-actions",
+    "dep:tilo-power-mgmt",
+    "dep:console-control",
+    "dep:tilo-install-helpers",
+    "dep:tilo-lock",
+    "tilo-dav/oauth",
+]
 
 [dependencies]
 ed25519-dalek.workspace = true
@@ -67,6 +79,14 @@ toml.workspace = true
 uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../../session/install-profile-model" }
+# The destination side (`destination`).
+calendar = { path = "../../../apps/calendar", default-features = false, features = ["live"], optional = true }
+os-actions = { path = "../../system/os-actions", optional = true }
+tilo-power-mgmt = { path = "../../system/power", default-features = false, optional = true }
+console-control = { path = "../../session/console-control", optional = true }
+tilo-lock = { path = "../tilo-lock", optional = true }
+# The live installer's account fixtures for the imager's tests (`test-support`).
+tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"], optional = true }
 workspace-hack = { version = "0.1" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 

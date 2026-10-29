@@ -110,7 +110,7 @@
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"crates/session/installer/src/installer_app.rs" = 7500
+"apps/imager/src/setup/destination/installer_app.rs" = 7500
 "crates/session/network-actor/src/lib.rs" = 6500
 "crates/session/quick-settings/src/root.rs" = 4000
 "crates/session/shell/examples/redraw_bench.rs" = 7000

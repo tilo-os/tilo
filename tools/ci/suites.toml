@@ -1113,15 +1113,12 @@ inputs = [
   "os/tests/test_firstboot_transaction.py",
   "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_prepared_first_use_binding.py",
-  "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
-  "crates/session/installer/src/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
   "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
 readers = [
   "crates/system/install-helpers/tests/native_python.rs",
-  "crates/system/install-helpers/src/bin/test_home_seeds.rs",
   "crates/system/install-helpers/tests/handoff_copy.rs",
   "crates/system/install-helpers/tests/dev_ssh.rs",
   "crates/system/install-helpers/tests/bootc_copy_cache.rs",
@@ -1354,25 +1351,14 @@ inputs = ["os/legacy-guest-snapshot.env"]
 readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
-package = "installer"
-inputs = [
-  "crates/system/block-devices/tests/fixtures/installer.json",
-  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
-]
-readers = [
-  "crates/session/installer/src/disks.rs",
-  "crates/session/installer/src/online_accounts/browser.rs",
-]
-
-[[cargo]]
 package = "imager"
 inputs = [
   "crates/system/block-devices/tests/fixtures/imager.json",
+  "os/usr/libexec/tilo-guided-partition",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
   "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
-  "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
@@ -1389,8 +1375,12 @@ inputs = [
   "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
+  "crates/system/block-devices/tests/fixtures/installer.json",
+  "apps/browser/tilo-app.toml",
 ]
 readers = [
+  "crates/platform/imager-backend/src/destination/disks.rs",
+  "crates/platform/imager-backend/src/destination/online_accounts/browser.rs",
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
   "crates/platform/imager-backend/src/setup/prepared_tpm/native.rs",

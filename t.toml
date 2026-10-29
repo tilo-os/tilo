@@ -2885,7 +2885,7 @@ binary_lib account-custody account_custody account-custody-lib
 binary_lib runtime-bundle runtime_bundle runtime-bundle-lib
 binary_target tilo-install-helpers native_python tilo-install-helpers-native-python
 binary_target env-tools it env-tools-it
-binary_target installer accounts_native installer-accounts-native
+binary_target tilo-install-helpers accounts_native installer-accounts-native
 """
 outputs = [
   "/target/vm/tilo-sandbox-job",
@@ -2896,7 +2896,6 @@ outputs = [
   "/target/vm/env-tools-it",
   "/target/vm/installer-accounts-native",
   "/target/debug/tilo-firstboot-home-seeds",
-  "/target/debug/install-test-home-seeds",
   "/target/debug/install-test-firstboot-files",
   "/target/debug/staging-handoff-native-extractor",
 ]
