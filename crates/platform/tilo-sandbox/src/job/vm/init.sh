@@ -189,7 +189,11 @@ done
 (cd "$T_CWD" && t_command) </dev/null >"$port" 2>&1 &
 wait $!
 code=$?
-if [ "$code" -gt 128 ] && dmesg | grep -q 'Out of memory'; then
+# The OOM killer may end any process under the command (rustc under cargo, which then fails with
+# its own code), and its lines never reach the console (loglevel=1): the host reads them here,
+# `Out of memory: Killed process ...` as the kernel wrote them.
+if [ "$code" -ne 0 ] && dmesg | grep -i 'out of memory: killed process' >$T/oom; then
+	cat $T/oom >"$port"
 	echo "t-vm: the command ran out of the VM's memory ($T_MEMORY_MIB MiB)" >"$port"
 fi
 
