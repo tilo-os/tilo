@@ -886,23 +886,6 @@ pub fn open_continuity_file_reference(
     Some(path)
 }
 
-/// A human label for a continuation file card. The record id is deliberately
-/// never user-facing: it is a transport identity, not a filename.
-pub fn continuity_file_reference_label(
-    reference: &crate::shell::continuation::LaunchIntent,
-) -> String {
-    resolve_continuity_file_reference_in_roots(
-        reference,
-        &file_explorer::model::workspace_record_authority_roots(),
-    )
-    .and_then(|path| {
-        path.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-    })
-    .filter(|name| !name.trim().is_empty())
-    .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
-}
-
 /// Production activation for a synchronized file-reference tab.  Resolution
 /// stays record-id based, then the ordinary document launcher grants the
 /// projected path and chooses the registered app exactly as for a local open.
