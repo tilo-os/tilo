@@ -13,7 +13,7 @@ mod canvas;
 mod desktop;
 mod widget;
 
-pub use desktop::{DesktopHost, StripPolicy, desktop};
+pub use desktop::{DesktopHost, StripPolicy, desktop, desktop_with};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
@@ -316,7 +316,7 @@ pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
     }
 }
 
-fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
+pub(crate) fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
     let mut state = ModifiersState::empty();
     state.set(ModifiersState::SHIFT, modifiers.shift);
     state.set(ModifiersState::CONTROL, modifiers.ctrl);
@@ -326,7 +326,7 @@ fn modifiers_state(modifiers: KeyModifiers) -> ModifiersState {
 }
 
 /// The toolkit's key event for a key the compositor's keymap resolved.
-fn key_event(key: &HostKey) -> WindowEvent {
+pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
     let text = key
         .pressed
         .then_some(key.text)

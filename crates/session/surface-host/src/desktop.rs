@@ -13,6 +13,7 @@ use std::rc::Rc;
 use smithay::utils::{Logical, Point, Rectangle};
 use tilo_compositor::{Arrangement, HostLayer, SurfaceHost, WindowInfo, WindowPolicy};
 use tilo_desktop_policy::{DesktopPolicy, Window};
+use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 
 use crate::{Placement, WidgetHost};
 
@@ -45,20 +46,6 @@ impl Desk {
             self.policy.set_viewport_width(f64::from(placement.size.0));
             self.host.set_placement(placement);
         }
-        let displays: Vec<ui::kurbo::Rect> = outputs
-            .iter()
-            .map(|output| {
-                let x = f64::from(output.loc.x - bounds.loc.x);
-                let y = f64::from(output.loc.y - bounds.loc.y);
-                ui::kurbo::Rect::new(
-                    x,
-                    y,
-                    x + f64::from(output.size.w),
-                    y + f64::from(output.size.h),
-                )
-            })
-            .collect();
-        self.policy.set_displays(&displays);
     }
 
     /// Where `window`'s content is in the logical layout, as last laid out.
@@ -83,7 +70,8 @@ impl Desk {
     }
 }
 
-/// The desktop drawn under every window.
+/// The desktop drawn under every window; a clone is the same desktop.
+#[derive(Clone)]
 pub struct DesktopHost {
     desk: Rc<RefCell<Desk>>,
 }
@@ -101,7 +89,20 @@ pub struct StripPolicy {
 /// them. The compositor hosts the one and runs with the other.
 #[must_use]
 pub fn desktop(salt: u16, scale: f64) -> (DesktopHost, StripPolicy) {
+    desktop_with(salt, scale, |surface, _| Box::new(surface))
+}
+
+/// As [`desktop`], with the surface drawn inside the tree `root` makes of
+/// it (the desk's backdrop and launchpad around the strips), given the
+/// policy's host side of the surface.
+#[must_use]
+pub fn desktop_with(
+    salt: u16,
+    scale: f64,
+    root: impl FnOnce(DesktopSurface, &DesktopHandle) -> Box<dyn ui::Widget>,
+) -> (DesktopHost, StripPolicy) {
     let (policy, surface) = DesktopPolicy::new(salt);
+    let root = root(surface, policy.handle());
     let placement = Placement {
         origin: (0, 0),
         size: (1, 1),
@@ -109,7 +110,7 @@ pub fn desktop(salt: u16, scale: f64) -> (DesktopHost, StripPolicy) {
     };
     let desk = Rc::new(RefCell::new(Desk {
         policy,
-        host: WidgetHost::new(Box::new(surface), placement, true),
+        host: WidgetHost::new(root, placement, true),
     }));
     (
         DesktopHost {

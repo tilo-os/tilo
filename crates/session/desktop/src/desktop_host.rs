@@ -16,7 +16,7 @@
 //!
 //! [`DesktopSurface`]: tilo_desktop_surface::DesktopSurface
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -237,7 +237,7 @@ pub struct DeskLayer {
     area: Stack,
     handle: DesktopHandle,
     empty: Rc<Cell<bool>>,
-    asks: Vec<DesktopAsk>,
+    asks: Rc<RefCell<Vec<DesktopAsk>>>,
     rect: Rect,
 }
 
@@ -269,7 +269,7 @@ impl DeskLayer {
             area,
             handle,
             empty,
-            asks: Vec::new(),
+            asks: Rc::default(),
             rect: Rect::ZERO,
         }
     }
@@ -292,7 +292,15 @@ impl DeskLayer {
 
     /// What the person asked of the host since the last call.
     pub fn take_asks(&mut self) -> Vec<DesktopAsk> {
-        std::mem::take(&mut self.asks)
+        std::mem::take(&mut *self.asks.borrow_mut())
+    }
+
+    /// Put the desk's asks in `asks`, shared with a host that reads them
+    /// outside the widget tree the desk is drawn in.
+    #[must_use]
+    pub fn with_asks(mut self, asks: Rc<RefCell<Vec<DesktopAsk>>>) -> Self {
+        self.asks = asks;
+        self
     }
 }
 
@@ -312,7 +320,7 @@ impl Widget for DeskLayer {
             self.handle.open_applications();
         }
         if let Some(action) = LaunchpadAction::take(edits, path) {
-            self.asks.push(DesktopAsk::Launchpad(action));
+            self.asks.borrow_mut().push(DesktopAsk::Launchpad(action));
         }
     }
 
@@ -490,7 +498,12 @@ pub struct DesktopChrome {
     /// The area under the bar, as last laid out.
     content: Rect,
     rect: Rect,
-    asks: Vec<DesktopAsk>,
+    asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// What a host's bar source raised, carried out on the next update.
+    intents: Rc<RefCell<Vec<ChromeIntent>>>,
+    /// Whether the chrome takes the keyboard, as of its last update or
+    /// event.
+    keyboard: Rc<Cell<bool>>,
 }
 
 impl DesktopChrome {
@@ -525,8 +538,17 @@ impl DesktopChrome {
             cursor: None,
             content: Rect::ZERO,
             rect: Rect::ZERO,
-            asks: Vec::new(),
+            asks: Rc::default(),
+            intents: Rc::default(),
+            keyboard: Rc::default(),
         }
+    }
+
+    /// Set while keys should come to the chrome rather than the window in
+    /// front ([`Self::wants_keyboard`]), for a host routing keys.
+    #[must_use]
+    pub fn keyboard(&self) -> Rc<Cell<bool>> {
+        Rc::clone(&self.keyboard)
     }
 
     /// Use `shortcuts` for the desktop's chords (the person's bindings).
@@ -578,7 +600,23 @@ impl DesktopChrome {
 
     /// What the person asked of the host since the last call.
     pub fn take_asks(&mut self) -> Vec<DesktopAsk> {
-        std::mem::take(&mut self.asks)
+        std::mem::take(&mut *self.asks.borrow_mut())
+    }
+
+    /// Put the chrome's asks in `asks`, shared with a host that reads them
+    /// outside the widget tree the chrome is drawn in.
+    #[must_use]
+    pub fn with_asks(mut self, asks: Rc<RefCell<Vec<DesktopAsk>>>) -> Self {
+        self.asks = asks;
+        self
+    }
+
+    /// Take the intents a host's bar source raises from `intents`,
+    /// shared with that source.
+    #[must_use]
+    pub fn with_intents(mut self, intents: Rc<RefCell<Vec<ChromeIntent>>>) -> Self {
+        self.intents = intents;
+        self
     }
 
     /// Close the menus the chrome opened: the host opens a popover of its
@@ -649,11 +687,19 @@ impl DesktopChrome {
             ChromeIntent::ShowStrips => self
                 .navigator
                 .open_for_choosing(&self.navigator_frame, ui::time::now()),
-            ChromeIntent::OpenAvatarAsk => self.handle.set_personal_ask_open(true),
-            ChromeIntent::CollapseAvatarAsk => self.handle.set_personal_ask_open(false),
-            ChromeIntent::AnswerAvatarAsk => self.handle.answer_personal_ask(),
-            ChromeIntent::PutOffAvatarAsk => self.handle.put_off_personal_ask(),
-            other => self.asks.push(DesktopAsk::Intent(other)),
+            ChromeIntent::OpenAvatarAsk => {
+                self.handle.set_personal_ask_open(true);
+            }
+            ChromeIntent::CollapseAvatarAsk => {
+                self.handle.set_personal_ask_open(false);
+            }
+            ChromeIntent::AnswerAvatarAsk => {
+                self.handle.answer_personal_ask();
+            }
+            ChromeIntent::PutOffAvatarAsk => {
+                self.handle.put_off_personal_ask();
+            }
+            other => self.asks.borrow_mut().push(DesktopAsk::Intent(other)),
         }
     }
 
@@ -722,10 +768,14 @@ impl DesktopChrome {
                         workspace: workspace.to_owned(),
                     });
                 } else if let Some(id) = key.strip_prefix(HOST_KEY) {
-                    self.asks.push(DesktopAsk::HostAction(id.to_owned()));
+                    self.asks
+                        .borrow_mut()
+                        .push(DesktopAsk::HostAction(id.to_owned()));
                 }
             }
-            WorkspaceMenuChoice::Action(id) => self.asks.push(DesktopAsk::HostAction(id)),
+            WorkspaceMenuChoice::Action(id) => {
+                self.asks.borrow_mut().push(DesktopAsk::HostAction(id))
+            }
             WorkspaceMenuChoice::Overview => {
                 if !self.overview.is_open() {
                     self.toggle_overview();
@@ -1153,7 +1203,7 @@ impl DesktopChrome {
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
-            ShortcutAction::ReportProblem => self.asks.push(DesktopAsk::ReportProblem),
+            ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
             other => {
                 if let Some(index) = other.focus_strip_index() {
                     self.go_to_strip(|_| Some(index));
@@ -1185,7 +1235,11 @@ impl DesktopChrome {
 
 impl Widget for DesktopChrome {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
+        let intents = std::mem::take(&mut *self.intents.borrow_mut());
+        let mut changed = !intents.is_empty();
+        for intent in intents {
+            self.apply_intent(intent);
+        }
         if let Some(pick) = self.overview.take_pick() {
             self.apply_pick(&pick);
             changed = true;
@@ -1208,7 +1262,8 @@ impl Widget for DesktopChrome {
         }
         changed |= self.bar.update(state, path);
         self.observe_navigation();
-        changed | !self.asks.is_empty()
+        self.keyboard.set(self.wants_keyboard());
+        changed | !self.asks.borrow().is_empty()
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ui::automerge::ObjId) {
@@ -1339,6 +1394,7 @@ impl Widget for DesktopChrome {
             self.bar
                 .handle_event(event, &mut ctx.reborrow(ctx.path, bar));
         }
+        self.keyboard.set(self.wants_keyboard());
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

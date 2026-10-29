@@ -10,8 +10,15 @@ use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+use tilo_compositor::HostKey;
+use winit::event::Modifiers;
+use winit::keyboard::ModifiersState;
+
 use crate::canvas::Canvas;
-use crate::{Placement, RASTER_THREADS, buffer_for, mouse_input};
+use crate::{Placement, RASTER_THREADS, buffer_for, key_event, modifiers_state, mouse_input};
 
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetHost {
@@ -21,6 +28,13 @@ pub struct WidgetHost {
     buffer: MemoryRenderBuffer,
     scene: vello::Scene,
     below: bool,
+    /// Set by the tree while keys should come to it rather than to the
+    /// focused window (an open menu or field).
+    keyboard: Option<Rc<Cell<bool>>>,
+    /// The modifiers the tree last heard of.
+    modifiers: ModifiersState,
+    /// The tree covers the outputs' bounding box, following them.
+    covers: bool,
     /// A frame is owed: input arrived or the placement changed.
     owed: bool,
 }
@@ -52,8 +66,27 @@ impl WidgetHost {
             buffer: buffer_for(size),
             scene: vello::Scene::new(),
             below,
+            keyboard: None,
+            modifiers: ModifiersState::empty(),
+            covers: false,
             owed: true,
         }
+    }
+
+    /// Cover every output, following them as they come and go: chrome
+    /// over the whole desktop.
+    #[must_use]
+    pub const fn covering_outputs(mut self) -> Self {
+        self.covers = true;
+        self
+    }
+
+    /// Take keys from the focused window while `wants` holds: the tree
+    /// sets it while a menu or field of its own is open.
+    #[must_use]
+    pub fn with_keyboard(mut self, wants: Rc<Cell<bool>>) -> Self {
+        self.keyboard = Some(wants);
+        self
     }
 
     /// The toolkit's host of the widget tree, to drive it directly.
@@ -170,6 +203,43 @@ impl SurfaceHost for WidgetHost {
             )),
             phase: TouchPhase::Moved,
         });
+    }
+
+    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        if !self.covers {
+            return;
+        }
+        let Some((x0, y0, x1, y1)) = outputs
+            .iter()
+            .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+        else {
+            return;
+        };
+        let (Ok(width), Ok(height)) = (
+            u32::try_from(x1.saturating_sub(x0)),
+            u32::try_from(y1.saturating_sub(y0)),
+        ) else {
+            return;
+        };
+        self.set_placement(Placement {
+            origin: (x0, y0),
+            size: (width.max(1), height.max(1)),
+            scale: self.placement.scale,
+        });
+    }
+
+    fn wants_keyboard(&self) -> bool {
+        self.keyboard.as_ref().is_some_and(|wants| wants.get())
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        let modifiers = modifiers_state(key.modifiers);
+        if modifiers != self.modifiers {
+            self.modifiers = modifiers;
+            self.input(&WindowEvent::ModifiersChanged(Modifiers::from(modifiers)));
+        }
+        self.input(&key_event(key));
     }
 
     fn prepare_frame(&mut self) {
