@@ -19922,6 +19922,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "os-actions",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-copy-lint",
@@ -19929,6 +19930,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-secret-vault",
+ "tilo-service",
  "tilo-test-env",
  "tokio",
  "tokio-util",
