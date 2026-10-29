@@ -50,9 +50,9 @@ struct Watch {
 
 impl Watch {
     fn start(fd: OwnedFd, wake: ui::wake::WakeHandle) -> Option<Self> {
-        let woke = Arc::new(AtomicBool::new(false));
+        let signalled = Arc::new(AtomicBool::new(false));
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
-        let flag = Arc::clone(&woke);
+        let flag = Arc::clone(&signalled);
         std::thread::Builder::new()
             .name("tilolang-patches".into())
             .spawn(move || {
@@ -83,7 +83,10 @@ impl Watch {
                 }
             })
             .ok()?;
-        Some(Self { woke, resume })
+        Some(Self {
+            woke: signalled,
+            resume,
+        })
     }
 
     /// The window took what arrived: wait for more.
