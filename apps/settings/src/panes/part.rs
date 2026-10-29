@@ -488,10 +488,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::Updates],
-        build: |app, _| model_pane(updates::area(app).map(updates::UpdatesArea::model)),
-    },
-    crate::area::PaneEntry {
         categories: &[Category::About],
         build: |app, _| model_pane(about::area(app).map(about::AboutArea::model)),
     },
@@ -599,8 +595,8 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("time.zone" => time_date::values::zone),
     crate::setting::setting_value!("storage.cache" => storage::values::cache),
     crate::setting::setting_value!("storage.clean" => storage::values::clean),
-    crate::setting::setting_switch!("updates.automatic" => updates::values::automatic, updates::values::automatic_switch),
-    crate::setting::setting_switch!("updates.metered" => updates::values::metered, updates::values::metered_switch),
+    crate::setting::setting_view_switch!("updates.automatic" => updates::values::automatic, updates::values::automatic_switch),
+    crate::setting::setting_view_switch!("updates.metered" => updates::values::metered, updates::values::metered_switch),
 ];
 
 pub const PART: crate::area::Part = crate::area::Part {

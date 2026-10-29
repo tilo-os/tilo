@@ -1350,6 +1350,30 @@ impl UpdatePrefs {
         }
         Ok(())
     }
+
+    /// Keep whether the machine's update timer runs, as the machine said
+    /// after a change: the timer is the setting, this what it last said.
+    #[action(id = "record-automatic-updates", housekeeping)]
+    pub fn record_automatic(
+        &mut self,
+        #[param("Whether the update timer runs")] on: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.auto = on;
+        Ok(())
+    }
+
+    /// Keep when updates were last checked for successfully.
+    #[action(id = "record-update-check", housekeeping)]
+    pub fn record_check(
+        &mut self,
+        #[param("When the check finished, as a person reads it")] at: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if at.trim().is_empty() {
+            return Err(ui::tilo_resource::Refusal::new("a time is needed"));
+        }
+        self.last_checked = at;
+        Ok(())
+    }
 }
 
 impl Default for UpdatePrefs {

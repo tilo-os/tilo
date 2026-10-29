@@ -6,9 +6,9 @@ use std::sync::Arc;
 use ui::widget::{ProgressBar, Row};
 
 use super::{
-    El, Landed, Landing, SettingsSection, UpdatesEffect, UpdatesModel, WindowsReadiness,
-    WindowsSupportAction, block, note, row, rows, section, t, t_args, thing_row,
-    windows_card_title, windows_explanation,
+    El, Landed, Landing, Settings, SettingsSection, UpdatesEffect, UpdatesModel, ViewCx,
+    WindowsReadiness, WindowsSupportAction, block, button, note, row, rows, section, t, t_args,
+    thing_row, windows_card_title, windows_explanation,
 };
 
 use ui::tilo_resource::Effect as _;
@@ -115,7 +115,7 @@ impl UpdatesModel {
             .collect()
     }
 
-    pub(super) fn windows_card(&self) -> SettingsSection {
+    pub(super) fn windows_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let mut buttons = Row::new()
             .no_wrap()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -124,8 +124,7 @@ impl UpdatesModel {
         let any = !offered.is_empty();
         for (label, control_id, action) in offered {
             let primary = action == WindowsSupportAction::Install;
-            let button = self
-                .button(control_id, &label, Self::windows_effect(action))
+            let button = button(cx, control_id, &label, Self::windows_effect(action))
                 .control_size(ui::widget::ControlSize::Small);
             buttons = buttons.push(Box::new(if primary {
                 button.role(ui::widget::ButtonRole::Primary)

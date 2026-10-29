@@ -1,5 +1,4 @@
 use super::*;
-use crate::panes::model::PaneModel;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -141,8 +140,6 @@ fn every_helper_state_has_its_status_and_controls() {
         let buttons = pane.codec_buttons();
         let offered: Vec<&str> = buttons.iter().map(|b| b.0.as_str()).collect();
         assert_eq!(offered, controls, "{json}");
-        // The card builds for every state.
-        let _ = pane.codecs_card();
     }
 }
 
@@ -912,31 +909,37 @@ impl UpdateControl for FakeControl {
 /// machine and is never made from a failed read.
 #[test]
 fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
-    let _cfg = crate::prefs::test_env::ConfigGuard::new();
-    let status = UpdateStatus {
-        current_version: "Tilo 2026.06".into(),
-        staged_version: None,
-        staged_error: Some("error: This command requires root privileges".into()),
-    };
-    let requeried = status.clone();
-    let pane = UpdatesModel::with_parts_and_control(
-        test_cx(),
-        status,
-        UpdatePrefs::default(),
-        Arc::new(move || requeried.clone()),
-        Arc::new(|| "CHECKED-NOW".to_string()),
-        Arc::new(RecordingRebooter::default()),
-        Arc::new(FakeControl::new(Some(true), None)),
-    );
-    let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        let status = UpdateStatus {
+            current_version: "Tilo 2026.06".into(),
+            staged_version: None,
+            staged_error: Some("error: This command requires root privileges".into()),
+        };
+        let requeried = status.clone();
+        *crate::panes::updates::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut() = UpdatesModel::with_parts_and_control(
+            settings.host().clone(),
+            status,
+            UpdatePrefs::default(),
+            Arc::new(move || requeried.clone()),
+            Arc::new(|| "CHECKED-NOW".to_string()),
+            Arc::new(RecordingRebooter::default()),
+            Arc::new(FakeControl::new(Some(true), None)),
+        );
+    })
+    .expect("the Settings window is mounted");
+    crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
+    app.settle();
+    let frame = app.harness().inspection_json().unwrap();
     assert!(
-        text.iter()
-            .any(|line| line
-                == "Can't check for updates: error: This command requires root privileges"),
-        "{text:#?}"
+        frame.contains("Can't check for updates: error: This command requires root privileges"),
+        "{frame}"
     );
     for claim in [t("upd-up-to-date"), t("upd-os-current")] {
-        assert!(!text.contains(&claim), "claims {claim:?}: {text:#?}");
+        assert!(!frame.contains(&claim), "claims {claim:?}: {frame}");
     }
 }
 
@@ -1071,6 +1074,48 @@ fn automatic_update_switch_follows_the_timer() {
         assert!(UnavailableControl.set_timer(true).is_err());
         assert!(UnavailableControl.roll_back().is_err());
     }
+}
+
+/// What the machine reported after a check or a change of the timer is
+/// kept in the update preferences, through the section's verbs.
+#[test]
+fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
+    use crate::effects::SettingsEffect;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
+
+    let mut app = TestApp::<SettingsShell>::new().unwrap();
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+        let status = UpdateStatus {
+            current_version: "Tilo 2026.06".into(),
+            staged_version: None,
+            staged_error: None,
+        };
+        let requeried = status.clone();
+        *crate::panes::updates::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut() = UpdatesModel::with_parts_and_control(
+            settings.host().clone(),
+            status,
+            UpdatePrefs::default(),
+            Arc::new(move || requeried.clone()),
+            Arc::new(|| "CHECKED-NOW".to_string()),
+            Arc::new(RecordingRebooter::default()),
+            Arc::new(FakeControl::new(Some(true), None)),
+        );
+    })
+    .expect("the Settings window is mounted");
+    app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
+        .expect("the check finishes");
+    app.effect(&SettingsEffect::from(UpdatesEffect::SetAutomaticUpdates {
+        on: false,
+    }))
+    .expect("the timer turns off");
+    app.settle();
+    let kept = app.settings::<UpdatePrefs>().get();
+    assert_eq!(kept.last_checked, "CHECKED-NOW");
+    assert!(!kept.auto, "the timer the machine reports is kept");
 }
 
 /// The effects reach the model the app keeps; a capture's reaches no
