@@ -31,17 +31,6 @@ fn the_host_keeps_its_rooms_beside_the_native_owners_state() {
 }
 
 #[test]
-fn a_device_hosted_before_only_once_its_host_wrote_something() {
-    let dir = tempfile::tempdir().expect("temp");
-    let root = dir.path().join(HOST_STATE_DIR);
-    assert!(!hosted_before(&root), "no host state at all");
-    std::fs::create_dir_all(&root).expect("dir");
-    assert!(!hosted_before(&root), "an empty host state hosts nothing");
-    std::fs::write(root.join("rooms"), b"x").expect("write");
-    assert!(hosted_before(&root));
-}
-
-#[test]
 fn a_placement_pass_takes_each_waiting_workspace_once() {
     let plans = RoomId::new();
     let notes = RoomId::new();
@@ -69,10 +58,10 @@ fn a_placement_pass_takes_each_waiting_workspace_once() {
 }
 
 #[test]
-fn a_device_that_hosts_nothing_opens_no_host() {
+fn a_network_without_a_host_of_its_own_opens_none() {
     let tree = WorkspaceTree::default().shared();
     let (network, _commands) = shell_network_for_test(tree, 1);
-    network.open_hosted_rooms();
+    network.open_local_host();
     assert!(network.embedded_host.host.is_none());
     assert!(network.local_host().is_err());
 }

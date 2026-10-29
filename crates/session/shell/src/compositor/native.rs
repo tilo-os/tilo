@@ -8115,7 +8115,7 @@ fn start_session_peer_sync(
             let _ = net.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             net.join_at_boot();
-            net.open_hosted_rooms();
+            net.open_local_host();
             net.follow_community();
             Ok(net)
         }),

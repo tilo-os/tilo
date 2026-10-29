@@ -1,6 +1,6 @@
 [package]
 name = "tilo-network-actor"
-description = "The desktop's peer-to-peer transport: the iroh actor that keeps the gossip topics, room host sessions, direct links and a person's private device lane."
+description = "The desktop's peer-to-peer transport: the iroh actor that keeps room host sessions, sessions with the person's own devices, direct links and a person's private device lane."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 
 [features]
 # The hooks the shell's tests reach the actor through: test membership
-# epochs, gossip retention, captured governance warnings, and no content-peer
+# epochs, captured governance warnings, and no content-peer
 # registration with a filesystem daemon that is not running.
 test-support = ["dep:tracing-subscriber"]
 
@@ -21,7 +21,6 @@ futures-util = { workspace = true, features = ["io"] }
 getrandom.workspace = true
 hex.workspace = true
 iroh.workspace = true
-iroh-gossip.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["alloc"] }

@@ -9809,7 +9809,7 @@ mod tests {
                 .try_send(tilo_network_actor::NetEvent::PeerLeft {
                     ws: 78,
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
+                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
                     membership_epoch: Some(old_epoch),
                 })
                 .unwrap();
@@ -9826,7 +9826,7 @@ mod tests {
                 .try_send(tilo_network_actor::NetEvent::PeerLeft {
                     ws: 77,
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
+                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
                     membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(6)),
                 })
                 .unwrap();
@@ -9843,7 +9843,7 @@ mod tests {
                 .try_send(tilo_network_actor::NetEvent::PeerLeft {
                     ws: 77,
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
+                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
                     membership_epoch: Some(old_epoch),
                 })
                 .unwrap();
@@ -10764,7 +10764,7 @@ mod tests {
                 membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
                 session_handle: 1,
                 route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
-                cause: crate::shell::network::PeerDepartureCause::LivenessTimedOut,
+                cause: crate::shell::network::PeerDepartureCause::HostSessionClosed,
                 user_public_key: Some([3; 32]),
                 participant_name: None,
                 observed_at: std::time::SystemTime::now(),

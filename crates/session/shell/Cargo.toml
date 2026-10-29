@@ -327,8 +327,8 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 tilo-color-pipeline = { path = "../color-pipeline" }
 # The GPU passes that put a frame on an output.
 tilo-output-passes = { path = "../output-passes" }
-# The peer-to-peer transport: gossip topics, room host sessions, direct
-# links and the person's private device lane.
+# The peer-to-peer transport: room host sessions, sessions with the
+# person's own devices, direct links and the private device lane.
 tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.

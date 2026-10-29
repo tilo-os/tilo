@@ -2,8 +2,8 @@
 //!
 //! Host A opens a share, host B subscribes as a viewer. Video frames flow
 //! through the dedicated substream, not `NeighbourMsg::SurfaceFrame`
-//! gossip — under paint-side stall the sender's bounded queue drops old
-//! frames and increments the drop counter, while gossip still carries
+//! on the workspace — under paint-side stall the sender's bounded queue drops old
+//! frames and increments the drop counter, while the workspace still carries
 //! the `SurfaceStreamStart`/`SurfaceStreamEnd` announcements.
 //!
 //! In-process, no real Iroh: substream framing + backpressure is
@@ -58,8 +58,8 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
 }
 
 #[test]
-fn substreams_carry_frames_while_gossip_carries_announcements_until_the_viewer_drops() {
-    // Phase `substream_carries_frames_gossip_carries_announcements`.
+fn substreams_carry_frames_while_the_workspace_carries_announcements_until_the_viewer_drops() {
+    // Phase `substream_carries_frames_workspace_carries_announcements`.
     // Frames drain in order with monotonic sequence numbers.
     {
         const W: u32 = 128;

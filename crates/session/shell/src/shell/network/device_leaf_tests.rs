@@ -17,7 +17,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
+use super::{HostIdentity, Reach, ShellNetwork};
 use crate::shell::channel_encryption::{
     ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, GovernanceTransport,
     InboundChannelGovernance,
@@ -227,11 +227,6 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
         DeviceCapabilities::member(),
     );
     assert!(member.join_default_workspace());
-    let owner_addr = until("the owner's device to listen", || owner.dial_addr());
-    member
-        .cmd_tx
-        .try_send(NetCmd::Connect { addr: owner_addr })
-        .unwrap();
     let invitation = owner.issue_invite(workspace, 3600).unwrap();
     let PeerSyncResponse::EnrollmentPending { id } =
         member.accept_peer_invitation(&invitation).unwrap()

@@ -1,12 +1,14 @@
-//! This device hosting the rooms placed on it.
+//! This device's own room host: the rooms placed on it, and its person's
+//! topics for their other devices.
 //!
 //! Every device runs the room host a relay runs (`tilo_relay::host::RoomHost`)
 //! in process, in [`HostMode::Device`]: the device governing its rooms
-//! terminates their service itself, with no host capability. It opens only
-//! once this device hosts a room: when the first workspace is placed here,
-//! or at start when a room was hosted here before
-//! ([`ShellNetwork::open_hosted_rooms`]). A device that hosts nothing never
-//! opens it, and its router's handlers for it refuse every connection
+//! terminates their service itself, with no host capability, and the
+//! person's other devices reach this one through it, on the same session
+//! protocol, for the topics they share. It opens as the network starts on a
+//! device with an identity and a place to keep it
+//! ([`ShellNetwork::open_local_host`]); until then, and on a device without
+//! one, its router's handlers for it refuse every connection
 //! ([`tilo_network_actor::local_host`]).
 //!
 //! A new workspace is placed on this device's host
@@ -124,12 +126,6 @@ pub(crate) fn host_state_root(state_file: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(HOST_STATE_DIR)
-}
-
-/// Whether the host state at `root` holds anything: a room was hosted here.
-/// The host writes nothing there before it hosts its first room.
-pub(crate) fn hosted_before(root: &Path) -> bool {
-    std::fs::read_dir(root).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// The workspaces of `tree` waiting to be placed, with their rooms and
@@ -262,19 +258,17 @@ impl ShellNetwork {
         Ok(host_state_root(&path))
     }
 
-    /// Open this device's host when a room was hosted here before, so the
-    /// rooms it hosts are served again and its native owner joins them. A
-    /// device that never hosted a room opens nothing. Blocks on the disk:
-    /// call it off the frame loop.
-    pub(crate) fn open_hosted_rooms(&self) {
-        let Ok(root) = self.host_state_root() else {
-            return;
-        };
-        if !hosted_before(&root) {
+    /// Open this device's host: the rooms it hosts are served again and
+    /// its native owner joins them, and the person's other devices reach
+    /// this one through it. A device with no identity, or nowhere to keep
+    /// its workspaces, opens nothing. Blocks on the disk: call it off the
+    /// frame loop.
+    pub(crate) fn open_local_host(&self) {
+        if !self.places_workspaces() || self.host_state_root().is_err() {
             return;
         }
         if let Err(error) = self.local_host() {
-            tracing::warn!(%error, "the rooms hosted on this device are not served");
+            tracing::warn!(%error, "this device's host is not served");
         }
     }
 

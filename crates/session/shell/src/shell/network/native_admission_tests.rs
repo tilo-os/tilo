@@ -76,7 +76,7 @@ fn queued_write_then_departure() -> Fixture {
         .try_send(NetEvent::PeerLeft {
             ws: DEFAULT_WS_TOPIC,
             peer: iroh::SecretKey::from_bytes(&[42; 32]).public(),
-            cause: PeerDepartureCause::LivenessTimedOut,
+            cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
         })
         .unwrap();

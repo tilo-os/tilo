@@ -317,9 +317,8 @@ thread_local! {
 /// Smallest gap between two pointer publishes for the same room — ~30
 /// Hz, matching the rate the toolkit throttles an app's pointer to so a
 /// desktop cursor and an in-app cursor cost the same on the wire. Both wires
-/// then pace a slot to 20 Hz (`tilo_relay_session::pointer_pacing`: the
-/// relay session writer, and the network actor for gossip), keeping the
-/// freshest of these samples.
+/// then pace a slot to 20 Hz (`tilo_relay_session::pointer_pacing`, in
+/// each session's writer), keeping the freshest of these samples.
 pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 
 fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room: &str) -> bool {
@@ -2702,7 +2701,7 @@ mod two_sessions {
         relay.pump(presence, &DESK_TILES);
     }
 
-    /// Hand `msg` to `to` the way the gossip reader does.
+    /// Hand `msg` to `to` the way the network delivers it.
     fn over_the_wire(msg: NeighbourMsg, to: &ShellNetwork) {
         match msg {
             NeighbourMsg::PresenceMoved {

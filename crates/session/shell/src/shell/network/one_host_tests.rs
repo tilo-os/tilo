@@ -498,7 +498,7 @@ impl Device {
         assert!(net.join_default_workspace());
         // As a session starts: the rooms this device hosted before are
         // served again.
-        net.open_hosted_rooms();
+        net.open_local_host();
         let net = Arc::new(net);
         let channels = self.open_channels(&net);
         let drain = Drain::start(&net, channels.clone(), &self.wakes);

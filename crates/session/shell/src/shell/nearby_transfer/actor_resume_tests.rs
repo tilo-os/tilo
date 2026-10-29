@@ -3,24 +3,31 @@
 use super::{CHECKPOINT_BYTES, IncomingManifest, NearbyTransferStore, SecureNearbyDestination};
 use iroh::{EndpointAddr, EndpointId};
 use tilo_network_actor::{
-    Actor, NearbyTransferCheckpoint, NetCmd, NetEvent, PERSONAL_TRANSFER_CHUNK_BYTES,
+    NearbyTransferCheckpoint, NetCmd, NetEvent, PERSONAL_TRANSFER_CHUNK_BYTES,
     PersonalFabricPayload, PersonalNearbyTransferFrame,
 };
 use tokio::sync::mpsc;
 
-async fn peer() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, EndpointAddr) {
-    let (endpoint, lookup) = tilo_network_actor::loopback_endpoint(None).await;
-    let addr = endpoint.addr();
-    let (commands, _task) = Actor::spawn(endpoint, lookup);
+/// One of the person `root`'s devices on topic 67, keeping its host under
+/// `state`.
+async fn peer(
+    root: &ed25519_dalek::SigningKey,
+    state: &std::path::Path,
+) -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, EndpointAddr) {
+    let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+        getrandom::SysRng,
+    ));
+    let device = tilo_network_actor::siblings::spawn(root, key, state).await;
     let (events, receiver) = mpsc::channel(64);
-    commands
+    device
+        .cmd
         .send(NetCmd::JoinPersonalTopic {
             ws: 67,
             on_event: events,
         })
         .await
         .unwrap();
-    (commands, receiver, addr)
+    (device.cmd, receiver, device.addr)
 }
 
 async fn joined(events: &mut mpsc::Receiver<NetEvent>, expected: EndpointId) {
@@ -86,11 +93,19 @@ async fn receive(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nearby_two_peers_resume_reopened_spools_after_fresh_receiver_consent() {
-    let (sender, mut sent_events, sender_addr) = peer().await;
-    let (receiver, mut received_events, receiver_addr) = peer().await;
+    let person = ed25519_dalek::SigningKey::from_bytes(&[0x67; 32]);
+    let states = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (sender, mut sent_events, sender_addr) = peer(&person, states.0.path()).await;
+    let (receiver, mut received_events, receiver_addr) = peer(&person, states.1.path()).await;
     sender
         .send(NetCmd::Connect {
             addr: receiver_addr.clone(),
+        })
+        .await
+        .unwrap();
+    receiver
+        .send(NetCmd::Connect {
+            addr: sender_addr.clone(),
         })
         .await
         .unwrap();

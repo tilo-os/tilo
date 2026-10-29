@@ -23,6 +23,12 @@ use serde::{Deserialize, Serialize};
 /// there, and there is one framing per version
 /// (docs/architecture/compatibility.md).
 pub const ALPN: &[u8] = b"tilo-relay/1";
+/// ALPN of the one connection between two of a person's devices: the same
+/// sessions as [`ALPN`], each on a bidirectional stream of its own, opened
+/// by either side with the other's host. The device with the lower endpoint
+/// id dials it, the other only when it is not dialled; of two dialled at
+/// once, both keep the lower id's.
+pub const SIBLING_ALPN: &[u8] = b"tilo-relay-sibling/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
 

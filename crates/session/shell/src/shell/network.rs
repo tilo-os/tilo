@@ -2557,15 +2557,7 @@ impl ShellNetwork {
         {
             return false;
         }
-        self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws,
-                    msg,
-                })
-                .is_ok()
+        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2587,7 +2579,6 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -2658,7 +2649,7 @@ impl ShellNetwork {
         transport_peer: Option<iroh::EndpointId>,
         message: NeighbourMsg,
     ) {
-        // Never reflect a host's own gossip echo into a decoder or seat.
+        // Never reflect a host's own echo into a decoder or seat.
         if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
             return;
         }
@@ -2792,7 +2783,7 @@ impl ShellNetwork {
     }
 
     /// Queue a received presence move; public so tests can inject one
-    /// without going through gossip.
+    /// without going through the network.
     pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         // A session does not paint its own cursor from the network: the
         // pointer it would draw is the one already under the user's hand.
@@ -3047,7 +3038,7 @@ impl ShellNetwork {
         let ws = personal_continuity_topic_id(&user_public_key);
         // The person's always-on hosts keep it for their devices that are
         // away: on the continuity topic, whose only member on a host is the
-        // person, and to host sessions only, never to gossip neighbours.
+        // person, and to host sessions only.
         let _ = self.cmd_tx.try_send(NetCmd::PublishToHosts {
             ws,
             msg: NeighbourMsg::AppDocument {
@@ -4178,15 +4169,7 @@ impl ShellNetwork {
             requester: self.local_peer_id_hash(),
         };
         let ws = room_topic_id(room);
-        let _ = self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws,
-                    msg,
-                })
-                .is_ok();
+        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -4209,7 +4192,6 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -4326,9 +4308,9 @@ impl ShellNetwork {
         });
     }
 
-    /// Attach an always-on home or hosted workspace server. The actor keeps
-    /// its direct Iroh gossip path and additionally uses the authenticated
-    /// host session for offline store-and-forward.
+    /// Attach an always-on home or hosted workspace server: its
+    /// authenticated session keeps the person's topics for their devices
+    /// that are away.
     pub fn connect_host(&self, addr: iroh::EndpointAddr) -> bool {
         if let Ok(mut hosts) = self.host_addrs.lock()
             && !hosts.iter().any(|known| known.id == addr.id)
@@ -6793,7 +6775,7 @@ impl ShellNetwork {
         });
     }
 
-    /// Route one gossip [`NeighbourMsg`] that arrived on topic `ws`
+    /// Route one [`NeighbourMsg`] that arrived on topic `ws`
     /// from `peer` to its per-variant handler, then flush anything the
     /// replica queued in response. Split out of [`Self::tick`] via
     /// [`Self::dispatch_net_event`].
@@ -8989,7 +8971,7 @@ mod tests {
             net.dispatch_net_event(NetEvent::PeerLeft {
                 ws: topic,
                 peer: iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
-                cause: PeerDepartureCause::LivenessTimedOut,
+                cause: PeerDepartureCause::HostSessionClosed,
                 membership_epoch: Some(epoch),
             });
             assert!(
@@ -9977,7 +9959,7 @@ mod tests {
         net.dispatch_net_event(NetEvent::PeerLeft {
             ws: personal_continuity_topic_id(&user),
             peer: peer.public(),
-            cause: PeerDepartureCause::GossipNeighborDown,
+            cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
         });
         assert!(!net.person_display_devices(&local)[0].online);
@@ -10268,7 +10250,7 @@ mod tests {
             net.dispatch_net_event(NetEvent::PeerLeft {
                 ws: personal_continuity_topic_id(&user),
                 peer: peer.public(),
-                cause: PeerDepartureCause::GossipNeighborDown,
+                cause: PeerDepartureCause::HostSessionClosed,
                 membership_epoch: Some(old_epoch),
             });
             assert_eq!(net.current_personal_route(&source), Some(current));
@@ -10315,7 +10297,7 @@ mod tests {
             net.dispatch_net_event(NetEvent::PeerLeft {
                 ws: personal_continuity_topic_id(&local_user).wrapping_add(1),
                 peer: peer.public(),
-                cause: PeerDepartureCause::GossipNeighborDown,
+                cause: PeerDepartureCause::HostSessionClosed,
                 membership_epoch: Some(epoch),
             });
             assert_eq!(net.current_personal_route(&peer_device), Some(admitted));
@@ -10762,7 +10744,7 @@ mod tests {
             ));
         }
 
-        fn legacy_inbox_drops_local_gossip_echo() {
+        fn legacy_inbox_drops_local_echo() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _commands) = shell_network_for_test(tree, 99);
             net.queue_legacy_message(
@@ -10788,7 +10770,7 @@ mod tests {
                     .try_send(NetEvent::PeerLeft {
                         ws: DEFAULT_WS_TOPIC,
                         peer,
-                        cause: PeerDepartureCause::LivenessTimedOut,
+                        cause: PeerDepartureCause::HostSessionClosed,
                         membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(
                             u64::try_from(generation + 1).expect("small test generation"),
                         )),
@@ -10828,7 +10810,7 @@ mod tests {
         }
 
         legacy_inbox_keeps_every_frame_and_control_in_order();
-        legacy_inbox_drops_local_gossip_echo();
+        legacy_inbox_drops_local_echo();
         tick_bounds_actor_event_work_per_frame();
         tick_with_no_events_is_noop();
     }
@@ -11227,7 +11209,7 @@ mod tests {
                 .try_send(NetEvent::PeerLeft {
                     ws: room_topic_id(room),
                     peer,
-                    cause: PeerDepartureCause::LivenessTimedOut,
+                    cause: PeerDepartureCause::HostSessionClosed,
                     membership_epoch: None,
                 })
                 .expect("queue peer departure");
@@ -11244,7 +11226,7 @@ mod tests {
                 tilo_network_actor::behaviour::peer_liveness_handle(&peer)
             );
             assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
-            assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
+            assert_eq!(departure.cause, PeerDepartureCause::HostSessionClosed);
             assert_eq!(departure.user_public_key, Some(cert.user_public_key));
             assert_eq!(departure.participant_name.as_deref(), Some("Vera"));
             assert!(departure.observed_at <= SystemTime::now());
@@ -11338,15 +11320,15 @@ mod tests {
     }
 
     /// `commands` hand one person-room document of `cluster` to the
-    /// person's always-on hosts, on their continuity topic, and gossip it
-    /// nowhere.
+    /// person's always-on hosts, on their continuity topic, and nowhere
+    /// else.
     fn assert_kept_for_the_persons_hosts(commands: &[NetCmd], user: &[u8; 32], cluster: &str) {
         assert!(
             commands.iter().all(|command| !matches!(
                 command,
                 NetCmd::Publish { .. } | NetCmd::NativePublish { .. } | NetCmd::Replay { .. }
             )),
-            "a person-room document is never gossiped and never reaches a room topic"
+            "a person-room document never reaches a room topic"
         );
         let hosted: Vec<_> = commands
             .iter()
@@ -11866,7 +11848,9 @@ mod tests {
                         target,
                         ..
                     } => Some((ws, user_public_key, target)),
-                    NetCmd::Publish { .. } => panic!("a person record is never gossiped"),
+                    NetCmd::Publish { .. } => {
+                        panic!("a person record is never published to a room")
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -12155,7 +12139,7 @@ mod tests {
     )]
     fn app_records_reach_only_their_room_without_leaking_paths() {
         /// The SDK guide promises a path-bearing record id never leaves the
-        /// device. Check the exact bytes the actor would put on gossip and the
+        /// device. Check the exact bytes the actor would put on a session and the
         /// host link, for a file record and a record derived from one.
         fn file_backed_records_never_put_a_path_on_the_wire() {
             // A workspace room's records travel as the native owner's
@@ -12365,7 +12349,7 @@ mod tests {
         }
 
         fn a_session_does_not_take_its_own_presence_off_the_network() {
-            // Gossip hands a session its own frames back; painting them
+            // A host hands a session its own frames back; painting them
             // would draw a second cursor chasing the user's own hand.
             let tree = WorkspaceTree::bootstrap_default().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
@@ -12413,7 +12397,7 @@ mod tests {
         fn publish_document_emits_a_publish_command() {
             // An app's document in its workspace's room is the native
             // owner's to publish: the network asks for its publication on
-            // the room's topic and never puts the app's envelope on gossip.
+            // the room's topic and never puts the app's envelope on the wire.
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let room = tree
                 .read()

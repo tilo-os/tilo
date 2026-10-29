@@ -670,7 +670,7 @@ pub(super) mod tests {
             super::super::NetEvent::PeerLeft {
                 ws,
                 peer: peer.transport,
-                cause: super::super::PeerDepartureCause::GossipNeighborDown,
+                cause: super::super::PeerDepartureCause::HostSessionClosed,
                 membership_epoch: Some(epoch),
             }
         });
