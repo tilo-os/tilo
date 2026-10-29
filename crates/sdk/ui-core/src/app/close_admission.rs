@@ -367,14 +367,7 @@ impl App {
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
-                        let _ = self.dispatch_node(node, |widget, doc, path| {
-                            widget.perform_action(
-                                &crate::a11y::Action::Activate,
-                                &[],
-                                &mut crate::widget::Edits::lend(doc),
-                                path,
-                            )
-                        });
+                        let _ = self.perform_node_action(node, &crate::a11y::Action::Activate);
                         handled = true;
                     }
                 }

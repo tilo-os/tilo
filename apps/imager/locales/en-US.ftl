@@ -2193,3 +2193,94 @@ installer-hardware-evidence-architecture = architecture { $architecture }
 installer-hardware-evidence-virtualization = virtualization { $names }
 installer-hardware-evidence-board = board { $board }
 installer-hardware-evidence-devicetree = device tree { $devicetree }
+
+
+## The destination side: the installer on the live medium.
+installer-welcome-title = Welcome to Tilo
+installer-welcome-note = We'll review your choices before installing. Nothing on your drives changes until you confirm.
+installer-keyboard-note = Choose the layout your keyboard uses. You can change it later.
+installer-account-name = Your name (optional)
+installer-account-name-note = Use the name you want people to see. Your sign-in username can be different.
+installer-account-username = Username
+installer-account-username-note = Used to sign in and for your home directory.
+installer-account-password = Your password
+installer-account-password-note = This protects your files. Use 15+ characters, like a few unrelated words.
+installer-account-password-confirm = Type your password again
+installer-account-pin = Your startup PIN
+installer-account-pin-note = Use at least 6 digits. Your computer limits wrong guesses. Keep the recovery key for hardware changes.
+installer-account-pin-confirm = Type your startup PIN again
+installer-storage-no-drives = No drives are available yet. Check that the drive is connected, then choose Refresh disks. Nothing has been changed.
+installer-storage-erase-warning = This replaces everything on the selected drive, including its other operating systems and files. Back up anything you want to keep. Nothing is erased until you review and confirm the installation.
+installer-storage-keep-guidance = Keep your other operating system and its files. Tilo needs at least 35 GiB of unallocated space or suitable empty partitions. It never shrinks or moves existing partitions. If there isn't room, you can go back safely and make space from your other operating system.
+
+installer-media-title = Play more video and audio formats
+installer-media-note = Downloaded to this computer from the formats' publishers once it is online. You can turn it off in Settings.
+installer-media-install = Install
+installer-media-skip = Not now
+installer-media-chosen = Chosen: installed once the new system is online
+installer-media-undo = Undo
+installer-media-next = Next
+installer-media-back = Back
+
+installer-storage-windows-preparation = Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.
+installer-storage-linux-ready = Keep Linux: the unallocated space holds Tilo, and existing partitions stay unchanged.
+installer-storage-use-capacity = Use N GiB for Tilo
+installer-storage-allocation-summary = Use { $capacity } for Tilo; { $remaining } remains unused. { $details }
+installer-storage-alongside-capacity = { $root } of encrypted storage for Tilo, using { $total } of unallocated space including its boot partitions.
+installer-storage-linux-no-space = No safe alongside space was found. { $preparation } Nothing has been erased; you can go back without installing.
+installer-storage-linux-preparation = Back up your files. Free space inside ext4 or Btrfs is not unallocated space: use your distribution's supported offline partitioning tools from recovery media to leave 35 GiB contiguous unallocated, then refresh disks. This installer will not automatically shrink existing filesystems, LVM, or LUKS containers. This medium is not a full live desktop.
+installer-storage-boot-guidance = If your other system is missing from Tilo's boot menu, use the computer's firmware boot picker. Existing boot entries and the default are preserved.
+installer-storage-files-guidance = Existing Linux partitions are not automatically mounted in Tilo. Files selected for import are separate from this. Set up Nextcloud separately after installation; do not share a writable sync folder between systems.
+
+installer-online-title = Online accounts
+installer-online-private = Sign in privately on this computer. Windows suggestions contain account details, not sign-in tokens.
+installer-online-google = Google
+installer-online-microsoft = Microsoft
+installer-online-dropbox = Dropbox
+installer-online-nextcloud = Nextcloud
+installer-online-use-hint = Review suggested account
+installer-online-email = Email (optional)
+installer-online-server = Nextcloud server (HTTPS)
+installer-online-review = Review the services to connect
+installer-online-files = Files
+installer-online-mail = Mail (Google and Microsoft only)
+installer-online-calendar = Calendars (Google and Nextcloud): read, create, change and delete events in the calendars you select
+installer-online-calendar-review = Select the calendars Tilo may read and write. No calendar is connected until you confirm.
+installer-online-calendar-confirm = Connect selected calendars
+installer-windows-offered = Prepared account suggestions are available from this installation medium. Unlock them locally to review; this does not sign in or grant access.
+installer-windows-unlock = Unlock prepared setup
+installer-windows-unlocking = Unlocking private suggestions…
+installer-windows-failed = Could not unlock with that password. Try again or skip; your Windows data will not be changed.
+installer-windows-unavailable = Prepared suggestions are unavailable or could not be verified on this medium. You can enter account details manually or skip without changing Windows data.
+installer-windows-skip = Skip prepared suggestions (keep Windows data)
+installer-online-ready = Choose a provider and review the services before signing in.
+installer-online-pending = Waiting for account sign-in or cancellation…
+installer-online-failed = Sign-in did not finish. Check your connection and try again, or continue without accounts.
+installer-online-added = Account connected for the services shown above. You can add another account or continue.
+installer-online-add = Add account
+installer-online-retry = Retry
+installer-online-cancel = Cancel sign-in
+installer-online-skip = Continue without another sign-in
+installer-online-invalid = Check the server address and select at least one supported service, then try again.
+installer-online-previous = Suggestions from Windows, not connected
+installer-online-source-onedrive = Found in OneDrive and suggested for Files. Review permissions before connecting.
+installer-online-source-outlook = Found in Outlook and suggested for Mail. Review permissions before connecting.
+installer-online-source-google-web = Found as a Google web account. Choose which services to connect.
+installer-online-manual = Connect an account
+installer-online-connected-files = Connected for Files
+installer-online-connected-mail = Connected for Mail
+installer-online-connected-calendar = Connected for Calendar
+installer-online-connected = Connected here
+installer-online-adopted = Sign-ins completed here are passed securely to your installed Tilo user. You do not need to sign in again for these connected services.
+installer-online-loading = Connected means access is authorized, not that all content is ready. Files and calendars may still need to load when you open them.
+installer-online-suggestions-note = Review a suggestion to prefill editable details below. Choose services and sign in here to connect them; no Windows sign-in tokens are imported.
+installer-online-skip-note = You can finish setup offline. Continuing cancels any unfinished sign-in and keeps accounts already connected here. Without connecting a service, its online files, mail and calendars will not be available through Tilo. You can connect it after installation.
+
+
+# The compatibility report on Review: the probe's own words, one message per
+# component class, reason, evidence and next step. Tilo Imager shows the same
+# messages for the same report.
+installer-hardware-evidence-firmware = firmware { $firmware }
+installer-hardware-unavailable = This computer does not say enough about its model for the compatibility report, so nothing on it was checked.
+installer-hardware-blocks-install = A part the desktop cannot start without is unsupported on this computer, so the installation stops at this step. Nothing has been changed.
+destination-windows-password = Password used to prepare this medium

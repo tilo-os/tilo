@@ -144,8 +144,8 @@ pub fn open_hosted(
     open_hosted_after_setup(st, kind, title, dest, |_, _| {})
 }
 
-/// File openers finalize their reference and startup payload before the
-/// creation owner captures its exact scratch-record ticket.
+/// File openers finalize their reference and startup payload in `setup`,
+/// before the new tab is first resolved.
 pub(crate) fn open_hosted_after_setup(
     st: &mut ChromeState,
     kind: AppKind,
@@ -154,35 +154,28 @@ pub(crate) fn open_hosted_after_setup(
     setup: impl FnOnce(&mut ChromeState, TabId),
 ) -> TabId {
     let placement = placement_for(st, dest);
-    let (id, drawn_here) = open_app_tab(st, kind, title, placement);
+    let id = open_app_tab(st, kind, title, placement);
     setup(st, id);
-    if drawn_here {
-        st.create_new_tab_record(id);
-    }
     st.bump();
     id
 }
 
 /// A tab of the app `kind` at `placement`: the app's own process where the
-/// session runs its apps that way, else drawn here (`true`), on a scratch
-/// record of the tab's own.
+/// session runs its apps that way, else drawn here.
 fn open_app_tab(
     st: &ChromeState,
     kind: AppKind,
     title: impl Into<String>,
     placement: Placement,
-) -> (TabId, bool) {
+) -> TabId {
     let title = title.into();
     let mut tree = st.tree_mut();
     if st.hosted_inputs.apps_as_processes()
         && let Some(id) = tab_binding::open_app_process(&mut tree, &kind, title.clone(), placement)
     {
-        return (id, false);
+        return id;
     }
-    (
-        tab_binding::open_hosted_app(&mut tree, kind, title, placement),
-        true,
-    )
+    tab_binding::open_hosted_app(&mut tree, kind, title, placement)
 }
 
 /// Why a duplicate could not be made.
@@ -307,10 +300,7 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, Dupli
             }
         }
     };
-    let (id, drawn_here) = open_app_tab(st, kind, title, Placement::TabIn(group));
-    if drawn_here {
-        st.create_new_tab_record(id);
-    }
+    let id = open_app_tab(st, kind, title, Placement::TabIn(group));
     st.bump();
     Ok(Some(id))
 }

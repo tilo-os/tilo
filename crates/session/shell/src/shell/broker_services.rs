@@ -1963,13 +1963,13 @@ impl ContinuationServices for NativeContinuations {
         schema: u16,
         metadata: Vec<u8>,
     ) -> Result<(), String> {
-        super::personal_continuity_registry::global_registry()
+        super::continuation_registry::global_registry()
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())?
             .report(
                 room,
                 app,
-                super::personal_continuity::AppInstanceId(instance),
+                super::continuation::AppInstanceId(instance),
                 schema,
                 metadata,
             )
@@ -1982,14 +1982,10 @@ impl ContinuationServices for NativeContinuations {
         app: &str,
         instance: u64,
     ) -> Result<(), String> {
-        super::personal_continuity_registry::global_registry()
+        super::continuation_registry::global_registry()
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())?
-            .clear(
-                room,
-                app,
-                super::personal_continuity::AppInstanceId(instance),
-            );
+            .clear(room, app, super::continuation::AppInstanceId(instance));
         Ok(())
     }
     fn handoff(
@@ -2003,14 +1999,10 @@ impl ContinuationServices for NativeContinuations {
             collab_types::handoff::HandoffReport::decode(&message),
             Some(collab_types::handoff::HandoffReport::OwnerSubscribe { .. })
         ) {
-            super::personal_continuity_registry::global_registry()
+            super::continuation_registry::global_registry()
                 .lock()
                 .map_err(|_| "continuation registry unavailable".to_owned())?
-                .refresh_owner_view(
-                    room,
-                    &app,
-                    super::personal_continuity::AppInstanceId(instance),
-                );
+                .refresh_owner_view(room, &app, super::continuation::AppInstanceId(instance));
             return Ok(());
         }
         if let Some(collab_types::handoff::HandoffReport::OwnerTakeover {
@@ -2024,13 +2016,13 @@ impl ContinuationServices for NativeContinuations {
             {
                 return Err("app continuation permission is disabled".into());
             }
-            return super::personal_continuity_registry::global_registry()
+            return super::continuation_registry::global_registry()
                 .lock()
                 .map_err(|_| "continuation registry unavailable".to_owned())?
                 .claim_owner_view(
                     room,
                     app,
-                    super::personal_continuity::AppInstanceId(instance),
+                    super::continuation::AppInstanceId(instance),
                     token,
                     ui::collaboration::ContinuationMetadata {
                         schema_version: schema,

@@ -189,6 +189,28 @@ params = [
 ]
 
 [[resources]]
+kind = "mail.trusted-senders"
+label = "Trusted senders"
+version = 1
+fields = [
+  { path = "senders", type = "Set<String>" },
+]
+
+[[resources.verbs]]
+id = "trust"
+kind = "undoable"
+params = [
+  { name = "sender", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "distrust"
+kind = "undoable"
+params = [
+  { name = "sender", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
 kind = "tilo.contacts.identities"
 label = "Contact identities"
 version = 2

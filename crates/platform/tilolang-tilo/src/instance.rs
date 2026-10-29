@@ -247,6 +247,8 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Principal, bool)>>,
     lenses_changed: bool,
+    /// The person and the room's policy the runtime's members were last read from.
+    members_from: Option<(String, tilo_action_policy::RoomPolicy)>,
     names_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -301,6 +303,7 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
+            members_from: None,
             names_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -1639,7 +1642,8 @@ impl Instance {
         }
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
-        let changed = received || door || opened || settled || lenses || renamed;
+        let members = self.follow_members();
+        let changed = received || door || opened || settled || lenses || renamed || members;
         if changed {
             self.poll_views();
         }
@@ -1651,6 +1655,30 @@ impl Instance {
         }
         self.flush();
         changed
+    }
+
+    /// Give the runtime the workspace's members as the room's policy has them now, when it
+    /// changed: who is in it, their roles, and who reads what. Whether it did.
+    fn follow_members(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let standing = self.standing.borrow().as_ref().and_then(|source| source());
+        let Some(standing) = standing else {
+            return false;
+        };
+        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
+            *person == standing.person && *policy == standing.policy
+        });
+        if seen {
+            return false;
+        }
+        host.runtime().set_members(
+            crate::members::members_of(&standing, &self.me),
+            Some(crate::members::reads_of(&standing, &self.me, &host)),
+        );
+        self.members_from = Some((standing.person, standing.policy));
+        true
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.

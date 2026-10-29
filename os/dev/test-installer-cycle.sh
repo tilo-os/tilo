@@ -550,10 +550,10 @@ field "$out/01-disk.json" /status | grep -Eqi 'setup choices are ready' \
 # live /dev/vda is refused by the shipped disk identity rules.
 method=erase
 [ "$install_mode" = erase ] || method=alongside
-ic invoke set-method@installer.storage "{\"method\":\"$method\"}" \
+ic invoke set-method@installer "{\"method\":\"$method\"}" \
   || die "installer refused the $method install method"
-ic invoke refresh@installer.storage || die "installer could not refresh disks"
-ic invoke select@installer.disk:/dev/vdb || die "installer did not offer the blank target"
+ic invoke refresh-disks@installer || die "installer could not refresh disks"
+ic invoke select-disk@installer.disk:/dev/vdb || die "installer did not offer the blank target"
 ic invoke next@installer || die "installer did not select the blank target"
 ic wait-step account --save "$out/02-account.json" \
   || die "installer did not select the blank target"
@@ -567,7 +567,7 @@ fi
 
 # The startup secret travels from the environment to the console argument;
 # it is never on a command line and never in a reply.
-ic invoke set-passphrase@installer.account \
+ic invoke set-passphrase@installer \
   --secret passphrase=TILO_PASS --secret confirmation=TILO_PASS \
   || die "installer rejected the configured startup secret"
 ic invoke next@installer || die "installer rejected the configured startup secret"
@@ -586,7 +586,7 @@ confirmation=/dev/vdb
 [ "$install_mode" != prepared-alongside ] || confirmation=/dev/vdb5
 [ "$(field "$out/03-review.json" /storage/confirmation_target)" = "$confirmation" ] \
   || die "Review names a different destructive target than this layout formats"
-ic invoke set-recovery-promise@installer.review '{"acknowledged":true}' \
+ic invoke set-recovery-promise@installer '{"acknowledged":true}' \
   || die "installer refused the recovery-key promise"
 if ic invoke begin@installer.review '{"confirmation_phrase":"/dev/vda"}' 2>/dev/null; then
   die "installer began an install confirmed with the wrong device"
@@ -611,10 +611,10 @@ fi
 # Copy the key into the ephemeral live clipboard, acknowledge the disposable
 # test target, then Power off so the next boot contains only the produced
 # target. The reply to power-off may be cut off by the guest going down.
-ic invoke copy@installer.recovery || die "installer could not copy the recovery key"
-ic invoke confirm-saved@installer.recovery '{"saved":true}' \
+ic invoke copy-recovery-key@installer || die "installer could not copy the recovery key"
+ic invoke confirm-recovery-saved@installer '{"saved":true}' \
   || die "installer refused the saved-key acknowledgement"
-ic invoke power-off@installer.power || true
+ic invoke power-off@installer || true
 for _ in $(seq 1 60); do
   "$vm" status | grep -q '^stopped' && break
   sleep 2

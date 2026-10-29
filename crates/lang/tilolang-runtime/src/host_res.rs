@@ -425,7 +425,9 @@ impl Core {
             let field = self.text(fh)?;
             let (_, f) = self.lookup_field(&target, &field)?;
             let author = self.module_of_frame()?;
-            return self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?));
+            let value =
+                self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?))?;
+            return Ok(whole_map(f.kind, value));
         }
         // The hottest import: a view over a list reads a field of every item. The reference,
         // the field's name and the author are read where they are held, not copied.
@@ -464,7 +466,7 @@ impl Core {
                     order: None,
                 })));
             }
-            let value = self.read_value(target, f, Some(author))?;
+            let value = whole_map(f.kind, self.read_value(target, f, Some(author))?);
             (value, (target.id_string(), f.id.clone()))
         };
         if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
@@ -971,5 +973,25 @@ impl Core {
             rec.fields.insert(field, v);
         }
         ret_void()
+    }
+}
+
+/// A field read whole: a map as its entries ([`Value::Map`]), which the store holds as a list
+/// of key and value pairs; any other field as it is.
+fn whole_map(kind: FieldKind, value: Value) -> Value {
+    match (kind, value) {
+        (FieldKind::Map, Value::List(pairs)) => Value::Map(
+            pairs
+                .into_iter()
+                .filter_map(|pair| match pair {
+                    Value::Tuple(kv) => {
+                        let mut kv = kv.into_iter();
+                        Some((kv.next()?, kv.next()?))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        ),
+        (_, value) => value,
     }
 }

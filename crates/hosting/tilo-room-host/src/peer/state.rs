@@ -257,8 +257,7 @@ pub(super) fn gated_checkpoint_channel(
         let latest_wins = match checkpoint.kind {
             crate::payloads::CheckpointKind::Governance
             | crate::payloads::CheckpointKind::Identity => true,
-            crate::payloads::CheckpointKind::Continuity { user }
-            | crate::payloads::CheckpointKind::Directory { user } => own(user),
+            crate::payloads::CheckpointKind::Directory { user } => own(user),
             crate::payloads::CheckpointKind::Other => false,
         };
         if latest_wins {
@@ -438,7 +437,6 @@ pub(super) fn captured_live_current(
     })
 }
 pub(super) struct StateCommit {
-    pub(super) continuity: Option<crate::store::continuity::Receipt>,
     pub(super) envelope: Arc<Envelope>,
     pub(super) pending: HashMap<[u8; 32], std::path::PathBuf>,
     pub(super) persisted_bytes: u64,

@@ -2021,8 +2021,8 @@ mod tests {
 
     #[test]
     fn palette_continue_focuses_the_offered_tab_and_then_retires() {
+        use crate::shell::continuation::AppInstanceId;
         use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
-        use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -2044,10 +2044,6 @@ mod tests {
                 device: laptop.clone(),
                 room,
                 app: AppInstanceId(22),
-                stamp: ContinuityStamp {
-                    counter: 4,
-                    device: laptop.clone(),
-                },
                 observed_at: Some(std::time::Instant::now()),
                 revision: 1,
                 withdrawn: false,

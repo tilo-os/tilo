@@ -1,29 +1,21 @@
 //! Camera as a resource: its record ([`Record`]: the recent capture handoff
 //! and the scan history) is the document; the shutter, devices and scanners
-//! are live rows the surface publishes.
+//! are live rows the view publishes.
 //!
-//! Everything else is the surface's [`CameraEffect`] vocabulary: the screen,
+//! Everything else is the window's [`CameraEffect`] vocabulary: the screen,
 //! mode and lens reveals and the capture preferences are offered on the
 //! camera, while shutter, record, camera chooser, code-scanner import and
-//! document-scanner effects ride the surface's
-//! [`ResourceSurface::live_rows`]. Capture preferences are settings — the
+//! document-scanner effects ride the live rows the view publishes. Capture
+//! preferences are settings — the
 //! person's [`CapturePreferences`] and this device's
 //! [`CameraDevicePreferences`] — never document state.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Command, Fixture, ResourceApp, ViewCx};
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
 
-use crate::actions::CameraEffect;
 use crate::app::CameraApp;
-use crate::model::{
-    CameraDevicePreferences, CaptureKind, CaptureMode, CapturePreferences, Facing, Timer,
-};
+use crate::model::{CaptureKind, CaptureMode, CapturePreferences, Facing, Timer};
 use crate::record::{Record, SharedCapture};
 
 /// The clock a screenshot reads instead of the machine's, in Unix seconds,
@@ -68,7 +60,7 @@ pub(crate) fn sample_capture() -> SharedCapture {
     }
 }
 
-/// Framework app: the camera widget is the surface over its [`Record`].
+/// Framework app: the camera widget is the window over its [`Record`].
 pub struct CameraShell;
 
 impl ResourceApp for CameraShell {
@@ -87,9 +79,9 @@ impl ResourceApp for CameraShell {
                 Some(content) => app.with_content(content),
                 None => app,
             };
-            cx.surface(app)
+            crate::app::window(cx, app)
         } else {
-            cx.surface(CameraApp::sample())
+            crate::app::window(cx, CameraApp::sample())
         }
     }
 
@@ -150,67 +142,12 @@ fn emit_photos(dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl ResourceSurface<Record, CameraEffect> for CameraApp {
-    /// The scan history and the recent capture, from the live record or a
-    /// past version in History.
-    fn present(&mut self, state: &Rc<Record>) {
-        self.present_record(state);
-    }
-
-    /// A live window follows the person's and this device's capture
-    /// preferences; a capture shows its scenario's; a past version the
-    /// defaults.
-    fn attach(&mut self, cx: SurfaceCx<Record>) {
-        match cx.mode() {
-            RunMode::Capture => {
-                if let Some(clock) = cx.fixture::<ShotClock>() {
-                    self.set_clock(clock.0);
-                }
-                if let Some(mode) = cx.fixture::<CaptureMode>() {
-                    self.stage_mode(*mode);
-                }
-                if let Some(person) = cx.fixture::<CapturePreferences>() {
-                    self.stage_preferences(*person, CameraDevicePreferences::default());
-                }
-            }
-            RunMode::Live => self.follow_preferences(
-                cx.settings::<CapturePreferences>(),
-                cx.settings::<CameraDevicePreferences>(),
-            ),
-            RunMode::Past => {}
-        }
-        self.attach_dispatcher(cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scene(scenario);
-    }
-
-    fn effect(&mut self, effect: CameraEffect, cx: &mut EffectCx<Record, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        crate::actions::live_rows(&self.camera_resource_ctx())
-    }
-
-    /// Switching between photo and video stops nothing: while a video
-    /// records, the switch is unavailable.
-    fn effects(&self) -> Vec<EffectStatus> {
-        if !self.is_recording() {
-            return Vec::new();
-        }
-        vec![EffectStatus::unavailable(
-            CameraEffect::USE_MODE,
-            "recording",
-            "Stop recording to switch modes",
-        )]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::CameraEffect;
+    use crate::model::CameraDevicePreferences;
+    use ui::framework::LiveRow;
     use ui::prelude::TestApp;
 
     #[test]
@@ -237,8 +174,7 @@ mod tests {
             "preferences are not document state"
         );
 
-        let rows: Vec<_> = CameraApp::sample()
-            .live_rows()
+        let rows: Vec<_> = crate::actions::live_rows(&CameraApp::sample().camera_resource_ctx())
             .into_iter()
             .map(LiveRow::into_resource)
             .collect();

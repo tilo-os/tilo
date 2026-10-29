@@ -25,6 +25,19 @@ else
   bad 'vm.sh builds its own QEMU command line or drops a machine setting'
 fi
 
+# ARM guests get a software TPM on the virt machine's sysbus interface for
+# what is not PCR-bound (the TPM-and-secret sign-in wrapper). No AAVMF build
+# is taken to measure, and its Secure Boot key stores stay refused.
+tilo_vm_qemu="$repo/crates/dev/tilo-vm/src/qemu"
+if grep -Fq 'Arch::Aarch64 => "tpm-tis-device,tpmdev=tpm0".into()' "$tilo_vm_qemu/swtpm.rs" \
+  && grep -Fq 'so only what is not PCR-bound is tested' "$tilo_vm_qemu/firmware.rs" \
+  && grep -Fq 'aarch64 VM Secure Boot key stores are not verified yet' "$tilo_vm_qemu/firmware.rs" \
+  && ! grep -Fq 'no verified measured-AAVMF profile' "$tilo_vm_qemu/firmware.rs"; then
+  ok 'ARM guests boot with an unmeasured software TPM and no Secure Boot key store'
+else
+  bad 'ARM guests refuse the software TPM or claim measured boot or Secure Boot keys'
+fi
+
 if grep -Fq 'TILO_VM_CYCLE=' "$common" \
   && grep -Fq '$TILO_CYCLE_DIR/installer-work.qcow2' "$common" \
   && grep -Fq '$TILO_CYCLE_DIR/target.qcow2' "$common" \
@@ -39,9 +52,9 @@ else
 fi
 
 if grep -Fq 'cmd_pointer()' "$vm" \
-  && grep -Fq 'mouse_move $qx $qy 1' "$vm" \
-  && grep -Fq 'mouse_button $mask' "$vm" \
-  && grep -Fq 'mouse_button 0' "$vm" \
+  && grep -Fq '{"type":"abs","data":{"axis":"x","value":' "$vm" \
+  && grep -Fq '{"type":"btn","data":{"down":true,"button":' "$vm" \
+  && grep -Fq '{"type":"btn","data":{"down":false,"button":' "$vm" \
   && grep -Fq 'pointer coordinate ($x,$y) is outside' "$vm"; then
   ok 'VM interaction helper maps guest pixels to the absolute tablet and releases clicks'
 else

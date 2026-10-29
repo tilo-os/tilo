@@ -465,23 +465,16 @@ impl HandoffInventory {
             roots.insert(source.installation.clone(), grant.root.clone());
             leases.push(grant);
         }
-        let selected_commits = self
-            .selected
-            .iter()
-            .map(|item| {
-                deployments
-                    .get(&(item.installation.clone(), item.reference.clone()))
-                    .cloned()
-                    .map(|commit| (item.reference.clone(), commit))
-                    .ok_or("Selected deployment commit is unavailable".to_owned())
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        if self.selected.iter().any(|item| {
+            !deployments.contains_key(&(item.installation.clone(), item.reference.clone()))
+        }) {
+            return Err("Selected deployment commit is unavailable".into());
+        }
         Ok(SourceScopedRunner {
             source_home: home.to_owned(),
             inventory: self.inventory.clone(),
             roots,
             deployments,
-            selected_commits,
             leases,
             target,
         })
@@ -595,13 +588,12 @@ impl ReadOnlySource {
     }
 }
 /// Queries of the reviewed mounted source are metadata-only. Target operations
-/// are real native Flatpak calls; no global installation on Tilo is substituted.
+/// are native Flatpak queries; no global installation on Tilo is substituted.
 pub struct SourceScopedRunner<R: Runner> {
     source_home: PathBuf,
     inventory: Inventory,
     roots: BTreeMap<Installation, PathBuf>,
     deployments: BTreeMap<(Installation, String), String>,
-    selected_commits: BTreeMap<String, String>,
     leases: Vec<ReadOnlySource>,
     target: R,
 }
@@ -617,17 +609,9 @@ impl<R: Runner> SourceScopedRunner<R> {
             inventory,
             roots,
             deployments,
-            selected_commits,
             target,
         } = self;
-        drop((
-            source_home,
-            inventory,
-            roots,
-            deployments,
-            selected_commits,
-            target,
-        ));
+        drop((source_home, inventory, roots, deployments, target));
         let mut sources = Vec::new();
         #[cfg(any(feature = "capture-worker", test))]
         let mut borrowed = false;
@@ -703,11 +687,9 @@ impl<R: Runner> SourceScopedRunner<R> {
         }
         Ok(files)
     }
-    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_inventory(&self) -> &Inventory {
         &self.inventory
     }
-    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_root(
         &self,
         scope: &Installation,
@@ -717,7 +699,6 @@ impl<R: Runner> SourceScopedRunner<R> {
             .map(PathBuf::as_path)
             .ok_or("Original root missing".into())
     }
-    #[cfg(any(feature = "capture-worker", test))]
     pub(in crate::setup::flatpak_transfer) fn closed_commit(
         &self,
         item: &InstalledRef,
@@ -727,60 +708,13 @@ impl<R: Runner> SourceScopedRunner<R> {
             .map(String::as_str)
             .ok_or("Original exact deployment missing".into())
     }
+    /// Target commands never install: system applications are deployed from
+    /// their sealed unit, not from a network remote.
     fn target_run(&self, home: &Path, arguments: &[String]) -> Result<String, String> {
-        if arguments.first().is_none_or(|verb| verb != "install") {
-            return self.target.run(home, arguments);
+        if arguments.first().is_some_and(|verb| verb == "install") {
+            return Err("Applications are deployed from their sealed unit".into());
         }
-        for lease in &self.leases {
-            lease.pin.validate().map_err(|error| error.to_string())?;
-            kernel_read_only(&lease.pin).map_err(|error| error.to_string())?;
-        }
-        let reference = arguments.last().ok_or("Missing selected Flatpak ref")?;
-        let commit = self
-            .selected_commits
-            .get(reference)
-            .ok_or("Target install is outside the reviewed Flatpak selection")?;
-        if arguments
-            .iter()
-            .any(|arg| arg == "--commit" || arg.starts_with("--commit="))
-        {
-            return Err("Target install cannot override the reviewed deployment commit".into());
-        }
-        let mut exact = arguments.to_vec();
-        let position = exact
-            .len()
-            .checked_sub(2)
-            .ok_or("Missing reviewed origin")?;
-        exact.insert(position, "--no-deps".into());
-        exact.insert(position, "--no-related".into());
-        exact.insert(position, format!("--commit={commit}"));
-        let result = self.target.run(home, &exact)?;
-        let actual = self.target.run(
-            home,
-            &[
-                "info".into(),
-                "--user".into(),
-                "--show-commit".into(),
-                reference.clone(),
-            ],
-        )?;
-        if actual.trim() != commit {
-            return Err("Installed Flatpak commit differs from the reviewed deployment".into());
-        }
-        let origin = arguments.get(position).ok_or("Missing reviewed origin")?;
-        let actual_origin = self.target.run(
-            home,
-            &[
-                "info".into(),
-                "--user".into(),
-                "--show-origin".into(),
-                reference.clone(),
-            ],
-        )?;
-        if actual_origin.trim() != origin {
-            return Err("Installed Flatpak origin differs from the approved repository".into());
-        }
-        Ok(result)
+        self.target.run(home, arguments)
     }
 }
 impl<R: Runner> Runner for SourceScopedRunner<R> {

@@ -491,12 +491,12 @@ impl PageSidebar {
         let top = f64_of_usize(i) * (self.thumb_h + self.m.gap);
         let bottom = top + self.thumb_h;
         let view_h = (self.list_vp.height() - 2.0 * self.m.pad).max(0.0);
-        if top < self.scroll {
-            self.scroll = top;
-        } else if bottom > self.scroll + view_h {
-            self.scroll = (bottom - view_h).max(0.0);
-        }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+        self.scroll = crate::widget::scroll_region::reveal_offset(
+            self.scroll,
+            view_h,
+            top..bottom,
+            self.max_scroll,
+        );
     }
 
     fn thumb_at(&self, p: Point) -> Option<usize> {

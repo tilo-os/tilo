@@ -83,19 +83,6 @@ pub(super) fn record_names(generation: &Path) -> Result<Vec<OsString>, StoreErro
     Ok(names)
 }
 
-fn has_sidecars(generation: &Path) -> Result<bool, StoreError> {
-    for entry in fs::read_dir(generation)? {
-        if entry?
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".continuity-v1")
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 impl WorkspaceStore {
     pub(super) fn channel_lineages(
         &self,
@@ -188,8 +175,7 @@ impl WorkspaceStore {
     /// given its file bytes. Must run on the persistence owner.
     ///
     /// The snapshot lineage keeps nothing but the snapshot and those of its
-    /// previous entries `remove` spares. A lineage holding continuity
-    /// receipts is left as it is.
+    /// previous entries `remove` spares.
     ///
     /// # Errors
     ///
@@ -239,10 +225,6 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage)? else {
                 continue;
             };
-            if has_sidecars(&active)? {
-                outcome.kept = outcome.kept.saturating_add(record_names(&active)?.len());
-                continue;
-            }
             let before = outcome.removed;
             let kept = survivors(&active, remove, &mut outcome)?;
             if outcome.removed != before {
@@ -261,9 +243,8 @@ impl WorkspaceStore {
     /// Take every entry of `channel` out of what any replay reads, and keep
     /// it in a new archive under [`ARCHIVE_DIR`]: a room's document started
     /// over from a base at an admission, and the history before it is no
-    /// newcomer's to read, yet stays as it was for those who held it. A
-    /// lineage holding continuity receipts is left as it is. Must run on the
-    /// persistence owner. Returns how many entries it archived.
+    /// newcomer's to read, yet stays as it was for those who held it. Must run
+    /// on the persistence owner. Returns how many entries it archived.
     ///
     /// # Errors
     ///
@@ -282,9 +263,6 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage)? else {
                 continue;
             };
-            if has_sidecars(&active)? {
-                continue;
-            }
             let names = record_names(&active)?;
             if names.is_empty() {
                 continue;

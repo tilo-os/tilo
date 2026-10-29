@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 17;
+pub const PEER_PROTOCOL_VERSION: u32 = 18;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -81,11 +81,6 @@ pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
     }
     h
 }
-
-/// Continuation is portable metadata, never an application backup. Keep this
-/// limit at the wire boundary so every transport (direct or store-forward)
-/// applies the same bound before decoding or retaining it.
-pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
@@ -383,26 +378,6 @@ pub enum NeighbourMsg {
         /// announcing device, so omission can never resurrect a device.
         revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
-    /// Ask another certified device of the same person for its latest
-    /// continuation checkpoints. This rides a user-root-derived topic, never
-    /// a collaboration room: personal session state must not become visible to
-    /// collaborators merely because they share a workspace.
-    ///
-    /// Appended to preserve all existing Postcard discriminants.
-    PersonalContinuityRequest {
-        user_public_key: [u8; 32],
-        requester: PeerId,
-    },
-    /// A bounded, validated aggregate of per-device
-    /// personal continuity snapshots.
-    /// The receiving shell accepts it only when the authenticated transport
-    /// certificate has `user_public_key`. Certified devices may relay the
-    /// aggregate so an always-on peer retains the latest state for all of them.
-    PersonalContinuityCheckpoint {
-        user_public_key: [u8; 32],
-        publisher: PeerId,
-        snapshot: Vec<u8>,
-    },
     /// One remote-action frame (`tilo_actions::remote::RemoteActionFrame`
     /// bytes) for exactly one authenticated device: a request to list,
     /// invoke, observe or cancel its actions, or the answer to one.
@@ -611,8 +586,6 @@ impl NeighbourMsg {
             | Self::ScrollbackRequest { .. }
             | Self::ScrollbackResponse { .. }
             | Self::IdentityAnnouncementV2 { .. }
-            | Self::PersonalContinuityRequest { .. }
-            | Self::PersonalContinuityCheckpoint { .. }
             | Self::RemoteAction { .. }
             | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
@@ -666,8 +639,6 @@ impl NeighbourMsg {
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
             Self::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
-            Self::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
-            Self::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
             Self::RemoteAction { .. } => "RemoteAction",
             Self::MediaCapabilities { .. } => "MediaCapabilities",
             Self::MlsGovernance { .. } => "MlsGovernance",
@@ -1029,21 +1000,6 @@ mod tests {
                 },
             ),
             (
-                "personal continuity request",
-                NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: [7; 32],
-                    requester: 0x00AB_CDEF,
-                },
-            ),
-            (
-                "personal continuity checkpoint",
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key: [7; 32],
-                    publisher: 0x00AB_CDEF,
-                    snapshot: vec![1, 2, 3],
-                },
-            ),
-            (
                 "personal workspaces",
                 NeighbourMsg::PersonalWorkspaces {
                     user_public_key: [7; 32],
@@ -1204,7 +1160,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 33;
+    const VARIANT_COUNT: usize = 31;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1249,11 +1205,11 @@ mod tests {
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
-        ("surface keyframe request", "1c0307ac02"),
+        ("surface keyframe request", "1a0307ac02"),
         (
             "surface view request",
             concat!(
-                "1e032430373834386666652d313839382d346637322d383431392d3062353463",
+                "1c032430373834386666652d313839382d346637322d383431392d3062353463",
                 "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
@@ -1265,7 +1221,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b11",
+                "0b12",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1297,34 +1253,20 @@ mod tests {
             ),
         ),
         (
-            "personal continuity request",
-            concat!(
-                "1207070707070707070707070707070707070707070707070707070707070707",
-                "07ef9baf05",
-            ),
-        ),
-        (
-            "personal continuity checkpoint",
-            concat!(
-                "1307070707070707070707070707070707070707070707070707070707070707",
-                "07ef9baf0503010203",
-            ),
-        ),
-        (
             "personal workspaces",
             concat!(
-                "1807070707070707070707070707070707070707070707070707070707070707",
+                "1607070707070707070707070707070707070707070707070707070707070707",
                 "0702020202020202020202020202020202020202020202020202020202020202",
                 "020a030102034003030303030303030303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303",
             ),
         ),
-        ("remote action", "14027b7d"),
+        ("remote action", "12027b7d"),
         (
             "media capabilities",
             concat!(
-                "15cdd702020361763103767039010468323634010361763101",
+                "13cdd702020361763103767039010468323634010361763101",
                 "03767039",
             ),
         ),
@@ -1350,12 +1292,12 @@ mod tests {
         ),
         (
             "record content want",
-            "19ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "17ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
         ),
         (
             "record content piece",
             concat!(
-                "1ad6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d02616203",
+                "18d6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d02616203",
                 "0003010203",
             ),
         ),
@@ -1381,7 +1323,7 @@ mod tests {
         (
             "channel governance frame",
             concat!(
-                "162436623366396131302d303030302d343030302d383030302d303030303030",
+                "142436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630210555555555555555555555555555555550707070707070707",
                 "0707070707070707070707070707070707070707070707070301010808080808",
                 "0808080808080808080808080808080808080808080808080808080002c03300",
@@ -1394,7 +1336,7 @@ mod tests {
         (
             "channel access request",
             concat!(
-                "172436623366396131302d303030302d343030302d383030302d303030303030",
+                "152436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630110555555555555555555555555555555550202020202020202",
                 "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
@@ -1405,7 +1347,7 @@ mod tests {
         (
             "channel routed access request",
             concat!(
-                "1b2436623366396131302d303030302d343030302d383030302d303030303030",
+                "192436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630110555555555555555555555555555555550202020202020202",
                 "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
@@ -1413,15 +1355,15 @@ mod tests {
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
             ),
         ),
-        ("live presence", "1d0303010203"),
+        ("live presence", "1b0303010203"),
         (
             "record content lacks",
-            "1f03040e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "1d03040e736f2e74696c6f2e736c6964657304726f6f6d026162",
         ),
         (
             "room archive",
             concat!(
-                "205e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+                "1e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
                 "5e2430373834386666652d313839382d346637322d383431392d306235346339",
                 "3365366461640103010203",
             ),

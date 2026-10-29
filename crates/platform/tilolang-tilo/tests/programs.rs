@@ -43,6 +43,8 @@ fn run(replica: &mut Replica, source: &str, confirm: bool) -> Json {
                 source: source.to_owned(),
                 session: None,
                 confirm: Some(confirm),
+                apps: None,
+                reads: None,
             },
             Some(&agent()),
         )

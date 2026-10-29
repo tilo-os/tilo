@@ -472,12 +472,15 @@ impl SearchResultsView {
         } else {
             row.rect.y0
         };
-        if top < list.y0 + PAD {
-            self.scroll -= list.y0 + PAD - top;
-        } else if row.rect.y1 > list.y1 - PAD {
-            self.scroll += row.rect.y1 - (list.y1 - PAD);
-        }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+        // The plan's rows sit `scroll` above where they would unscrolled;
+        // the band they must show in is the list less its padding.
+        let content = |y: f64| y + self.scroll - (list.y0 + PAD);
+        self.scroll = crate::widget::scroll_region::reveal_offset(
+            self.scroll,
+            (list.height() - 2.0 * PAD).max(0.0),
+            content(top)..content(row.rect.y1),
+            self.max_scroll(),
+        );
     }
 
     /// Scroll the rows by `dy` logical px (positive moves down the list);

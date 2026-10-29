@@ -324,9 +324,7 @@ containerfile="$repo/os/Containerfile"
 # The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
 # take their authentication from it ride the existing PAM COPY: three payload
 # rows.
-# The 93tilo-boot-face dracut module, which carries the login screen's face
-# into the initramfs for the boot screen, is one payload row with a COPY of its
-# own. The separate COPY of fex-emulator.json and fex-graphics-provider.json is
+# The separate COPY of fex-emulator.json and fex-graphics-provider.json is
 # gone: the COPY of os/usr/share/tilo/windows/ already installs both, so their
 # two file rows leave the contract while the installed files are unchanged.
 # What a build's own keys sign (the runtimes' bundle.toml and publisher keys,
@@ -337,8 +335,11 @@ containerfile="$repo/os/Containerfile"
 # The 94tilo-greeter dracut module, which carries the greeter into the
 # initramfs as the boot's sign-in screen, rides the rollback files with the
 # dracut modules beside it, and the greeter's initramfs build (the boot-greeter
-# component) with the component files.
-expected_contract=1dd4fdf8ee70176c13b5478587fdf47ef2411db3835619e6fa04c1322baf04e2
+# component) with the component files. With the greeter as the sign-in screen,
+# the 93tilo-boot-face module, which carried the login screen's face into the
+# initramfs for Plymouth's sign-in screen, and its row with a COPY of its own
+# are gone.
+expected_contract=2e3ae47d2c3f9ce4faec35172d0cf3a11f89e5f67d2162d8360f543da1b067cd
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
