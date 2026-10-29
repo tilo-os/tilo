@@ -168,14 +168,18 @@ impl ChannelSettings {
             .and_then(|entry| entry.get(VIEW_KEY))
             .cloned();
         drop(state);
-        let delivery: Delivery = delivery
-            .and_then(|value| serde_json::from_value(value).ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotConnected,
-                    "personal dictionary is unavailable",
-                )
-            })?;
+        let delivery: Delivery = serde_json::from_value(delivery.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "personal dictionary is unavailable",
+            )
+        })?)
+        .map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("personal dictionary delivery does not decode: {error}"),
+            )
+        })?;
         if delivery.owner != owner {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

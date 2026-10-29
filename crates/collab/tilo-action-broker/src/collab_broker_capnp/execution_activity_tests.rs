@@ -1526,3 +1526,56 @@ fn an_agents_change_the_person_allowed_runs() {
         assert!(heard, "the app runs it");
     }
 }
+
+/// A Store disclosure whose `operation` does not decode is refused with
+/// why, not taken for an action nobody offers.
+#[test]
+fn a_store_disclosure_with_a_malformed_operation_is_refused_with_the_reason() {
+    let (state, person, _app) = fixture();
+    let room = person.room().unwrap().to_owned();
+    let mut surfaces = state.published_surfaces();
+    let surface = surfaces.first_mut().unwrap();
+    surface.app_id = "so.tilo.store".into();
+    surface.route.app_id = "so.tilo.store".into();
+    let action = surface.actions.first_mut().unwrap();
+    action.resource = "store:moderation".into();
+    action.action = "submit-report".into();
+    state.replace_published_surfaces_for_test(surfaces);
+    let caller = Caller::authenticated([0xa1; 32], [2; 32])
+        .in_room(room)
+        .in_new_execution();
+    let mut invoke = request();
+    invoke.target.address = tilo_actions::ActionAddress::new("store:moderation", "submit-report");
+    invoke.argument = InvokeArgument::Json(
+        serde_json::json!({"app": "org.example.app", "operation": "not an operation"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    );
+    let refused = state.request_witness(&caller, None, &invoke).poll_ready();
+    let PendingPoll::Ready(Err(ActionHostError::InvalidRequest { reason })) = &refused else {
+        panic!("refused for its operation: {refused:?}");
+    };
+    assert!(
+        reason.contains("operation is malformed"),
+        "the reason names the operation: {reason}"
+    );
+}
+
+/// A sheet that goes away unanswered (the session ended) answers the
+/// waiting agent that nobody answered, never that the person declined.
+#[tokio::test]
+async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() {
+    let (state, person, mut app) =
+        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
+    let (agent, invoke, mut asked) = ask_to_update(&state, &person);
+    let witness = state.request_witness(&agent, None, &invoke);
+    let (_question, answer) = asked.recv().await.expect("the person is asked");
+    drop(answer);
+    let answered = witness.await.expect("answered");
+    let Err(ActionHostError::Unavailable { reason }) = &answered else {
+        panic!("unanswered, not declined: {answered:?}");
+    };
+    assert!(reason.contains("without the person's answer"), "{reason}");
+    assert!(app.try_recv().is_err(), "nothing runs");
+}

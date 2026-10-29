@@ -181,18 +181,33 @@ impl OriginalInvocationData {
         Ok(certificate)
     }
 
-    pub(super) fn private_draft_token(&self) -> Option<uuid::Uuid> {
+    /// The private draft an `adopt-private-draft` invocation adopts; `None`
+    /// for any other action.
+    ///
+    /// # Errors
+    /// An adoption whose arguments name no readable token: it is refused
+    /// for that, not judged as some other action.
+    pub(super) fn private_draft_token(&self) -> Result<Option<uuid::Uuid>, String> {
         if self.request.address.action != "adopt-private-draft" {
-            return None;
+            return Ok(None);
         }
-        let argument = self.request.argument.as_deref()?;
+        let argument = self
+            .request
+            .argument
+            .as_deref()
+            .ok_or("private draft adoption has no arguments")?;
         let value: serde_json::Value = serde_json::from_str(
             argument
                 .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
                 .unwrap_or(argument),
         )
-        .ok()?;
-        serde_json::from_value(value.get("token")?.clone()).ok()
+        .map_err(|error| format!("private draft adoption arguments are not JSON: {error}"))?;
+        let token = value
+            .get("token")
+            .ok_or("private draft adoption names no token")?;
+        serde_json::from_value(token.clone())
+            .map(Some)
+            .map_err(|error| format!("private draft adoption token is malformed: {error}"))
     }
 
     pub(super) fn person_chat_caller(
@@ -233,7 +248,7 @@ impl OriginalInvocationData {
                 .map_err(|_| "invalid original person conversation arguments")?
                 .unwrap_or(serde_json::Value::Null)
         };
-        let original_peer = self.person_conversation_peer(&argument);
+        let original_peer = self.person_conversation_peer(&argument)?;
         match command {
             PersonChatCommand::Contacts => {
                 return Err("contacts are a private native snapshot, not an action".into());
@@ -290,29 +305,40 @@ impl OriginalInvocationData {
         Ok(certificate)
     }
 
-    fn person_conversation_peer(&self, argument: &serde_json::Value) -> Option<String> {
+    /// The peer the original invocation opened a conversation with, from
+    /// its arguments or its bound `chat.person` resource; `None` where it
+    /// names none.
+    ///
+    /// # Errors
+    /// A bound `chat.person` resource that does not decode.
+    fn person_conversation_peer(
+        &self,
+        argument: &serde_json::Value,
+    ) -> Result<Option<String>, String> {
         if let Some(key) = argument.get("public_key") {
-            return key.as_str().map(str::to_owned);
+            return Ok(key.as_str().map(str::to_owned));
         }
         // A framework live row binds the peer in its resource address, so the
         // caller supplies only the unbound fields (text for Send, none for
         // Open/Read). This is the retained, broker-resolved address, never a
         // new address asserted by the worker. Lifecycle checks pin its owner.
         if self.resource_kind != "chat.person" {
-            return None;
+            return Ok(None);
         }
         let resource = &self.request.address.resource;
         let key = if let Some(bound) = resource.strip_prefix("tilo-ui-bound:v1:") {
-            let mut parts = bound.splitn(3, ':');
-            uuid::Uuid::parse_str(parts.next()?).ok()?;
-            uuid::Uuid::parse_str(parts.next()?).ok()?;
-            String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?
+            decode_bound_resource_key(bound)
+                .map_err(|reason| format!("bound person resource is malformed: {reason}"))?
         } else {
             resource.clone()
         };
-        let peer = key.strip_prefix("chat.person:")?;
-        (peer.len() == 64 && peer.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .then(|| peer.to_owned())
+        let Some(peer) = key.strip_prefix("chat.person:") else {
+            return Ok(None);
+        };
+        Ok(
+            (peer.len() == 64 && peer.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| peer.to_owned()),
+        )
     }
 
     pub(super) fn display_caller(
@@ -1278,6 +1304,16 @@ fn selected_open_v2_action_matches(
                 .is_none_or(|always| always == &serde_json::Value::Bool(false))
     })
 }
+/// The resource key a `tilo-ui-bound:v1:` address binds: two uuids and the
+/// hex of the key, separated by colons.
+fn decode_bound_resource_key(bound: &str) -> Result<String, String> {
+    let mut parts = bound.splitn(3, ':');
+    let mut part = || parts.next().ok_or_else(|| "too few fields".to_owned());
+    uuid::Uuid::parse_str(part()?).map_err(|error| format!("first id: {error}"))?;
+    uuid::Uuid::parse_str(part()?).map_err(|error| format!("second id: {error}"))?;
+    let key = hex::decode(part()?).map_err(|error| format!("key hex: {error}"))?;
+    String::from_utf8(key).map_err(|error| format!("key text: {error}"))
+}
 fn selected_open_action_matches(
     address: &tilo_actions::ActionAddress,
     argument: Option<&str>,
@@ -1295,6 +1331,7 @@ fn selected_open_action_matches(
         return false;
     }
     argument
+        // optional-decode: a match predicate; arguments that are not a JSON map name no app, so the action is not the selected open
         .and_then(|argument| serde_json::from_str::<serde_json::Value>(argument).ok())
         .is_some_and(|value| {
             value.get("app").and_then(serde_json::Value::as_str)
@@ -1304,6 +1341,31 @@ fn selected_open_action_matches(
                     .is_none_or(|always| always == &serde_json::Value::Bool(false))
         })
 }
+#[cfg(test)]
+mod bound_resource_tests {
+    use super::decode_bound_resource_key;
+
+    #[test]
+    fn a_bound_resource_decodes_or_says_which_field_is_wrong() {
+        let (a, b) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let key = hex::encode("chat.person:ab");
+        assert_eq!(
+            decode_bound_resource_key(&format!("{a}:{b}:{key}")).as_deref(),
+            Ok("chat.person:ab")
+        );
+        for (bound, field) in [
+            (format!("{a}"), "too few fields"),
+            (format!("nope:{b}:{key}"), "first id"),
+            (format!("{a}:nope:{key}"), "second id"),
+            (format!("{a}:{b}:zz"), "key hex"),
+            (format!("{a}:{b}:ff"), "key text"),
+        ] {
+            let refused = decode_bound_resource_key(&bound).unwrap_err();
+            assert!(refused.contains(field), "{bound}: {refused}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod selected_open_tests {
     use super::selected_open_action_matches;
