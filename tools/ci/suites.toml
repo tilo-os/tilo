@@ -1557,10 +1557,6 @@ reason = "#[ignore]d: writes evidence under target/ from a prebuilt ux-bench"
 # Exercised by a suite that is already gated.
 
 [[covered]]
-suite = "apps/imager/packaging/test_release_catalog.py"
-by = "os/tests/imager_release_invariants.sh"
-
-[[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
 by = "os/tests/workflow_dependency_invariants.sh"
 
@@ -1573,24 +1569,12 @@ suite = "os/tests/frozen_source_fixture.py"
 by = "os/tests/test_native_resume.py"
 
 [[covered]]
-suite = "os/tests/forgejo_release_publication.sh"
-by = "os/tests/imager_release_invariants.sh"
-
-[[covered]]
-suite = "os/tests/internal_bundle_catalog.sh"
-by = "os/tests/imager_release_invariants.sh"
-
-[[covered]]
 suite = "os/tests/live_installer_service_invariants.sh"
 by = "os/tests/installer_target_invariants.sh"
 
 [[covered]]
 suite = "os/tests/managed-fex-dxvk-load.py"
 by = "os/tests/test_windows_dxvk_load_evidence.py"
-
-[[covered]]
-suite = "os/tests/public_release_origin.sh"
-by = "os/tests/imager_release_invariants.sh"
 
 [[covered]]
 suite = "os/tests/test_installer_target_boot_digest.py"
@@ -1615,14 +1599,6 @@ by = "os/tests/no_openssl_runtime.sh"
 [[covered]]
 suite = "os/tests/tls_registry_fixture.py"
 by = "os/tests/test_tls_registry_fixture.py"
-
-[[covered]]
-suite = "os/tests/winget_acceptance_monitor.sh"
-by = "os/tests/imager_release_invariants.sh"
-
-[[covered]]
-suite = "os/tests/winget_publication_idempotency.sh"
-by = "os/tests/imager_release_invariants.sh"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
 # gate but do not pass today; fix the suite, then move it into a group.

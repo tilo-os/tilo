@@ -2,7 +2,7 @@
 # Opt-in SELinux enforcing/audit proof for --dev-login installer media.
 #
 # Kept out of test-installer-cycle.sh so the release-gate script stays free of
-# guest-shell and journal inspection channels (imager_release_invariants.sh).
+# guest-shell and journal inspection channels.
 set -euo pipefail
 
 usage() {
