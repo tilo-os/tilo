@@ -24,7 +24,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::effects::SlidesEffect;
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
-use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, TextControl, ViewCx};
+use ui::framework::{Dispatcher, Live, TextControl, ViewCx};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, PickRequest};
@@ -32,7 +32,6 @@ use ui::presence::PresenceCtx;
 use ui::snap::{Guide, snap_rect};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{Notice, ToastKind};
@@ -383,6 +382,14 @@ pub struct SlidesApp {
     /// Slides a search hit or an agent's `open` asked to show, taken up in
     /// the next sync.
     opened: Rc<RefCell<Opened>>,
+    /// What the editor shares with the view's effect handler: what effects
+    /// ask of it and the element it has selected.
+    store: store::Shared,
+    /// The deck as the document holds it, shown as it changes; `None` for
+    /// an editor outside the framework.
+    live: Option<Live<DeckRecord>>,
+    /// The `(revision, loads)` of the deck last shown.
+    presented: Option<(u64, u64)>,
     rect: Rect,
     node: Option<NodeId>,
     bootstrapped: bool,
@@ -489,9 +496,6 @@ pub struct SlidesApp {
     /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
-    /// Where image elements' bytes live, addressed by the hash in their `src`.
-    /// Created once with the app and shared with its image and document workers.
-    content: ContentStore,
     /// Path-keyed decode cache for image elements. Decodes off the UI thread;
     /// the slide shows a light loading state until the pixels land.
     images: ImageStore,
@@ -586,10 +590,14 @@ impl SlidesApp {
         let deck = starter_deck();
         let notes_slide = Rc::new(RefCell::new(String::new()));
         let notes = notes_control(&dispatch, "");
+        let store = Rc::new(RefCell::new(store::Store::new(content.clone())));
         SlidesApp {
             focus_slide: None,
             deferred: None,
             opened: Rc::default(),
+            store,
+            live: None,
+            presented: None,
             deck,
             rect: Rect::ZERO,
             node: None,
@@ -624,8 +632,7 @@ impl SlidesApp {
             slide_pan: (0.0, 0.0),
             slide_pane: std::cell::Cell::new((0.0, 0.0)),
             deck_rev: 0,
-            images: ImageStore::new(content.clone()),
-            content,
+            images: ImageStore::new(content),
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
             layout_picker: Self::new_layout_picker(),
@@ -1026,60 +1033,36 @@ impl SlidesApp {
         });
     }
 
-    /// The edits bound to the selected element, published on the deck
-    /// beside its declared actions: delete it, bring it to the front, send
-    /// it to the back.
-    pub(crate) fn selection_declarations(&self) -> Vec<ActionDecl<DeckRecord>> {
+    /// The element selected in the editor, as the edits bound to it name
+    /// it; none outside the editor or with nothing selected.
+    fn selected(&self) -> Option<store::Selected> {
         if self.mode != Mode::Edit {
-            return Vec::new();
+            return None;
         }
-        let (Some(slide), Some(element)) = (self.slide(), self.selected_element()) else {
-            return Vec::new();
+        let (slide, element) = (self.slide()?, self.selected_element()?);
+        Some(store::Selected {
+            slide: ui::tilo_resource::Id::from(slide.id.as_str()),
+            element: ui::tilo_resource::Id::from(element.id.as_str()),
+            label: crate::actions::element_label(element.kind, &element.text),
+        })
+    }
+
+    /// Hand the view the element selected now, for the edits it binds.
+    fn note_selection(&self) {
+        self.store.borrow_mut().selected = self.selected();
+    }
+
+    /// Show the deck the document holds when it changed since it was last
+    /// shown.
+    fn follow_document(&mut self) {
+        let Some(state) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
         };
-        let (slide, element) = (
-            ui::tilo_resource::Id::from(slide.id.as_str()),
-            ui::tilo_resource::Id::from(element.id.as_str()),
-        );
-        let label = crate::actions::element_label(
-            self.selected_element()
-                .map_or(ElementKind::Text, |element| element.kind),
-            &self
-                .selected_element()
-                .map(|element| element.text.clone())
-                .unwrap_or_default(),
-        );
-        let mut declarations = Vec::new();
-        if let Some(delete) = DeckRecord::DELETE_ELEMENT
-            .bind(
-                crate::deck::deck::DeleteElement::paths().slide,
-                slide.clone(),
-            )
-            .and(
-                crate::deck::deck::DeleteElement::paths().element,
-                element.clone(),
-            )
-            .declaration("delete-selection", format!("Delete {label}"))
-        {
-            declarations.push(delete.describe("Delete the element selected in the editor."));
-        }
-        let front = DeckRecord::BRING_TO_FRONT
-            .bind(
-                crate::deck::deck::BringToFront::paths().slide,
-                slide.clone(),
-            )
-            .and(
-                crate::deck::deck::BringToFront::paths().element,
-                element.clone(),
-            )
-            .declaration("bring-selection-front", format!("Bring to front: {label}"));
-        let back = DeckRecord::SEND_TO_BACK
-            .bind(crate::deck::deck::SendToBack::paths().slide, slide)
-            .and(crate::deck::deck::SendToBack::paths().element, element)
-            .declaration("send-selection-back", format!("Send to back: {label}"));
-        for restack in [front, back].into_iter().flatten() {
-            declarations.push(restack.describe("Restack the element selected in the editor."));
-        }
-        declarations
+        self.adopt_resource_state(&state);
     }
 
     /// The inspector column's painted rect this frame (the same geometry
@@ -1589,133 +1572,6 @@ impl SlidesApp {
             self.begin_text_edit(true);
         } else {
             self.editing_text = false;
-        }
-    }
-
-    /// Ask the person for a picture with the host's chooser (the app never
-    /// draws its own picker), then keep its bytes in the content store and
-    /// place it on the current slide. A cancelled choice places nothing.
-    fn choose_picture(cx: &mut EffectCx<DeckRecord, Self>) -> Effected {
-        cx.choose_file(image_open_request(), |app: &mut Self, chosen, _| {
-            let Some(file) = chosen else {
-                return Ok(Effected::done());
-            };
-            let Some(src) = crate::assets::store_asset(&app.content, &file.bytes) else {
-                let message = tr("slides-toast-image-import-failed");
-                app.io_toast.show(message.clone(), ToastKind::Error);
-                return Err(message);
-            };
-            app.insert_picture(&src);
-            Ok(Effected::done())
-        })
-    }
-
-    /// Open a presentation file in place of the deck: the file at `path`,
-    /// or the one the person chooses with the host's chooser. It is read off
-    /// the UI thread and lands as one action, one undo step.
-    fn open_presentation(
-        &self,
-        path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut EffectCx<DeckRecord, Self>,
-    ) -> Effected {
-        match path {
-            Some(path) => {
-                let content = self.content.clone();
-                cx.thread(
-                    move |_| load_presentation_from_path(&path, &content),
-                    |app: &mut Self, loaded, cx| app.finish_open(loaded, cx),
-                )
-            }
-            None => cx.choose_file(open_document_request(), |app: &mut Self, chosen, cx| {
-                let Some(file) = chosen else {
-                    return Ok(Effected::done());
-                };
-                let pptx = is_pptx(std::path::Path::new(&file.name));
-                if pptx {
-                    app.io_toast
-                        .show(tr("slides-toast-opening-pptx"), ToastKind::Info);
-                }
-                let content = app.content.clone();
-                Ok(cx.thread(
-                    move |_| parse_presentation(&file.bytes, pptx, &content),
-                    |app: &mut Self, loaded, cx| app.finish_open(loaded, cx),
-                ))
-            }),
-        }
-    }
-
-    /// Show the outcome of opening a presentation, replacing the deck when
-    /// it was read.
-    fn finish_open(
-        &mut self,
-        loaded: Result<Deck, String>,
-        cx: &EffectCx<DeckRecord, Self>,
-    ) -> EffectAnswer {
-        match loaded {
-            Ok(deck) => {
-                cx.apply(&actions::replace_deck_action(&deck));
-                self.show_opened_deck();
-                Ok(Effected::done())
-            }
-            Err(error) => {
-                self.io_toast
-                    .show(tr("slides-toast-process-failed"), ToastKind::Error);
-                Err(error)
-            }
-        }
-    }
-
-    /// Save the deck as a presentation file: at `path` (PPTX by its
-    /// extension, else ODP), or as ODP where the person chooses with the
-    /// host's chooser. It is written off the UI thread.
-    fn save_presentation(
-        &mut self,
-        path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut EffectCx<DeckRecord, Self>,
-    ) -> EffectAnswer {
-        if !actions::deck_within_aggregate_limits(&self.deck) {
-            let message = tr("slides-toast-export-limit");
-            self.io_toast.show(message.clone(), ToastKind::Error);
-            return Err(message);
-        }
-        let deck = self.deck.clone();
-        let content = self.content.clone();
-        Ok(match path {
-            Some(path) => {
-                cx.thread(
-                    move |_| save_presentation_to_path(&deck, &path, &content),
-                    // Saving where the deck lives says nothing; only a
-                    // failure is news.
-                    move |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),
-                )
-            }
-            None => {
-                let name = format!("{}.odp", sanitize_filename(&deck.title));
-                cx.thread(
-                    move |_| crate::odp::write_odp(&deck, &content).map_err(|e| e.to_string()),
-                    move |app: &mut Self, bytes, cx| match bytes {
-                        Ok(bytes) => Ok(cx.save_file(
-                            save_document_request(&name),
-                            bytes,
-                            |app: &mut Self, saved, _| app.finish_save(Ok(saved)),
-                        )),
-                        Err(error) => app.finish_save(Err(error)),
-                    },
-                )
-            }
-        })
-    }
-
-    /// Show a failed save. A save through the chooser has nothing more to
-    /// say: the person just picked the file.
-    fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
-        match saved {
-            Ok(_) => Ok(Effected::done()),
-            Err(error) => {
-                self.io_toast
-                    .show("Could not process the presentation", ToastKind::Error);
-                Err(error)
-            }
         }
     }
 
@@ -2577,6 +2433,11 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        self.follow_document();
+        let asks = std::mem::take(&mut self.store.borrow_mut().asks);
+        for ask in asks {
+            self.take_ask(ask);
+        }
         // An open's or a save's result says so in the window's bar while it
         // lasts.
         self.io_toast.expire();
@@ -2609,6 +2470,15 @@ impl Widget for SlidesApp {
             self.sync_notes(state);
         }
         self.ensure_text_editor(state);
+        self.note_selection();
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
@@ -2702,6 +2572,7 @@ impl Widget for SlidesApp {
         self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
+        self.note_selection();
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3248,13 +3119,24 @@ impl Widget for SlidesApp {
 }
 
 impl SlidesApp {
-    /// Answer one of the editor's effects, from a control, a key, the
-    /// palette or an agent.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: SlidesEffect,
-        cx: &mut EffectCx<DeckRecord, Self>,
-    ) -> EffectAnswer {
+    /// Do what an effect asked of the editor: show a mode, a panel, a
+    /// slide, an element or its notes, place a picture, say something.
+    fn take_ask(&mut self, ask: store::Ask) {
+        match ask {
+            store::Ask::Show(effect) => {
+                if let Err(error) = self.show(effect) {
+                    tracing::debug!(%error, "slides: what an effect named went away");
+                }
+            }
+            store::Ask::InsertPicture(src) => self.insert_picture(&src),
+            store::Ask::ShowOpenedDeck => self.show_opened_deck(),
+            store::Ask::Say(message, kind) => self.io_toast.show(message, kind),
+            store::Ask::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
+        }
+    }
+
+    /// Show what a view effect names.
+    fn show(&mut self, effect: SlidesEffect) -> Result<(), String> {
         match effect {
             SlidesEffect::Editor => self.mode = Mode::Edit,
             SlidesEffect::Overview => self.mode = Mode::Overview,
@@ -3304,18 +3186,15 @@ impl SlidesApp {
                 self.begin_notes_edit();
                 self.scroll_rail_to_current();
             }
-            SlidesEffect::InsertPicture => return Ok(Self::choose_picture(cx)),
-            SlidesEffect::OpenPresentation { path } => return Ok(self.open_presentation(path, cx)),
-            SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
-            SlidesEffect::ReadDeck => {
-                return Ok(Effected::value(crate::outline::of_deck(&self.deck)));
-            }
-            SlidesEffect::ImportPptxContent { content } => {
-                return self.import_pptx_content(&content, cx);
-            }
-            SlidesEffect::ExportPptxContent => return self.export_pptx_content(cx),
+            // The store answers the rest without the editor.
+            SlidesEffect::InsertPicture
+            | SlidesEffect::OpenPresentation { .. }
+            | SlidesEffect::SaveAs { .. }
+            | SlidesEffect::ReadDeck
+            | SlidesEffect::ImportPptxContent { .. }
+            | SlidesEffect::ExportPptxContent => {}
         }
-        Ok(Effected::done())
+        Ok(())
     }
 
     /// What shows slide `id` when a search hit or an agent's `open` names
@@ -4668,6 +4547,9 @@ fn custom_colour_hex(hex: &str) -> String {
 
 #[path = "app/content_files.rs"]
 mod content_files;
+#[path = "app/store.rs"]
+mod store;
+pub(crate) use store::window;
 
 #[cfg(test)]
 #[path = "app/bench.rs"]

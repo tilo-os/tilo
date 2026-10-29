@@ -5,17 +5,18 @@
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 
-use super::{DeckRecord, MAX_PRESENTATION_FILE_BYTES, SlidesApp};
+use super::store::{Ask, Store};
+use super::{DeckRecord, MAX_PRESENTATION_FILE_BYTES};
 use crate::actions;
 
-impl SlidesApp {
+impl Store {
     /// Replace a new, untouched deck with the `.pptx` at `content` (a
     /// `tilo.content:<hash>` address) and answer its outline. A deck someone
     /// wrote is never replaced: the import is refused instead.
     pub(super) fn import_pptx_content(
         &mut self,
         content: &str,
-        cx: &EffectCx<DeckRecord, Self>,
+        cx: &EffectCx<DeckRecord>,
     ) -> EffectAnswer {
         let hash = ui::tilo_actions::content_hash(content.trim())
             // A plan that carried the content gives its bare hash.
@@ -43,13 +44,13 @@ impl SlidesApp {
         let deck = crate::pptx::read_pptx(&bytes, &self.content)
             .map_err(|error| format!("content `{hash}` is not a PowerPoint deck: {error}"))?;
         cx.apply(&actions::replace_deck_action(&deck));
-        self.show_opened_deck();
+        self.ask(Ask::ShowOpenedDeck);
         Ok(Effected::value(crate::outline::of_deck(&deck)))
     }
 
     /// Keep the deck as a `.pptx` in the content store and answer its
     /// address.
-    pub(super) fn export_pptx_content(&self, cx: &EffectCx<DeckRecord, Self>) -> EffectAnswer {
+    pub(super) fn export_pptx_content(&self, cx: &EffectCx<DeckRecord>) -> EffectAnswer {
         let deck = crate::deck::mirror(&cx.live().get());
         let bytes = crate::pptx::write_pptx(&deck, &self.content)
             .map_err(|error| format!("the deck could not be written: {error}"))?;
