@@ -1,0 +1,541 @@
+//! Screen capture against a headless compositor: a trusted tool copies a
+//! whole output and a region of it into shared memory through
+//! `wlr-screencopy`, waits for damage when it asks to, and copies through
+//! `ext-image-copy-capture`; ordinary clients see neither global.
+
+#![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    reason = "test fixtures: a failed step is the assertion"
+)]
+
+use std::os::fd::{AsFd as _, OwnedFd};
+use std::time::Duration;
+
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::utils::Transform;
+use tilo_compositor::{Compositor, HostLayer, OutputConfig, StackPolicy, SurfaceHost};
+use wayland_client::protocol::{
+    wl_buffer::WlBuffer, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_shm,
+    wl_shm::WlShm, wl_shm_pool::WlShmPool,
+};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::ext::image_capture_source::v1::client::{
+    ext_image_capture_source_v1::ExtImageCaptureSourceV1,
+    ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+};
+use wayland_protocols::ext::image_copy_capture::v1::client::{
+    ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
+    ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options},
+    ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
+};
+use wayland_protocols_wlr::screencopy::v1::client::{
+    zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
+    zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
+
+/// The desktop's background, B, G, R, X as XRGB8888 lies in memory.
+const BACKGROUND: [u8; 3] = [38, 27, 26];
+const RED: [u8; 3] = [0, 0, 255];
+const GREEN: [u8; 3] = [0, 255, 0];
+
+#[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per event a test tool waits for"
+)]
+struct Seen {
+    globals: Vec<String>,
+    shm: Option<WlShm>,
+    output: Option<WlOutput>,
+    screencopy: Option<ZwlrScreencopyManagerV1>,
+    image_copy: Option<ExtImageCopyCaptureManagerV1>,
+    sources: Option<ExtOutputImageCaptureSourceManagerV1>,
+    /// The screencopy frame's shm buffer: format, width, height, stride.
+    buffer: Option<(u32, u32, u32, u32)>,
+    buffer_done: bool,
+    damage: Vec<(u32, u32, u32, u32)>,
+    ready: bool,
+    failed: bool,
+    /// The image-copy session's buffer size and shm formats.
+    session_size: Option<(u32, u32)>,
+    session_formats: Vec<u32>,
+    session_done: bool,
+    transform: Option<u32>,
+}
+
+struct Tool {
+    connection: Connection,
+    queue: EventQueue<Seen>,
+    seen: Seen,
+}
+
+impl Tool {
+    fn connect(compositor: &mut Compositor, trusted: bool) -> Self {
+        let socket = if trusted {
+            compositor.connect_trusted_client()
+        } else {
+            compositor.connect_client()
+        }
+        .expect("client socket");
+        let connection = Connection::from_socket(socket).expect("connection");
+        let queue = connection.new_event_queue();
+        connection.display().get_registry(&queue.handle(), ());
+        Self {
+            connection,
+            queue,
+            seen: Seen::default(),
+        }
+    }
+
+    fn exchange(&mut self) {
+        self.connection.flush().expect("flush");
+        if let Some(guard) = self.connection.prepare_read() {
+            let _ = guard.read();
+        }
+        self.queue
+            .dispatch_pending(&mut self.seen)
+            .expect("client dispatch");
+        self.connection.flush().expect("flush");
+    }
+
+    /// A shared-memory buffer of `width` x `height` XRGB8888 pixels and
+    /// the memory behind it.
+    fn buffer(&self, width: i32, height: i32) -> (WlBuffer, OwnedFd) {
+        let qh = self.queue.handle();
+        let fd =
+            rustix::fs::memfd_create("tilo-capture-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+        rustix::fs::ftruncate(&fd, u64::try_from(width * height * 4).unwrap()).unwrap();
+        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
+            fd.as_fd(),
+            width * height * 4,
+            &qh,
+            (),
+        );
+        let buffer = pool.create_buffer(
+            0,
+            width,
+            height,
+            width * 4,
+            wl_shm::Format::Xrgb8888,
+            &qh,
+            (),
+        );
+        pool.destroy();
+        (buffer, fd)
+    }
+}
+
+/// The B, G, R of the pixel at `x`, `y` of an XRGB8888 image `width` wide.
+fn pixel(fd: &OwnedFd, width: usize, x: usize, y: usize) -> [u8; 3] {
+    let mut bytes = [0_u8; 3];
+    let offset = u64::try_from((y * width + x) * 4).unwrap();
+    rustix::io::pread(fd, &mut bytes, offset).unwrap();
+    bytes
+}
+
+fn near(got: [u8; 3], want: [u8; 3]) -> bool {
+    got.iter()
+        .zip(want)
+        .all(|(got, want)| got.abs_diff(want) <= 1)
+}
+
+/// Let compositor and tool talk, drawing a frame each round, until `done`
+/// holds; false when it never does.
+fn pump_until(
+    compositor: &mut Compositor,
+    tool: &mut Tool,
+    rounds: usize,
+    mut done: impl FnMut(&Seen) -> bool,
+) -> bool {
+    for _ in 0..rounds {
+        tool.exchange();
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        compositor.render().expect("render");
+        tool.exchange();
+        if done(&tool.seen) {
+            return true;
+        }
+    }
+    false
+}
+
+fn pump(compositor: &mut Compositor, tool: &mut Tool, done: impl FnMut(&Seen) -> bool) {
+    assert!(
+        pump_until(compositor, tool, 500, done),
+        "condition not reached"
+    );
+}
+
+/// A hosted surface: one square of one colour.
+struct Square {
+    rect: (i32, i32, i32, i32),
+    buffer: MemoryRenderBuffer,
+}
+
+impl Square {
+    fn new(rect: (i32, i32, i32, i32), bgr: [u8; 3]) -> Self {
+        let pixel = [bgr[0], bgr[1], bgr[2], 255];
+        let bytes = pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap());
+        let buffer = MemoryRenderBuffer::from_slice(
+            &bytes,
+            Fourcc::Argb8888,
+            (rect.2, rect.3),
+            1,
+            Transform::Normal,
+            None,
+        );
+        Self { rect, buffer }
+    }
+}
+
+impl SurfaceHost for Square {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            location: (self.rect.0, self.rect.1),
+            size: (self.rect.2, self.rect.3),
+            buffer: self.buffer.clone(),
+        }]
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+}
+
+/// A 64 x 48 output with a red square at 8, 8 of side 16.
+fn compositor() -> Compositor {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 64, 48))
+        .expect("output");
+    compositor.add_host(Box::new(Square::new((8, 8, 16, 16), RED)));
+    compositor
+}
+
+fn trusted_tool(compositor: &mut Compositor) -> Tool {
+    let mut tool = Tool::connect(compositor, true);
+    pump(compositor, &mut tool, |seen| {
+        seen.shm.is_some()
+            && seen.output.is_some()
+            && seen.screencopy.is_some()
+            && seen.image_copy.is_some()
+            && seen.sources.is_some()
+    });
+    tool
+}
+
+#[test]
+fn ordinary_clients_cannot_capture_the_screen() {
+    let mut compositor = compositor();
+    let mut tool = Tool::connect(&mut compositor, false);
+    pump(&mut compositor, &mut tool, |seen| seen.output.is_some());
+    for global in [
+        "zwlr_screencopy_manager_v1",
+        "ext_image_copy_capture_manager_v1",
+        "ext_output_image_capture_source_manager_v1",
+    ] {
+        assert!(
+            !tool.seen.globals.iter().any(|seen| seen == global),
+            "{global} offered to an ordinary client"
+        );
+    }
+}
+
+#[test]
+fn a_trusted_tool_copies_an_output_and_a_region_of_it() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let qh = tool.queue.handle();
+    let manager = tool.seen.screencopy.clone().unwrap();
+    let output = tool.seen.output.clone().unwrap();
+
+    let frame = manager.capture_output(0, &output, &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.buffer_done);
+    assert_eq!(
+        tool.seen.buffer,
+        Some((wl_shm::Format::Xrgb8888 as u32, 64, 48, 256))
+    );
+    let (buffer, memory) = tool.buffer(64, 48);
+    frame.copy(&buffer);
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the frame was copied");
+    assert!(near(pixel(&memory, 64, 0, 0), BACKGROUND));
+    assert!(near(pixel(&memory, 64, 63, 47), BACKGROUND));
+    assert!(near(pixel(&memory, 64, 8, 8), RED));
+    assert!(near(pixel(&memory, 64, 23, 23), RED));
+    assert!(near(pixel(&memory, 64, 24, 24), BACKGROUND));
+    frame.destroy();
+
+    tool.seen.buffer = None;
+    tool.seen.buffer_done = false;
+    tool.seen.ready = false;
+    let frame = manager.capture_output_region(0, &output, 16, 16, 16, 16, &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.buffer_done);
+    assert_eq!(
+        tool.seen.buffer,
+        Some((wl_shm::Format::Xrgb8888 as u32, 16, 16, 64))
+    );
+    let (buffer, memory) = tool.buffer(16, 16);
+    frame.copy(&buffer);
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready);
+    // The region's top left quarter is the square's bottom right.
+    assert!(near(pixel(&memory, 16, 0, 0), RED));
+    assert!(near(pixel(&memory, 16, 7, 7), RED));
+    assert!(near(pixel(&memory, 16, 8, 8), BACKGROUND));
+}
+
+#[test]
+fn a_copy_with_damage_waits_until_the_output_changes() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let qh = tool.queue.handle();
+    let manager = tool.seen.screencopy.clone().unwrap();
+    let output = tool.seen.output.clone().unwrap();
+    let (buffer, memory) = tool.buffer(64, 48);
+
+    // The first copy has everything as damage.
+    let frame = manager.capture_output(0, &output, &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.buffer_done);
+    frame.copy_with_damage(&buffer);
+    pump(&mut compositor, &mut tool, |seen| seen.ready);
+    assert_eq!(tool.seen.damage, vec![(0, 0, 64, 48)]);
+    frame.destroy();
+
+    tool.seen.ready = false;
+    tool.seen.damage.clear();
+    let frame = manager.capture_output(0, &output, &qh, ());
+    frame.copy_with_damage(&buffer);
+    assert!(
+        !pump_until(&mut compositor, &mut tool, 20, |seen| seen.ready),
+        "nothing changed, nothing is copied"
+    );
+    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    pump(&mut compositor, &mut tool, |seen| seen.ready);
+    // The new square is damaged (and the one it moved down in the stack),
+    // not the whole output.
+    assert!(tool.seen.damage.contains(&(40, 30, 8, 8)));
+    assert!(!tool.seen.damage.contains(&(0, 0, 64, 48)));
+    assert!(near(pixel(&memory, 64, 44, 34), GREEN));
+}
+
+#[test]
+fn a_wrong_buffer_is_a_protocol_error() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let qh = tool.queue.handle();
+    let manager = tool.seen.screencopy.clone().unwrap();
+    let output = tool.seen.output.clone().unwrap();
+    let frame = manager.capture_output(0, &output, &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.buffer_done);
+    let (buffer, _memory) = tool.buffer(32, 48);
+    frame.copy(&buffer);
+    for _ in 0..50 {
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        tool.connection.flush().ok();
+        if let Some(guard) = tool.connection.prepare_read() {
+            let _ = guard.read();
+        }
+        if tool.queue.dispatch_pending(&mut tool.seen).is_err() {
+            break;
+        }
+    }
+    assert!(
+        tool.connection.protocol_error().is_some(),
+        "a buffer of the wrong size is refused"
+    );
+}
+
+#[test]
+fn a_trusted_tool_copies_an_output_through_image_copy_capture() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let qh = tool.queue.handle();
+    let sources = tool.seen.sources.clone().unwrap();
+    let manager = tool.seen.image_copy.clone().unwrap();
+    let output = tool.seen.output.clone().unwrap();
+
+    let source = sources.create_source(&output, &qh, ());
+    let session = manager.create_session(&source, Options::empty(), &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.session_done);
+    assert_eq!(tool.seen.session_size, Some((64, 48)));
+    assert!(
+        tool.seen
+            .session_formats
+            .contains(&(wl_shm::Format::Xrgb8888 as u32))
+    );
+
+    let (buffer, memory) = tool.buffer(64, 48);
+    let frame = session.create_frame(&qh, ());
+    frame.attach_buffer(&buffer);
+    frame.damage_buffer(0, 0, 64, 48);
+    frame.capture();
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the frame was copied");
+    assert_eq!(tool.seen.transform, Some(0));
+    assert_eq!(tool.seen.damage, vec![(0, 0, 64, 48)]);
+    assert!(near(pixel(&memory, 64, 0, 0), BACKGROUND));
+    assert!(near(pixel(&memory, 64, 12, 12), RED));
+    frame.destroy();
+
+    // A buffer of the wrong size fails the frame, not the client.
+    tool.seen.ready = false;
+    let (small, _memory) = tool.buffer(16, 16);
+    let frame = session.create_frame(&qh, ());
+    frame.attach_buffer(&small);
+    frame.damage_buffer(0, 0, 16, 16);
+    frame.capture();
+    compositor.add_host(Box::new(Square::new((40, 30, 8, 8), GREEN)));
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.failed);
+}
+
+impl Dispatch<WlRegistry, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        registry: &WlRegistry,
+        event: wl_registry::Event,
+        (): &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name, interface, ..
+        } = event
+        {
+            seen.globals.push(interface.clone());
+            match interface.as_str() {
+                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
+                "wl_output" => seen.output = Some(registry.bind(name, 1, qh, ())),
+                "zwlr_screencopy_manager_v1" => {
+                    seen.screencopy = Some(registry.bind(name, 3, qh, ()));
+                }
+                "ext_image_copy_capture_manager_v1" => {
+                    seen.image_copy = Some(registry.bind(name, 1, qh, ()));
+                }
+                "ext_output_image_capture_source_manager_v1" => {
+                    seen.sources = Some(registry.bind(name, 1, qh, ()));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<ZwlrScreencopyFrameV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
+                let format = match format {
+                    WEnum::Value(format) => format as u32,
+                    WEnum::Unknown(format) => format,
+                };
+                seen.buffer = Some((format, width, height, stride));
+            }
+            zwlr_screencopy_frame_v1::Event::BufferDone => seen.buffer_done = true,
+            zwlr_screencopy_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => seen.damage.push((x, y, width, height)),
+            zwlr_screencopy_frame_v1::Event::Ready { .. } => seen.ready = true,
+            zwlr_screencopy_frame_v1::Event::Failed => seen.failed = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtImageCopyCaptureSessionV1,
+        event: ext_image_copy_capture_session_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
+                seen.session_size = Some((width, height));
+            }
+            ext_image_copy_capture_session_v1::Event::ShmFormat { format } => {
+                seen.session_formats.push(match format {
+                    WEnum::Value(format) => format as u32,
+                    WEnum::Unknown(format) => format,
+                });
+            }
+            ext_image_copy_capture_session_v1::Event::Done => seen.session_done = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtImageCopyCaptureFrameV1,
+        event: ext_image_copy_capture_frame_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_image_copy_capture_frame_v1::Event::Transform { transform } => {
+                seen.transform = Some(match transform {
+                    WEnum::Value(transform) => transform as u32,
+                    WEnum::Unknown(transform) => transform,
+                });
+            }
+            ext_image_copy_capture_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => seen.damage.push((
+                u32::try_from(x).unwrap(),
+                u32::try_from(y).unwrap(),
+                u32::try_from(width).unwrap(),
+                u32::try_from(height).unwrap(),
+            )),
+            ext_image_copy_capture_frame_v1::Event::Ready => seen.ready = true,
+            ext_image_copy_capture_frame_v1::Event::Failed { .. } => seen.failed = true,
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore WlShm);
+delegate_noop!(Seen: ignore WlOutput);
+delegate_noop!(Seen: ignore WlShmPool);
+delegate_noop!(Seen: ignore WlBuffer);
+delegate_noop!(Seen: ignore ZwlrScreencopyManagerV1);
+delegate_noop!(Seen: ExtImageCopyCaptureManagerV1);
+delegate_noop!(Seen: ExtOutputImageCaptureSourceManagerV1);
+delegate_noop!(Seen: ExtImageCaptureSourceV1);
