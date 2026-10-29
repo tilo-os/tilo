@@ -458,7 +458,7 @@ fn pdf_export_uses_the_live_source_before_the_editor_pulls_it() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("report.pdf");
     std::fs::write(&path, b"previous export").unwrap();
-    app.pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
+    app.state().pending_resource_io = Some(ResourceIo::ExportPdf(path.clone()));
     app.sync(&doc, &ROOT);
     assert_eq!(
         std::fs::read(&path).unwrap(),

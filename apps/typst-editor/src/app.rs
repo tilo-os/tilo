@@ -55,6 +55,10 @@ use ui::surface::Region;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
+mod store;
+pub(crate) use store::window;
+use store::{Shared, Store};
+
 /// An Open, Save or Export in flight: its chooser, then for a save or an
 /// export the write to where the person chose.
 enum PendingIo {
@@ -190,11 +194,14 @@ pub struct TypstApp {
     /// Export is under way.
     io: Option<PendingIo>,
     background_poll_deadline: Cell<Option<Instant>>,
-    /// The answer owed to the file effect still running, given when its
-    /// chooser or its write settles.
-    file_reply: Option<ui::framework::EffectReply>,
-    /// A file effect's read or write, done on the next sync.
-    pending_resource_io: Option<ResourceIo>,
+    /// What the window shares with the view's effect handler: the effects
+    /// it asks, the file effect's caller and the rows it publishes.
+    store: Shared,
+    /// The workspace as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<ui::framework::Live<crate::resource::Workspace>>,
+    /// The `(revision, loads)` of the workspace last shown.
+    presented: Option<(u64, u64)>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -300,8 +307,9 @@ impl TypstApp {
             known_files: Vec::new(),
             io: None,
             background_poll_deadline: Cell::new(None),
-            file_reply: None,
-            pending_resource_io: None,
+            store: Rc::default(),
+            live: None,
+            presented: None,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
@@ -348,20 +356,66 @@ impl TypstApp {
         }
     }
 
-    /// Attach the workspace's dispatcher; a capture's first file.
-    pub(crate) fn attach_surface(
-        &mut self,
-        cx: &ui::framework::SurfaceCx<crate::resource::Workspace>,
-    ) {
+    /// Take part in the view `cx` builds: edit through its dispatcher,
+    /// follow the document it holds; a capture's first file.
+    pub(crate) fn attach(&mut self, cx: &ui::framework::ViewCx<crate::resource::Workspace>) {
         self.chrome.attach_actions(&cx.actions());
         self.actions = Some(cx.dispatcher());
         self.saves = cx.saves();
         self.editor.attach(cx.dispatcher());
+        self.live = Some(cx.live().clone());
         #[cfg(feature = "samples")]
         if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
             self.current = Some(file.0.clone());
         }
         self.follow_current();
+    }
+
+    /// What the window shares with the view's effect handler.
+    pub(crate) fn state(&self) -> std::cell::RefMut<'_, Store> {
+        self.store.borrow_mut()
+    }
+
+    /// Show the workspace when the document changed since it was last shown.
+    fn follow_document(&mut self) {
+        let Some(shown) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
+        };
+        self.present_state(&shown);
+    }
+
+    /// Do what the effects asked and a capture staged.
+    fn answer_asks(&mut self) {
+        let (asks, staged) = {
+            let mut state = self.state();
+            (std::mem::take(&mut state.asks), state.staged.take())
+        };
+        if let Some(scenario) = staged {
+            self.stage_scenario(scenario.0.as_deref());
+        }
+        for ask in asks {
+            match ask {
+                crate::actions::TypstEffect::Save { path: None } => match self.save() {
+                    Ok(true) => self.finish_file_effect(Ok(())),
+                    // The chooser or the write answers when it settles.
+                    Ok(false) => {}
+                    Err(error) => self.finish_file_effect(Err(error)),
+                },
+                other => self.perform_resource_operation(other),
+            }
+            self.dirty = true;
+        }
+    }
+
+    /// Publish the Problems rows, preview pages and headings as they are
+    /// now.
+    fn publish_rows(&self) {
+        let rows = self.live_rows();
+        self.state().rows = rows;
     }
 
     /// Show the workspace as it is now: the file shown stays open unless it
@@ -576,6 +630,8 @@ impl TypstApp {
         }
         self.outline.set_headings(out.headings);
         self.diagnostics.set_diagnostics(out.diagnostics);
+        // The Problems rows, pages and headings follow each compile.
+        self.publish_rows();
         if self.err_count > 0 && self.compile_feedback {
             // An explicit Compile that fails opens Problems. While typing, a
             // half-written expression fails on every keystroke: the inline
@@ -1310,6 +1366,8 @@ impl Widget for TypstApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.answer_asks();
         self.sync_workspace(doc, path);
         // The bar's slots say what the sync just learned: the name, whether
         // the source is unsaved, the problems, the open panels.
@@ -1325,6 +1383,14 @@ impl Widget for TypstApp {
             .into_iter()
             .chain(self.status.deadline())
             .min()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
@@ -1652,55 +1718,11 @@ impl ui::widget::controls::ActionControls for TypstApp {
 
 impl TypstApp {
     /// Answer the file effect's caller, if one is waiting.
-    fn finish_file_effect(&mut self, result: Result<(), String>) {
-        if let Some(reply) = self.file_reply.take() {
+    fn finish_file_effect(&self, result: Result<(), String>) {
+        let reply = self.state().file_reply.take();
+        if let Some(reply) = reply {
             reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
-    }
-
-    /// Answer `effect`: a file read or write with a path waits for the next
-    /// sync, one without asks the file chooser; the rest happen now.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: crate::actions::TypstEffect,
-        cx: &mut ui::framework::EffectCx<crate::resource::Workspace, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use crate::actions::TypstEffect;
-        let file = matches!(
-            effect,
-            TypstEffect::OpenFile { .. }
-                | TypstEffect::Save { .. }
-                | TypstEffect::SaveAs
-                | TypstEffect::ExportPdf { .. }
-        );
-        if file && (self.file_reply.is_some() || self.pending_resource_io.is_some()) {
-            return Err("another file operation is already running".into());
-        }
-        match effect {
-            TypstEffect::OpenFile { path: Some(path) } => {
-                self.pending_resource_io = Some(ResourceIo::Open(path.into()));
-            }
-            TypstEffect::Save { path: Some(path) } => {
-                self.pending_resource_io = Some(ResourceIo::Save(path.into()));
-            }
-            TypstEffect::ExportPdf { path: Some(path) } => {
-                self.pending_resource_io = Some(ResourceIo::ExportPdf(path.into()));
-            }
-            TypstEffect::OpenFile { path: None } => self.open(),
-            TypstEffect::Save { path: None } => {
-                if self.save()? {
-                    return Ok(ui::framework::Effected::done());
-                }
-            }
-            TypstEffect::SaveAs => self.save_as(),
-            TypstEffect::ExportPdf { path: None } => self.export_pdf(),
-            other => {
-                self.perform_resource_operation(other);
-                return Ok(ui::framework::Effected::done());
-            }
-        }
-        self.file_reply = Some(cx.reply());
-        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -2067,7 +2089,8 @@ impl TypstApp {
         {
             dispatcher.effect(&crate::actions::TypstEffect::Save { path: Some(path) });
         }
-        if let Some(operation) = self.pending_resource_io.take() {
+        let operation = self.state().pending_resource_io.take();
+        if let Some(operation) = operation {
             let result = match operation {
                 ResourceIo::Open(path) => self.open_typ_from(&path),
                 ResourceIo::Save(path) => self.save_typ_to(&path),
@@ -2119,7 +2142,7 @@ impl TypstApp {
 
     /// When background work is next polled, while there is any.
     fn background_wake(&self) -> Option<Instant> {
-        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
+        if self.io.is_none() && !self.store.borrow().waiting() && !self.compiling() {
             return None;
         }
         // Poll completed work independently of animation preferences. Repeated
