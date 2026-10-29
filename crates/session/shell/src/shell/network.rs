@@ -7034,32 +7034,11 @@ impl ShellNetwork {
                 views,
                 decode,
             } => self.note_surface_views(ws, viewer, &room, views, &decode),
-            NeighbourMsg::MlsGovernance { room, frame, .. } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::Frame { room, frame });
-                }
-            }
-            NeighbourMsg::MlsAccessRequest { room, request, .. } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: None,
-                    });
-                }
-            }
-            NeighbourMsg::MlsRoutedAccessRequest {
-                room,
-                request,
-                route,
-                ..
-            } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request,
-                        route: Some(route),
-                    });
+            message @ (NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. }) => {
+                if let Some(governance) = InboundChannelGovernance::from_message(message) {
+                    self.queue_channel_governance(governance);
                 }
             }
             message @ (NeighbourMsg::RecordContentWant { .. }
