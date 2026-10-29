@@ -379,6 +379,7 @@ mod inotify_watch {
             } else {
                 interest.subscribers.push((subscriber, mask));
             }
+            drop(routes);
             Ok(wd)
         }
 
