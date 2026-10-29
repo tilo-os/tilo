@@ -14,6 +14,8 @@ mod shared_desktop_tests;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 mod cached_document;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod direct;
 pub mod document;
 pub mod document_frame;
 pub mod installation;

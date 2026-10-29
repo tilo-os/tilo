@@ -51,7 +51,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 thiserror.workspace = true
 parking_lot.workspace = true
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 
