@@ -992,7 +992,6 @@ impl SpeakersModel {
     }
 
     fn nav_buttons(
-        &self,
         actions: &Actions<Settings>,
         back: bool,
         next: Option<(&str, &str, bool)>,
@@ -1030,7 +1029,6 @@ impl SpeakersModel {
     /// The controls of a set led here: calibrate it from its row; deleting
     /// it is in its menu.
     fn led_set_controls(
-        &self,
         actions: &Actions<Settings>,
         group: &ui::collaboration::SpeakerGroupInfo,
     ) -> Box<dyn Widget> {
@@ -1121,7 +1119,7 @@ impl SpeakersModel {
         }
         let trailing = group
             .led_here
-            .then(|| self.led_set_controls(actions, group));
+            .then(|| Self::led_set_controls(actions, group));
         let mut description = if group.led_here {
             summary
         } else {
@@ -1227,7 +1225,7 @@ impl SpeakersModel {
             body.push(note(&problem));
         }
         body.extend(self.message_rows());
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
             actions,
             true,
             Some((
@@ -1263,7 +1261,7 @@ impl SpeakersModel {
         )));
         if self.setup.arrangement() == Arrangement::Room {
             body.push(note(&t("speakers-identify-room-next")));
-            body.push(self.nav_buttons(actions, true, None));
+            body.push(Self::nav_buttons(actions, true, None));
             body.push(row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
@@ -1301,7 +1299,7 @@ impl SpeakersModel {
                 body.push(note(&t("speakers-identify-play-first")));
             }
             body.extend(self.message_rows());
-            body.push(self.nav_buttons(actions, true, None));
+            body.push(Self::nav_buttons(actions, true, None));
         }
         vec![section(&t("speakers-identify-title"), rows(body))]
     }
@@ -1367,7 +1365,7 @@ impl SpeakersModel {
         if let Some(problem) = self.setup.layout_problem() {
             body.push(note(&problem));
         }
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
             actions,
             true,
             Some((
@@ -1397,7 +1395,7 @@ impl SpeakersModel {
         }
         body.push(note(&t("speakers-name-join-note")));
         body.extend(self.message_rows());
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
             actions,
             true,
             Some(("speakers.save", &t("speakers-save"), self.in_flight == 0)),
@@ -1705,6 +1703,10 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let app = Rc::clone(app);
     Some(cx.switch(&shown, move |_, _| {
         // The part keeps the sets followed while it is shown.
+        #[allow(
+            clippy::no_effect_underscore_binding,
+            reason = "the part holds the follow token while it is shown"
+        )]
         let _followed = &following;
         area(&app).map_or_else(
             || page(Vec::new()),

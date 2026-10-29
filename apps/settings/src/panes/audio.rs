@@ -1878,7 +1878,7 @@ mod tests {
         let mut app = on_sound();
         let error = "wpctl: Could not connect to PipeWire";
         change_model(&mut app, move |model| {
-            model.volume_error = Some(error.into())
+            model.volume_error = Some(error.into());
         });
         let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
         let text = frame(&mut app);
@@ -2715,7 +2715,7 @@ mod tests {
                             if address.resource == format!("settings:{AUDIO}")
                     )
                 })
-                .map(|binding| binding.control_id.clone())
+                .map(|binding| binding.control_id)
                 .collect();
         for control in [
             "audio.system_sounds",
