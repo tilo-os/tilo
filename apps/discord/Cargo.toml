@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["discord-samples"]
+
 [lib]
 name = "discord"
 path = "src/lib.rs"
@@ -31,7 +35,10 @@ data-encoding.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-discord = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `discord` claims `--features discord/thin` in the
+# collection build, and the app then links the whole runtime statically.
+discord-samples = { package = "discord", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The bridge reads a real Chat record in its tests.
 chat = { path = "../chat" }
