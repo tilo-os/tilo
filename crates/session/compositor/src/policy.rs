@@ -62,6 +62,11 @@ pub trait WindowPolicy {
         None
     }
 
+    /// A window asked its size of ([`Self::initial_size`]) went away before
+    /// it showed a buffer, so it never maps: whatever place it was given
+    /// goes.
+    fn withdrawn(&mut self, _window: &WindowInfo) {}
+
     /// Whether a window takes keyboard focus when it first shows.
     fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {
         true

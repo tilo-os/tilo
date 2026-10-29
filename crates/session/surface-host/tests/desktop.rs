@@ -69,6 +69,39 @@ fn windows_open_side_by_side_where_their_tabs_are_laid_out() {
 }
 
 #[test]
+fn a_window_waits_in_its_place_until_it_shows_a_buffer() {
+    let _settled = ui::motion::testing::settled();
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let first = window(1, "org.gnome.Terminal");
+    let size = policy.initial_size(&first, &outputs).unwrap();
+    // Laid out again before its first buffer: the compositor lists no
+    // window yet, and the place stays.
+    policy.arrange(&[], &outputs).unwrap();
+    let tabs = || host.with_policy(|policy| policy.layout().shown.len());
+    assert_eq!(tabs(), 1, "the pending window keeps its tab");
+    let at = policy.place(&first, size, &outputs);
+    assert!(at.x >= 0, "placed where it waited: {at:?}");
+
+    // One that goes away before it shows a buffer gives its place up.
+    let second = window(2, "org.mozilla.firefox");
+    policy.initial_size(&second, &outputs).unwrap();
+    policy.withdrawn(&second);
+    policy
+        .arrange(
+            &[(first.clone(), Rectangle::new(at, size.into()))],
+            &outputs,
+        )
+        .unwrap();
+    let layout = host.with_policy(|policy| policy.layout());
+    assert!(
+        !layout.shown.iter().any(|(id, _)| *id == 2) && !layout.hidden.contains(&2),
+        "{layout:?}"
+    );
+    assert!(policy.take_close_requests().is_empty());
+}
+
+#[test]
 fn the_desktop_lies_under_the_windows_and_covers_the_output() {
     let _settled = ui::motion::testing::settled();
     let (host, policy) = desktop(7, 1.0);

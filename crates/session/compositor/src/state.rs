@@ -842,8 +842,15 @@ impl XdgShellHandler for State {
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let pending = self
+            .unmapped
+            .iter()
+            .any(|window| window.toplevel() == Some(&surface));
         self.unmapped
             .retain(|window| window.toplevel() != Some(&surface));
+        if pending {
+            self.policy.withdrawn(&window_info(&surface));
+        }
         let gone = self
             .space
             .elements()
