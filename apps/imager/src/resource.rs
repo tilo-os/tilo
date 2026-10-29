@@ -8,18 +8,13 @@
 //! a collaborator's record is a claim, never trust.
 //!
 //! Everything else belongs to this machine: the drives the probe sees are
-//! [`LiveRow`]s beneath the resource, and writing one is the
+//! [`LiveRow`](ui::framework::LiveRow)s beneath the resource, and writing one is the
 //! [`ImagerEffect::Write`] job, whose progress, cancellation and outcome
 //! reach whoever started it — the Write button, the palette or an agent.
 //! The Wi-Fi passphrase, credentials and the destructive confirmation never
 //! enter the document.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, Helper, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, Helper, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Availability, Effect, Id, Invoke, Keyed, Model, resource};
 use ui::widget::Element;
@@ -412,7 +407,7 @@ impl ResourceApp for ImagerShell {
             .fixture::<Flow>()
             .map_or_else(|| Flow::launched(cx), |flow| *flow);
         match flow {
-            Flow::Wizard => cx.surface(ImagerApp::new()),
+            Flow::Wizard => crate::app::wizard_view(cx, ImagerApp::new()),
             #[cfg(feature = "installation")]
             Flow::Setup => crate::setup::journey::view(cx),
             #[cfg(feature = "installation")]
@@ -420,35 +415,6 @@ impl ResourceApp for ImagerShell {
             #[cfg(feature = "destination")]
             Flow::Destination => crate::setup::destination::view(cx),
         }
-    }
-}
-
-impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
-    fn present(&mut self, state: &Rc<Imager>) {
-        self.present_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        self.attach_control_actions(cx.actions());
-        self.attach_framework(cx.dispatcher(), cx.jobs(), cx.mode());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or("source"));
-    }
-
-    fn effect(&mut self, effect: ImagerEffect, cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    /// The removable drives the probe sees and the write job: a handful,
-    /// so all of them are published.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_rows()
     }
 }
 
@@ -466,13 +432,13 @@ mod tests {
         const ID: &'static str = "so.tilo.imager";
         const TITLE: &'static str = "Disk Imager";
 
-        // In a column, so a harness lookup by type meets the hosted
-        // surface among the column's children.
+        // In a column, so a harness lookup by type meets the wizard among
+        // the column's children.
         fn view(cx: &mut ViewCx<Imager>) -> Element {
             Box::new(
                 ui::widget::Column::new()
                     .with_no_padding()
-                    .push(cx.surface(ImagerApp::sample())),
+                    .push(crate::app::wizard_view(cx, ImagerApp::sample())),
             )
         }
     }

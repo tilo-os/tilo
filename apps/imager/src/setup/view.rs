@@ -35,11 +35,10 @@ use super::internal_install_flow::{
 use super::model::{Capabilities, Experience, HostOs};
 use super::staging::helper::Action as HelperAction;
 use crate::resource::Imager;
+use crate::window_view::{Published, PublishingWindow};
 use imager_backend::support_report::SupportReport;
 use ui::LocalState;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, SurfaceCx,
-};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ViewCx};
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::page::{self, Frame, stack};
 
@@ -116,6 +115,8 @@ pub struct SetupApp {
     /// Built with live adapters: a live window starts them on attach.
     starts_when_live: bool,
     actions: Option<ui::framework::Actions<Imager>>,
+    /// What the window shares with the view it stands in.
+    published: Rc<RefCell<Published>>,
     guided_navigation: LocalState<bool>,
     guided_desktop: Option<guided_desktop::DesktopPreparation>,
     desktop_only: bool,
@@ -369,6 +370,7 @@ impl SetupApp {
             composed: ui::widget::Composed::default(),
             starts_when_live: false,
             actions: None,
+            published: Rc::default(),
             guided_navigation: LocalState::new(false),
             guided_desktop: None,
             desktop_only: false,
@@ -2076,10 +2078,19 @@ fn fixture_desktop_flow(available: bool) -> DesktopFlow {
 }
 
 impl Widget for SetupApp {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
         self.composed.sync(state, path);
+        self.publish();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -2137,21 +2148,28 @@ impl Widget for SetupApp {
     }
 }
 
-impl ResourceSurface<Imager, SetupEffect> for SetupApp {
-    fn present(&mut self, _state: &Rc<Imager>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        self.actions = Some(cx.actions());
-        if cx.mode().is_live() && self.starts_when_live {
-            self.start_live();
-        }
-    }
-
-    fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
+impl SetupApp {
+    fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager>) -> EffectAnswer {
         self.answer(effect).map(Effected::value)
     }
+}
 
-    fn effects(&self) -> Vec<EffectStatus> {
+/// `app` as a view of the imager resource: a live window starts the
+/// setup it was made to start.
+pub(crate) fn setup_window(cx: &ViewCx<Imager>, mut app: SetupApp) -> ui::widget::Element {
+    app.actions = Some(cx.actions());
+    if cx.mode().is_live() && app.starts_when_live {
+        app.start_live();
+    }
+    crate::window_view::window_view(cx, app, SetupApp::effect)
+}
+
+impl PublishingWindow for SetupApp {
+    fn published(&self) -> &Rc<RefCell<Published>> {
+        &self.published
+    }
+
+    fn statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = super::actions::statuses(&self.setup_projection());
         statuses.push(super::actions::desktop_preparation_status(
             self.guided_delivery_retry_available(),
@@ -2159,7 +2177,7 @@ impl ResourceSurface<Imager, SetupEffect> for SetupApp {
         statuses
     }
 
-    fn live_rows(&self) -> Vec<LiveRow> {
+    fn rows(&self) -> Vec<LiveRow> {
         let mut rows = vec![super::actions::row(&self.setup_projection())];
         if self.reviewed() == Experience::Desktop {
             rows.push(super::actions::desktop_preparation_row(
@@ -2712,7 +2730,7 @@ mod tests {
             let setup = NEXT_SETUP
                 .with(|next| next.borrow_mut().take())
                 .expect("a setup to mount");
-            cx.surface(setup)
+            setup_window(cx, setup)
         }
     }
 
@@ -2738,7 +2756,7 @@ mod tests {
     /// Setup as the imager resource publishes it: the live row, carrying
     /// the setup effects as callers see them now.
     fn setup_resource(app: &SetupApp) -> tilo_actions::ResourceSpec {
-        let mut root = app.live_rows().remove(0).into_resource();
+        let mut root = app.rows().remove(0).into_resource();
         let blocked = super::super::actions::blocked(&app.setup_projection());
         root.actions = SetupEffect::specs()
             .into_iter()

@@ -133,5 +133,5 @@ pub(crate) fn view(cx: &mut ui::framework::ViewCx<crate::resource::Imager>) -> u
     } else {
         InstallerApp::for_shot(Step::Keyboard)
     };
-    crate::setup::window_view::window_view(cx, app, InstallerApp::effect)
+    crate::window_view::window_view(cx, app, InstallerApp::effect)
 }

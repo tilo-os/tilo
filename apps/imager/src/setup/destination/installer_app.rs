@@ -982,7 +982,7 @@ pub struct InstallerApp {
     /// on the UI thread (see [`console`]).
     console: Option<imager_backend::destination::console::ConsoleServer>,
     /// What the window shares with the view it stands in.
-    published: Rc<std::cell::RefCell<crate::setup::window_view::Published>>,
+    published: Rc<std::cell::RefCell<crate::window_view::Published>>,
 }
 
 impl Default for InstallerApp {
@@ -4119,7 +4119,7 @@ impl Widget for InstallerApp {
     /// view state is noticed and the composed controls sync.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let staged = self.published.borrow_mut().take_staged();
-        if let Some(crate::setup::window_view::Staged(scenario)) = staged {
+        if let Some(crate::window_view::Staged(scenario)) = staged {
             self.stage(scenario.as_deref());
         }
         if self.recovery_key_copy.failed() {
@@ -4136,7 +4136,7 @@ impl Widget for InstallerApp {
             self.dirty_structure = true;
         }
         self.composed.sync(state, root);
-        crate::setup::window_view::PublishingWindow::publish(self);
+        crate::window_view::PublishingWindow::publish(self);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -4360,8 +4360,8 @@ impl InstallerApp {
     }
 }
 
-impl crate::setup::window_view::PublishingWindow for InstallerApp {
-    fn published(&self) -> &Rc<std::cell::RefCell<crate::setup::window_view::Published>> {
+impl crate::window_view::PublishingWindow for InstallerApp {
+    fn published(&self) -> &Rc<std::cell::RefCell<crate::window_view::Published>> {
         &self.published
     }
 

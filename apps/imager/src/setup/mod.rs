@@ -88,8 +88,6 @@ pub(crate) mod strings;
 mod test_support;
 #[cfg(feature = "installation")]
 pub mod view;
-#[cfg(any(feature = "installation", feature = "destination"))]
-mod window_view;
 
 #[cfg(target_os = "linux")]
 pub mod media_setup;

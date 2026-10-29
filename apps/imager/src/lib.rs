@@ -119,6 +119,7 @@ pub mod profile_cli;
 pub mod release;
 pub mod resource;
 pub mod setup;
+mod window_view;
 pub(crate) mod windows_media;
 pub mod write;
 pub mod write_setup;

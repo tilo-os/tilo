@@ -202,6 +202,8 @@ pub struct ImagerApp {
     live: bool,
     reaches_machine: bool,
     dirty: bool,
+    /// What the window shares with the view it stands in.
+    published: Rc<RefCell<crate::window_view::Published>>,
 }
 
 impl Default for ImagerApp {
@@ -270,6 +272,7 @@ impl ImagerApp {
             live: false,
             reaches_machine: true,
             dirty: true,
+            published: Rc::default(),
         }
     }
 
@@ -609,7 +612,7 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the framework dispatcher of the view the window stands in.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Imager>,
@@ -3105,6 +3108,40 @@ impl ImagerApp {
     pub(crate) fn present_state(&mut self, state: &Imager) {
         self.adopt_resource_state(state);
     }
+}
+
+impl crate::window_view::PublishingWindow for ImagerApp {
+    fn published(&self) -> &Rc<RefCell<crate::window_view::Published>> {
+        &self.published
+    }
+
+    /// The removable drives the probe sees and the write job: a handful,
+    /// so all of them are published.
+    fn rows(&self) -> Vec<LiveRow> {
+        self.published_rows()
+    }
+
+    fn statuses(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    fn present(&mut self, state: &Imager) {
+        self.present_state(state);
+    }
+}
+
+/// The image writer wizard `app` as a view of the imager resource: its
+/// writes, downloads and checks finish on the window.
+pub(crate) fn wizard_view(
+    cx: &ui::framework::ViewCx<Imager>,
+    mut app: ImagerApp,
+) -> ui::widget::Element {
+    app.attach_control_actions(cx.actions());
+    app.attach_framework(cx.dispatcher(), cx.window_jobs::<ImagerApp>(), cx.mode());
+    crate::window_view::hosting_window_view(cx, app, ImagerApp::answer_effect)
+}
+
+impl ImagerApp {
     fn go_to_station(&mut self, index: usize) {
         if let Some(step) = self.visible_steps().get(index).copied() {
             if step == Step::Customize && !self.needs_manual_customization() {
@@ -3311,6 +3348,11 @@ impl Widget for ImagerApp {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        crate::window_view::PublishingWindow::follow_document(self);
+        let staged = self.published.borrow_mut().take_staged();
+        if let Some(crate::window_view::Staged(scenario)) = staged {
+            self.stage_scenario(scenario.as_deref().unwrap_or("source"));
+        }
         self.take_window_toolbar_events();
         self.renew_prepared_artifact();
         if !self.seeded {
@@ -3369,6 +3411,7 @@ impl Widget for ImagerApp {
         self.declare_window_toolbar();
         self.composed.sync(_state, _path);
         self.dirty = true;
+        crate::window_view::PublishingWindow::publish(self);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -3383,7 +3426,7 @@ impl Widget for ImagerApp {
             .composed
             .element_mut()
             .is_some_and(|view| view.update(state, path));
-        changed || asked
+        changed || asked || self.published.borrow().staging()
     }
 
     fn build_layout(
@@ -3508,6 +3551,14 @@ impl Widget for ImagerApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.composed.children_mut()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -4628,7 +4679,7 @@ mod tests {
             app.profile.wifi_ssid.is_empty(),
             "the previous projection is still cached"
         );
-        // Present the document through the actual ResourceSurface hook. No
+        // Present the document as the window follows it. No
         // layout, draw, animation tick or test-only profile assignment intervenes.
         app.present_state(&Imager::read(&doc).expect("the updated resource"));
         let error = app
@@ -5049,7 +5100,7 @@ mod tests {
         const ID: &'static str = "so.tilo.imager";
         const TITLE: &'static str = "Disk Imager";
         fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
-            cx.surface(ImagerApp::sample())
+            crate::app::wizard_view(cx, ImagerApp::sample())
         }
     }
 

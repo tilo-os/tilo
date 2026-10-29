@@ -38,7 +38,7 @@ use imager_backend::migration_worker::{
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::resource::Imager;
 
-use super::window_view::{Published, PublishingWindow};
+use crate::window_view::{Published, PublishingWindow};
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, ViewCx};
 use ui::widget::Element;
 
@@ -2717,7 +2717,7 @@ impl Widget for ImportApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let staged = self.published.borrow_mut().take_staged();
-        if let Some(crate::setup::window_view::Staged(scenario)) = staged {
+        if let Some(crate::window_view::Staged(scenario)) = staged {
             self.stage(scenario.as_deref());
         }
         self.poll_background();
@@ -3195,7 +3195,7 @@ pub(crate) fn import_window(cx: &ViewCx<Imager>, mut app: ImportApp) -> Element 
         app.open_live();
     }
     app.actions = Some(cx.actions());
-    super::window_view::window_view(cx, app, ImportApp::effect)
+    crate::window_view::window_view(cx, app, ImportApp::effect)
 }
 
 /// Folder imports in a view of the imager resource. A live window opens

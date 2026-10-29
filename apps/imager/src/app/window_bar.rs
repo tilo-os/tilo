@@ -64,7 +64,7 @@ mod tests {
         const TITLE: &'static str = "Tilo Installer";
 
         fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
-            cx.surface(ImagerApp::sample())
+            crate::app::wizard_view(cx, ImagerApp::sample())
         }
     }
 
