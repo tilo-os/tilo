@@ -37,6 +37,19 @@ fn room(chrome: &Chrome) -> String {
         .to_string()
 }
 
+/// The person at this device in the fixture's room: whom an admitted agent
+/// acts for.
+fn person(chrome: &Chrome) -> String {
+    let state = chrome.borrow();
+    let room = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .expect("fixture has a room")
+        .room();
+    state.local_user_for_room(&room)
+}
+
 fn facts(exe: &str) -> ClientFacts {
     ClientFacts {
         client: "Claude Code".into(),
@@ -146,7 +159,8 @@ fn allowing_once_adds_the_proposed_agent_and_remembers_nothing() {
         decided.try_recv().unwrap(),
         Consent::Admit {
             room: room(&chrome),
-            agent: "claude-code".into()
+            agent: "claude-code".into(),
+            person: person(&chrome),
         }
     );
     assert_eq!(agent_members(&chrome), ["claude-code"]);
@@ -511,7 +525,8 @@ fn two_waiting_clients_are_each_decided_only_by_the_answer_to_their_own_prompt()
         t.try_recv().unwrap(),
         Consent::Admit {
             room: room(&chrome),
-            agent: "t".into()
+            agent: "t".into(),
+            person: person(&chrome),
         }
     );
     assert!(

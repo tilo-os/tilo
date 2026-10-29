@@ -591,7 +591,7 @@ bin = "{bin}"
 /// session fails.
 pub fn dev(options: &DevOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
-    let bin = repo.join(session::BUILD_DIR).join("bin");
+    let bin = session::tools(&repo)?;
     let peer = Peer::attach(&options.session, &repo)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
     let built_in = if options.build_runtime {

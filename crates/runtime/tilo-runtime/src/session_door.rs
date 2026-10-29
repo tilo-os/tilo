@@ -103,8 +103,14 @@ pub struct Hello {
 /// What the person decided about one connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Consent {
-    /// Serve it as agent `agent`, confined to `room`.
-    Admit { room: String, agent: String },
+    /// Serve it as agent `agent`, confined to `room`, acting for `person`:
+    /// the person who admitted it, whose own records it reads and whose
+    /// authority bounds what it does (the lesser of theirs and the agent's).
+    Admit {
+        room: String,
+        agent: String,
+        person: String,
+    },
     /// Refuse it, telling the client why.
     Refuse(String),
 }
@@ -384,8 +390,12 @@ where
         let stream = stream.try_clone()?;
         move || client_connected(&stream)
     };
-    let (room, agent) = match ask(&hello, &probe) {
-        Consent::Admit { room, agent } => (room, agent),
+    let (room, agent, person) = match ask(&hello, &probe) {
+        Consent::Admit {
+            room,
+            agent,
+            person,
+        } => (room, agent, person),
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
@@ -396,7 +406,7 @@ where
     // of the task's own (docs/designs/app-language/agents.md, "How a program runs").
     let run = format!("door-{}", uuid::Uuid::new_v4().simple());
     let server = std::sync::Arc::new(
-        crate::mcp::McpServer::for_agent(host, room, &agent)
+        crate::mcp::McpServer::for_agent(host, room, &agent, &person)
             .with_agent_run(run, agent.clone())
             .with_task_hosts(tasks),
     );
@@ -634,6 +644,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         served.join().unwrap().unwrap();
@@ -657,6 +668,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();
@@ -692,6 +704,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         let reader = std::thread::spawn(move || {
@@ -725,6 +738,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();

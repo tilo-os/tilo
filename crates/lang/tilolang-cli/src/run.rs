@@ -194,13 +194,13 @@ fn wait_for_file(
 /// does not come up.
 pub fn run(options: &RunOptions) -> Result<(), String> {
     let repo = session::repo_root(options.repo.as_deref(), &options.dir)?;
-    let build_dir = repo.join(session::BUILD_DIR);
+    let build_dir = session::build_dir(&repo);
     if !build_dir.join(session::RUNTIME_BINARY).is_file() {
         return Err(format!(
             "{} has no tilolang runtime; build the nested session with \
              `dist/dev/nested-session-build.sh {}`",
             build_dir.display(),
-            session::BUILD_DIR
+            build_dir.display()
         ));
     }
     let base = options

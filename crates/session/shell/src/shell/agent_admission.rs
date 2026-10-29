@@ -266,6 +266,9 @@ struct StoredBinding {
 struct Waiting {
     facts: ClientFacts,
     room: String,
+    /// The person at this device in `room`, who is asked and whom an
+    /// admitted agent acts for.
+    person: String,
     answer: tokio::sync::oneshot::Receiver<AgentAnswer>,
     proposed_agent: String,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -277,6 +280,8 @@ struct Waiting {
 struct Admitting {
     room: String,
     agent: String,
+    /// The person who admitted it, whom it acts for.
+    person: String,
     decide: tokio::sync::oneshot::Sender<Consent>,
 }
 
@@ -361,9 +366,14 @@ impl AgentDoorConsent {
                 }
             };
             match consent {
-                Consent::Admit { room, agent } => self.admitting.push(Admitting {
+                Consent::Admit {
                     room,
                     agent,
+                    person,
+                } => self.admitting.push(Admitting {
+                    room,
+                    agent,
+                    person,
                     decide: waiting.decide,
                 }),
                 refused @ Consent::Refuse(_) => {
@@ -406,6 +416,7 @@ impl AgentDoorConsent {
                 (Some(true), _) => Consent::Admit {
                     room: admitting.room,
                     agent: admitting.agent,
+                    person: admitting.person,
                 },
                 (Some(false), Some(reason)) => Consent::Refuse(reason),
                 (Some(false), None) => {
@@ -434,16 +445,25 @@ impl AgentDoorConsent {
             let member = remembered
                 .as_deref()
                 .is_some_and(|agent| workspace.agent_role_at(agent, now).is_some());
-            (workspace.room().to_string(), workspace.name.clone(), member)
+            (
+                workspace.room().to_string(),
+                workspace.name.clone(),
+                member,
+                state.local_user_for_room(&workspace.room()),
+            )
         });
-        let Some((room, workspace, remembered_member)) = workspace else {
+        let Some((room, workspace, remembered_member, person)) = workspace else {
             let _ = decide.send(Consent::Refuse(t("agent-door-no-workspace")));
             return;
         };
         if remembered_member && let Some(agent) = remembered {
             // What the person said to remember: this client is this agent,
             // let in wherever it is already a member.
-            let _ = decide.send(Consent::Admit { room, agent });
+            let _ = decide.send(Consent::Admit {
+                room,
+                agent,
+                person,
+            });
             return;
         }
         let proposed_agent = remembered.unwrap_or_else(|| proposed_agent_id(&facts.client));
@@ -462,6 +482,7 @@ impl AgentDoorConsent {
         self.waiting.push(Waiting {
             facts,
             room,
+            person,
             answer: answered,
             proposed_agent,
             decide,
@@ -502,6 +523,7 @@ impl AgentDoorConsent {
         Consent::Admit {
             room: waiting.room.clone(),
             agent,
+            person: waiting.person.clone(),
         }
     }
 

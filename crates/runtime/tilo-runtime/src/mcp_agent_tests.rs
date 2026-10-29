@@ -869,7 +869,7 @@ async fn tool(server: &McpServer<Notes>, name: &str, arguments: Value) -> (Strin
 }
 
 fn agent(host: &Notes) -> McpServer<Notes> {
-    McpServer::for_agent(host.clone(), "room".into(), "claude-code")
+    McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada")
 }
 
 #[test]
