@@ -1091,6 +1091,51 @@ impl AdmittedJoinIdentity {
         self
     }
 
+    /// The durable owner of an invocation this admitted identity invokes:
+    /// [`InvocationOwner::AuthenticatedLocal`] naming the agent this session
+    /// was handed to, or no agent for the person themselves. Both doors that
+    /// admit a certified or local identity derive their owner here, so an
+    /// invocation's durable owner, its receipt actor and every later
+    /// validation name the same effective actor.
+    fn invocation_owner(&self) -> Result<InvocationOwner, String> {
+        let cert = self
+            .certificate
+            .as_ref()
+            .ok_or("admitted caller certificate missing")?;
+        let owner = InvocationOwner::AuthenticatedLocal {
+            root: cert.user_public_key,
+            device: cert.device_public_key,
+            agent: self.agent_id.clone(),
+        };
+        owner.validate()?;
+        Ok(owner)
+    }
+
+    /// The durable owner of an invocation from a certified caller
+    /// ([`VerifiedActionCaller`]).
+    ///
+    /// A session the person's own device handed to an agent is owned exactly
+    /// as the local door owns that same admitted identity
+    /// ([`Self::invocation_owner`]): [`InvocationOwner::AuthenticatedLocal`]
+    /// naming the agent, so the durable owner, the receipt actor and every
+    /// later validation agree on who acted. A plain certified person keeps
+    /// [`InvocationOwner::Certified`], which is how their invocations have
+    /// always been owned.
+    fn delegated_invocation_owner(&self, delegated: Option<&str>) -> InvocationOwner {
+        if delegated.is_some() {
+            return self
+                .invocation_owner()
+                .unwrap_or_else(|_| InvocationOwner::Certified {
+                    root: self.verified.user_public_key,
+                    device: self.verified.device_public_key,
+                });
+        }
+        InvocationOwner::Certified {
+            root: self.verified.user_public_key,
+            device: self.verified.device_public_key,
+        }
+    }
+
     fn broker_actor(&self) -> BrokerActor {
         let actor = match &self.agent_id {
             Some(agent) => {
@@ -1944,16 +1989,22 @@ impl VerifiedActionCaller {
     /// who acted. Keeping only `Certified` here dropped the delegation, and
     /// the agent's own terminal update then looked like a stranger's.
     fn owner(&self) -> InvocationOwner {
-        let root = self.admitted.verified.user_public_key;
-        let device = self.admitted.verified.device_public_key;
-        match &self.delegated {
-            Some(agent) => InvocationOwner::AuthenticatedLocal {
-                root,
-                device,
-                agent: Some(agent.clone()),
-            },
-            None => InvocationOwner::Certified { root, device },
-        }
+        self.admitted
+            .delegated_invocation_owner(self.delegated.as_deref())
+    }
+
+    /// The owner `self` still has once `current` — a fresh verification of
+    /// the same presentation or signed evidence — re-establishes it, with
+    /// this caller's session delegation re-applied. `None` when the proven
+    /// person, device or delegation changed, so a caller can never widen or
+    /// swap what an invocation is owned by.
+    fn reverified_owner(&self, current: &Self) -> Option<InvocationOwner> {
+        let admitted = current
+            .admitted
+            .clone()
+            .delegated_to(self.delegated.as_deref());
+        let owner = admitted.delegated_invocation_owner(self.delegated.as_deref());
+        (owner == self.owner()).then_some(owner)
     }
 }
 
@@ -2355,7 +2406,13 @@ impl CapnpBrokerState {
         } else {
             self.verify_action_caller(&caller.room, &caller.presentation)?
         };
-        if current.owner() != caller.owner() {
+        // The fresh verification re-establishes the person and device; the
+        // session delegation this caller carries is the one the person's own
+        // device handed over, here re-applied exactly as the dispatch does.
+        // Compare the whole resulting owner (person, device and delegation),
+        // so a caller whose proven identity or delegation changed is refused
+        // while a delegated caller's own recheck passes.
+        if caller.reverified_owner(&current).is_none() {
             return Err("certified caller changed".into());
         }
         Ok(current.admitted.delegated_to(caller.delegated.as_deref()))

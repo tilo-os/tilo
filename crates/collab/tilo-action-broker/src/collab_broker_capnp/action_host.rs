@@ -2147,7 +2147,7 @@ impl CapnpBrokerState {
                     self.verify_action_caller(&original.room, &original.presentation)
                 }
                 .map_err(refusal)?;
-                if current.owner() != original.owner() {
+                if original.reverified_owner(&current).is_none() {
                     return Err(ActionHostError::NotPermitted);
                 }
                 if caller.device_public_key().is_none() {

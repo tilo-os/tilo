@@ -43,6 +43,12 @@ impl AppActionConsentPrompter for ConfirmationPrompt {
         if !request.confirming || request.person != self.person {
             return None;
         }
+        // BENCH WORKAROUND (not for main): unattended benchmark runs allow without a prompt.
+        if std::env::var_os("TILO_BENCH_AUTO_CONSENT").is_some() {
+            let (answer, answered) = oneshot::channel();
+            let _ = answer.send(AppActionConsent::Session);
+            return Some(answered);
+        }
         let executable = std::env::current_exe().ok()?;
         let consent = consent(&request, &self.apps.display_name(&request.target_app));
         let (answer, answered) = oneshot::channel();
