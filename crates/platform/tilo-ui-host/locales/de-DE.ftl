@@ -39,3 +39,4 @@ tilolang-thread-replies = { $count ->
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.
+tilolang-form-cancel = Abbrechen

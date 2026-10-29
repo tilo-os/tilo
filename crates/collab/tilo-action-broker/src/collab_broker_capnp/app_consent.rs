@@ -245,18 +245,23 @@ pub(super) fn serve_after_consent(
     use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
     Promise::from_future(async move {
         let mut consent = consent;
-        // A grant question shows no draft: only the choice counts.
-        let answer = (&mut consent.answer)
-            .await
-            .map_or(AppActionConsent::Deny, |answer| answer.consent);
+        // A grant question shows no draft: only the choice counts. Resolved
+        // by the sheet: the person's answer, or its sender dropped with the
+        // sheet, which refuses the call as unanswered, not as declined.
+        let answered = (&mut consent.answer).await;
         state.finish_app_action_consent(&consent);
         // The grant is in force before the call it was given for goes on:
         // a call held while it is recorded, refused when it is not.
-        let recorded = match state.record_app_action_grant(&consent, answer) {
-            None => Err(ActionHostError::NotPermitted),
-            Some(recording) => recording
-                .await
-                .map_err(|reason| ActionHostError::Refused { reason }),
+        let recorded = match answered {
+            Err(_) => Err(ActionHostError::Unavailable {
+                reason: "the sheet closed without the person's answer".into(),
+            }),
+            Ok(answer) => match state.record_app_action_grant(&consent, answer.consent) {
+                None => Err(ActionHostError::NotPermitted),
+                Some(recording) => recording
+                    .await
+                    .map_err(|reason| ActionHostError::Refused { reason }),
+            },
         };
         let reply = if let Err(error) = recorded {
             refuse(&message, error)

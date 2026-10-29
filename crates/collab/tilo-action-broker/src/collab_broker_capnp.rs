@@ -234,7 +234,7 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(room).ok())
+        .zip(uuid::Uuid::parse_str(room).ok()) // optional-decode: a non-uuid room is governed by no authority: the stricter bound applies
         .is_some_and(|(authority, room)| authority.governs(room, device));
     // A foreign device is held to the bound only in a room it does not govern.
     foreign && !governs
@@ -6842,7 +6842,7 @@ impl CapnpBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // optional-decode: a JSON-map probe; other text is evaluated as it is
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
@@ -10665,7 +10665,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             if exhausted {
                 let peer_bound = ops
                     .iter()
-                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok())
+                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
                     .map(|op| op.seq)
                     .min()
                     .unwrap_or(before_seq);

@@ -432,6 +432,7 @@ fn v1_frame_charge(
 /// otherwise ordered by hash.
 pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
+        // optional-decode: only a sort rank; a lineage not named for an author ranks last
         let Ok(author) = hex::decode(author) else {
             return false;
         };
@@ -641,8 +642,19 @@ impl ReplaySnapshot {
         };
         increment(&mut self.stats.preparation_reads)?;
         self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(bytes.capacity());
-        let Ok(envelope) = transport::decode(frame_payload(&bytes)) else {
-            return Ok(());
+        let envelope = match transport::decode(frame_payload(&bytes)) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                // A retained frame that does not decode is not replayed; it
+                // is reported, never left out unseen.
+                tracing::warn!(
+                    workspace_id = self.workspace_id,
+                    pin = meta.pin,
+                    %error,
+                    "a retained frame does not decode; it is left out of the replay"
+                );
+                return Ok(());
+            }
         };
         let decoded = heap_bytes(&envelope).saturating_add(std::mem::size_of::<Envelope>());
         self.stats.peak_frame_bytes = self
