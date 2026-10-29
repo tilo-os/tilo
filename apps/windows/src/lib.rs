@@ -21,7 +21,6 @@ pub mod resource;
 pub mod search;
 pub mod strings;
 
-pub use app::WindowsApp;
 pub use resource::{Windows, WindowsShell};
 
 /// The app as every host mounts it.

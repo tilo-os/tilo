@@ -3,8 +3,9 @@
 //!
 //! The window is a retained [`NavShell`]: the overview lists the apps and the
 //! appliance, the content shows the selection. Controls queue an `Intent`;
-//! the app applies intents against the selected model in one ordered place
-//! and swaps the columns when what they show changes.
+//! the [`WindowsApp`] the view shares with its effect handler applies them
+//! in one ordered place, and the [`WindowsWindow`] swaps the columns when
+//! what they show changes.
 use crate::actions;
 use crate::appliance_owner::{
     ApplianceOwnerClient, AppliancePowerState, ApplianceStatus, EgressPurpose, LifecycleAction,
@@ -16,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::rc::Rc;
 use ui::a11y::Action as AccessibilityAction;
+use ui::framework::{EffectStatus, Live, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
@@ -229,7 +231,7 @@ fn appliance_summary(status: &ApplianceStatus, checked: bool) -> String {
     }
 }
 
-/// The compatibility service as the surface and its route projection share
+/// The compatibility service as the window and its route projection share
 /// it.
 pub(crate) type SharedProvider = Rc<RefCell<Box<dyn CompatibilityProvider>>>;
 
@@ -239,6 +241,9 @@ impl Default for WindowsApp {
     }
 }
 
+/// The manager a window shows: the service's catalogue, the appliance, the
+/// selection and the work running on them, shared by the
+/// [`WindowsWindow`] and the view's effect handler.
 pub struct WindowsApp {
     provider: SharedProvider,
     pub(crate) catalogue: Catalogue,
@@ -249,11 +254,6 @@ pub struct WindowsApp {
     page: Page,
     notice: Option<Notice>,
     intents: Intents,
-    shell: NavShell,
-    dialog: Option<ModalDialog<Text>>,
-    dialog_for: Option<Confirm>,
-    overview_key: Option<OverviewKey>,
-    content_key: Option<ContentKey>,
     /// The content column should come to the front of a narrow window's
     /// push stack at the next rebuild.
     push_content: bool,
@@ -276,7 +276,7 @@ pub struct WindowsApp {
     /// The routes the service reports, which the shared overrides are
     /// compared against.
     pub(crate) reported_routes: crate::resource::ReportedRoutes,
-    /// The shared overrides as last presented, carried to this device's
+    /// The shared overrides as last followed, carried to this device's
     /// service while they differ from what it reports; `None` where the
     /// window reaches no service of its own (a capture, a past version).
     routes: Option<Rc<crate::resource::Windows>>,
@@ -291,8 +291,26 @@ pub struct WindowsApp {
     opened: Rc<RefCell<Option<String>>>,
 }
 
+/// The [`WindowsApp`] as the window and the effect handler share it.
+pub(crate) type Shared = Rc<RefCell<WindowsApp>>;
+
+/// The window: the manager in a [`NavShell`], with the confirmation dialog
+/// over it while one is open.
+pub struct WindowsWindow {
+    app: Shared,
+    /// The overrides as the document holds them, followed as they change;
+    /// `None` for a window outside the framework.
+    live: Option<Live<crate::resource::Windows>>,
+    presented: Option<(u64, u64)>,
+    shell: NavShell,
+    dialog: Option<ModalDialog<Text>>,
+    dialog_for: Option<Confirm>,
+    overview_key: Option<OverviewKey>,
+    content_key: Option<ContentKey>,
+}
+
 impl WindowsApp {
-    /// The surface before it knows what it runs for: connected to nothing,
+    /// The manager before it knows what it runs for: connected to nothing,
     /// so building it (for a past version too) reaches no service.
     pub fn new() -> Self {
         Self::default()
@@ -326,16 +344,31 @@ impl WindowsApp {
         *self.provider.borrow_mut() = provider;
         self.refresh();
     }
-    /// Take part in the resource: route edits go through `dispatcher`.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Windows>,
-    ) {
-        self.dispatcher = Some(dispatcher);
+    /// Take part in the resource: route edits go through its dispatcher. A
+    /// live window reaches this session's service and appliance; a capture
+    /// shows its fixture's sample catalogue; a past version reaches no
+    /// service.
+    fn attach(&mut self, cx: &ViewCx<crate::resource::Windows>) {
+        match cx.mode() {
+            RunMode::Live => self.connect_live(),
+            RunMode::Capture => {
+                if let Some(sample) = cx.fixture::<crate::provider::SampleProvider>() {
+                    self.use_provider(Box::new((*sample).clone()));
+                }
+            }
+            RunMode::Past => {}
+        }
+        self.mode = cx.mode();
+        self.dispatcher = Some(cx.dispatcher());
     }
 
     /// Carry the shared overrides `state` holds to this device's service.
+    /// The routes the window shows are the ones the service reports; only a
+    /// live window has a service of its own to carry them to.
     pub(crate) fn follow_routes(&mut self, state: &Rc<crate::resource::Windows>) {
+        if !self.mode.is_live() {
+            return;
+        }
         self.routes = Some(Rc::clone(state));
         self.carry_routes();
     }
@@ -417,7 +450,6 @@ impl WindowsApp {
             }
             _ => {}
         }
-        self.rebuild();
     }
 
     pub fn with_provider(provider: Box<dyn CompatibilityProvider>) -> Self {
@@ -432,31 +464,14 @@ impl WindowsApp {
         appliance_owner: ApplianceOwnerClient,
     ) -> Self {
         let catalogue = provider.catalogue();
-        let intents = Intents::default();
-        let install = Button::icon_only(
-            "windows-install",
-            Icon::Plus,
-            &strings::t("windows-install"),
-        )
-        .on_effect(intents.sender(Intent::Install));
-        let shell = NavShell::new()
-            .content_kind(ui::widget::ContentKind::Page)
-            .with_id("windows-shell")
-            .overview_header(strings::t("windows-apps-title"), vec![Box::new(install)])
-            .content_header(strings::t("windows-app-title"), Vec::new());
-        let mut app = Self {
+        Self {
             provider: Rc::new(RefCell::new(provider)),
             catalogue,
             dispatcher: None,
             selected: 0,
             page: Page::App,
             notice: None,
-            intents,
-            shell,
-            dialog: None,
-            dialog_for: None,
-            overview_key: None,
-            content_key: None,
+            intents: Intents::default(),
             push_content: false,
             appliance_details: false,
             cursor: Point::ZERO,
@@ -477,9 +492,7 @@ impl WindowsApp {
             mode: ui::framework::RunMode::Capture,
             route_notice: Rc::default(),
             opened: Rc::default(),
-        };
-        app.rebuild();
-        app
+        }
     }
 
     /// Ask the host for `effect` as the live row `row` offers it, or on the
@@ -607,7 +620,7 @@ impl WindowsApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: &actions::WindowsEffect,
-        cx: &mut ui::framework::EffectCx<crate::resource::Windows, Self>,
+        cx: &mut ui::framework::EffectCx<crate::resource::Windows>,
     ) -> ui::framework::EffectAnswer {
         if let actions::WindowsEffect::Show { app } = effect {
             let index = self
@@ -637,6 +650,38 @@ impl WindowsApp {
         self.resource_waits_for_appliance = effect.waits_for_appliance();
         self.resource_reply = Some(cx.reply());
         Ok(ui::framework::Effected::Pending)
+    }
+
+    /// The operations unavailable while another is still running.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
+        const CODE: &str = "windows.busy";
+        const REASON: &str = "Another Windows operation is still running";
+        if !self.is_busy() {
+            return Vec::new();
+        }
+        vec![
+            EffectStatus::unavailable(actions::WindowsEffect::INSTALL, CODE, REASON),
+            EffectStatus::unavailable(actions::WindowsEffect::IMPORT_ISO, CODE, REASON),
+            EffectStatus::unavailable(actions::WindowsEffect::OPEN_FILE, CODE, REASON),
+        ]
+    }
+
+    /// Every application in the service's catalogue, found by its name and
+    /// publisher and opened at its row.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.catalogue
+            .apps
+            .iter()
+            .map(|app| {
+                ui::tilo_resource::SearchEntry::new(
+                    app.name.clone(),
+                    format!("{} {}", app.publisher, strings::t(app.route.button_key())),
+                )
+                .subtitled(app.publisher.clone())
+                .grouped(strings::t("windows-search-group"))
+                .anchored(crate::search::app_resource_id(&app.id))
+            })
+            .collect()
     }
 
     /// Show the outcome of a request: its error, or `done` when it was
@@ -1221,12 +1266,6 @@ impl WindowsApp {
             || self.document_portal_rx.is_some()
     }
 
-    /// Whether the window is narrow enough that the overview and the content
-    /// are separate screens.
-    fn pushed(&self) -> bool {
-        !self.shell.geometry().stack.is_empty()
-    }
-
     fn confirmation(&self) -> Option<Confirm> {
         if self.confirm_delete_data.is_some() {
             Some(Confirm::Delete)
@@ -1243,7 +1282,9 @@ impl WindowsApp {
         }
     }
 
-    fn overview_key(&self) -> OverviewKey {
+    /// What the overview shows; `pushed` when the window is narrow enough
+    /// that the overview and the content are separate screens.
+    fn overview_key(&self, pushed: bool) -> OverviewKey {
         let status = self.appliance_owner.status();
         OverviewKey {
             apps: self
@@ -1263,7 +1304,7 @@ impl WindowsApp {
                 .map(|pending| pending.display_name.clone()),
             page: self.page,
             selected: self.selected,
-            pushed: self.pushed(),
+            pushed,
         }
     }
 
@@ -1286,31 +1327,7 @@ impl WindowsApp {
         }
     }
 
-    /// Swap whichever columns no longer show the model.
-    pub(crate) fn rebuild(&mut self) {
-        let overview = self.overview_key();
-        if self.overview_key.as_ref() != Some(&overview) {
-            self.shell.set_overview(Some(self.overview()));
-            self.overview_key = Some(overview);
-        }
-        let content = self.content_key();
-        if self.content_key.as_ref() != Some(&content) {
-            self.shell.set_content(self.content());
-            self.shell.set_content_title(self.content_title());
-            self.content_key = Some(content);
-        }
-        let confirmation = self.confirmation();
-        if self.dialog_for != confirmation {
-            self.dialog = confirmation.map(|confirm| self.dialog(confirm));
-            self.dialog_for = confirmation;
-        }
-        if std::mem::take(&mut self.push_content) {
-            self.shell.show(NavPane::Content);
-        }
-    }
-
-    fn overview(&self) -> Element {
-        let pushed = self.pushed();
+    fn overview(&self, pushed: bool) -> Element {
         let mut list = Column::new().with_intrinsic_height();
         if let Some(pending) = &self.catalogue.vm_install_confirmation {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
@@ -1980,10 +1997,88 @@ impl WindowsApp {
             .with_destructive(destructive)
             .open(true)
     }
+}
+
+impl WindowsWindow {
+    /// A window over `app`.
+    fn new(app: WindowsApp, live: Option<Live<crate::resource::Windows>>) -> Self {
+        let install = Button::icon_only(
+            "windows-install",
+            Icon::Plus,
+            &strings::t("windows-install"),
+        )
+        .on_effect(app.intents.sender(Intent::Install));
+        let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::Page)
+            .with_id("windows-shell")
+            .overview_header(strings::t("windows-apps-title"), vec![Box::new(install)])
+            .content_header(strings::t("windows-app-title"), Vec::new());
+        let mut window = Self {
+            app: Rc::new(RefCell::new(app)),
+            live,
+            presented: None,
+            shell,
+            dialog: None,
+            dialog_for: None,
+            overview_key: None,
+            content_key: None,
+        };
+        window.follow_document();
+        window.rebuild();
+        window
+    }
+
+    /// Carry the overrides the document holds to the service when they
+    /// changed. Returns whether they did.
+    fn follow_document(&mut self) -> bool {
+        let Some(live) = &self.live else {
+            return false;
+        };
+        let held = (live.revision(), live.loads());
+        if self.presented == Some(held) {
+            return false;
+        }
+        self.presented = Some(held);
+        let routes = live.get();
+        self.app.borrow_mut().follow_routes(&routes);
+        true
+    }
+
+    /// Whether the window is narrow enough that the overview and the content
+    /// are separate screens.
+    fn pushed(&self) -> bool {
+        !self.shell.geometry().stack.is_empty()
+    }
+
+    /// Swap whichever columns no longer show the model.
+    pub(crate) fn rebuild(&mut self) {
+        let pushed = self.pushed();
+        let app = Rc::clone(&self.app);
+        let mut app = app.borrow_mut();
+        let overview = app.overview_key(pushed);
+        if self.overview_key.as_ref() != Some(&overview) {
+            self.shell.set_overview(Some(app.overview(pushed)));
+            self.overview_key = Some(overview);
+        }
+        let content = app.content_key();
+        if self.content_key.as_ref() != Some(&content) {
+            self.shell.set_content(app.content());
+            self.shell.set_content_title(app.content_title());
+            self.content_key = Some(content);
+        }
+        let confirmation = app.confirmation();
+        if self.dialog_for != confirmation {
+            self.dialog = confirmation.map(|confirm| app.dialog(confirm));
+            self.dialog_for = confirmation;
+        }
+        if std::mem::take(&mut app.push_content) {
+            self.shell.show(NavPane::Content);
+        }
+    }
 
     /// Apply queued intents, then bring the columns up to date.
     fn settle(&mut self) {
-        self.apply_intents();
+        self.app.borrow_mut().apply_intents();
         self.rebuild();
     }
 
@@ -1992,9 +2087,44 @@ impl WindowsApp {
     }
 }
 
+/// The Windows Apps window over this session's compatibility service,
+/// answering its effects and publishing its catalogue as live rows and
+/// search entries.
+pub(crate) fn window(cx: &ViewCx<crate::resource::Windows>) -> Element {
+    let mut app = WindowsApp::new();
+    // A search hit, or an agent's `open`, shows the application it names.
+    cx.on_open(app.opener());
+    app.attach(cx);
+    let window = WindowsWindow::new(app, Some(cx.live().clone()));
+    let app = Rc::clone(&window.app);
+    {
+        let (answer, status) = (Rc::clone(&app), Rc::clone(&app));
+        cx.effects(move |effect: actions::WindowsEffect, cx| {
+            answer.borrow_mut().answer_effect(&effect, cx)
+        })
+        .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let app = Rc::clone(&app);
+        cx.on_stage(move |scenario| app.borrow_mut().stage_scenario(scenario));
+    }
+    let (rows, row, entries) = (Rc::clone(&app), Rc::clone(&app), app);
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || actions::live_rows(&rows.borrow().catalogue))
+            .live_row(move |id| {
+                actions::live_rows(&row.borrow().catalogue)
+                    .into_iter()
+                    .find(|row| row.id() == id)
+            })
+            .search_entries(move || entries.borrow().search_entries()),
+        Box::new(window),
+    )
+}
+
 /// The window is its shell plus the model, the confirmation dialog and the
 /// Windows operations the shell knows nothing about.
-impl ui::widget::Decorator for WindowsApp {
+impl ui::widget::Decorator for WindowsWindow {
     type Inner = NavShell;
 
     fn inner(&self) -> &NavShell {
@@ -2011,38 +2141,51 @@ impl ui::widget::Decorator for WindowsApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.drain_portal();
-        self.drain_document_portal();
-        self.drain_iso_portal();
-        self.refresh();
+        self.follow_document();
+        {
+            let mut app = self.app.borrow_mut();
+            app.drain_portal();
+            app.drain_document_portal();
+            app.drain_iso_portal();
+            app.refresh();
+        }
         self.settle();
         self.shell.sync(state, path);
     }
 
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let followed = self.follow_document();
+        if followed {
+            self.rebuild();
+        }
+        self.shell.update(state, path) || followed
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = ctx.logical(position);
+            self.app.borrow_mut().cursor = ctx.logical(position);
         }
         if let Some(dialog) = self.dialog.as_mut().filter(|dialog| dialog.is_open()) {
             dialog.handle_event(event, ctx);
             *ctx.handled = true;
         } else {
             self.shell.handle_event(event, ctx);
+            let app = self.app.borrow();
             if !*ctx.handled
-                && self.page == Page::App
+                && app.page == Page::App
                 && let WindowEvent::KeyboardInput {
                     event: key_event, ..
                 } = event
                 && key_event.state == ElementState::Pressed
             {
-                let last = self.catalogue.apps.len().saturating_sub(1);
+                let last = app.catalogue.apps.len().saturating_sub(1);
                 let next = match key_event.logical_key {
-                    Key::Named(NamedKey::ArrowUp) => Some(self.selected.saturating_sub(1)),
-                    Key::Named(NamedKey::ArrowDown) => Some((self.selected + 1).min(last)),
+                    Key::Named(NamedKey::ArrowUp) => Some(app.selected.saturating_sub(1)),
+                    Key::Named(NamedKey::ArrowDown) => Some((app.selected + 1).min(last)),
                     _ => None,
                 };
-                if let Some(next) = next.filter(|next| *next != self.selected) {
-                    self.intents.push(Intent::SelectApp(next));
+                if let Some(next) = next.filter(|next| *next != app.selected) {
+                    app.intents.push(Intent::SelectApp(next));
                     *ctx.handled = true;
                 }
             }
@@ -2130,14 +2273,16 @@ impl ui::widget::Decorator for WindowsApp {
             .strip_prefix("windows.select:")
             .filter(|_| activates)
             .and_then(|id| {
-                self.catalogue
+                self.app
+                    .borrow()
+                    .catalogue
                     .apps
                     .iter()
                     .position(|candidate| candidate.id == id)
             })
             .map(Intent::SelectApp);
         let handled = if let Some(intent) = intent {
-            self.intents.push(intent);
+            self.app.borrow().intents.push(intent);
             true
         } else {
             self.shell
@@ -2151,7 +2296,7 @@ impl ui::widget::Decorator for WindowsApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for WindowsApp {
+impl ui::widget::controls::ActionControls for WindowsWindow {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         ui::widget::controls::ActionControls::take_control_invocation(&mut self.shell)
     }
@@ -2184,13 +2329,13 @@ mod tests {
         let mut capture = WindowsApp::new_offline();
         capture.refresh();
         let before = route(&capture);
-        ui::framework::ResourceSurface::present(&mut capture, &overridden);
+        capture.follow_routes(&overridden);
         assert_eq!(route(&capture), before, "a capture reaches no service");
 
         let mut app = WindowsApp::new_offline();
         app.mode = ui::framework::RunMode::Live;
         app.refresh();
-        ui::framework::ResourceSurface::present(&mut app, &overridden);
+        app.follow_routes(&overridden);
         assert_eq!(route(&app), Some(Route::Proton), "the override is carried");
 
         app.provider
@@ -2200,10 +2345,7 @@ mod tests {
         app.refresh();
         assert_eq!(route(&app), Some(Route::Proton));
 
-        ui::framework::ResourceSurface::present(
-            &mut app,
-            &Rc::new(crate::resource::Windows::default()),
-        );
+        app.follow_routes(&Rc::new(crate::resource::Windows::default()));
         assert_ne!(route(&app), Some(Route::Proton));
     }
 
@@ -2294,7 +2436,18 @@ mod tests {
 
     fn apply(app: &mut WindowsApp, intent: Intent) {
         app.intents.push(intent);
-        app.settle();
+        app.apply_intents();
+    }
+
+    /// A window over `app`, outside the framework.
+    fn window(app: WindowsApp) -> WindowsWindow {
+        WindowsWindow::new(app, None)
+    }
+
+    /// Press what queues `intent` in `window`, as its control does.
+    fn press(window: &mut WindowsWindow, intent: Intent) {
+        window.app.borrow().intents.push(intent);
+        window.settle();
     }
 
     fn test_ids(widget: &dyn Widget, out: &mut Vec<String>) {
@@ -2304,9 +2457,9 @@ mod tests {
         widget.for_each_child(&mut |child| test_ids(child, out));
     }
 
-    fn ids(app: &WindowsApp) -> Vec<String> {
+    fn ids(window: &WindowsWindow) -> Vec<String> {
         let mut out = Vec::new();
-        Widget::for_each_child(app, &mut |child| test_ids(child, &mut out));
+        Widget::for_each_child(window, &mut |child| test_ids(child, &mut out));
         out
     }
 
@@ -2430,9 +2583,9 @@ mod tests {
             assert!(WindowsApp::new().catalogue.apps.is_empty());
         }
         {
-            let app = WindowsApp::new_offline();
-            assert_eq!(Widget::test_id(&app), Some("windows-app"));
-            let ids = ids(&app);
+            let window = window(WindowsApp::new_offline());
+            assert_eq!(Widget::test_id(&window), Some("windows-app"));
+            let ids = ids(&window);
             for id in [
                 "windows-install",
                 "windows-app-adobe-reader",
@@ -2482,38 +2635,50 @@ mod tests {
     #[test]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
         {
-            let mut app = WindowsApp::new_offline();
-            let capsule = app.catalogue.apps[0].capsule.clone();
-            apply(&mut app, Intent::DeleteData);
+            let mut window = window(WindowsApp::new_offline());
+            let app = Rc::clone(&window.app);
+            let capsule = app.borrow().catalogue.apps[0].capsule.clone();
+            press(&mut window, Intent::DeleteData);
             assert!(
-                app.catalogue
+                app.borrow()
+                    .catalogue
                     .apps
                     .iter()
                     .any(|item| item.capsule == capsule)
             );
-            assert_eq!(app.confirm_delete_data.as_deref(), Some(capsule.as_str()));
-            assert!(app.dialog_open(), "deleting opens the confirmation dialog");
+            assert_eq!(
+                app.borrow().confirm_delete_data.as_deref(),
+                Some(capsule.as_str())
+            );
+            assert!(
+                window.dialog_open(),
+                "deleting opens the confirmation dialog"
+            );
 
             // The original management action cannot confirm itself; only the
             // dialog's destructive action can.
-            apply(&mut app, Intent::DeleteData);
-            assert_eq!(app.confirm_delete_data.as_deref(), Some(capsule.as_str()));
-            apply(&mut app, Intent::ConfirmDelete);
-            assert!(!app.dialog_open());
+            press(&mut window, Intent::DeleteData);
+            assert_eq!(
+                app.borrow().confirm_delete_data.as_deref(),
+                Some(capsule.as_str())
+            );
+            press(&mut window, Intent::ConfirmDelete);
+            assert!(!window.dialog_open());
             assert!(
-                !app.catalogue
+                !app.borrow()
+                    .catalogue
                     .apps
                     .iter()
                     .any(|item| item.capsule == capsule)
             );
         }
         {
-            let mut app = WindowsApp::new_offline_scenario("confirm-delete");
-            assert!(app.dialog_open());
-            assert_eq!(app.dialog_for, Some(Confirm::Delete));
-            apply(&mut app, Intent::CancelDelete);
-            assert!(!app.dialog_open());
-            assert_eq!(app.catalogue.apps.len(), 3);
+            let mut window = window(WindowsApp::new_offline_scenario("confirm-delete"));
+            assert!(window.dialog_open());
+            assert_eq!(window.dialog_for, Some(Confirm::Delete));
+            press(&mut window, Intent::CancelDelete);
+            assert!(!window.dialog_open());
+            assert_eq!(window.app.borrow().catalogue.apps.len(), 3);
         }
         {
             let mut app = WindowsApp::new_offline();
@@ -2537,13 +2702,17 @@ mod tests {
             assert!(!app.catalogue.apps[0].can_escalate_install_to_vm);
         }
         {
-            let mut app = WindowsApp::new_offline();
-            apply(&mut app, Intent::Uninstall);
-            assert!(app.dialog_open());
-            app.catalogue.apps[1].can_vendor_uninstall = false;
-            app.catalogue.apps[1].can_delete_data = false;
-            apply(&mut app, Intent::SelectApp(1));
-            assert!(!app.dialog_open());
+            let mut window = window(WindowsApp::new_offline());
+            press(&mut window, Intent::Uninstall);
+            assert!(window.dialog_open());
+            {
+                let mut app = window.app.borrow_mut();
+                app.catalogue.apps[1].can_vendor_uninstall = false;
+                app.catalogue.apps[1].can_delete_data = false;
+            }
+            press(&mut window, Intent::SelectApp(1));
+            assert!(!window.dialog_open());
+            let mut app = window.app.borrow_mut();
             assert_eq!(app.confirm_vendor_uninstall, None);
             // Actions the newly selected app does not offer do nothing.
             app.intents.push(Intent::DeleteData);
@@ -2568,17 +2737,17 @@ mod tests {
             );
         }
         {
-            let mut app = WindowsApp::new_offline();
+            let mut window = window(WindowsApp::new_offline());
             assert!(Widget::perform_semantic_action(
-                &mut app,
+                &mut window,
                 "windows.select:cyberpunk-2077",
                 &AccessibilityAction::Activate,
                 &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
-            assert_eq!(app.selected, 1);
+            assert_eq!(window.app.borrow().selected, 1);
             assert!(!Widget::perform_semantic_action(
-                &mut app,
+                &mut window,
                 "windows.select:stale-id",
                 &AccessibilityAction::Activate,
                 &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
@@ -2592,16 +2761,16 @@ mod tests {
             app.catalogue.vm_install_confirmation = None;
             app.refresh();
             assert_eq!(app.page, Page::PendingInstall);
-            app.rebuild();
-            let ids = ids(&app);
+            let ids = ids(&window(app));
             assert!(ids.contains(&"windows-confirm-capsule-install".to_owned()));
             assert!(ids.contains(&"windows-confirm-vm-install".to_owned()));
         }
         {
             let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
-            app.with_surface::<WindowsApp, _>(|surface| {
-                surface.use_provider(Box::new(SampleProvider::new()));
-                surface.stage_scenario(Some("wide"));
+            app.with_widget(|window: &mut WindowsWindow| {
+                let mut app = window.app.borrow_mut();
+                app.use_provider(Box::new(SampleProvider::new()));
+                app.stage_scenario(Some("wide"));
             })
             .expect("authored catalogue over the live action host");
             app.settle();
@@ -2635,22 +2804,21 @@ mod tests {
             let failed = app.selected_app().expect("failed sample application");
             assert_eq!(failed.status, crate::model::AppStatus::Failed);
             assert!(!failed.launch_available);
-            let ids = ids(&app);
+            let ids = ids(&window(app));
             assert!(ids.contains(&"windows-retry-install".to_owned()));
             assert!(ids.contains(&"windows-escalate-install-to-vm".to_owned()));
         }
         {
-            let mut app = WindowsApp::new_offline_scenario("appliance-setup");
-            let ids_before = ids(&app);
+            let mut window = window(WindowsApp::new_offline_scenario("appliance-setup"));
+            let ids_before = ids(&window);
             assert!(ids_before.contains(&"windows-choose-windows-iso".to_owned()));
             assert!(ids_before.contains(&"windows-appliance-details".to_owned()));
-            assert!(!app.appliance_details);
-            apply(&mut app, Intent::ToggleApplianceDetails);
-            assert!(app.appliance_details);
+            assert!(!window.app.borrow().appliance_details);
+            press(&mut window, Intent::ToggleApplianceDetails);
+            assert!(window.app.borrow().appliance_details);
         }
         {
-            let app = WindowsApp::new_offline_scenario("appliance");
-            let ids = ids(&app);
+            let ids = ids(&window(WindowsApp::new_offline_scenario("appliance")));
             assert!(ids.contains(&"windows-restart-appliance".to_owned()));
             assert!(ids.contains(&"windows-shutdown-appliance".to_owned()));
             assert!(!ids.contains(&"windows-start-appliance".to_owned()));

@@ -7,20 +7,17 @@
 //! its own compatibility service, comparing them with the routes the
 //! service reports back (level state the window keeps in step). Install and appliance lifecycle are
 //! effects with no document delta (published on the root and on the live
-//! rows the surface reports).
+//! rows the view publishes).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::tilo_resource::{self, Invoke, Map, Model, resource};
 use ui::widget::Element;
 
-use crate::actions::{self, WindowsEffect};
-use crate::app::{SharedProvider, WindowsApp};
+use crate::actions::WindowsEffect;
+use crate::app::SharedProvider;
 use crate::model::{Catalogue, Route};
 use crate::provider::SampleProvider;
 
@@ -57,7 +54,7 @@ struct ReportedRoute {
     overridable: bool,
 }
 
-/// The routes the service last reported, shared by the surface (which
+/// The routes the service last reported, shared by the window (which
 /// refreshes them) and the route projection (which compares the document's
 /// overrides with them).
 #[derive(Clone, Debug, Default)]
@@ -151,10 +148,7 @@ impl ResourceApp for WindowsShell {
     }
 
     fn view(cx: &mut ViewCx<Windows>) -> Element {
-        let app = WindowsApp::new();
-        // A search hit, or an agent's `open`, shows the application it names.
-        cx.on_open(app.opener());
-        cx.surface(app)
+        crate::app::window(cx)
     }
 
     /// Opening an installer with Windows Apps installs it, through the same
@@ -195,84 +189,6 @@ impl ResourceApp for WindowsShell {
             sample.seed_install_confirmation();
         }
         fixture.provide(sample);
-    }
-}
-
-impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
-    /// The routes the window shows are the ones the service reports; the
-    /// stored overrides are carried to this device's service.
-    fn present(&mut self, state: &Rc<Windows>) {
-        if self.mode.is_live() {
-            self.follow_routes(state);
-        }
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Windows>) {
-        match cx.mode() {
-            RunMode::Live => self.connect_live(),
-            RunMode::Capture => {
-                if let Some(sample) = cx.fixture::<SampleProvider>() {
-                    self.use_provider(Box::new((*sample).clone()));
-                }
-            }
-            // A past version reaches no service.
-            RunMode::Past => {}
-        }
-        self.mode = cx.mode();
-        self.attach_framework(cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: WindowsEffect, cx: &mut EffectCx<Windows, Self>) -> EffectAnswer {
-        self.answer_effect(&effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        const CODE: &str = "windows.busy";
-        const REASON: &str = "Another Windows operation is still running";
-        if !self.is_busy() {
-            return Vec::new();
-        }
-        vec![
-            EffectStatus::unavailable(WindowsEffect::INSTALL, CODE, REASON),
-            EffectStatus::unavailable(WindowsEffect::IMPORT_ISO, CODE, REASON),
-            EffectStatus::unavailable(WindowsEffect::OPEN_FILE, CODE, REASON),
-        ]
-    }
-
-    /// The service's catalogue, appliance and pending install, merged by id
-    /// with the overrides the document holds.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.catalogue
-            .apps
-            .iter()
-            .map(|app| {
-                ui::tilo_resource::SearchEntry::new(
-                    app.name.clone(),
-                    format!(
-                        "{} {}",
-                        app.publisher,
-                        crate::strings::t(app.route.button_key())
-                    ),
-                )
-                .subtitled(app.publisher.clone())
-                .grouped(crate::strings::t("windows-search-group"))
-                .anchored(crate::search::app_resource_id(&app.id))
-            })
-            .collect()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        actions::live_rows(&self.catalogue)
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        actions::live_rows(&self.catalogue)
-            .into_iter()
-            .find(|row| row.id() == id)
     }
 }
 
