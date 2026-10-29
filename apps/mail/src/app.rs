@@ -279,7 +279,9 @@ fn engine_error_text(context: &str, message: &str, account: &str) -> String {
         }
         "connect" | "fetch" if offline => "You’re offline. Mail will check again.".to_owned(),
         "connect" | "fetch" => format!("Can’t check mail for {account}: {message}"),
-        "send" | "smtp" => format!("Couldn’t send the message: {message}"),
+        "send" | "smtp" | crate::engine::SMTP_UNREACHED => {
+            format!("Couldn’t send the message: {message}")
+        }
         "oauth" => format!("Sign-in didn’t finish: {message}"),
         _ => format!("Couldn’t update the mail server: {message}"),
     }

@@ -167,6 +167,7 @@ imports! {
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
+    Delivery = "delivery" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);
     Members = "members" ([H] -> [H]);
     Speakers = "speakers" ([H] -> [H]);

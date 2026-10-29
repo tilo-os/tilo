@@ -20,6 +20,8 @@ use crate::view_state::StateKey;
 /// The window the lenses on each resource are kept under, as view state of no window: set by
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
+/// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
+pub const DELIVERY_WINDOW: &str = "$delivery";
 
 /// The platform's phrases in the person's language, with their arguments.
 pub type Phrases = Box<dyn Fn(&str, &[(String, String)]) -> String>;
@@ -100,6 +102,16 @@ fn all_defaulted(params: &[ParamMeta]) -> bool {
     params.iter().all(|param| param.default.is_some())
 }
 
+/// The state key `delivery(r)` reads for the resource `id`.
+#[must_use]
+pub fn delivery_key(id: &str) -> StateKey {
+    StateKey {
+        window: DELIVERY_WINDOW.to_owned(),
+        principal: None,
+        state: id.to_owned(),
+    }
+}
+
 /// The key of the lenses on the resource `id`.
 #[must_use]
 pub fn lens_key(id: &str) -> StateKey {
@@ -122,6 +134,24 @@ struct Offered<'m> {
 }
 
 impl Core {
+    /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
+    /// last said; a view that read it runs again when that moves.
+    fn delivery_of(&self, doc: &str) -> HResult<Value> {
+        let key = delivery_key(doc);
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states
+                    .get(&key)
+                    .cloned()
+                    .map_or_else(Value::none, Value::some),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value)?;
+        Ok(value)
+    }
+
     /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
     /// person's zone, as a `host.Dated` tuple of the rest of the text, the day and the moment.
     fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -152,6 +182,11 @@ impl Core {
                 let target = self.ref_arg(a.h(0)?)?;
                 let offered = self.actions_on(&target)?;
                 self.ret_h(Value::List(offered))
+            }
+            Imp::Delivery => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.delivery_of(&target.target.doc)?;
+                self.ret_h(value)
             }
             Imp::Lenses => {
                 let target = self.ref_arg(a.h(0)?)?;

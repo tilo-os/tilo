@@ -39,6 +39,20 @@ pub struct MemoryHost {
     actions: Arc<Mutex<Vec<Vec<String>>>>,
     /// The run each file action was part of, in order.
     runs: Arc<Mutex<Vec<String>>>,
+    /// The terminal's width, when the host has a terminal to edit lines on.
+    terminal: Option<usize>,
+    /// Whether the terminal takes keys one at a time now, and how often it
+    /// was switched.
+    editing: Arc<Mutex<(bool, usize)>>,
+    /// The person's history, oldest first, when this host holds it.
+    history: Option<Arc<Mutex<Vec<String>>>>,
+    /// The programs it says it can run, for completion.
+    programs: Vec<String>,
+    /// Whether `sleep` waits as long as it says, for tests of commands
+    /// that run side by side.
+    real_time: bool,
+    /// Ctrl+Z was pressed and no job took it yet.
+    suspended: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemoryHost {
@@ -46,6 +60,49 @@ impl MemoryHost {
         let host = Self::default();
         host.tree().nodes.insert(PathBuf::from("/"), (Node::Dir, 0));
         host
+    }
+
+    /// A host with a terminal `columns` wide: the line editor runs on it,
+    /// reading keys from the shell's standard input.
+    #[must_use]
+    pub fn with_terminal(mut self, columns: usize) -> Self {
+        self.terminal = Some(columns);
+        self
+    }
+
+    /// A host that holds the person's history, `lines` oldest first.
+    #[must_use]
+    pub fn with_history(mut self, lines: &[&str]) -> Self {
+        self.history = Some(Arc::new(Mutex::new(
+            lines.iter().map(|l| (*l).to_owned()).collect(),
+        )));
+        self
+    }
+
+    /// A host that says it runs `names`, as the environment's tools.
+    #[must_use]
+    pub fn with_programs(mut self, names: &[&str]) -> Self {
+        self.programs = names.iter().map(|n| (*n).to_owned()).collect();
+        self
+    }
+
+    /// A host whose `sleep` takes as long as it says.
+    #[must_use]
+    pub const fn with_real_time(mut self) -> Self {
+        self.real_time = true;
+        self
+    }
+
+    /// Press Ctrl+Z: the job in the foreground stops.
+    pub fn suspend(&self) {
+        self.suspended
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the terminal takes keys one at a time now, and how many
+    /// times the editor switched it.
+    pub fn editing(&self) -> (bool, usize) {
+        *self.editing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn tree(&self) -> MutexGuard<'_, Tree> {
@@ -446,8 +503,49 @@ impl Host for MemoryHost {
     }
 
     fn sleep(&self, millis: u64) {
+        if self.real_time {
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+        }
         let millis = i64::try_from(millis).unwrap_or(i64::MAX);
         self.slept
             .fetch_add(millis, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn edit_mode(&self, on: bool) -> bool {
+        if self.terminal.is_none() {
+            return false;
+        }
+        let mut editing = self.editing.lock().unwrap_or_else(PoisonError::into_inner);
+        editing.0 = on;
+        editing.1 = editing.1.saturating_add(1);
+        true
+    }
+
+    fn columns(&self) -> usize {
+        self.terminal.unwrap_or(80)
+    }
+
+    fn take_suspend(&self) -> bool {
+        self.suspended
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn history(&self, query: &crate::host::HistoryQuery) -> Option<Vec<String>> {
+        let lines = self.history.as_ref()?;
+        let lines = lines.lock().unwrap_or_else(PoisonError::into_inner);
+        Some(
+            lines
+                .iter()
+                .rev()
+                .filter(|line| line.contains(&query.matching))
+                .skip(query.skip)
+                .take(query.limit)
+                .cloned()
+                .collect(),
+        )
+    }
+
+    fn programs(&self, _path: &str) -> Vec<String> {
+        self.programs.clone()
     }
 }

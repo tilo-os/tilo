@@ -659,6 +659,8 @@ mod cases {
             json!(["bo@example.org", "Plans", "See you at nine."])
         );
         assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+        // Marked as being handed over, then handed over.
+        assert_eq!(w.rt.settle().unwrap().marked, 1);
         assert_eq!(w.rt.settle().unwrap().delivered, 1);
         assert_eq!(
             w.sink.delivered(),
@@ -941,6 +943,7 @@ mod cases {
                     .count();
             assert_eq!(sends, 1);
         }
+        assert_eq!(wa.rt.settle().unwrap().marked, 1);
         assert_eq!(wa.rt.settle().unwrap().delivered, 1);
         assert_eq!(wa.sink.delivered().len(), 1);
 
