@@ -1366,6 +1366,9 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# The compositor's Wayland library with small additions upstream lacks.
+# See vendor/smithay/TILO-PATCH.md.
+smithay = { path = "vendor/smithay" }
 # The HTML5 entity table as offsets into two string literals instead of 2125
 # pairs of pointers the loader relocates in every app process (it is in the
 # shared runtime through the Markdown codec). See
