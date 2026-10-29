@@ -16,6 +16,7 @@ fn main() -> std::process::ExitCode {
     use tilo_session::{DeviceHost, Options, QuickSettings, Session};
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Options, Session};
+    use tilo_session::{Options, Session, SessionConfig, SessionEnvironment};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -68,6 +69,8 @@ fn main() -> std::process::ExitCode {
         }))),
         session_actions: os_actions::perform_session_action,
         search: search_options(),
+    let options = Options {
+        config: SessionConfig::load(),
         ..Options::default()
     };
     let started = match backend {
@@ -95,6 +98,12 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
+    SessionEnvironment {
+        wayland_display: socket.clone(),
+        x11_display: None,
+        x11_authority: None,
+    }
+    .export();
     let mut child = None;
     if let Some((program, rest)) = command.split_first() {
         match std::process::Command::new(program)

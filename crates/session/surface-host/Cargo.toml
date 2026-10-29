@@ -16,6 +16,7 @@ vello.workspace = true
 winit.workspace = true
 # The buffers the compositor shows (memory render buffers).
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
+serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 

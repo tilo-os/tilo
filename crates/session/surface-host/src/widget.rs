@@ -139,6 +139,32 @@ impl WidgetHost {
     }
 }
 
+impl crate::Published for WidgetHost {
+    fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        self.host.resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+        let started = self
+            .host
+            .invoke_published(&address.resource, &address.action, arguments);
+        self.owed = true;
+        started
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.host
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect()
+    }
+}
+
 impl SurfaceHost for WidgetHost {
     fn layers(&self) -> Vec<HostLayer> {
         vec![HostLayer {

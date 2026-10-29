@@ -44,9 +44,14 @@ tilo-network-secret-agent = { path = "../network-secret-agent" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+os-actions = { path = "../../system/os-actions" }
+serde.workspace = true
 serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+tilo-paths = { path = "../../platform/tilo-paths" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing.workspace = true
+xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 

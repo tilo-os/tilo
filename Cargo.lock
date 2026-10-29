@@ -21437,6 +21437,7 @@ version = "0.1.0"
 dependencies = [
  "os-actions",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
  "settings-store",
  "tilo-action-policy",
@@ -21658,6 +21659,7 @@ dependencies = [
 name = "tilo-surface-host"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "smithay",
  "tilo-compositor",
  "tilo-cpu-raster",

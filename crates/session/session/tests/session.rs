@@ -14,15 +14,18 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use std::cell::RefCell;
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
+use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_compositor::{Compositor, OutputConfig};
-use tilo_desktop::desktop_actions::{CHROME_RESOURCE, WINDOW_KIND};
+use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig};
+use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
 use tilo_onboarding::OnboardingEffect;
 use tilo_quick_settings::QsEffect;
+use tilo_quick_settings::QuickSettingsState;
 use tilo_quick_settings::device::Device;
 use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
@@ -32,6 +35,7 @@ use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileReque
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
+use tilo_surface_host::Published;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
@@ -314,6 +318,400 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     assert!(
         window_resource(&session, "org.example.Editor").is_none(),
         "the tab is gone from the desk"
+    );
+}
+
+/// evdev codes the tests press.
+mod keys {
+    pub const TAB: u32 = 15;
+    pub const A: u32 = 30;
+    pub const LEFT_META: u32 = 125;
+    pub const VOLUME_UP: u32 = 115;
+    pub const MUTE: u32 = 113;
+    pub const BRIGHTNESS_DOWN: u32 = 224;
+    pub const PLAY_PAUSE: u32 = 164;
+    pub const WLAN: u32 = 238;
+    /// What laptops send for their touchpad key.
+    pub const F21: u32 = 191;
+}
+
+fn key(session: &mut Session, keycode: u32, pressed: bool) {
+    session
+        .compositor()
+        .input(InputEvent::Key { keycode, pressed })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+}
+
+fn tap(session: &mut Session, keycode: u32) {
+    key(session, keycode, true);
+    key(session, keycode, false);
+}
+
+/// A session with quick settings over stand-in readings, whose effects the
+/// returned host records.
+fn session_with_quick_settings() -> (Session, Rc<FixtureHost>) {
+    let host = Rc::new(FixtureHost::new(QuickSettingsState::fixture()));
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Lent(
+                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
+            )),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    (session, host)
+}
+
+fn find_resource(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+    resources.iter().find_map(|resource| {
+        if resource.id.0 == id {
+            Some(resource.clone())
+        } else {
+            find_resource(&resource.children, id)
+        }
+    })
+}
+
+fn publishes(session: &Session, resource: &str, action: &str) -> bool {
+    find_resource(&session.resources(), resource)
+        .is_some_and(|found| found.actions.iter().any(|spec| spec.id == action))
+}
+
+#[test]
+fn a_desktop_chord_works_while_a_window_has_the_keyboard_and_the_window_never_sees_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Terminal");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused
+    });
+    let before = session.accessible_labels();
+    key(&mut session, keys::LEFT_META, true);
+    tap(&mut session, keys::TAB);
+    key(&mut session, keys::LEFT_META, false);
+    pump(&mut session, &mut [&mut client], |_, _| true);
+    assert_ne!(
+        session.accessible_labels(),
+        before,
+        "Super+Tab opened the overview"
+    );
+    assert!(
+        !client.seen.keys.iter().any(|(code, _)| *code == keys::TAB),
+        "the window never saw the chord's key: {:?}",
+        client.seen.keys
+    );
+    // With the overview closed again, plain typing reaches the window.
+    invoke(&mut session, CHROME_RESOURCE, "hide-overview");
+    pump(&mut session, &mut [&mut client], |_, _| true);
+    tap(&mut session, keys::A);
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.contains(&(keys::A, true))
+    });
+}
+
+#[test]
+fn hardware_keys_run_the_published_effects_and_a_held_volume_key_repeats() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, host) = session_with_quick_settings();
+    assert!(
+        publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
+        "quick settings publishes its effects: {:#?}",
+        session
+            .resources()
+            .iter()
+            .map(|resource| resource.id.clone())
+            .collect::<Vec<_>>()
+    );
+    tap(&mut session, keys::MUTE);
+    tap(&mut session, keys::BRIGHTNESS_DOWN);
+    tap(&mut session, keys::WLAN);
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::ToggleMuted,
+            QsEffect::BrightnessDown,
+            QsEffect::ToggleAirplaneMode
+        ]
+    );
+
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_millis(20),
+        rate: 100,
+    });
+    key(&mut session, keys::VOLUME_UP, true);
+    let held = std::time::Instant::now();
+    while held.elapsed() < Duration::from_millis(200) {
+        session.step(Duration::from_millis(5)).unwrap();
+    }
+    key(&mut session, keys::VOLUME_UP, false);
+    let louder = host
+        .ran()
+        .iter()
+        .filter(|effect| **effect == QsEffect::VolumeUp)
+        .count();
+    assert!(louder > 3, "holding volume up ramps it: {louder}");
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.starts_with("Volume ")),
+        "the readout shows the volume: {:?}",
+        session.accessible_labels()
+    );
+    for _ in 0..5 {
+        session.step(Duration::from_millis(10)).unwrap();
+    }
+    let after = host
+        .ran()
+        .iter()
+        .filter(|effect| **effect == QsEffect::VolumeUp)
+        .count();
+    assert_eq!(after, louder, "the release stops the repeat");
+}
+
+/// A service the session runs in its process: it publishes what plays,
+/// and records what it was asked.
+struct Player {
+    asked: Rc<RefCell<Vec<String>>>,
+}
+
+impl Published for Player {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        let spec = |id: &'static str| {
+            tilo_actions::ActionSpec::typed_operation(
+                id,
+                id,
+                String::new(),
+                tilo_actions::OperationKind::Effect,
+                "test.player",
+                Vec::new(),
+                move |_| tilo_actions::EncodedAction::encode_operation("test.player", &id).unwrap(),
+            )
+        };
+        vec![
+            ResourceSpec::new(tilo_session::MEDIA_PLAYER, "media", "Player")
+                .with_action(spec("play-pause"))
+                .with_action(spec("next")),
+        ]
+    }
+
+    fn invoke(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        _: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+        self.asked.borrow_mut().push(address.action.clone());
+        Ok(ui::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn the_play_key_reaches_whatever_publishes_the_player() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    session.publish(Rc::new(RefCell::new(Player {
+        asked: Rc::clone(&asked),
+    })));
+    assert!(publishes(
+        &session,
+        tilo_session::MEDIA_PLAYER,
+        "play-pause"
+    ));
+    tap(&mut session, keys::PLAY_PAUSE);
+    assert_eq!(*asked.borrow(), ["play-pause"]);
+}
+
+#[test]
+fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    assert!(session.input_config().touchpad_enabled);
+    tap(&mut session, keys::F21);
+    assert!(
+        !session.input_config().touchpad_enabled,
+        "the key turned it off"
+    );
+    assert!(
+        session
+            .accessible_labels()
+            .contains(&"Touchpad off".to_owned()),
+        "the readout says so: {:?}",
+        session.accessible_labels()
+    );
+    let mut on = serde_json::Map::new();
+    on.insert("on".into(), true.into());
+    session
+        .invoke(tilo_session::INPUT_RESOURCE, "toggle-touchpad", &on)
+        .unwrap();
+    assert!(
+        session.input_config().touchpad_enabled,
+        "the action turned it on"
+    );
+}
+
+#[test]
+fn the_lock_action_locks_the_session() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    // The compositor locks and hands the lock to whatever shows the lock
+    // screen.
+    assert_eq!(
+        session.compositor().take_session_events(),
+        vec![tilo_compositor::SessionTransition::Locked]
+    );
+}
+
+#[test]
+fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _host) = session_with_quick_settings();
+    invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+    assert!(session.quick_settings_open());
+    session.step(Duration::from_millis(1)).unwrap();
+    // On the desk, far from the panel at the right.
+    for event in [
+        InputEvent::PointerMotion { x: 100.0, y: 400.0 },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: true,
+        },
+        InputEvent::PointerButton {
+            button: 0x110,
+            pressed: false,
+        },
+    ] {
+        session.compositor().input(event).unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert!(
+        !session.quick_settings_open(),
+        "the press outside closed it"
+    );
+    // Its shortcut opens it again.
+    session
+        .invoke(
+            CHROME_RESOURCE,
+            "shortcut",
+            &serde_json::json!({"action": "quick_settings"})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+    assert!(session.quick_settings_open());
+}
+
+#[test]
+fn the_empty_desks_launchpad_is_published_until_a_window_opens() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    for card in [
+        "chat", "notes", "tasks", "meet", "invite", "activity", "apps",
+    ] {
+        assert!(
+            publishes(&session, LAUNCHPAD_RESOURCE, card),
+            "the launchpad publishes {card}"
+        );
+    }
+    invoke(&mut session, LAUNCHPAD_RESOURCE, "apps");
+    let _client = mapped(&mut session, "org.example.Terminal");
+    assert!(
+        find_resource(&session.resources(), LAUNCHPAD_RESOURCE).is_none(),
+        "a desk with a window shows no launchpad"
+    );
+}
+
+#[test]
+fn the_magnifier_zooms_the_screen_about_the_pointer_by_its_actions() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let _client = mapped(&mut session, "org.example.Terminal");
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 300.0, y: 300.0 })
+        .unwrap();
+    session.step(Duration::from_millis(1)).unwrap();
+    let plain = session.compositor().screenshot("HEADLESS-1").unwrap();
+    invoke(&mut session, tilo_session::MAGNIFIER_RESOURCE, "toggle");
+    assert!((session.compositor().zoom() - 2.0).abs() < f64::EPSILON);
+    invoke(&mut session, tilo_session::MAGNIFIER_RESOURCE, "zoom-in");
+    assert!((session.compositor().zoom() - 3.0).abs() < f64::EPSILON);
+    let zoomed = session.compositor().screenshot("HEADLESS-1").unwrap();
+    assert_ne!(zoomed.rgba, plain.rgba, "the screen shows magnified");
+    invoke(&mut session, tilo_session::MAGNIFIER_RESOURCE, "toggle");
+    assert!((session.compositor().zoom() - 1.0).abs() < f64::EPSILON);
+}
+
+fn active_workspace(session: &Session) -> Option<u64> {
+    session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|workspace| workspace.id.0))
+}
+
+fn gesture(session: &mut Session, events: &[GestureEvent]) {
+    for event in events {
+        session
+            .compositor()
+            .input(InputEvent::Gesture(*event))
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
+#[test]
+fn touchpad_gestures_the_desktop_takes_switch_workspaces_and_open_the_overview() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let first = active_workspace(&session);
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    let second = active_workspace(&session);
+    assert_ne!(first, second, "a new workspace opened");
+    // Four fingers down go to the workspace before, under natural
+    // scrolling (the default): the workspaces follow the fingers.
+    gesture(
+        &mut session,
+        &[
+            GestureEvent::SwipeBegin { fingers: 4 },
+            GestureEvent::SwipeUpdate { dx: 0.0, dy: 60.0 },
+            GestureEvent::SwipeUpdate { dx: 0.0, dy: 60.0 },
+            GestureEvent::SwipeEnd { cancelled: false },
+        ],
+    );
+    assert_eq!(active_workspace(&session), first, "back to the first");
+
+    let before = session.accessible_labels();
+    gesture(
+        &mut session,
+        &[
+            GestureEvent::PinchBegin { fingers: 3 },
+            GestureEvent::PinchUpdate {
+                dx: 0.0,
+                dy: 0.0,
+                scale: 0.6,
+                rotation: 0.0,
+            },
+            GestureEvent::PinchEnd { cancelled: false },
+        ],
+    );
+    session.step(Duration::from_millis(1)).unwrap();
+    assert_ne!(
+        session.accessible_labels(),
+        before,
+        "a pinch in opened the overview"
     );
 }
 

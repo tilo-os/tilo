@@ -88,3 +88,44 @@ fn the_desktop_lies_under_the_windows_and_covers_the_output() {
         "and takes the pointer there"
     );
 }
+
+#[test]
+fn a_window_refused_the_keyboard_waits_on_its_tab_until_the_person_looks() {
+    let _settled = ui::motion::testing::settled();
+    let (host, mut policy) = desktop(7, 1.0);
+    let outputs = output();
+    let first = window(1, "org.gnome.Terminal");
+    let second = window(2, "org.mozilla.firefox");
+    let size = policy.initial_size(&first, &outputs).unwrap();
+    let size2 = policy.initial_size(&second, &outputs).unwrap();
+    let mapped = [
+        (first.clone(), Rectangle::new((0, 0).into(), size.into())),
+        (second.clone(), Rectangle::new((0, 0).into(), size2.into())),
+    ];
+    policy.arrange(&mapped, &outputs).unwrap();
+    assert_eq!(policy.focused(), Some(2));
+    let asks = |id: u64| host.with_policy(|policy| policy.asks_attention(id));
+
+    // A stale activation token: the first window does not take the
+    // keyboard from what the person is in, and waits instead.
+    assert!(!policy.activate(&first, false));
+    policy.arrange(&mapped, &outputs).unwrap();
+    assert_eq!(policy.focused(), Some(2));
+    assert!(asks(1));
+    // The window in front never waits.
+    assert!(!policy.activate(&second, false));
+    assert!(!asks(2));
+
+    // Looking at it answers it.
+    assert!(policy.focus_on_click(&first));
+    policy.arrange(&mapped, &outputs).unwrap();
+    assert_eq!(policy.focused(), Some(1));
+    assert!(!asks(1));
+
+    // A fresh request comes from what the person just did: it is brought
+    // forward at once.
+    assert!(policy.activate(&second, true));
+    policy.arrange(&mapped, &outputs).unwrap();
+    assert_eq!(policy.focused(), Some(2));
+    assert!(!asks(2));
+}

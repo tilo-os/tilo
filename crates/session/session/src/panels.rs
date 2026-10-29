@@ -3,25 +3,14 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 
-use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
+use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
+use tilo_compositor::{HostKey, HostLayer, KeyClaim, SurfaceHost};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
-use tilo_surface_host::{AppHost, Placement};
-use ui::device_local_door::SharedDoor;
+use tilo_surface_host::{AppHost, Placement, Published};
+use ui::host_operation::ResourceOperationStart;
 use ui::kurbo::Rect;
-
-/// A surface app whose actions the session publishes: through its door,
-/// as any catalogue on this device reaches it.
-pub(crate) trait Served {
-    /// The surface's door.
-    fn door(&self) -> SharedDoor;
-    /// Run what its door holds now, and publish what it offers.
-    fn serve(&mut self);
-    /// Whether it offers its actions now.
-    fn offered(&self) -> bool {
-        true
-    }
-}
 
 /// The width of a popover panel (quick settings), logical pixels.
 const POPOVER_WIDTH: i32 = 380;
@@ -56,28 +45,78 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     }
 }
 
-/// An app the bar opens below its right end, shown while `open` holds.
+/// Quick settings' host, with its readings kept where the session reads
+/// them too (a readout shows the level a key just changed).
+pub(crate) struct Tap {
+    pub(crate) inner: Rc<dyn tilo_quick_settings::host::PanelHost>,
+    pub(crate) feed: Readings,
+}
+
+/// The readings quick settings was lent, once it attached.
+pub(crate) type Readings = Rc<std::cell::RefCell<Option<tilo_quick_settings::host::Feed>>>;
+
+impl tilo_quick_settings::host::PanelHost for Tap {
+    fn attach(&self, feed: tilo_quick_settings::host::Feed) {
+        *self.feed.borrow_mut() = Some(feed.clone());
+        self.inner.attach(feed);
+    }
+
+    fn showing(&self, showing: &tilo_quick_settings::host::Showing) {
+        self.inner.showing(showing);
+    }
+
+    fn run(&self, effect: tilo_quick_settings::QsEffect) -> Result<(), String> {
+        self.inner.run(effect)
+    }
+
+    fn laid_out(&self, height: f64) {
+        self.inner.laid_out(height);
+    }
+}
+
+/// An app the bar opens below its right end, shown while `open` holds; a
+/// press anywhere else closes it.
 pub(crate) struct Popover {
     host: AppHost,
     open: Rc<Cell<bool>>,
+    /// When a press outside last closed it.
+    dismissed: Rc<Cell<Option<Instant>>>,
 }
 
 impl Popover {
-    pub(crate) fn new(app: ui::App, open: Rc<Cell<bool>>, scale: f64) -> Self {
+    pub(crate) fn new(
+        app: ui::App,
+        open: Rc<Cell<bool>>,
+        dismissed: Rc<Cell<Option<Instant>>>,
+        scale: f64,
+    ) -> Self {
         Self {
             host: AppHost::new(app, placement(0, 0, POPOVER_WIDTH, 1, scale)),
             open,
+            dismissed,
         }
     }
 }
 
-impl Served for Popover {
-    fn door(&self) -> SharedDoor {
-        self.host.door()
+impl Published for Popover {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.host.resources()
     }
 
-    fn serve(&mut self) {
-        self.host.serve_door();
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        self.host.invoke(address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        if self.open.get() {
+            self.host.accessible_labels()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -108,6 +147,12 @@ impl SurfaceHost for Popover {
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
         self.host.pointer_axis(horizontal, vertical);
+    }
+
+    fn pressed_elsewhere(&mut self) {
+        if self.open.replace(false) {
+            self.dismissed.set(Some(Instant::now()));
+        }
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -158,13 +203,21 @@ impl Banners {
     }
 }
 
-impl Served for Banners {
-    fn door(&self) -> SharedDoor {
-        self.host.door()
+impl Published for Banners {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.host.resources()
     }
 
-    fn serve(&mut self) {
-        self.host.serve_door();
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        self.host.invoke(address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.host.accessible_labels()
     }
 }
 
@@ -218,6 +271,88 @@ impl SurfaceHost for Banners {
     }
 }
 
+/// The hardware keys' readout, bottom-centre on the first output: it never
+/// takes the pointer or the keyboard.
+pub(crate) struct Readout {
+    host: tilo_surface_host::WidgetHost,
+}
+
+impl Readout {
+    pub(crate) fn new(scale: f64) -> Self {
+        let (w, h) = tilo_desktop::osd::OSD_SIZE;
+        Self {
+            host: tilo_surface_host::WidgetHost::new(
+                Box::new(tilo_desktop::osd::OsdSlab::new()),
+                Placement {
+                    origin: (0, 0),
+                    size: (w, h),
+                    scale,
+                },
+                false,
+            ),
+        }
+    }
+}
+
+impl Published for Readout {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        Published::resources(&mut self.host)
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        Published::invoke(&mut self.host, address, arguments)
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Published::accessible_labels(&mut self.host)
+    }
+}
+
+impl SurfaceHost for Readout {
+    fn layers(&self) -> Vec<HostLayer> {
+        self.host.layers()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn prepare_frame(&mut self) {
+        self.host.prepare_frame();
+    }
+
+    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+        let Some((x, y, w, h)) = first(outputs) else {
+            return;
+        };
+        let (width, height) = tilo_desktop::osd::OSD_SIZE;
+        let (width, height) = (
+            i32::try_from(width).unwrap_or(i32::MAX),
+            i32::try_from(height).unwrap_or(i32::MAX),
+        );
+        let scale = self.host.placement().scale;
+        // A sixth of the way up from the bottom edge, where a glance finds
+        // it and no bar sits.
+        self.host.set_placement(placement(
+            x.saturating_add(w.saturating_sub(width) / 2),
+            y.saturating_add(h)
+                .saturating_sub(height)
+                .saturating_sub(h / 6),
+            width,
+            height,
+            scale,
+        ));
+    }
+}
+
 /// A hosted surface the session keeps a hold of after handing it to the
 /// compositor: the chrome, which the session reads back.
 pub(crate) struct Held<T>(pub(crate) Rc<std::cell::RefCell<T>>);
@@ -249,6 +384,14 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
         self.0.borrow_mut().pointer_axis(horizontal, vertical);
+    }
+
+    fn pressed_elsewhere(&mut self) {
+        self.0.borrow_mut().pressed_elsewhere();
+    }
+
+    fn claim_key(&mut self, key: &HostKey, locked: bool) -> KeyClaim {
+        self.0.borrow_mut().claim_key(key, locked)
     }
 
     fn wants_keyboard(&self) -> bool {
