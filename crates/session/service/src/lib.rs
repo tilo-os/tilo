@@ -13,16 +13,25 @@
 //! `PipeWire`) block, so they run on the service's [`Worker`]: an action
 //! is [`Started::Accepted`] at once and its result lands in the reading.
 //!
+//! What needs a person's answer is asked through [`Questions`], itself a
+//! service: each pending question a resource the session's sheet reads and
+//! answers through its actions.
+//!
 //! [`Services`] is the session's side: every service it started, with one
 //! catalogue, one reader and one door over them.
 
 pub mod lines;
+pub mod questions;
 mod worker;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_resource::Effect;
 
+pub use questions::{
+    Answer, Asked, QUESTION_KIND, QUESTIONS_KIND, QUESTIONS_RESOURCE, Question, QuestionEffect,
+    Questions, question_resource,
+};
 pub use worker::{Jobs, Wake, Worker};
 
 /// What an invocation started.

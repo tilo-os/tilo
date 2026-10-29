@@ -21,15 +21,15 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::{
-    ActionOutput, ActionParam, DoorError, EncodedAction, ParamType, ResourcePresentation,
-    ResourceSpec,
-};
+use serde_json::{Map, Value};
+use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
-use crate::{Service, arguments, attended, effect, own_device};
+use tilo_resource::Effect;
+
+use crate::{Service, Started, decode, offer};
 
 /// The resource the pending questions are published under.
 pub const QUESTIONS_RESOURCE: &str = "questions";
@@ -38,10 +38,6 @@ pub const QUESTIONS_KIND: &str = "session.questions";
 /// The kind of each question's resource.
 pub const QUESTION_KIND: &str = "session.question";
 
-const ANSWER: &str = "answer";
-const CANCEL: &str = "cancel";
-const ANSWER_TYPE: &str = "so.tilo.session.question.answer";
-const CANCEL_TYPE: &str = "so.tilo.session.question.cancel";
 /// What a question's resource id starts with, before its handle.
 const QUESTION_PREFIX: &str = "question:";
 
@@ -97,12 +93,23 @@ impl std::fmt::Debug for Answer {
     }
 }
 
-/// The arguments of a question's `answer` action.
-#[derive(Deserialize)]
-struct AnswerArguments {
-    choice: Option<u64>,
-    uris: Option<Vec<String>>,
-    remember: Option<bool>,
+/// What a question's resource offers: answering it or declining it.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.question")]
+pub enum QuestionEffect {
+    /// Answer the question
+    #[effect(own_device, attended)]
+    Answer {
+        #[param("The choice made, counted from zero")]
+        choice: Option<u32>,
+        #[param("The files or the place chosen, as URIs")]
+        uris: Option<Vec<String>>,
+        #[param("Whether the answer is remembered")]
+        remember: Option<bool>,
+    },
+    /// Decline the question
+    #[effect(own_device, idempotent)]
+    Cancel,
 }
 
 struct Pending {
@@ -228,78 +235,65 @@ impl Questions {
     }
 }
 
+fn question_spec(question: Question) -> ResourceSpec {
+    offer::<QuestionEffect>(ResourceSpec::new(
+        question_resource(&question.handle),
+        QUESTION_KIND,
+        question.label,
+    ))
+    .with_presentation(ResourcePresentation {
+        detail: Some(question.kind),
+        badge: None,
+        preview: None,
+    })
+}
+
 impl Service for Questions {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let children = self.pending().into_iter().map(|question| {
-            let answer = attended(own_device(effect(
-                ANSWER,
-                "Answer",
-                ANSWER_TYPE,
-                vec![
-                    ActionParam::optional(
-                        "choice",
-                        ParamType::Integer,
-                        "The choice made, counted from zero",
-                    ),
-                    ActionParam::optional("uris", ParamType::Array, "The files or place chosen"),
-                    ActionParam::optional(
-                        "remember",
-                        ParamType::Boolean,
-                        "Whether the answer is remembered",
-                    ),
-                ],
-            )));
-            let cancel = own_device(effect(CANCEL, "Decline", CANCEL_TYPE, Vec::new()));
-            ResourceSpec::new(
-                question_resource(&question.handle),
-                QUESTION_KIND,
-                question.label,
-            )
-            .with_presentation(ResourcePresentation {
-                detail: Some(question.kind),
-                badge: None,
-                preview: None,
-            })
-            .with_action(answer)
-            .with_action(cancel)
-        });
+        let children = self.pending().into_iter().map(question_spec);
         vec![
             ResourceSpec::new(QUESTIONS_RESOURCE, QUESTIONS_KIND, "Questions")
                 .with_children(children),
         ]
     }
 
-    fn run(&self, resource: &str, action: &EncodedAction) -> Result<ActionOutput, DoorError> {
-        let unknown = || {
-            DoorError::Unknown(tilo_actions::ActionAddress::new(
-                resource,
-                action.type_id.as_str(),
-            ))
-        };
+    /// A question's reading is the question itself: what the sheet shows.
+    fn read(&self, resource: &str) -> Option<Value> {
+        if resource == QUESTIONS_RESOURCE {
+            return Some(crate::reading(&self.pending()));
+        }
+        let handle = resource.strip_prefix(QUESTION_PREFIX)?;
+        self.question(handle)
+            .map(|question| crate::reading(&question))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let effect: QuestionEffect = decode(&self.resources(), resource, action, arguments)?;
+        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         let handle = resource.strip_prefix(QUESTION_PREFIX).ok_or_else(unknown)?;
-        let done = match action.type_id.as_str() {
-            ANSWER_TYPE => {
-                let given: AnswerArguments = arguments(action)?;
-                let choice = given
-                    .choice
-                    .map(usize::try_from)
-                    .transpose()
-                    .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-                self.answer(
-                    handle,
-                    Answer {
-                        choice,
-                        uris: given.uris.unwrap_or_default(),
-                        remember: given.remember.unwrap_or(false),
-                        values: Vec::new(),
-                    },
-                )
-            }
-            CANCEL_TYPE => self.decline(handle),
-            _ => false,
+        let done = match effect {
+            QuestionEffect::Answer {
+                choice,
+                uris,
+                remember,
+            } => self.answer(
+                handle,
+                Answer {
+                    choice: choice.and_then(|choice| usize::try_from(choice).ok()),
+                    uris: uris.unwrap_or_default(),
+                    remember: remember.unwrap_or(false),
+                    values: Vec::new(),
+                },
+            ),
+            QuestionEffect::Cancel => self.decline(handle),
         };
         if done {
-            Ok(ActionOutput::default())
+            Ok(Started::Done(ActionOutput::default()))
         } else {
             Err(unknown())
         }
@@ -348,3 +342,6 @@ impl Drop for Asked {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

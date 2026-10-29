@@ -5,6 +5,7 @@ use serde_json::json;
 use tilo_actions::DoorError;
 
 use super::*;
+use crate::{Service, Services};
 
 fn question(handle: &str) -> Question {
     Question {
@@ -23,8 +24,19 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
     }
 }
 
-fn services(questions: &Questions) -> Vec<Arc<dyn Service>> {
-    vec![Arc::new(questions.clone())]
+fn services(questions: &Questions) -> Services {
+    let mut services = Services::default();
+    services.add(Box::new(questions.clone()));
+    services
+}
+
+fn invoke(
+    services: &mut Services,
+    resource: &str,
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Result<Started, DoorError>> {
+    services.invoke(resource, action, arguments)
 }
 
 #[tokio::test]
@@ -53,7 +65,7 @@ async fn an_answer_through_the_published_action_reaches_the_asker() {
     assert!(answer.contract.is_attended(), "only the person answers");
 
     let done = invoke(
-        &services(&questions),
+        &mut services(&questions),
         &question_resource("portal:1"),
         "answer",
         &arguments(json!({ "uris": ["file:///home/me/a.txt"] })),
@@ -65,12 +77,24 @@ async fn an_answer_through_the_published_action_reaches_the_asker() {
     assert!(questions.pending().is_empty());
 }
 
+#[test]
+fn a_questions_reading_is_what_the_sheet_shows() {
+    let questions = Questions::new();
+    let _asked = questions.ask(question("portal:4"));
+    let read = questions
+        .read(&question_resource("portal:4"))
+        .expect("published");
+    assert_eq!(read["kind"], "portal.file-chooser");
+    assert_eq!(read["details"]["multiple"], true);
+    assert!(questions.read(&question_resource("gone")).is_none());
+}
+
 #[tokio::test]
 async fn declining_resolves_to_nothing() {
     let questions = Questions::new();
     let asked = questions.ask(question("portal:2"));
     let done = invoke(
-        &services(&questions),
+        &mut services(&questions),
         &question_resource("portal:2"),
         "cancel",
         &serde_json::Map::new(),
@@ -84,7 +108,7 @@ fn arguments_outside_the_declared_ones_are_refused() {
     let questions = Questions::new();
     let _asked = questions.ask(question("portal:3"));
     let refused = invoke(
-        &services(&questions),
+        &mut services(&questions),
         &question_resource("portal:3"),
         "answer",
         &arguments(json!({ "password": "hunter2" })),
@@ -98,7 +122,7 @@ fn an_address_nobody_publishes_is_none() {
     let questions = Questions::new();
     assert!(
         invoke(
-            &services(&questions),
+            &mut services(&questions),
             &question_resource("gone"),
             "answer",
             &serde_json::Map::new(),
@@ -139,13 +163,11 @@ async fn asking_again_replaces_and_the_old_asker_only_withdraws_its_own() {
 
 #[test]
 fn an_answer_for_a_question_no_longer_asked_is_unknown() {
-    let questions = Questions::new();
-    let refused = questions.run(
+    let mut questions = Questions::new();
+    let refused = questions.invoke(
         &question_resource("portal:9"),
-        &tilo_actions::EncodedAction {
-            type_id: "so.tilo.session.question.cancel".into(),
-            payload: b"{}".to_vec(),
-        },
+        "cancel",
+        &serde_json::Map::new(),
     );
     assert!(matches!(refused, Err(DoorError::Unknown(_))), "{refused:?}");
 }
