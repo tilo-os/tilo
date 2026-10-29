@@ -101,6 +101,15 @@ pub struct Shell {
     pub(crate) render: crate::commands::Render,
     /// The run the command running now is part of.
     pub(crate) run: Option<Arc<crate::host::Run>>,
+    /// The line editor's state: the kill ring, the lines this shell ran,
+    /// the person's history as answered so far.
+    pub(crate) editor: Arc<std::sync::Mutex<crate::editor::State>>,
+    /// The shell's jobs, shared with its copies.
+    pub(crate) jobs: Arc<std::sync::Mutex<crate::jobs::Table>>,
+    /// The number `$!` gives: the last background job's.
+    pub(crate) last_background: Option<u32>,
+    /// Terminal's run marks, when Terminal asked for them.
+    pub(crate) marks: Option<Arc<crate::jobs::Marks>>,
 }
 
 /// How deep functions may call each other before the shell refuses.
@@ -144,6 +153,10 @@ impl Shell {
             call_depth: 0,
             render: crate::commands::Render::Text,
             run: None,
+            editor: Arc::default(),
+            jobs: Arc::default(),
+            last_background: None,
+            marks: None,
         };
         shell.set_stdio(io);
         let _ = shell.vars.set("PWD", pwd);

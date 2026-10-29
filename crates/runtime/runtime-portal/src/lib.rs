@@ -25,6 +25,7 @@ pub mod agent_transport;
 #[cfg(target_os = "linux")]
 pub mod jobs;
 pub mod local_socket;
+pub mod origin_connector;
 pub mod pending_connection;
 pub mod process_binding;
 #[cfg(unix)]
@@ -126,7 +127,12 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     {
         let var_name = format!("TILO_SVC_{}_FD", name.to_uppercase());
         let raw = env::var(&var_name).ok()?;
-        let fd: RawFd = raw.parse().ok()?;
+        let Ok(fd) = raw.parse::<RawFd>() else {
+            eprintln!(
+                "tilo-portal: the inherited service descriptor {var_name}={raw:?} is not a number"
+            );
+            return None;
+        };
         if fd < 0 {
             return None;
         }
@@ -263,7 +269,10 @@ impl CapnpClient {
         tokio::task::spawn_local(async move {
             // Resolves when the connection closes; higher layers observe a
             // Disconnected error on outstanding or subsequent service calls.
-            let _ = self.rpc_system.await;
+            if let Err(error) = self.rpc_system.await {
+                eprintln!("tilo-portal: a portal connection ended with an error: {error}");
+            }
+            // Nobody may be waiting for the end; the calls see Disconnected.
             let _ = ended.send(());
         });
         (client, end)

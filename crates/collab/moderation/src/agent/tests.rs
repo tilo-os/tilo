@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use tilo_action_policy::{Authority, Context, Role, RoomPolicy};
-use tilo_resource::{ActionCx, Collection, Model, Refusal, Replica, resource};
+use tilo_resource::{ActionCx, Collection, Model, NonBlank, Refusal, Replica, resource};
 
 use super::*;
 use crate::judge::Verdict;
@@ -204,7 +204,7 @@ fn vandalised() -> FakeRoom {
         app: None,
         record: None,
         item: None,
-        reason: "deleted all our cards".into(),
+        reason: NonBlank::parse("deleted all our cards").expect("a test reason says something"),
     }))
     .unwrap();
     room.moderation.sync_with(&mut ada).unwrap();
@@ -360,7 +360,7 @@ fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
         app: None,
         record: None,
         item: None,
-        reason: "she is annoying".into(),
+        reason: NonBlank::parse("she is annoying").expect("a test reason says something"),
     }))
     .unwrap();
     room.moderation.sync_with(&mut ada).unwrap();

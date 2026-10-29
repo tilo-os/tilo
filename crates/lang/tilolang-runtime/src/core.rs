@@ -39,12 +39,28 @@ pub trait ModelHost {
     fn call(&self, kind: &str, input: &Value) -> Result<Value, String>;
 }
 
+/// What became of an outside effect handed to a sink (convergence.md, "What people see").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// The service took it: it is done.
+    Delivered,
+    /// The service refused it, for this reason. It is never tried again.
+    Rejected(String),
+    /// Handed over; the service has not answered yet. Asked again on the next settle.
+    ///
+    /// Resolved by the sink that says it: it is obliged to have its owner settle again once
+    /// the service answered (an origin reports `Polled::settle` from the poll that took the
+    /// answer in), and to answer every effect it took, its service going away included.
+    Pending,
+    /// The service could not be reached, for this reason, so it never got it: the effect waits
+    /// to go online and is tried again when the network comes back.
+    Offline(String),
+}
+
 /// Where outside effects are delivered once settled.
 pub trait OutsideSink {
-    /// # Errors
-    ///
-    /// A message when the capability cannot be delivered; the entry stays queued.
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String>;
+    /// Hand the effect to the service, or say what became of it since it was handed over.
+    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
 }
 
 /// How a principal is called where a view shows it (`principal.name()`).
@@ -66,6 +82,8 @@ pub struct Core {
     /// The workspace's members, as the host last gave them (`workspace.members`).
     pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
+    /// The network came back: entries waiting to go online are tried again on the next settle.
+    pub retry_waiting: std::cell::Cell<bool>,
     /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
     /// the host says.
     pub phrases: RefCell<Option<crate::platform::Phrases>>,
@@ -189,6 +207,7 @@ impl Core {
             names: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
+            retry_waiting: std::cell::Cell::new(false),
             phrases: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
@@ -274,12 +293,13 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
-            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated, EnumGetF,
-            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
-            FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
-            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
-            ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
-            Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
+            CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated,
+            Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
+            EventPart, EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker,
+            InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH,
+            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListReverse,
+            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members,
+            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
             PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
             RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
             ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
@@ -325,9 +345,11 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | SetAdd | SetRemove
-            | MapPut | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId => self.resource_import(imp, a),
+            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
+            | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
+            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
+                self.resource_import(imp, a)
+            }
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
             | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
                 self.effect_import(imp, a)
@@ -335,9 +357,8 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
-            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase | Dated => {
-                self.platform_import(imp, a)
-            }
+            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
+            | VersionEnd | Phrase | Dated => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

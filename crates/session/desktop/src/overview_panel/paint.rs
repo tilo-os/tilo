@@ -650,7 +650,7 @@ impl OverviewPanel {
                 };
                 let tab = window.address.tab;
                 let front = strip.front.get(wi).copied().unwrap_or(true);
-                let tile = Tile {
+                let window_tile = Tile {
                     window,
                     front,
                     well: *well,
@@ -671,7 +671,7 @@ impl OverviewPanel {
                 };
                 self.paint_tile(
                     &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-                    &tile,
+                    &window_tile,
                     &picture,
                     (p, chrome),
                 );

@@ -1027,18 +1027,9 @@ impl App {
                 FloatingSurfaceHostMessage::PaintStop => {
                     crate::webview::paint::set_share_watched(false);
                 }
-                FloatingSurfaceHostMessage::ToolbarEvent { event } => {
-                    // The bar's search and History act here; the app's own
-                    // slots are the app's to read, on its sync pass
-                    // (`window_toolbar::take_events`). A host message asks
-                    // for a new frame, but a frame syncs only when something
-                    // asked for it: without this, what the person typed or
-                    // committed in the bar waited, unread, for whatever made
-                    // the app sync next (Enter in the address opened nothing).
-                    if self.apply_window_bar_event(event).is_none() {
-                        self.deliver_app_slot_event(event.clone());
-                        self.needs_sync = true;
-                    }
+                FloatingSurfaceHostMessage::ToolbarEvent { event, after_input } => {
+                    // In its place among the window's own input.
+                    self.receive_bar_event(event.clone(), *after_input);
                 }
                 FloatingSurfaceHostMessage::HistoryDescriptions { described } => {
                     if let Some(history) = self.history.as_mut() {

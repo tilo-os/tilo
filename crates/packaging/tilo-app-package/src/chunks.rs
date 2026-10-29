@@ -160,7 +160,8 @@ impl ChunkList {
                 reason: reason.to_string(),
             })
         };
-        if self.format != CHUNK_LIST_FORMAT {
+        // The images published at an earlier format were cut by lists of it.
+        if !crate::tapp::READABLE_FORMATS.contains(&self.format) {
             return bad("unsupported format");
         }
         if self.blob != *blob {

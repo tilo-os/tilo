@@ -22,6 +22,7 @@ use std::process::{Command, Stdio as ProcessStdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ush_shell::jobs::{Job, Signal};
 use ush_shell::{
     DirEntry, FileCall, Host, Input, Kind, Metadata, Output, Program, Shell, Std, Stdio, WriteMode,
 };
@@ -35,16 +36,19 @@ pub fn guest_shell_path() -> PathBuf {
     Path::new(crate::GUEST_BIN_DIR).join(SHELL_COMMAND)
 }
 
-/// Whether `shell` is this shell.
-pub fn is_ush(shell: &Path) -> bool {
-    shell.file_name().is_some_and(|name| name == SHELL_COMMAND)
-}
-
 /// Set by the `SIGINT` handler: the person pressed Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+/// Set by the `SIGTSTP` handler: the person pressed Ctrl-Z while one of
+/// the shell's own commands had the terminal.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
 extern "C" fn on_interrupt(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
+extern "C" fn on_suspend(_: libc::c_int) {
+    SUSPENDED.store(true, Ordering::SeqCst);
 }
 
 /// Take Ctrl-C as a request to stop what is running, not as the end of the
@@ -58,10 +62,16 @@ fn catch_interrupt() {
         action.sa_flags = 0;
         libc::sigemptyset(&raw mut action.sa_mask);
         libc::sigaction(libc::SIGINT, &raw const action, std::ptr::null_mut());
+        // Ctrl-Z stops the job in the foreground, never the shell.
+        action.sa_sigaction = on_suspend as *const () as usize;
+        libc::sigaction(libc::SIGTSTP, &raw const action, std::ptr::null_mut());
         // A program the shell runs gets the terminal's signals itself; the
-        // shell must not die of SIGQUIT or a write to a closed pipe.
+        // shell must not die of SIGQUIT or a write to a closed pipe, nor
+        // stop when it takes the terminal back from a job's programs.
         libc::signal(libc::SIGQUIT, libc::SIG_IGN);
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+        libc::signal(libc::SIGTTIN, libc::SIG_IGN);
     }
 }
 
@@ -70,6 +80,9 @@ pub struct DeviceHost {
     /// The broker of the guest the shell runs in; `None` outside a guest.
     broker: Option<PathBuf>,
     recoverable: PathBuf,
+    /// The terminal's settings as commands left them, while the line editor
+    /// has it taking keys one at a time: what it gets back afterwards.
+    cooked: std::sync::Mutex<Option<libc::termios>>,
 }
 
 impl DeviceHost {
@@ -87,6 +100,7 @@ impl DeviceHost {
                 home.join("ush/recoverable")
             },
             broker: inside.then_some(broker),
+            cooked: std::sync::Mutex::new(None),
         }
     }
 }
@@ -239,7 +253,22 @@ impl Host for DeviceHost {
         cwd: &Path,
         io: &Stdio,
     ) -> Program {
-        run_program(argv, env, cwd, io, None)
+        run_program(argv, env, cwd, io, None, None)
+    }
+
+    fn program_in_job(
+        &self,
+        argv: &[String],
+        env: &[(String, String)],
+        cwd: &Path,
+        io: &Stdio,
+        job: &Arc<Job>,
+    ) -> Program {
+        run_program(argv, env, cwd, io, None, Some(job))
+    }
+
+    fn take_suspend(&self) -> bool {
+        SUSPENDED.swap(false, Ordering::SeqCst)
     }
 
     fn program_until(
@@ -250,7 +279,7 @@ impl Host for DeviceHost {
         io: &Stdio,
         stop: &dyn Fn() -> bool,
     ) -> Program {
-        run_program(argv, env, cwd, io, Some(stop))
+        run_program(argv, env, cwd, io, Some(stop), None)
     }
 
     fn interrupted(&self) -> bool {
@@ -302,6 +331,77 @@ impl Host for DeviceHost {
         std::fs::read_to_string("/proc/sys/kernel/hostname")
             .map_or_else(|_| "localhost".into(), |h| h.trim().to_string())
     }
+
+    fn edit_mode(&self, on: bool) -> bool {
+        let cooked = || {
+            self.cooked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if on {
+            take_terminal();
+            // SAFETY: tcgetattr and tcsetattr only read and write the
+            // termios struct we own, on our own standard input.
+            unsafe {
+                let mut now: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(libc::STDIN_FILENO, &raw mut now) != 0 {
+                    return false;
+                }
+                let mut raw = now;
+                // Keys one at a time, unechoed; Ctrl-C, Ctrl-Z and Ctrl-S
+                // are keys too, and Enter arrives as itself.
+                raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+                raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
+                raw.c_cc[libc::VMIN] = 1;
+                raw.c_cc[libc::VTIME] = 0;
+                if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const raw) != 0 {
+                    return false;
+                }
+                // Switched on twice, it goes back to what it was first.
+                cooked().get_or_insert(now);
+            }
+            return true;
+        }
+        let settings = cooked().take();
+        if let Some(settings) = settings {
+            // SAFETY: as above, with settings tcgetattr filled in.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const settings);
+            }
+        }
+        true
+    }
+
+    fn columns(&self) -> usize {
+        // SAFETY: TIOCGWINSZ writes only into the winsize struct we own.
+        unsafe {
+            let mut size: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &raw mut size) == 0
+                && size.ws_col > 0
+            {
+                return usize::from(size.ws_col);
+            }
+        }
+        80
+    }
+
+    fn programs(&self, path: &str) -> Vec<String> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut names = Vec::new();
+        for dir in path.split(':').filter(|d| !d.is_empty()) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let executable = std::fs::metadata(entry.path())
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+                if executable {
+                    names.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+        names
+    }
 }
 
 /// The name an id has in `passwd` or `group`.
@@ -315,14 +415,61 @@ fn account_name(file: &str, id: u32) -> Option<String> {
     })
 }
 
+/// Give the terminal back to the shell's own process group: the prompt is
+/// the shell's, whatever job had the terminal last.
+fn take_terminal() {
+    // SAFETY: plain calls on our own standard input; SIGTTOU is ignored, so
+    // asking from the background does not stop the shell.
+    unsafe {
+        if libc::isatty(libc::STDIN_FILENO) == 1 {
+            libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
+        }
+    }
+}
+
+/// Give the terminal to the process group `group`: a job's programs in the
+/// foreground get Ctrl-C and Ctrl-Z themselves.
+fn give_terminal(group: i32) {
+    // SAFETY: as in `take_terminal`.
+    unsafe {
+        if libc::isatty(libc::STDIN_FILENO) == 1 {
+            libc::tcsetpgrp(libc::STDIN_FILENO, group);
+        }
+    }
+}
+
+/// Send `signal` to the process group `group`.
+fn signal_group(group: i32, signal: Signal, job: &Job) {
+    let number = match signal {
+        Signal::Stop => libc::SIGTSTP,
+        Signal::Continue => {
+            if job.foreground() {
+                give_terminal(group);
+            }
+            libc::SIGCONT
+        }
+        Signal::Terminate => libc::SIGTERM,
+        Signal::Interrupt => libc::SIGINT,
+        Signal::Kill => libc::SIGKILL,
+    };
+    // SAFETY: killpg only sends a signal; the group is one this shell made.
+    unsafe {
+        libc::killpg(group, number);
+    }
+}
+
 /// Run a program on this machine with the shell's streams, until it ends or
 /// `stop` says to stop it. Without `stop` it is a plain wait: nothing polls.
+/// As part of `job`, it runs in the job's own process group, holding the
+/// terminal while the job is in the foreground, and Ctrl-Z stopping it
+/// stops the job.
 fn run_program(
     argv: &[String],
     env: &[(String, String)],
     cwd: &Path,
     io: &Stdio,
     stop: Option<&dyn Fn() -> bool>,
+    job: Option<&Arc<Job>>,
 ) -> Program {
     let Some((name, operands)) = argv.split_first() else {
         return Program::Exited(0);
@@ -334,11 +481,13 @@ fn run_program(
         .envs(env.iter().cloned())
         .current_dir(cwd);
     // SAFETY: between fork and exec this only calls signal(2), which is
-    // async-signal-safe. The shell ignores SIGQUIT; the program must not
-    // inherit that.
+    // async-signal-safe. The shell ignores SIGQUIT, SIGPIPE, SIGTTOU and
+    // SIGTTIN; the program must not inherit that.
     unsafe {
         std::os::unix::process::CommandExt::pre_exec(&mut command, || {
-            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            for signal in [libc::SIGQUIT, libc::SIGPIPE, libc::SIGTTOU, libc::SIGTTIN] {
+                libc::signal(signal, libc::SIG_DFL);
+            }
             Ok(())
         });
     }
@@ -349,7 +498,11 @@ fn run_program(
     command.stdin(stdin.map_or_else(ProcessStdio::piped, ProcessStdio::from));
     command.stdout(stdout.map_or_else(ProcessStdio::piped, ProcessStdio::from));
     command.stderr(stderr.map_or_else(ProcessStdio::piped, ProcessStdio::from));
-    let mut child = match command.spawn() {
+    let spawned = match job {
+        Some(job) => spawn_in_job(&mut command, job),
+        None => command.spawn(),
+    };
+    let mut child = match spawned {
         Ok(child) => child,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Program::NotFound,
         Err(e) => {
@@ -357,6 +510,9 @@ fn run_program(
             return Program::Exited(126);
         }
     };
+    if let Some(job) = job {
+        return in_job(&mut child, io, job, (feed, drain_out, drain_err));
+    }
     std::thread::scope(|scope| {
         if feed && let Some(mut to) = child.stdin.take() {
             let input = io.stdin.clone();
@@ -399,6 +555,120 @@ fn run_program(
         };
         Program::Exited(status)
     })
+}
+
+/// Start `command` in `job`'s process group, making the group with it when
+/// it is the job's first program.
+fn spawn_in_job(command: &mut Command, job: &Arc<Job>) -> io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt as _;
+    let mut group = job.group();
+    let joined = group.and_then(|g| i32::try_from(g).ok());
+    command.process_group(joined.unwrap_or(0));
+    let child = match command.spawn() {
+        Ok(child) => child,
+        // The group's first program is gone: this one starts a group anew.
+        Err(e) if joined.is_some() && e.raw_os_error() == Some(libc::EPERM) => {
+            command.process_group(0);
+            command.spawn()?
+        }
+        Err(e) => return Err(e),
+    };
+    let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+    let leader = match joined {
+        Some(g) if g != pid => g,
+        _ => {
+            *group = Some(i64::from(pid));
+            pid
+        }
+    };
+    drop(group);
+    if job.foreground() {
+        give_terminal(leader);
+    }
+    Ok(child)
+}
+
+/// Wait for a job's program: feeding and draining its streams as
+/// [`run_program`] does, telling the job when Ctrl-Z stopped it, and
+/// carrying the job's signals to its group.
+fn in_job(
+    child: &mut std::process::Child,
+    io: &Stdio,
+    job: &Arc<Job>,
+    (feed, drain_out, drain_err): (bool, bool, bool),
+) -> Program {
+    let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+    let group = job
+        .group()
+        .and_then(|g| i32::try_from(g).ok())
+        .unwrap_or(pid);
+    let signalled = Arc::clone(job);
+    let attached = job.attach(move |signal| signal_group(group, signal, &signalled));
+    let status = std::thread::scope(|scope| {
+        if feed && let Some(mut to) = child.stdin.take() {
+            let input = io.stdin.clone();
+            scope.spawn(move || {
+                let mut buf = [0_u8; 16 * 1024];
+                while let Ok(n) = input.read(&mut buf) {
+                    if n == 0 || to.write_all(buf.get(..n).unwrap_or(&[])).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        if drain_out && let Some(from) = child.stdout.take() {
+            let to = io.stdout.clone();
+            scope.spawn(move || copy_out(from, &to));
+        }
+        if drain_err && let Some(from) = child.stderr.take() {
+            let to = io.stderr.clone();
+            scope.spawn(move || copy_out(from, &to));
+        }
+        loop {
+            let mut status: libc::c_int = 0;
+            // SAFETY: waits for our own child, writing only `status`.
+            let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WUNTRACED) };
+            if waited < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break 1;
+            }
+            if libc::WIFSTOPPED(status) {
+                // Ctrl-Z reached it: the job stops, and the prompt has the
+                // terminal again. A stop the shell already took back
+                // (`fg` before this thread saw it) is no stop.
+                let mut again: libc::c_int = 0;
+                // SAFETY: as above; WNOHANG returns at once.
+                let changed =
+                    unsafe { libc::waitpid(pid, &raw mut again, libc::WCONTINUED | libc::WNOHANG) }
+                        == pid;
+                if changed && libc::WIFEXITED(again) {
+                    break libc::WEXITSTATUS(again);
+                }
+                if changed && libc::WIFSIGNALED(again) {
+                    break libc::WTERMSIG(again).saturating_add(128);
+                }
+                if !(changed && libc::WIFCONTINUED(again)) {
+                    job.stopped();
+                }
+                continue;
+            }
+            if libc::WIFEXITED(status) {
+                break libc::WEXITSTATUS(status);
+            }
+            if libc::WIFSIGNALED(status) {
+                break libc::WTERMSIG(status).saturating_add(128);
+            }
+        }
+    });
+    drop(attached);
+    // The job's last program ended: the shell's own commands that follow
+    // in the line have the terminal again.
+    if job.foreground() && job.programs_running() == 0 {
+        take_terminal();
+    }
+    Program::Exited(status)
 }
 
 /// An [`Output`] as a [`Write`].

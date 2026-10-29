@@ -199,8 +199,8 @@ impl ResourceApp for TlApp {
             && tilolang_tilo::origin::uses_origin(meta, "imap")
         {
             let wake = ui::wake::WakeHandle::new();
-            let origin = crate::mail::live_origin(
-                crate::mail::settings_accounts(cx.storage().config_root()),
+            let origin = tilolang_mail::live_origin(
+                tilolang_mail::settings_accounts(cx.storage().config_root()),
                 std::sync::Arc::new(move || wake.wake()),
             );
             window = window.with_origin(origin);
@@ -216,12 +216,13 @@ impl ResourceApp for TlApp {
 
 /// Where windows keep their rooms' indexes: in the app's cache area, which its host gives it.
 pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
-    files
-        .paths()
-        .cache()
-        .native_path()
-        .ok()
-        .map(|cache| cache.join("indexes"))
+    match files.paths().cache().native_path() {
+        Ok(cache) => Some(cache.join("indexes")),
+        Err(error) => {
+            tracing::warn!(%error, "no cache area for the rooms' indexes: they are kept in memory");
+            None
+        }
+    }
 }
 
 /// The built-in packages, compiled in the test process, which the window's tests run side by

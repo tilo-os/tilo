@@ -65,11 +65,26 @@ impl PointerHandler for WinitState {
 
         for event in events {
             let surface = &event.surface;
+            // A button nothing here takes is delivered all the same: see `push_input_serial`.
+            let button_serial = match event.kind {
+                PointerEventKind::Press { serial, .. }
+                | PointerEventKind::Release { serial, .. } => Some(serial),
+                _ => None,
+            };
+            let dropped =
+                |sink: &mut crate::platform_impl::wayland::event_loop::sink::EventSink| {
+                    if let Some(serial) = button_serial {
+                        sink.push_input_serial(serial);
+                    }
+                };
 
             // The parent surface.
             let parent_surface = match event.surface.data::<SurfaceData>() {
                 Some(data) => data.parent_surface().unwrap_or(surface),
-                None => continue,
+                None => {
+                    dropped(&mut self.events_sink);
+                    continue;
+                }
             };
 
             let window_id = wayland::make_wid(parent_surface);
@@ -77,7 +92,10 @@ impl PointerHandler for WinitState {
             // Ensure that window exists.
             let mut window = match self.windows.get_mut().get_mut(&window_id) {
                 Some(window) => window.lock().unwrap(),
-                None => continue,
+                None => {
+                    dropped(&mut self.events_sink);
+                    continue;
+                }
             };
 
             let scale_factor = window.scale_factor();
@@ -115,7 +133,10 @@ impl PointerHandler for WinitState {
                     let click = match wayland_button_to_winit(button) {
                         MouseButton::Left => FrameClick::Normal,
                         MouseButton::Right => FrameClick::Alternate,
-                        _ => continue,
+                        _ => {
+                            dropped(&mut self.events_sink);
+                            continue;
+                        }
                     };
                     let pressed = matches!(kind, PointerEventKind::Press { .. });
 
@@ -129,6 +150,7 @@ impl PointerHandler for WinitState {
                         window_id,
                         &mut self.window_compositor_updates,
                     );
+                    self.events_sink.push_input_serial(serial);
                 }
                 // Regular events on the main surface.
                 PointerEventKind::Enter { .. } => {
@@ -193,6 +215,7 @@ impl PointerHandler for WinitState {
                         },
                         window_id,
                     );
+                    self.events_sink.push_input_serial(serial);
                 }
                 PointerEventKind::Axis {
                     horizontal,

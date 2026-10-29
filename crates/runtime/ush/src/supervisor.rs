@@ -31,7 +31,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -67,15 +67,10 @@ pub struct SessionOptions {
     /// The key the shell marks its command runs with for Terminal
     /// ([`crate::runs`]); `None` marks nothing.
     pub runs: Option<String>,
-    /// Connected participant-private editing endpoint from this served session.
-    pub editor: Option<Arc<runtime_portal::editor::Socket>>,
     /// A served session's terminal ([`crate::setup`]): standard error is the
     /// supervisor's, and the guest's shell gets this as its own. `None` when
     /// `ush` runs on a terminal of its own.
     pub terminal: Option<Arc<OwnedFd>>,
-    /// Which shell the guest runs: ush's own, or bash for a full Linux
-    /// session.
-    pub shell: tilo_environment::Shell,
 }
 
 impl Default for SessionOptions {
@@ -89,9 +84,7 @@ impl Default for SessionOptions {
             runs: std::env::var(crate::runs::KEY_ENV)
                 .ok()
                 .filter(|key| crate::runs::valid_key(key)),
-            editor: None,
             terminal: None,
-            shell: tilo_environment::Shell::default(),
         }
     }
 }
@@ -146,8 +139,6 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     }
     std::env::current_exe()
 }
-
-pub use crate::shell_start::guest_shell;
 
 /// One session, built and torn down.
 pub struct Session {
@@ -289,18 +280,8 @@ impl Session {
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let runtime_bin = runtime_binary()?;
         let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
-        let shell = match self.opts.shell {
-            tilo_environment::Shell::Ush => crate::shell_host::guest_shell_path(),
-            tilo_environment::Shell::Linux => guest_shell(&images),
-        };
-        let runs = self.opts.runs.clone().filter(|_| {
-            self.opts.command.is_empty()
-                && (crate::runs::is_bash(&shell) || crate::shell_host::is_ush(&shell))
-        });
         Ok(GuestPlan {
-            shell,
-            runs,
-            shell_rc: false,
+            shell: crate::shell_host::guest_shell_path(),
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -326,7 +307,6 @@ impl Session {
             term: self.opts.term.clone(),
             env: Vec::new(),
             resolver: None,
-            editor: None,
             terminal: None,
             control: None,
         })
@@ -347,41 +327,19 @@ impl Session {
         Ok((netns, egress))
     }
 
-    /// May a restart request rebuild this session, or is it a one-shot? Only an
-    /// interactive session restarts: `ush -c "…"` has a command with side
-    /// effects, and rebuilding would re-run it.
-    pub fn restarts_in_place(&self) -> bool {
-        self.opts.command.is_empty()
-    }
-
-    /// Run the session to completion, restarting in place as many times as the
-    /// guest asks. Returns the guest's exit code.
+    /// Run the session to completion: an interactive one is ush's shell on
+    /// the Tilo side ([`crate::tilo_side`]), a command runs in a guest of its
+    /// own. Returns the exit code.
     ///
     /// # Errors
     ///
     /// Returns an error if the store cannot be prepared, or if building or
-    /// running a guest fails (see `Session::run_once`).
+    /// running a guest fails.
     pub fn run(&mut self) -> anyhow::Result<i32> {
-        if self.opts.shell.is_ush() && self.opts.command.is_empty() {
+        if self.opts.command.is_empty() {
             return self.run_tilo_side(None);
         }
         self.store.ensure()?;
-        let code;
-        loop {
-            let (exit, again) = self.run_once()?;
-            if !again || !self.restarts_in_place() {
-                code = exit;
-                break;
-            }
-            // A restart is a new namespace: a new session directory and broker
-            // socket, and the record read again — that is how a tool added or a
-            // directory granted reaches the shell.
-            self.session_id = uuid::Uuid::new_v4().simple().to_string();
-        }
-        Ok(code)
-    }
-
-    fn run_once(&self) -> anyhow::Result<(i32, bool)> {
         let resolved = self.resolve()?;
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
@@ -418,7 +376,8 @@ impl Session {
         }
     }
 
-    fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
+    /// Run the session's command in a guest of its own, to its end.
+    fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<i32> {
         // Before anything else: a guest whose network cannot be confined as
         // its record says does not start.
         let (netns, egress) = self.network(resolved)?;
@@ -435,15 +394,6 @@ impl Session {
         plan.prepare()?;
         if !plan.home_by_grants {
             seed_guest_home(&plan.guest_home)?;
-        }
-        let editor = if self.opts.editor.is_some() && self.opts.command.is_empty() {
-            crate::editor::Prepared::prepare(&plan).unwrap_or(None)
-        } else {
-            None
-        };
-        plan.editor = editor.as_ref().map(|prepared| prepared.guest.clone());
-        if self.opts.command.is_empty() {
-            plan.write_shell_rc()?;
         }
 
         if self.opts.verbose {
@@ -472,36 +422,11 @@ impl Session {
             ]);
         }
         command.push("--".into());
-        if user_command.is_empty() {
-            // The session's login shell, started as the Host's is.
-            command.extend(
-                plan.shell_argv()
-                    .into_iter()
-                    .map(|arg| arg.to_string_lossy().into_owned()),
-            );
-        } else {
-            command.extend(user_command);
-        }
+        command.extend(user_command);
         plan.command = command;
         plan.terminal.clone_from(&self.opts.terminal);
 
         let mut child = crate::guest::spawn(&plan, Some(&netns))?;
-        plan.editor = None; // the parent must not retain the inherited producer FD
-        let _editor_worker = match (editor, self.opts.editor.as_ref()) {
-            (Some(editor), Some(app)) => {
-                if let Ok(worker) = editor.start(Arc::clone(app), child.id()) {
-                    Some(worker)
-                } else {
-                    app.retire();
-                    None
-                }
-            }
-            (_, Some(app)) => {
-                app.retire();
-                None
-            }
-            _ => None,
-        };
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
@@ -512,12 +437,11 @@ impl Session {
             }
             eprintln!("{SANDBOX_SETUP_FAILED}");
         }
-        let restart = broker.restart_requested();
         drop(broker);
         // The stub and pasta stop before the namespace's holder goes.
         drop(egress);
         drop(netns);
-        Ok((code, restart))
+        Ok(code)
     }
 }
 
@@ -564,9 +488,6 @@ pub enum ServeRequest {
         /// ([`crate::runs`]), chosen by the app for this session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runs: Option<String>,
-        /// Explicit opt-in; existing clients continue to receive exactly one FD.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        editor_protocol: Option<u8>,
         /// Explicit opt-in: before a session's lease closes, tell the app on
         /// it how the session ended (`EndReport`): its shell exited, its
         /// guest could not be set up, or, for a relay session, the
@@ -659,9 +580,6 @@ pub enum ServeResponse {
         /// request named. A shell other than `bash` writes no marks.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         runs: bool,
-        /// V1 bundles PTY first, private editor second, under this session's lifetime.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        editor_protocol: Option<u8>,
     },
     Denied {
         reason: String,
@@ -995,30 +913,19 @@ fn open_environment(
 ) -> anyhow::Result<Served> {
     let record = record.to_owned();
     let ServeRequest::OpenSession {
-        target,
         cols,
         rows,
         term,
         command,
         runs,
-        editor_protocol,
         end_report,
         ..
     } = req
     else {
         return Ok(Served::Done);
     };
-    let shell = match target {
-        Target::Environment { shell, .. } => shell,
-        Target::Host => tilo_environment::Shell::Linux,
-    };
     let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
-    let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
-        Some(runtime_portal::editor::Socket::pair()?)
-    } else {
-        None
-    };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
@@ -1034,8 +941,6 @@ fn open_environment(
         host_root,
         command: &command,
         runs: runs.as_deref(),
-        editor: editor.as_ref().map(|(_, supervisor)| supervisor),
-        shell,
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -1060,11 +965,9 @@ fn open_environment(
             environment: record,
             relay_session: None,
             runs: runs.is_some(),
-            editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
         },
         master,
         child,
-        editor.map(|(app, _)| app),
         || {
             Some(EndWatch {
                 ended: watch_setup(diagnostics, session_id),
@@ -1101,7 +1004,6 @@ fn hand_off_session(
     response: &ServeResponse,
     master: std::fs::File,
     child: std::process::Child,
-    editor: Option<runtime_portal::editor::Socket>,
     on_started: impl FnOnce() -> Option<EndWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
@@ -1143,21 +1045,8 @@ fn hand_off_session(
         error
     };
     if !transport.persistent {
-        // The legacy lease is the request connection itself: PTY first, then
-        // the editor capability when one was negotiated.
-        if let Some(app) = &editor {
-            let mut bytes = serde_json::to_vec(response)?;
-            bytes.push(b'\n');
-            runtime_portal::fd_transport::send_with_fds(
-                &*writer,
-                &bytes,
-                &[master.as_fd(), app.as_fd()],
-            )
-            .map_err(|error| undelivered(error.into()))?;
-        } else {
-            reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
-        }
-        drop(editor);
+        // The legacy lease is the request connection itself: the PTY.
+        reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
         drop(master);
         // The legacy lease carries no report: it only closes.
         let watch = on_started().map(|watch| EndWatch {
@@ -1176,15 +1065,10 @@ fn hand_off_session(
         protocol: SERVICE_PROTOCOL,
     })?;
     bytes.push(b'\n');
-    // Roles, in order: PTY master, private session lease, then the editor
-    // capability when `editor_protocol` was negotiated.
-    let mut rights = vec![master.as_fd(), terminal_lease.as_fd()];
-    if let Some(app) = &editor {
-        rights.push(app.as_fd());
-    }
+    // Roles, in order: PTY master, then the private session lease.
+    let rights = [master.as_fd(), terminal_lease.as_fd()];
     runtime_portal::fd_transport::send_with_fds(&*writer, &bytes, &rights)
         .map_err(|error| undelivered(error.into()))?;
-    drop(editor);
     drop(master);
     drop(terminal_lease);
     let watch = on_started();
@@ -1417,7 +1301,7 @@ fn serve_host(
         .then(|| {
             let rc = store.session_dir(&id).join("shell.bash");
             std::fs::create_dir_all(store.session_dir(&id)).ok()?;
-            std::fs::write(&rc, crate::shell_start::bash_rc("", key.is_some())).ok()?;
+            std::fs::write(&rc, crate::shell_start::bash_rc(key.is_some())).ok()?;
             Some(rc)
         })
         .flatten();
@@ -1442,11 +1326,9 @@ fn serve_host(
             environment: "host".into(),
             relay_session: None,
             runs: runs.is_some(),
-            editor_protocol: None,
         },
         master,
         child,
-        None,
         || None,
     )?;
     Ok(Served::Done)
@@ -1613,11 +1495,9 @@ fn serve_relay(
             environment: key,
             relay_session: Some(session_id),
             runs: false,
-            editor_protocol: None,
         },
         master,
         child,
-        None,
         || {
             Some(EndWatch {
                 ended: watch_relay_bridge(status, store.records_root().to_path_buf()),
@@ -1846,8 +1726,6 @@ struct Launch<'a> {
     command: &'a [String],
     /// The key the session's shell marks its runs with.
     runs: Option<&'a str>,
-    editor: Option<&'a runtime_portal::editor::Socket>,
-    shell: tilo_environment::Shell,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1867,35 +1745,7 @@ fn spawn_attached(
     if let Some(record) = launch.environment {
         cmd.arg("--environment").arg(record);
     }
-    cmd.arg("--shell").arg(match launch.shell {
-        tilo_environment::Shell::Ush => "ush",
-        tilo_environment::Shell::Linux => "linux",
-    });
     cmd.arg("--host-root").arg(launch.host_root);
-    // Held until the spawn: the editor endpoint, moved off the descriptor
-    // the terminal takes in the child.
-    let moved_editor = match launch.editor {
-        Some(editor) if editor.as_fd().as_raw_fd() == crate::setup::TERMINAL_FD => {
-            Some(editor.as_fd().try_clone_to_owned()?)
-        }
-        _ => None,
-    };
-    if let Some(editor) = launch.editor {
-        use std::os::unix::process::CommandExt;
-        let fd = moved_editor
-            .as_ref()
-            .map_or_else(|| editor.as_fd().as_raw_fd(), AsRawFd::as_raw_fd);
-        cmd.arg("--editor-fd").arg(fd.to_string());
-        // SAFETY: only this owned endpoint is inherited by the trusted runtime.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
     if !launch.command.is_empty() {
         cmd.arg("--").args(launch.command);
     }
@@ -1915,7 +1765,6 @@ fn spawn_attached(
     };
     let (read, write) = crate::relay::status_pipe()?;
     let child = spawn_on_pty_with(cmd, slave, job, Some(write))?;
-    drop(moved_editor);
     Ok((child, read))
 }
 
@@ -2075,7 +1924,7 @@ mod tests {
         std::fs::create_dir(home.path().join("fixture-unique-directory")).unwrap();
         let session = tempfile::tempdir().unwrap();
         let rc = session.path().join("shell.bash");
-        std::fs::write(&rc, crate::shell_start::bash_rc("", true)).unwrap();
+        std::fs::write(&rc, crate::shell_start::bash_rc(true)).unwrap();
         let account = crate::host::LoginAccount {
             user: "you".into(),
             home: home.path().to_path_buf(),
@@ -2154,11 +2003,9 @@ mod tests {
                     environment: "default".into(),
                     relay_session: None,
                     runs: false,
-                    editor_protocol: None,
                 },
                 master,
                 child,
-                None,
                 || None,
             );
             if fails {
@@ -2222,11 +2069,9 @@ mod tests {
                     environment: environment.into(),
                     relay_session: None,
                     runs: false,
-                    editor_protocol: None,
                 },
                 master,
                 child,
-                None,
                 || None,
             )
             .unwrap();
@@ -2467,9 +2312,8 @@ mod tests {
                 environment: "default".into(),
                 relay_session: None,
                 runs: false,
-                editor_protocol: None,
             },
-            Some(master.as_fd()),
+            Some(std::os::fd::AsFd::as_fd(&master)),
         );
         assert!(
             handed.is_err(),
@@ -2502,7 +2346,6 @@ mod tests {
             environment: "default".into(),
             relay_session: None,
             runs: true,
-            editor_protocol: None,
         };
         assert_eq!(
             serde_json::to_string(&reply).unwrap(),
@@ -2520,7 +2363,6 @@ mod tests {
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
             runs: None,
-            editor_protocol: None,
             end_report: false,
         }
     }
@@ -2532,7 +2374,6 @@ mod tests {
             decide_serve(&open(Target::Environment {
                 record: Some("work".into()),
                 location: tilo_environment::Location::ThisDevice,
-                shell: tilo_environment::Shell::Linux,
             })),
             Ok(Some("work".into()))
         );
@@ -2571,7 +2412,6 @@ mod tests {
         let err = decide_serve(&open(Target::Environment {
             record: Some("../../etc".into()),
             location: tilo_environment::Location::ThisDevice,
-            shell: tilo_environment::Shell::Linux,
         }))
         .unwrap_err();
         assert!(err.contains("does not name"), "{err}");
@@ -2793,23 +2633,8 @@ mod tests {
             session.store.environment_home(DEFAULT_RECORD)
         );
         assert_eq!(plan.var_dir, session.store.environment_var(DEFAULT_RECORD));
-        // A new session runs ush's own shell; a full Linux session bash.
+        // A session's guest hosts ush's own shell.
         assert_eq!(plan.shell, crate::shell_host::guest_shell_path());
-        let mut linux = session.opts.clone();
-        linux.shell = tilo_environment::Shell::Linux;
-        let bash = Session::new(
-            session.store.clone(),
-            linux,
-            Arc::clone(&session.images),
-            Arc::clone(&session.builder),
-        )
-        .plan(
-            &resolved,
-            PathBuf::from("/tmp/b.sock"),
-            PathBuf::from("/tmp/f.bpf"),
-        )
-        .unwrap();
-        assert_eq!(bash.shell, PathBuf::from("/usr/bin/bash"));
         assert_eq!(plan.environment, tilo_environment::DEFAULT_NAME);
         assert!(
             plan.masked
@@ -2911,16 +2736,6 @@ mod tests {
     }
 
     #[test]
-    fn a_one_shot_command_never_restarts_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let interactive = session_in(dir.path());
-        assert!(interactive.restarts_in_place());
-        let mut one_shot = session_in(dir.path());
-        one_shot.opts.command = vec!["/bin/sh".into(), "-c".into(), "restart".into()];
-        assert!(!one_shot.restarts_in_place());
-    }
-
-    #[test]
     fn the_guest_home_is_seeded_once() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -2932,19 +2747,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&rc).unwrap(),
             "# edited by the user\n"
-        );
-    }
-
-    #[test]
-    fn the_guest_shell_falls_back_rather_than_failing_the_session() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
-        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("SHELL", "/usr/bin/definitely-not-here");
-        assert_eq!(
-            guest_shell(&[dir.path().to_path_buf()]),
-            PathBuf::from("/usr/bin/bash")
         );
     }
 

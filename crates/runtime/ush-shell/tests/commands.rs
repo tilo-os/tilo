@@ -1445,3 +1445,292 @@ fn every_command_is_named() {
     }
     assert!(lookup("cp").is_none());
 }
+
+// The options Tab completion offers
+
+/// What `name OPTION` is refused with when the parser does not take it, or
+/// takes it without the value it was given.
+const REFUSALS: &[&str] = &[
+    "invalid option",
+    "unrecognized option",
+    "is not supported",
+    "unknown option",
+    "requires an argument",
+];
+
+/// The value an option that takes one is given, as words: what follows the
+/// option for it to be read.
+#[expect(
+    clippy::match_same_arms,
+    reason = "one arm per command's options, read as they are listed"
+)]
+fn option_value(name: &str, bare: &str) -> Option<&'static str> {
+    Some(match (name, bare) {
+        ("basename", "-s" | "--suffix") => ".txt",
+        ("find", "-name" | "-iname" | "-path" | "-ipath" | "-wholename" | "-iwholename") => "*.txt",
+        ("find", "-type") => "f",
+        ("find", "-size") => "+0",
+        ("find", "-mtime" | "-mmin") => "+0",
+        ("find", "-newer") => "a.txt",
+        ("find", "-maxdepth" | "-mindepth") => "1",
+        ("find", "-not" | "-and" | "-or") => "-true",
+        ("find", "-exec" | "-execdir" | "-ok" | "-okdir") => "echo {} ;",
+        ("ls" | "grep" | "diff", "--color") => "never",
+        ("stat", "-c" | "--format" | "--printf") => "%n",
+        ("tree", "-L") => "1",
+        ("cut", "-f" | "--fields" | "-b" | "--bytes" | "-c" | "--characters") => "1",
+        ("cut", "-d" | "--delimiter") => ",",
+        ("cut", "--output-delimiter") => ":",
+        ("diff", "-U") => "1",
+        ("diff" | "grep", "--label") => "x",
+        ("env", "-u" | "--unset") => "HOME",
+        ("env", "-C" | "--chdir") => "/w",
+        ("grep", "-m" | "--max-count") => "1",
+        ("grep", "-A" | "--after-context" | "-B" | "--before-context" | "-C" | "--context") => "1",
+        ("grep", "--include") => "*.txt",
+        ("grep", "--exclude") => "*.md",
+        ("grep", "--exclude-dir") => "d",
+        ("grep", "-e" | "--regexp") => "one",
+        ("grep", "-f" | "--file") => "a.txt",
+        ("grep", "--binary-files") => "text",
+        ("head" | "tail", "-n" | "--lines" | "-c" | "--bytes") => "2",
+        ("nl", "-b" | "--body-numbering") => "a",
+        ("nl", "-n" | "--number-format") => "ln",
+        ("nl", "-w" | "--number-width") => "3",
+        ("nl", "-s" | "--number-separator") => ":",
+        ("nl", "-v" | "--starting-line-number" | "-i" | "--line-increment") => "1",
+        ("seq", "-s" | "--separator") => ",",
+        ("sort", "-k" | "--key") => "1",
+        ("sort", "-t" | "--field-separator") => ",",
+        ("sort", "-o" | "--output") => "out.txt",
+        ("uniq", "-f" | "--skip-fields" | "-s" | "--skip-chars" | "-w" | "--check-chars") => "1",
+        ("wc", "--total") => "always",
+        ("nice", "-n" | "--adjustment") => "1",
+        ("timeout", "-s" | "--signal") => "TERM",
+        ("timeout", "-k" | "--kill-after") => "1",
+        ("xargs", "-d" | "--delimiter") => ",",
+        ("xargs", "-n" | "--max-args" | "-L" | "--max-lines" | "-P" | "--max-procs") => "1",
+        ("xargs", "-I") => "{}",
+        ("xargs", "-s" | "--max-chars") => "100",
+        ("xargs", "-E" | "--eof") => "END",
+        ("xargs", "-a" | "--arg-file") => "a.txt",
+        _ => return None,
+    })
+}
+
+/// The operands `name` is run on after an option, so it has something to
+/// read.
+#[expect(
+    clippy::match_same_arms,
+    reason = "one arm per command's options, read as they are listed"
+)]
+fn option_operands(name: &str, bare: &str) -> &'static [&'static str] {
+    match (name, bare) {
+        ("cut", "-f" | "--fields" | "-b" | "--bytes" | "-c" | "--characters") => &["a.txt"],
+        ("cut", _) => &["-f", "1", "a.txt"],
+        ("grep", "-e" | "--regexp" | "-f" | "--file") => &["a.txt"],
+        ("grep", _) => &["one", "a.txt"],
+        ("diff", _) => &["a.txt", "greek.txt"],
+        ("env", "-0" | "--null") => &[],
+        ("env" | "nice", _) => &["true"],
+        ("timeout", _) => &["1", "true"],
+        ("xargs", _) => &["echo", "{}"],
+        ("tr", "-d" | "--delete") => &["a"],
+        ("tr", _) => &["a", "b"],
+        ("seq", _) => &["3"],
+        ("tee", _) => &["out.txt"],
+        ("dirname", _) => &["/w/a.txt"],
+        ("printenv", _) => &["HOME"],
+        ("find" | "tree", _) => &[],
+        ("ls", _) => &["."],
+        _ => &["a.txt"],
+    }
+}
+
+/// `name OPTION`, with the option's value and operands, as a script in `/w`
+/// with every word quoted.
+fn option_script(name: &str, spelling: &str) -> String {
+    let bare = spelling.trim_end_matches('=');
+    let value = option_value(name, bare);
+    let mut words: Vec<String> = vec![name.to_string()];
+    if name == "find" && spelling != "-P" {
+        words.push(".".into());
+        if matches!(bare, "-and" | "-or") {
+            words.push("-true".into());
+        }
+    }
+    assert!(
+        value.is_some() || !spelling.ends_with('='),
+        "{name} {spelling}: no value to give it"
+    );
+    match (spelling.ends_with('='), value) {
+        (true, Some(v)) => words.push(format!("{spelling}{v}")),
+        (false, Some(v)) => {
+            words.push(spelling.to_string());
+            words.extend(v.split_whitespace().map(str::to_string));
+        }
+        (_, None) => words.push(spelling.to_string()),
+    }
+    if name == "find" && spelling == "-P" {
+        words.push(".".into());
+    }
+    words.extend(option_operands(name, bare).iter().map(|w| (*w).to_string()));
+    let quoted: Vec<String> = words.iter().map(|w| format!("'{w}'")).collect();
+    format!("cd /w && {}", quoted.join(" "))
+}
+
+/// Standard error of `script` run through the shell on fresh files.
+fn shell_stderr(script: &str) -> String {
+    let host = files();
+    host.file("/w/b.txt", "one\nthree\n").dir("/w/d");
+    let (stdout, _out) = Output::buffer();
+    let (stderr, err) = Output::buffer();
+    let io = Stdio {
+        stdin: Input::bytes(b"one\ntwo\n".to_vec()),
+        stdout,
+        stderr,
+    };
+    let env = [
+        ("HOME".to_string(), "/w".to_string()),
+        ("PATH".to_string(), "/bin".to_string()),
+    ];
+    let mut shell = ush_shell::Shell::new(Arc::new(host), env, PathBuf::from("/w"), io);
+    shell.run_to_exit(script);
+    drop(shell);
+    String::from_utf8_lossy(&err.take()).into_owned()
+}
+
+fn assert_not_refused(name: &str, spelling: &str, script: &str) {
+    let err = shell_stderr(script);
+    assert!(
+        !REFUSALS.iter().any(|r| err.contains(r)),
+        "{name} {spelling}: `{script}` was refused: {err}"
+    );
+}
+
+#[test]
+fn every_option_offered_for_a_command_is_one_it_takes() {
+    let mut tried = 0;
+    for name in ush_shell::commands::names() {
+        if ush_shell::commands::FILE_ACTIONS.contains(&name) {
+            continue;
+        }
+        for opt in ush_shell::commands::options::of(name) {
+            assert_not_refused(name, opt.spelling, &option_script(name, opt.spelling));
+            tried += 1;
+        }
+    }
+    assert!(tried > 300, "only {tried} options tried");
+}
+
+#[test]
+fn every_option_offered_for_a_built_in_is_one_it_takes() {
+    for (name, spelling, script) in [
+        ("alias", "-p", "alias -p"),
+        ("cd", "-L", "cd -L /w"),
+        ("cd", "-P", "cd -P /w"),
+        ("pwd", "-L", "pwd -L"),
+        ("pwd", "-P", "pwd -P"),
+        ("command", "-v", "command -v ls"),
+        ("command", "-V", "command -V ls"),
+        ("command", "-p", "command -p true"),
+        ("echo", "-n", "echo -n x"),
+        ("echo", "-e", "echo -e 'x\\ty'"),
+        ("echo", "-E", "echo -E x"),
+        ("export", "-n", "X=1; export X; export -n X"),
+        ("export", "-p", "export -p"),
+        ("mapfile", "-t", "mapfile -t lines"),
+        ("mapfile", "-d", "mapfile -d , lines"),
+        ("mapfile", "-n", "mapfile -n 1 lines"),
+        ("mapfile", "-s", "mapfile -s 1 lines"),
+        ("readarray", "-t", "readarray -t lines"),
+        ("printf", "-v", "printf -v x %s y"),
+        ("read", "-r", "read -r x"),
+        ("read", "-p", "read -p '> ' x"),
+        ("read", "-a", "read -a xs"),
+        ("read", "-d", "read -d , x"),
+        ("read", "-n", "read -n 2 x"),
+        ("read", "-N", "read -N 2 x"),
+        ("read", "-u", "read -u 0 x"),
+        ("readonly", "-a", "readonly -a xs"),
+        ("readonly", "-A", "readonly -A m"),
+        ("readonly", "-p", "readonly -p"),
+        ("set", "-o", "set -o pipefail"),
+        ("shopt", "-s", "shopt -s nullglob"),
+        ("shopt", "-u", "shopt -u nullglob"),
+        ("shopt", "-q", "shopt -q nullglob"),
+        ("trap", "-p", "trap -p"),
+        ("trap", "-l", "trap -l"),
+        ("type", "-t", "type -t ls"),
+        ("unalias", "-a", "unalias -a"),
+        ("unset", "-f", "unset -f f"),
+        ("unset", "-v", "unset -v x"),
+    ] {
+        assert!(
+            ush_shell::commands::options::of(name)
+                .iter()
+                .any(|o| o.spelling == spelling),
+            "{name} {spelling} is not offered"
+        );
+        assert_not_refused(name, spelling, script);
+    }
+    let every = |name: &str, script: &dyn Fn(&str) -> String| {
+        for opt in ush_shell::commands::options::of(name) {
+            assert_not_refused(name, opt.spelling, &script(opt.spelling));
+        }
+    };
+    every("set", &|s| {
+        if s == "-o" {
+            "set -o errexit".into()
+        } else {
+            format!("set {s}")
+        }
+    });
+    every("declare", &|s| format!("declare {s} x"));
+    every("typeset", &|s| format!("typeset {s} x"));
+    every("local", &|s| format!("f() {{ local {s} x; }}; f"));
+    every("test", &|s| {
+        if s.len() == 3 {
+            format!("test 1 {s} 1")
+        } else {
+            format!("test {s} a")
+        }
+    });
+    every("[", &|s| {
+        if s.len() == 3 {
+            format!("[ 1 {s} 1 ]")
+        } else {
+            format!("[ {s} a ]")
+        }
+    });
+}
+
+#[test]
+fn options_are_offered_for_every_command_that_takes_them() {
+    let none = ["append", "nohup", "rev", "sleep", "touch", "yes"];
+    for name in ush_shell::commands::names() {
+        let opts = ush_shell::commands::options::of(name);
+        if none.contains(&name) {
+            assert!(opts.is_empty(), "{name} takes no options");
+        } else {
+            assert!(!opts.is_empty(), "{name} has no options offered");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for opt in opts {
+            assert!(opt.spelling.starts_with('-'), "{name} {}", opt.spelling);
+            assert!(seen.insert(opt.spelling), "{name} {} twice", opt.spelling);
+            assert!(
+                !opt.help.is_empty() && !opt.help.ends_with('.'),
+                "{name} {}: {:?}",
+                opt.spelling,
+                opt.help
+            );
+        }
+    }
+    for name in [
+        "ls", "grep", "find", "head", "tail", "wc", "sort", "cut", "diff", "cat", "xargs",
+    ] {
+        assert!(!ush_shell::commands::options::of(name).is_empty(), "{name}");
+    }
+    assert!(ush_shell::commands::options::of("no-such-command").is_empty());
+}

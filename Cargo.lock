@@ -10273,6 +10273,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nested-session-bus"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "workspace-hack",
+]
+
+[[package]]
 name = "nested_enum_utils"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22118,6 +22126,7 @@ dependencies = [
  "tilo-ui-host",
  "tilolang",
  "tilolang-host",
+ "tilolang-mail",
  "tilolang-tilo",
  "tokio",
  "tracing",
@@ -22143,7 +22152,9 @@ dependencies = [
  "tempfile",
  "tilo-app-package",
  "tilo-files",
+ "tilo-render-protocol",
  "tilo-ui",
+ "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
  "toml 1.0.6+spec-1.1.0",
@@ -22173,10 +22184,30 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-wake",
  "tilolang",
+ "tilolang-mail",
  "tilolang-tilo",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-mail"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "mail",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-content",
+ "tilo-net",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]
@@ -23642,6 +23673,7 @@ dependencies = [
  "base64 0.22.1",
  "brush-parser",
  "regex",
+ "unicode-width",
  "workspace-hack",
 ]
 

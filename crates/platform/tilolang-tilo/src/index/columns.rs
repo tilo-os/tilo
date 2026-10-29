@@ -115,9 +115,11 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         (ColumnKind::Bool, Lit::Bool(b)) => if *b { "1" } else { "0" }.to_owned(),
         (ColumnKind::Int, Lit::Int(i)) => int(*i),
         // A set holds its members as their text.
+        // optional-decode: a member that is not a number is a value of another kind (`None`).
         (ColumnKind::Int, Lit::Text(t)) => int(t.parse().ok()?),
         (ColumnKind::Float, Lit::Float(f)) => float(f.0),
         (ColumnKind::Float, Lit::Int(i)) => float(int_as_float(*i)),
+        // optional-decode: a member that is not a number is a value of another kind (`None`).
         (ColumnKind::Float, Lit::Text(t)) => float(t.parse().ok()?),
         (ColumnKind::Text, x) => {
             let t = x.as_text()?;

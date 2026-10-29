@@ -43,38 +43,61 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
     Some(PeerPresence { key, payload })
 }
 
+/// The presence a peer sent, as this desktop shows it. `None` for what it
+/// does not show (talking beside a pointer is the desktop's, never an
+/// app's) and for a frame that does not decode, which is logged with why.
 pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload)> {
-    let key = postcard::from_bytes(&presence.key).ok()?;
+    decode_peer(presence).unwrap_or_else(|reason| {
+        tracing::warn!(%reason, "peer presence frame refused");
+        None
+    })
+}
+
+/// [`from_peer`], telling a frame shown to nobody (`Ok(None)`) from one
+/// that does not decode.
+///
+/// # Errors
+/// Why the frame does not decode.
+pub fn decode_peer(
+    presence: PeerPresence,
+) -> Result<Option<(PresenceKey, PresencePayload)>, String> {
+    let index = |name: &str, value: u64| {
+        usize::try_from(value).map_err(|_| format!("{name} {value} is out of range"))
+    };
+    let key = postcard::from_bytes(&presence.key)
+        .map_err(|error| format!("presence key does not decode: {error}"))?;
     let payload = match presence.payload {
         PeerPresencePayload::Pointer { x, y } => PresencePayload::Pointer { x, y },
         PeerPresencePayload::Caret { pos } => PresencePayload::Caret {
-            pos: usize::try_from(pos).ok()?,
+            pos: index("caret", pos)?,
         },
         PeerPresencePayload::Selection { start, end } => PresencePayload::Selection {
-            start: usize::try_from(start).ok()?,
-            end: usize::try_from(end).ok()?,
+            start: index("selection start", start)?,
+            end: index("selection end", end)?,
         },
         PeerPresencePayload::Typing { start, end } => PresencePayload::Typing {
-            start: usize::try_from(start).ok()?,
-            end: usize::try_from(end).ok()?,
+            start: index("typing start", start)?,
+            end: index("typing end", end)?,
         },
         PeerPresencePayload::Arrived => PresencePayload::Arrived,
         PeerPresencePayload::Left => PresencePayload::Left,
         PeerPresencePayload::Following { target } => PresencePayload::Following { target },
-        PeerPresencePayload::InteractionJson(json) => {
-            PresencePayload::Interaction(Box::new(serde_json::from_str(&json).ok()?))
-        }
+        PeerPresencePayload::InteractionJson(json) => PresencePayload::Interaction(Box::new(
+            serde_json::from_str(&json)
+                .map_err(|error| format!("interaction does not decode: {error}"))?,
+        )),
         PeerPresencePayload::Status { text, automatic } => {
             PresencePayload::Status { text, automatic }
         }
         PeerPresencePayload::Availability { state, call } => PresencePayload::Availability {
-            state: ui::Availability::from_id(&state)?,
+            state: ui::Availability::from_id(&state)
+                .ok_or_else(|| format!("availability {state:?} is unknown"))?,
             call,
         },
         // Talking beside a pointer is the desktop's to show, never an app's.
-        PeerPresencePayload::Chat { .. } | PeerPresencePayload::Reaction { .. } => return None,
+        PeerPresencePayload::Chat { .. } | PeerPresencePayload::Reaction { .. } => return Ok(None),
     };
-    Some((key, payload))
+    Ok(Some((key, payload)))
 }
 
 #[cfg(test)]
@@ -143,6 +166,11 @@ mod tests {
             key: vec![0xff, 0xff],
             payload: PeerPresencePayload::Arrived,
         };
+        let refused = decode_peer(wire.clone()).unwrap_err();
+        assert!(
+            refused.contains("presence key does not decode"),
+            "{refused}"
+        );
         assert!(from_peer(wire).is_none());
     }
 }

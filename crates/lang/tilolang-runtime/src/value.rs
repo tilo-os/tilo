@@ -351,6 +351,9 @@ pub enum Value {
     /// holds its place (`open(x)` on `select(x)`), and the host puts the value there when the
     /// event fires (`ViewInstance::fire_with`).
     Event,
+    /// One part of what an event carries when it also says where its value lands (a drop
+    /// carries `[card, at]`): 0 the value, 1 the place.
+    EventPart(usize),
     /// A `window` or `lens` slot an action reference takes as an argument (`send(c, draft)`):
     /// read when the event fires, so the action gets what the person typed up to the press,
     /// whatever the view last drew. `scalar` slots hold their value boxed.
@@ -432,7 +435,7 @@ impl Value {
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
             Self::Error(_) => "error",
-            Self::Event => "event value",
+            Self::Event | Self::EventPart(_) => "event value",
             Self::State { .. } => "view state",
             Self::Map(_) => "map",
             Self::Offered(_) => "offered action",
@@ -498,6 +501,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::Rec(_)
         | Value::Coll(_)
         | Value::Event
+        | Value::EventPart(_)
         | Value::State { .. }
         | Value::AtEvent { .. }
         | Value::Map(_)
