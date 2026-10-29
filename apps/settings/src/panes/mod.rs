@@ -82,6 +82,8 @@ pub(crate) fn view(
         crate::categories::Category::Spelling => {
             mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Spelling)
         }
+        crate::categories::Category::Users => users::view(cx, app),
+        crate::categories::Category::Printers => printers::view(cx, app),
         _ => None,
     }
 }

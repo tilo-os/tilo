@@ -478,14 +478,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         build: |app, _| model_pane(device_mesh::area(app).map(device_mesh::DeviceMeshArea::model)),
     },
     crate::area::PaneEntry {
-        categories: &[Category::Users],
-        build: |app, _| model_pane(users::area(app).map(users::UsersArea::model)),
-    },
-    crate::area::PaneEntry {
-        categories: &[Category::Printers],
-        build: |app, _| model_pane(printers::area(app).map(printers::PrintersArea::shown_model)),
-    },
-    crate::area::PaneEntry {
         categories: &[Category::Storage],
         build: |app, _| {
             storage::build_with_drives(
