@@ -65,6 +65,7 @@ fn look(doc: &AutoCommit) -> Look<'_> {
         doc,
         tree: None,
         quiet: false,
+        read: &reading_nothing,
     }
 }
 
@@ -192,6 +193,7 @@ fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
             doc: &part,
             tree: Some(&chat),
             quiet: false,
+            read: &reading_nothing,
         },
         &name,
     );

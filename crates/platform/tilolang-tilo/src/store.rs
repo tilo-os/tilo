@@ -329,6 +329,9 @@ struct Inner {
     /// The last snapshot taken, while the store has not changed since: what search and
     /// publication starting in one frame share.
     snapshot: std::sync::Weak<Snapshot>,
+    /// What a reference to a resource the reader does not hold says, in their language
+    /// ([`crate::reading`]).
+    unshared: Arc<str>,
 }
 
 /// The store as it was when taken, to read on another thread: each package's index as its last
@@ -337,6 +340,9 @@ pub struct Snapshot {
     index: BTreeMap<DocId, (AppId, TypeId)>,
     apps: BTreeMap<AppId, Arc<idx::Snapshot>>,
     overlay: Arc<Overlay>,
+    /// Every package loaded, whether or not its index was read from yet.
+    packages: BTreeSet<AppId>,
+    unshared: Arc<str>,
 }
 
 impl Snapshot {
@@ -358,10 +364,62 @@ impl Snapshot {
     /// [`TiloStore::first_text`], as it was when the snapshot was taken.
     #[must_use]
     pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let (value, held) = self.first_stored(at)?;
+        Some((crate::reading::said(self, &at.id_string(), value)?, held))
+    }
+
+    /// The text value `value` of the resource `of` (its id) as the store's reader reads it
+    /// ([`crate::reading::said`]).
+    #[must_use]
+    pub fn said(&self, of: &str, value: FieldValue) -> Option<String> {
+        crate::reading::said(self, of, value)
+    }
+
+    fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
         let (app, ty) = self.index.get(&at.doc)?;
         let view = self.view(app)?;
         let schema = lookup(&at.ty).or_else(|| lookup(ty))?;
         view.first_text(&at.id_string(), schema).ok().flatten()
+    }
+}
+
+impl crate::reading::Holdings for Snapshot {
+    fn held(&self, at: &ResourceRef) -> Option<String> {
+        let (app, ty) = self.index.get(&at.doc)?;
+        if at.path.is_empty() {
+            return Some(ty.clone());
+        }
+        self.view(app)?.type_of(&at.id_string()).ok().flatten()
+    }
+
+    fn first_value(&self, at: &ResourceRef) -> Option<FieldValue> {
+        self.first_stored(at).map(|(value, _)| value)
+    }
+
+    fn keeps(&self, app: &str) -> bool {
+        self.packages.contains(app)
+    }
+
+    fn unshared(&self) -> Arc<str> {
+        Arc::clone(&self.unshared)
+    }
+}
+
+impl crate::reading::Holdings for TiloStore {
+    fn held(&self, at: &ResourceRef) -> Option<String> {
+        Store::type_of(self, at).ok()
+    }
+
+    fn first_value(&self, at: &ResourceRef) -> Option<FieldValue> {
+        self.first_stored(at).map(|(value, _)| value)
+    }
+
+    fn keeps(&self, app: &str) -> bool {
+        self.inner.borrow().apps.contains_key(app)
+    }
+
+    fn unshared(&self) -> Arc<str> {
+        Arc::clone(&self.inner.borrow().unshared)
     }
 }
 
@@ -650,6 +708,7 @@ impl TiloStore {
                 instance,
                 counter: 0,
                 snapshot: std::sync::Weak::new(),
+                unshared: Arc::from(tilolang_runtime::rich::UNSHARED),
             })),
         }
     }
@@ -1165,9 +1224,20 @@ impl TiloStore {
                 .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
                 .collect(),
             overlay: Arc::clone(&inner.overlay),
+            packages: inner.apps.keys().cloned().collect(),
+            unshared: Arc::clone(&inner.unshared),
         });
         inner.snapshot = Arc::downgrade(&taken);
         taken
+    }
+
+    /// Say a reference to a resource the reader does not hold as `unshared`: the platform's
+    /// phrase in the reader's language ([`crate::reading`]).
+    pub fn set_unshared(&self, unshared: &str) {
+        let unshared = Arc::from(unshared);
+        if *self.inner.borrow().unshared != *unshared {
+            self.mutate().unshared = unshared;
+        }
     }
 
     /// The store, to change: a snapshot taken before no longer stands for it.
@@ -1221,9 +1291,24 @@ impl TiloStore {
     }
 
     /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
-    /// and the path of the resource that holds it: what names a resource.
+    /// as the store's reader reads it ([`crate::reading`]), and the path of the resource that
+    /// holds it: what names a resource.
     #[must_use]
     pub fn first_text(&self, at: &ResourceRef) -> Option<(String, String)> {
+        let (value, held) = self.first_stored(at)?;
+        Some((crate::reading::said(self, &at.id_string(), value)?, held))
+    }
+
+    /// The text value `value` of the resource `of` (its id) as the store's reader reads it
+    /// ([`crate::reading::said`]): each reference in rich text by what its resource is called
+    /// now when they hold it, as not shared when they do not.
+    #[must_use]
+    pub fn said(&self, of: &str, value: FieldValue) -> Option<String> {
+        crate::reading::said(self, of, value)
+    }
+
+    /// [`Self::first_text`] as stored.
+    fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at).ok()?;
         if let Some(view) = inner.view(&app) {
@@ -1233,6 +1318,7 @@ impl TiloStore {
         let mirror = inner.mirror.as_deref()?;
         let located = locate_ref(mirror, (&app, &ty), at).ok()?;
         crate::reads::first_text(mirror, &located.obj?, located.schema, &at.id_string())
+            .map(|(text, held)| (FieldValue::Text(text), held))
     }
 
     /// How many items of the collection `field` of `at` hold each value of their column
@@ -2219,6 +2305,15 @@ fn edit_of(
 }
 
 impl Store for TiloStore {
+    /// The store holds only the records its reader was sent: a resource of a package here
+    /// reads by what it is called now when the store holds it, as not shared when it does not.
+    fn reading(
+        &self,
+        reference: &tilolang_runtime::rich::Reference,
+    ) -> tilolang_runtime::rich::Reading {
+        crate::reading::reading(self, reference)
+    }
+
     fn fresh_id(&mut self, prefix: &str) -> String {
         self.inner.borrow_mut().fresh(prefix)
     }

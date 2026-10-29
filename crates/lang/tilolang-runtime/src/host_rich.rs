@@ -1,5 +1,9 @@
 //! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`), `r.excerpt`,
 //! `r.text`, `r.references`, `r.people` and `r.is_empty()` (see [`crate::rich`]).
+//!
+//! `r.excerpt` and `r.text` are the text as the person running the code reads it: each
+//! reference to a resource they hold by its title now, one they cannot read as only being
+//! there ([`Core::read_rich`]), never the title the text was written with.
 
 use std::rc::Rc;
 
@@ -41,8 +45,8 @@ impl Core {
             Imp::RichPart => {
                 let r = self.rich_arg(a.h(0)?)?;
                 let part = match a.h(1)? {
-                    PART_EXCERPT => Value::Text(r.excerpt()),
-                    PART_TEXT => Value::Text(r.plain_text()),
+                    PART_EXCERPT => Value::Text(self.read_rich(&r, true)?),
+                    PART_TEXT => Value::Text(self.read_rich(&r, false)?),
                     PART_REFERENCES => Value::List(self.referenced(&r)?),
                     PART_PEOPLE => Value::List(
                         r.references()
@@ -73,6 +77,66 @@ impl Core {
                 self.ret_h(Value::Rich(out))
             }
             _ => trap("not a rich text import"),
+        }
+    }
+
+    /// The text of `r` as the person running the code reads it (its first line with text,
+    /// for `excerpt`): each reference as the store says it reads for them
+    /// ([`crate::store::Store::reading`]). A view that reads it is read again when a resource
+    /// it refers to changes.
+    ///
+    /// # Errors
+    /// A trap when the frame cannot note what it read.
+    pub fn read_rich(&self, r: &RichValue, excerpt: bool) -> HResult<String> {
+        let unshared = self.unshared();
+        let mut reads: Vec<(String, String)> = Vec::new();
+        let text = {
+            let store = self.store.borrow();
+            let registry = self.registry.borrow();
+            let mut read = |reference: &Reference| {
+                let reading = store.reading(reference);
+                // What it is called now is read from the resource: a view reading this reads
+                // again when the resource is renamed or arrives.
+                if let Some(target) = crate::rich::resource_id(reference)
+                    .and_then(|id| ResourceRef::parse_id(id, String::new()))
+                {
+                    let id = target.id_string();
+                    reads.push((id.clone(), crate::store::ANY_FIELD.to_owned()));
+                    if let Ok(ty) = store.type_of(&target)
+                        && let Some((_, info)) = registry.type_info(&ty)
+                    {
+                        reads.extend(info.fields.iter().map(|f| (id.clone(), f.id.clone())));
+                    }
+                }
+                reading
+            };
+            if excerpt {
+                r.read_excerpt(&mut read, &unshared)
+            } else {
+                r.read_text(&mut read, &unshared)
+            }
+        };
+        if !reads.is_empty() && self.frames.borrow().depth() > 0 {
+            self.note_reads(reads)?;
+        }
+        Ok(text)
+    }
+
+    /// What a reference to a resource the reader cannot read says, in their language: the
+    /// platform's phrase, the chip's wording.
+    #[must_use]
+    pub fn unshared(&self) -> String {
+        let id = tilo_reference::embed::UNSHARED_PHRASE;
+        match self.phrases.borrow().as_ref() {
+            Some(phrases) => {
+                let said = phrases(id, &[]);
+                if said == id {
+                    tilo_reference::embed::UNSHARED.to_owned()
+                } else {
+                    said
+                }
+            }
+            None => tilo_reference::embed::UNSHARED.to_owned(),
         }
     }
 
