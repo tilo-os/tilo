@@ -656,6 +656,21 @@ impl Toolbar {
         self.menu.is_open()
     }
 
+    /// A separator's box: its hairline along the row, a command's height
+    /// across it.
+    fn separator_size(&self) -> Size<f32> {
+        match self.orientation {
+            Orientation::Horizontal => Size {
+                width: SEPARATOR_HAIRLINE,
+                height: self.minimum,
+            },
+            Orientation::Vertical => Size {
+                width: self.minimum,
+                height: SEPARATOR_HAIRLINE,
+            },
+        }
+    }
+
     fn axis(&self, size: Size<f32>) -> f64 {
         f64::from(match self.orientation {
             Orientation::Horizontal => size.width,
@@ -694,16 +709,7 @@ impl Toolbar {
                 ToolbarItem::Spacer => Size::ZERO,
                 // A hosted control's size comes from its own layout.
                 ToolbarItem::Element(_) => previous.get(index).copied().unwrap_or(square),
-                ToolbarItem::Separator => match self.orientation {
-                    Orientation::Horizontal => Size {
-                        width: SEPARATOR_HAIRLINE,
-                        height: self.minimum,
-                    },
-                    Orientation::Vertical => Size {
-                        width: self.minimum,
-                        height: SEPARATOR_HAIRLINE,
-                    },
-                },
+                ToolbarItem::Separator => self.separator_size(),
             })
             .collect();
         let changed = extents != previous || chip != self.chip_extent;
@@ -1476,16 +1482,7 @@ impl Widget for Toolbar {
                     width: self.minimum,
                     height: self.minimum,
                 },
-                ToolbarItem::Separator => match self.orientation {
-                    Orientation::Horizontal => Size {
-                        width: SEPARATOR_HAIRLINE,
-                        height: self.minimum,
-                    },
-                    Orientation::Vertical => Size {
-                        width: self.minimum,
-                        height: SEPARATOR_HAIRLINE,
-                    },
-                },
+                ToolbarItem::Separator => self.separator_size(),
                 ToolbarItem::Spacer => Size::ZERO,
             })
             .collect();
