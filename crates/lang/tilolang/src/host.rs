@@ -282,6 +282,7 @@ pub fn host_meta() -> PackageMeta {
             fields: Vec::new(),
             search: crate::meta::SearchMeta::default(),
             holder: false,
+            origin: None,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
