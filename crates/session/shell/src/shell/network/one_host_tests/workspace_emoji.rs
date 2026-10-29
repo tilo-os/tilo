@@ -9,10 +9,8 @@ use std::sync::{Arc, mpsc};
 use tilo_app::framework::WorkspaceRecord;
 use tilo_app::tilo_workspace_emoji::{self as emoji, WorkspaceEmoji, workspace_emoji as verbs};
 use tilo_user_identity::DeviceCapabilities;
-use ui::permissions::UserId;
-use ui::record::workspace::WorkspaceRecords;
 
-use super::cold_reads::{AppLaunch, open_launched};
+use super::cold_reads::{AppLaunch, open_launched_window};
 use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until};
 
 /// The app whose windows add to the workspace's emoji.
@@ -65,16 +63,15 @@ impl CodeWindow {
         let thread = {
             let done = Arc::clone(&done);
             std::thread::spawn(move || {
-                let (mut app, owners) = open_launched(
+                // The records every app of the room opens, where the window
+                // opens them: as its host gave them to it, beside its own.
+                let (mut app, _, workspace) = open_launched_window(
                     &profile,
                     code_editor::definition(),
                     room,
                     &person,
                     launch.connect(),
                 );
-                // The records every app of the room opens, where the window
-                // opens them: beside its own, in the same owners.
-                let workspace = WorkspaceRecords::in_room(owners, room.to_string(), UserId(person));
                 let mut record = None;
                 let mut waiting = Vec::new();
                 while !done.load(Ordering::Acquire) {
