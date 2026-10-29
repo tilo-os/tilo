@@ -385,7 +385,7 @@ pub(crate) fn statuses(state: &crate::QuickSettingsState) -> Vec<EffectStatus> {
     let probed = state.available;
     let radios = &state.radios;
     let can = crate::actions::QsActionAvailability {
-        brightness: probed.brightness || state.brightness_available,
+        brightness: state.can_set_brightness(),
         volume: probed.volume || state.volume_available,
         wifi: probed.wifi || radios.wifi_available,
         power_profile: probed.power_profile || !state.power_profiles.is_empty(),

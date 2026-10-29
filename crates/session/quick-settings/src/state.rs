@@ -204,6 +204,13 @@ impl Default for QuickSettingsState {
 }
 
 impl QuickSettingsState {
+    /// Whether anything on this device can set the brightness: a backlight
+    /// the desktop found, or a brightness it read.
+    #[must_use]
+    pub fn can_set_brightness(&self) -> bool {
+        self.available.brightness || self.brightness_available
+    }
+
     /// A panel with stand-in readings and no device reads, for shots and
     /// tests.
     #[must_use]
