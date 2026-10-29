@@ -1430,89 +1430,88 @@ mod tests {
     }
 
     #[test]
-    fn continuity_projection_commands_and_routes_are_allowlisted_and_expire() {
-        {
-            let bridge = NotificationBridge::new();
-            assert!(
-                bridge
-                    .project_continuity_notification(
-                        continuity_draft(NotificationSharing::LocalOnly),
-                        1_000
-                    )
-                    .is_none()
-            );
-            let id = bridge
+    fn local_only_is_never_projected_and_redacted_hides_the_body() {
+        let bridge = NotificationBridge::new();
+        assert!(
+            bridge
                 .project_continuity_notification(
-                    continuity_draft(NotificationSharing::Redacted),
-                    1_000,
+                    continuity_draft(NotificationSharing::LocalOnly),
+                    1_000
                 )
-                .unwrap();
-            let events = bridge.drain_continuity_outbound();
-            let ContinuityOutboundEvent::Project(projected) = &events[0] else {
-                panic!("expected projection");
-            };
-            assert_eq!(projected.id, id);
-            assert!(projected.body.is_empty());
-            assert!(projected.body_redacted);
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let id = bridge
-                .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
-                .unwrap();
-            bridge.drain_continuity_outbound();
+                .is_none()
+        );
+        let id = bridge
+            .project_continuity_notification(continuity_draft(NotificationSharing::Redacted), 1_000)
+            .unwrap();
+        let events = bridge.drain_continuity_outbound();
+        let ContinuityOutboundEvent::Project(projected) = &events[0] else {
+            panic!("expected projection");
+        };
+        assert_eq!(projected.id, id);
+        assert!(projected.body.is_empty());
+        assert!(projected.body_redacted);
+    }
 
-            assert!(!bridge.apply_continuity_command(
-                id,
-                &ContinuityNotificationCommand::Invoke {
-                    action_key: "delete-everything".into(),
-                },
-                2_000,
-            ));
-            assert!(bridge.apply_continuity_command(
-                id,
-                &ContinuityNotificationCommand::Invoke {
-                    action_key: "reply".into(),
-                },
-                2_000,
-            ));
-            assert_eq!(bridge.drain_action_events(), vec![(7, "reply".into())]);
-            assert_eq!(
-                bridge.drain_closed_events(),
-                vec![(7, CloseReason::Dismissed)]
-            );
-            assert_eq!(
-                bridge.drain_continuity_outbound(),
-                vec![ContinuityOutboundEvent::Retire(id)]
-            );
-            assert!(!bridge.apply_continuity_command(
-                id,
-                &ContinuityNotificationCommand::Dismiss,
-                2_001,
-            ));
-        }
-        {
-            let first = NotificationBridge::new();
-            let id = first
-                .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
-                .unwrap();
-            assert!(!first.apply_continuity_command(
-                id,
-                &ContinuityNotificationCommand::Dismiss,
-                10_000,
-            ));
+    #[test]
+    fn continuity_commands_are_allowlisted_and_retire_once() {
+        let bridge = NotificationBridge::new();
+        let id = bridge
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        bridge.drain_continuity_outbound();
 
-            let restarted = NotificationBridge::new();
-            let replacement = restarted
-                .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
-                .unwrap();
-            assert_ne!(id.epoch, replacement.epoch);
-            assert!(!restarted.apply_continuity_command(
-                id,
-                &ContinuityNotificationCommand::Dismiss,
-                2_000,
-            ));
-        }
+        assert!(!bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Invoke {
+                action_key: "delete-everything".into(),
+            },
+            2_000,
+        ));
+        assert!(bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            },
+            2_000,
+        ));
+        assert_eq!(bridge.drain_action_events(), vec![(7, "reply".into())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(7, CloseReason::Dismissed)]
+        );
+        assert_eq!(
+            bridge.drain_continuity_outbound(),
+            vec![ContinuityOutboundEvent::Retire(id)]
+        );
+        assert!(!bridge.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            2_001,
+        ));
+    }
+
+    #[test]
+    fn continuity_commands_expire_and_do_not_survive_a_restart() {
+        let first = NotificationBridge::new();
+        let id = first
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        assert!(!first.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            10_000,
+        ));
+
+        let restarted = NotificationBridge::new();
+        let replacement = restarted
+            .project_continuity_notification(continuity_draft(NotificationSharing::Full), 1_000)
+            .unwrap();
+        assert_ne!(id.epoch, replacement.epoch);
+        assert!(!restarted.apply_continuity_command(
+            id,
+            &ContinuityNotificationCommand::Dismiss,
+            2_000,
+        ));
     }
 
     fn remote_projection(token: u8, title: &str) -> ContinuityNotificationProjection {
@@ -1533,210 +1532,218 @@ mod tests {
     }
 
     #[test]
-    fn remote_inbox_keys_dedupes_prunes_and_bounds_by_source() {
-        {
-            let bridge = NotificationBridge::new();
-            let projection = remote_projection(9, "Same id");
-            assert!(bridge.receive_continuity_projection("phone", "Phone", projection.clone(), 1));
-            assert!(bridge.receive_continuity_projection("tablet", "Tablet", projection, 1));
-            assert_eq!(bridge.remote_continuity_len(), 2);
+    fn remote_inbox_keys_by_source_device() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(9, "Same id");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection.clone(), 1));
+        assert!(bridge.receive_continuity_projection("tablet", "Tablet", projection, 1));
+        assert_eq!(bridge.remote_continuity_len(), 2);
 
-            assert!(bridge.retire_remote_continuity("phone", remote_projection(9, "x").id));
-            assert_eq!(bridge.remote_continuity_len(), 1);
-            assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let first = remote_projection(2, "First");
-            assert!(bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
-            assert!(!bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
-            assert_eq!(bridge.drain_remote_continuity_events().len(), 1);
-
-            let mut replacement = first;
-            replacement.title = "Replacement".into();
-            assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, 1));
-            assert_eq!(bridge.remote_continuity_len(), 1);
-            let events = bridge.drain_remote_continuity_events();
-            let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
-                panic!("expected replacement upsert");
-            };
-            assert_eq!(notification.projection.title, "Replacement");
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let id = remote_projection(12, "Shared id").id;
-            assert!(bridge.receive_continuity_projection(
-                "phone",
-                "Phone",
-                remote_projection(12, "Phone"),
-                1,
-            ));
-            assert!(bridge.receive_continuity_projection(
-                "tablet",
-                "Tablet",
-                remote_projection(12, "Tablet"),
-                1,
-            ));
-            let _ = bridge.drain_remote_continuity_events();
-
-            assert_eq!(
-                bridge.retain_remote_continuity_sources(&HashSet::from(["tablet".to_string()])),
-                1
-            );
-            assert_eq!(bridge.remote_continuity_len(), 1);
-            assert_eq!(
-                bridge.drain_remote_continuity_events(),
-                vec![RemoteContinuityEvent::Retire {
-                    source_device: "phone".into(),
-                    id,
-                }]
-            );
-            assert!(bridge.retire_remote_continuity("tablet", id));
-        }
-        {
-            let bridge = NotificationBridge::new();
-            for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
-                let token = u8::try_from(index.saturating_add(1)).unwrap();
-                assert!(bridge.receive_continuity_projection(
-                    "phone",
-                    "Phone",
-                    remote_projection(token, "Bounded"),
-                    1,
-                ));
-            }
-            assert_eq!(bridge.remote_continuity_len(), MAX_CONTINUITY_NOTIFICATIONS);
-            let events = bridge.drain_remote_continuity_events();
-            assert!(events.iter().any(|event| matches!(
-                event,
-                RemoteContinuityEvent::Retire { id, .. } if id.token == [1; 16]
-            )));
-        }
+        assert!(bridge.retire_remote_continuity("phone", remote_projection(9, "x").id));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
     }
 
     #[test]
-    fn remote_records_route_live_actions_expire_and_fail_closed() {
-        {
-            let bridge = NotificationBridge::new();
-            let projection = remote_projection(3, "Action");
-            let id = projection.id;
-            assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
-            assert!(!bridge.request_remote_continuity_command(
-                "phone",
+    fn remote_inbox_dedupes_and_replaces_by_id() {
+        let bridge = NotificationBridge::new();
+        let first = remote_projection(2, "First");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert!(!bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert_eq!(bridge.drain_remote_continuity_events().len(), 1);
+
+        let mut replacement = first;
+        replacement.title = "Replacement".into();
+        assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, 1));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected replacement upsert");
+        };
+        assert_eq!(notification.projection.title, "Replacement");
+    }
+
+    #[test]
+    fn remote_inbox_prunes_sources_no_longer_present() {
+        let bridge = NotificationBridge::new();
+        let id = remote_projection(12, "Shared id").id;
+        assert!(bridge.receive_continuity_projection(
+            "phone",
+            "Phone",
+            remote_projection(12, "Phone"),
+            1,
+        ));
+        assert!(bridge.receive_continuity_projection(
+            "tablet",
+            "Tablet",
+            remote_projection(12, "Tablet"),
+            1,
+        ));
+        let _ = bridge.drain_remote_continuity_events();
+
+        assert_eq!(
+            bridge.retain_remote_continuity_sources(&HashSet::from(["tablet".to_string()])),
+            1
+        );
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
                 id,
-                ContinuityNotificationCommand::Invoke {
-                    action_key: "archive".into(),
-                },
-                2,
-            ));
-            assert!(bridge.request_remote_continuity_command(
-                "phone",
-                id,
-                ContinuityNotificationCommand::Invoke {
-                    action_key: "reply".into(),
-                },
-                2,
-            ));
-            assert_eq!(
-                bridge.drain_continuity_command_egress(),
-                vec![ContinuityCommandEgress {
-                    target_device: "phone".into(),
-                    id,
-                    command: ContinuityNotificationCommand::Invoke {
-                        action_key: "reply".into(),
-                    },
-                }]
-            );
-            assert_eq!(bridge.remote_continuity_len(), 0);
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let projection = remote_projection(4, "Expires");
-            let id = projection.id;
-            assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
-            bridge.drain_remote_continuity_events();
-            bridge.expire_remote_continuity(10_000);
-            assert_eq!(bridge.remote_continuity_len(), 0);
-            assert_eq!(
-                bridge.drain_remote_continuity_events(),
-                vec![RemoteContinuityEvent::Retire {
-                    source_device: "phone".into(),
-                    id,
-                }]
-            );
-        }
-        {
-            let bridge = NotificationBridge::new();
+            }]
+        );
+        assert!(bridge.retire_remote_continuity("tablet", id));
+    }
+
+    #[test]
+    fn remote_inbox_is_bounded_and_drops_the_oldest() {
+        let bridge = NotificationBridge::new();
+        for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
+            let token = u8::try_from(index.saturating_add(1)).unwrap();
             assert!(bridge.receive_continuity_projection(
-                "certified-phone",
-                "Ada's phone",
-                remote_projection(5, "Remote"),
+                "phone",
+                "Phone",
+                remote_projection(token, "Bounded"),
                 1,
             ));
-            let events = bridge.drain_remote_continuity_events();
-            let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
-                panic!("expected remote upsert");
-            };
-            assert_eq!(notification.source_device, "certified-phone");
-            assert_eq!(notification.source_label, "Ada's phone");
-            assert!(!notification.is_projectable());
         }
-        {
-            let hints = HashMap::from([(
-                "x-tilo-device-sharing".to_string(),
-                OwnedValue::from(zbus::zvariant::Str::from("surprise")),
-            )]);
-            assert_eq!(
-                parse_notification_sharing(&hints),
-                NotificationSharing::LocalOnly
-            );
-        }
+        assert_eq!(bridge.remote_continuity_len(), MAX_CONTINUITY_NOTIFICATIONS);
+        let events = bridge.drain_remote_continuity_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RemoteContinuityEvent::Retire { id, .. } if id.token == [1; 16]
+        )));
+    }
+
+    #[test]
+    fn remote_actions_route_only_allowlisted_keys_to_their_device() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(3, "Action");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        assert!(!bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "archive".into(),
+            },
+            2,
+        ));
+        assert!(bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            },
+            2,
+        ));
+        assert_eq!(
+            bridge.drain_continuity_command_egress(),
+            vec![ContinuityCommandEgress {
+                target_device: "phone".into(),
+                id,
+                command: ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                },
+            }]
+        );
+        assert_eq!(bridge.remote_continuity_len(), 0);
+    }
+
+    #[test]
+    fn remote_records_expire() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(4, "Expires");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        bridge.drain_remote_continuity_events();
+        bridge.expire_remote_continuity(10_000);
+        assert_eq!(bridge.remote_continuity_len(), 0);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
+                id,
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_records_carry_their_source_and_are_never_reprojected() {
+        let bridge = NotificationBridge::new();
+        assert!(bridge.receive_continuity_projection(
+            "certified-phone",
+            "Ada's phone",
+            remote_projection(5, "Remote"),
+            1,
+        ));
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected remote upsert");
+        };
+        assert_eq!(notification.source_device, "certified-phone");
+        assert_eq!(notification.source_label, "Ada's phone");
+        assert!(!notification.is_projectable());
+    }
+
+    #[test]
+    fn an_unknown_sharing_hint_fails_closed_to_local_only() {
+        let hints = HashMap::from([(
+            "x-tilo-device-sharing".to_string(),
+            OwnedValue::from(zbus::zvariant::Str::from("surprise")),
+        )]);
+        assert_eq!(
+            parse_notification_sharing(&hints),
+            NotificationSharing::LocalOnly
+        );
+    }
+
+    #[test]
+    fn flatpak_cgroup_matching_uses_the_systemd_escaped_scope() {
+        assert_eq!(systemd_escape("org.example.App"), "org.example.App");
+        assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
+        assert!(flatpak_cgroup_matches(
+            "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
+            "org.example App"
+        ));
+        assert!(!flatpak_cgroup_matches(
+            "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
+            "org.example App"
+        ));
     }
 
     #[test]
     fn flatpak_identity_requires_matching_scope_runtime_and_install() {
-        {
-            assert_eq!(systemd_escape("org.example.App"), "org.example.App");
-            assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
-            assert!(flatpak_cgroup_matches(
-                "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
-                "org.example App"
-            ));
-            assert!(!flatpak_cgroup_matches(
-                "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
-                "org.example App"
-            ));
-        }
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let app_id = "org.example.Chat";
-            let entries = flatpak_entries(tmp.path(), app_id);
-            write_flatpak_proc(tmp.path(), 404, app_id, app_id);
+        let tmp = tempfile::tempdir().unwrap();
+        let app_id = "org.example.Chat";
+        let entries = flatpak_entries(tmp.path(), app_id);
+        write_flatpak_proc(tmp.path(), 404, app_id, app_id);
 
-            assert_eq!(
-                verified_foreign_notification_identity_from(tmp.path(), 404, &entries).as_deref(),
-                Some(app_id),
-                "identity comes from runtime metadata/cgroup, not Notify.app_name"
-            );
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 404, &entries).as_deref(),
+            Some(app_id),
+            "identity comes from runtime metadata/cgroup, not Notify.app_name"
+        );
 
-            write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
-            assert_eq!(
-                verified_foreign_notification_identity_from(tmp.path(), 405, &entries),
-                None,
-                "a mismatched cgroup leaves a foreign sender global-only"
-            );
+        write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 405, &entries),
+            None,
+            "a mismatched cgroup leaves a foreign sender global-only"
+        );
 
-            write_flatpak_proc(
-                tmp.path(),
-                406,
-                "org.example.Missing",
-                "org.example.Missing",
-            );
-            assert_eq!(
-                verified_foreign_notification_identity_from(tmp.path(), 406, &entries),
-                None,
-                "an uninstalled Flatpak id is never accepted as a policy key"
-            );
-        }
+        write_flatpak_proc(
+            tmp.path(),
+            406,
+            "org.example.Missing",
+            "org.example.Missing",
+        );
+        assert_eq!(
+            verified_foreign_notification_identity_from(tmp.path(), 406, &entries),
+            None,
+            "an uninstalled Flatpak id is never accepted as a policy key"
+        );
     }
 
     // D-Bus round-trip over an in-process p2p connection, mirroring
