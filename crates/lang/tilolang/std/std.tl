@@ -28,10 +28,7 @@ view list<R, T, S>(
     let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
-    let title = match places.find(p -> p.query == query) {
-        .some(p) => p.label,
-        .none => if places.is_empty() { meta(of).title } else { everything },
-    }
+    let title = places.find(p -> p.query == query)?.label ?? if places.is_empty() { meta(of).title } else { everything }
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
     let primary = if query == "" or query == place { offered.find(a -> a.primary) } else { .none }
@@ -91,11 +88,12 @@ view rows<T>(
     row: (T) -> View
 ) {
     if items.is_empty() {
-        match primary {
-            .some(a) => ui.EmptyState(empty, icon: icon, action: a.label) {
+        if let a = primary {
+            ui.EmptyState(empty, icon: icon, action: a.label) {
                 on act: a.run
-            },
-            .none => ui.EmptyState(empty, icon: icon),
+            }
+        } else {
+            ui.EmptyState(empty, icon: icon)
         }
     } else {
         ui.VirtualList(selection_follows_focus: true, in_column: true) {
@@ -103,10 +101,7 @@ view rows<T>(
             on activate(x: T): open(x)
             for x in items {
                 let offered = actions(x)
-                ui.ListItem(item: x, presence: match lenses(x).find(l -> not l.mine) {
-                    .some(l) => .some(l.who),
-                    .none => .none,
-                }) {
+                ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
                     menu: {
                         for a in offered {
                             ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
@@ -115,18 +110,14 @@ view rows<T>(
                         }
                     }
                     swipe: {
-                        match offered.find(a -> a.destructive) {
-                            .some(a) => ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
+                        if let a = offered.find(.destructive) {
+                            ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
                                 on swipe: a.run
-                            },
-                            .none => {
-                                match offered.first() {
-                                    .some(a) => ui.SwipeAction(a.label, icon: a.icon) {
-                                        on swipe: a.run
-                                    },
-                                    .none => {}
-                                }
-                            },
+                            }
+                        } else if let a = offered.first() {
+                            ui.SwipeAction(a.label, icon: a.icon) {
+                                on swipe: a.run
+                            }
                         }
                     }
                     row(x)
@@ -145,15 +136,14 @@ view header<S>(
     sort: Option<State<S>> = .none,
     extra: View
 ) {
-    match sort {
-        .some(s) => ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
+    if let s = sort {
+        ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
             for c in cases(S) {
                 ui.MenuItem(c.label(), checked: c == s) {
                     on choose: set(s, c)
                 }
             }
-        },
-        .none => {}
+        }
     }
     ui.SearchButton()
     extra
@@ -226,11 +216,12 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
         }
         content: {
             if empty {
-                match actions(of).find(a -> a.primary) {
-                    .some(a) => ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
+                if let a = actions(of).find(.primary) {
+                    ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
                         on act: a.run
-                    },
-                    .none => ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon),
+                    }
+                } else {
+                    ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon)
                 }
             } else {
                 ui.Scroll {
@@ -254,18 +245,13 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 }
 
 /// A window that is a conversation of `of`: its items in order, the latest at the foot, each a
-/// `row`, built as they show, above the composer, which stays at the foot. An item's `author`
-/// and `time` are drawn by the list as every conversation draws them: the author's avatar and
-/// name over each run of their messages, the time beside the name, and a divider where the
-/// day changes; the `row` then shows only what the item says.
-view transcript<R, T>(
-    of: R,
-    items: List<T>,
-    composer: View,
-    row: (T) -> View,
-    author: Option<(T) -> Principal> = .none,
-    time: Option<(T) -> Time> = .none
-) {
+/// `row`, built as they show, above the composer, which stays at the foot. Who wrote each item
+/// and when come from the log (`created`), and the list draws them as every conversation does:
+/// the author's avatar and name over each run of their messages, the time beside the name, and
+/// a divider where the day changes; the `row` then shows only what the item says. Each item's
+/// menu offers its actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every
+/// action stays reachable; the row's hover toolbar and swipe are its own.
+view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
             std.header(actions(of))
@@ -279,18 +265,17 @@ view transcript<R, T>(
                 }
                 ui.VirtualList(transcript: true) {
                     for m in items {
-                        match author {
-                            .some(by) => match time {
-                                .some(at) => ui.ListItem(item: m, author: by(m), time: at(m)) {
-                                    row(m)
-                                },
-                                .none => ui.ListItem(item: m, author: by(m)) {
-                                    row(m)
-                                },
-                            },
-                            .none => ui.ListItem(item: m) {
-                                row(m)
-                            },
+                        let made = created(m)
+                        let offered = actions(m)
+                        ui.ListItem(item: m, author: made?.who, time: made?.at) {
+                            menu: {
+                                for a in offered {
+                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                        on choose: a.run
+                                    }
+                                }
+                            }
+                            row(m)
                         }
                     }
                 }

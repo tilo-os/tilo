@@ -4494,12 +4494,27 @@ impl Widget for NavShell {
             || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
+    /// Only for what the next sync would change: a bound title or open state
+    /// that moved, or a Back the page stack now answers differently. A
+    /// binding alone asks nothing; asking for it re-synced and repainted the
+    /// window on every turn of its event loop while nothing changed.
     fn needs_idle_sync(&self) -> bool {
+        let open_moved = |state: &Option<OpenBinding>| {
+            state
+                .as_ref()
+                .is_some_and(|state| state.wanted.is_some() || state.binding.changed())
+        };
         let mut needed = self.animating
-            || self.content_back.is_some()
-            || self.headers.iter().any(|header| header.binding.is_some())
-            || self.sidebar_state.is_some()
-            || self.inspector_state.is_some();
+            || self
+                .content_back
+                .as_ref()
+                .is_some_and(|back| (back.can_go_back)() != self.inputs.borrow().content_back)
+            || self
+                .headers
+                .iter()
+                .any(|header| header.binding.as_ref().is_some_and(LocalBinding::changed))
+            || open_moved(&self.sidebar_state)
+            || open_moved(&self.inspector_state);
         self.for_each_owned(|child| needed |= child.needs_idle_sync());
         needed
     }

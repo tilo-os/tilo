@@ -483,3 +483,77 @@ fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
         root
     );
 }
+
+/// A view showing the same jobs without a surface of its own: its effects
+/// answered by the view, its rows published beside its widgets.
+struct ViewJobsApp;
+
+thread_local! {
+    static VIEW_EFFECTS: RefCell<Option<Effects>> = const { RefCell::new(None) };
+}
+
+impl ResourceApp for ViewJobsApp {
+    type Resource = Tally;
+    const ID: &'static str = "so.tilo.test-tally";
+    const TITLE: &'static str = "View jobs";
+
+    fn view(cx: &mut ViewCx<Tally>) -> Element {
+        let effects = Effects::default();
+        VIEW_EFFECTS.with(|kept| *kept.borrow_mut() = Some(effects.clone()));
+        cx.effects(move |effect: JobEffect, _| {
+            effects.borrow_mut().push(effect.clone());
+            Ok(match effect {
+                JobEffect::Stop { job } => Effected::value(json!({ "stopped": job })),
+                JobEffect::Inspect { .. } | JobEffect::Reveal { .. } => Effected::done(),
+            })
+        });
+        // How many jobs run is the view's own state.
+        let running = cx.local(2_u32);
+        let shown = running.clone();
+        cx.publishing(
+            tilo_app::framework::Publishes::new()
+                .live_rows(move || (1..=shown.get()).map(job).collect())
+                .live_row(|id| Some(job(id.strip_prefix("job:")?.parse().ok()?))),
+            Box::new(
+                Column::new()
+                    .push(Box::new(Button::new("start-job", "Start a job").on_click(
+                        move || running.set(running.get().saturating_add(1)),
+                    )))
+                    .push(Box::new(Jobs::default())),
+            ),
+        )
+    }
+}
+
+#[test]
+fn a_view_publishes_the_rows_it_shows_without_a_surface() {
+    RAW.set(Raw::Nothing);
+    let mut app = TestApp::<ViewJobsApp>::new().unwrap();
+    let effects = VIEW_EFFECTS.with(|kept| kept.borrow().clone()).unwrap();
+    let children = |app: &mut TestApp<ViewJobsApp>| -> Vec<String> {
+        let resources = app.harness().resources();
+        find(&resources, Tally::KIND)
+            .unwrap()
+            .children
+            .iter()
+            .map(|child| child.id.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2"]);
+
+    // The rows follow the view's state as it is when published.
+    app.harness().click_named("start-job").unwrap();
+    assert_eq!(children(&mut app), [TOTAL, "job:1", "job:2", "job:3"]);
+
+    // A row's effect reaches the view's handler; a row left out of the tree
+    // resolves by id.
+    let output = app.call_on("job:3", "stop", json!({})).unwrap();
+    assert_eq!(output, Some(json!({ "stopped": 3 })));
+    let output = app.call_on("job:9", "stop", json!({})).unwrap();
+    assert_eq!(output, Some(json!({ "stopped": 9 })));
+    assert_eq!(
+        *effects.borrow(),
+        [JobEffect::Stop { job: 3 }, JobEffect::Stop { job: 9 }]
+    );
+    assert_eq!(app.state(), 0, "rows change nothing in the document");
+}

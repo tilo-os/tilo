@@ -1,5 +1,5 @@
 use super::*;
-use crate::setup::account_transfer::{self, SourceRoots};
+use imager_backend::account_transfer::{self, SourceRoots};
 use imager_backend::browser_selection::Service;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -65,7 +65,7 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
     let declaration = prepared.manifest.service_sessions.as_ref().unwrap();
     assert_eq!(declaration.sessions.len(), 1);
     let held_artifact = prepared.staging_artifact().unwrap();
-    let review = super::super::super::prepared_setup::PreparedSetupReview::open(
+    let review = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
         std::path::Path::new(&held_artifact.source_path),
         password.as_bytes(),
         &root.path().join("quarantine"),
@@ -155,7 +155,7 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
     assert!(prepared.service_session_protocol().is_none());
     assert!(prepared.manifest.service_sessions.is_none());
     let artifact = prepared.staging_artifact().unwrap();
-    let review = super::super::super::prepared_setup::PreparedSetupReview::open(
+    let review = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
         std::path::Path::new(&artifact.source_path),
         password.as_bytes(),
         &root.path().join("review"),

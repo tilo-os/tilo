@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["diffmerge-samples"]
+
 [lib]
 name = "diffmerge"
 path = "src/lib.rs"
@@ -40,7 +44,10 @@ similar = "2.6"
 # never draws its own file picker (HIG §5).
 
 [dev-dependencies]
-diffmerge = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `diffmerge` claims `--features diffmerge/thin` in the
+# collection build, and the app then links the whole runtime statically.
+diffmerge-samples = { package = "diffmerge", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The bound a test waits on work it started by.
 tilo-test-env = { path = "../../crates/dev/test-env" }

@@ -714,7 +714,7 @@ impl ActionHost for CertifiedLocalActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         if let Err(error) = self.check(caller) {
             return Pending::ready(Err(error));
         }

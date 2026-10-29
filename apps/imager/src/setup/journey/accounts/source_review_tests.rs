@@ -21,7 +21,7 @@ fn linux_nextcloud_source_review_production_view_preserves_local_only_changes_wa
     let original = "[Accounts]\n0\\url=https://cloud.example.test/base\n0\\http_user=ada\n0\\authType=http\n0\\Folders\\1\\localPath=/not-a-granted-sync-folder\n";
     std::fs::write(&path, original).unwrap();
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let candidate = inventory
         .candidates
         .iter()

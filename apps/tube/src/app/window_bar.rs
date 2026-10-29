@@ -4,7 +4,7 @@
 //! search; the window draws no header row.
 
 use ui::widget::NavShell;
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
 use super::TubeApp;
 use crate::action::{self, Action};
@@ -12,9 +12,6 @@ use crate::actions::TubeEffect;
 use crate::i18n::t;
 use crate::model::Route;
 use crate::screens;
-
-/// The bar action that clears the watch history.
-pub(crate) const CLEAR_HISTORY: &str = "tube.clear-history";
 
 impl TubeApp {
     /// The window bar's slots for what the window shows now.
@@ -28,7 +25,14 @@ impl TubeApp {
         if matches!(self.model.route, Route::History) && !self.model.history.is_empty() {
             NavShell::push_window_actions(
                 &mut toolbar,
-                [ToolbarAction::new(CLEAR_HISTORY, "trash", t("tube-clear-history")).in_menu()],
+                [self
+                    .bar
+                    .entry(
+                        "trash",
+                        t("tube-clear-history"),
+                        Action::Effect(TubeEffect::ClearHistory),
+                    )
+                    .in_menu()],
             );
         }
         toolbar
@@ -43,10 +47,8 @@ impl TubeApp {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
-            if let ToolbarEvent::Action { id } = event
-                && id == CLEAR_HISTORY
-            {
-                action::push(&self.bus, Action::Effect(TubeEffect::ClearHistory));
+            if let Some(action) = self.bar.pressed(&event) {
+                action::push(&self.bus, action);
             }
         }
         asked
@@ -60,6 +62,7 @@ impl TubeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::window_toolbar::ToolbarEvent;
 
     fn location(app: &TubeApp) -> Option<String> {
         app.window_toolbar().location.map(|location| location.label)
@@ -93,15 +96,12 @@ mod tests {
             .window_toolbar()
             .actions
             .into_iter()
-            .find(|action| action.id == CLEAR_HISTORY)
+            .find(|action| action.name == "Clear history")
             .expect("the History screen offers Clear history in the bar");
-        assert_eq!(clear.name, "Clear history");
         assert!(clear.menu, "a destructive action waits in the bar's menu");
 
         action::drain(&app.bus);
-        ui::window_toolbar::deliver(ToolbarEvent::Action {
-            id: CLEAR_HISTORY.into(),
-        });
+        ui::window_toolbar::deliver(ToolbarEvent::Action { id: clear.id });
         assert!(app.take_window_toolbar_events());
         assert_eq!(
             action::drain(&app.bus),

@@ -25,7 +25,7 @@ fn a_missing_decoder_exposes_one_formats_action_and_clears_on_a_new_open() {
                 .window_toolbar()
                 .actions
                 .iter()
-                .any(|action| action.id == window_bar::OPEN && action.enabled),
+                .any(|action| action.name == "Open video" && action.enabled),
             "another video stays reachable from the window's bar"
         );
         let root = framed.accessibility().expect("player accessibility");

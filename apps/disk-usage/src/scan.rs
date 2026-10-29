@@ -30,7 +30,7 @@ impl ScanCancellation {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub path: PathBuf,
     pub name: String,
@@ -38,7 +38,7 @@ pub struct Entry {
     pub files: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanResult {
     pub path: PathBuf,
     pub entries: Vec<Entry>,

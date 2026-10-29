@@ -60,9 +60,8 @@ pub type Outgoing = (String, Map<String, Value>, Option<String>);
 static INSTALLED: RwLock<Option<Arc<ChannelSettings>>> = RwLock::new(None);
 
 /// Make the shell's records, reached through the collaboration channel,
-/// the settings of app `app_id` in this process. Not when the launcher
-/// handed the process the session document itself (Settings), which it
-/// then reads and writes directly. Only the first call installs.
+/// the settings of app `app_id` in this process. Only the first call
+/// installs.
 pub fn install(app_id: &str) {
     if app_id.is_empty() {
         return;
@@ -72,9 +71,7 @@ pub fn install(app_id: &str) {
         return;
     }
     let channel = Arc::new(ChannelSettings::new(app_id));
-    if crate::host::environment().session_settings.is_none() {
-        settings_store::install_source(Some(Arc::clone(&channel) as Arc<dyn SettingsSource>));
-    }
+    settings_store::install_source(Some(Arc::clone(&channel) as Arc<dyn SettingsSource>));
     *installed = Some(channel);
 }
 

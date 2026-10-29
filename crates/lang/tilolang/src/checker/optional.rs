@@ -14,9 +14,24 @@ use crate::types::Ty;
 /// The name a key path's lambda binds its item to; no source can write it.
 const KEY_ITEM: &str = "$item";
 
-/// `.field` written where a lambda goes, as the lambda `x -> x.field`; a lambda as itself.
+/// `.field` written where a lambda goes, as the lambda `x -> x.field`; `.a.b` as
+/// `x -> x.a.b`; a lambda as itself.
 pub(super) fn lambda_of(e: &ast::Expr) -> Option<(ast::Ident, ast::Expr)> {
     match &e.kind {
+        ExprKind::Field { base, name } => {
+            let (item, inner) = lambda_of(base)?;
+            if matches!(base.kind, ExprKind::Lambda { .. }) {
+                return None;
+            }
+            let body = ast::Expr {
+                kind: ExprKind::Field {
+                    base: Box::new(inner),
+                    name: name.clone(),
+                },
+                span: e.span,
+            };
+            Some((item, body))
+        }
         ExprKind::Lambda { param, body } => Some((param.clone(), (**body).clone())),
         ExprKind::Variant { name, args: None } => {
             let item = ast::Ident {

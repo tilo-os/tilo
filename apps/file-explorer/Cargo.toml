@@ -7,6 +7,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["file-explorer-samples"]
+
 [lib]
 name = "file_explorer"
 path = "src/lib.rs"
@@ -98,7 +102,10 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-file-explorer = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `file-explorer` claims `--features file-explorer/thin` in the
+# collection build, and the app then links the whole runtime statically.
+file-explorer-samples = { package = "file-explorer", path = ".", features = ["samples"] }
 tar.workspace = true
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

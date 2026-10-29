@@ -17,6 +17,7 @@ use vello::peniko::Color;
 use winit::event::Modifiers;
 
 use tilo_doc::model::Region;
+use tilo_doc::paging::PageFlow;
 use tilo_doc::snapshot::{BlockView, NoteView};
 use ui::gesture::DragSelect;
 use ui::richtext::RichTextLayout;
@@ -1076,8 +1077,8 @@ pub struct WordProcessorWidget {
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
-    /// The command each of the window bar's slots runs, as last declared.
-    bar_commands: Vec<(String, window_bar::BarCommand)>,
+    /// The window bar's slots, each carrying the command it runs.
+    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     paper_theme: Theme,
     /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
@@ -1402,7 +1403,7 @@ impl WordProcessorWidget {
             recent_layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
-            bar_commands: Vec::new(),
+            bar: ui::framework::BarCommands::new(),
             paper_theme: Theme::light(),
             desk_theme: Theme::dark(),
             text_scale: 1.0,
@@ -2435,17 +2436,14 @@ struct PaginationResult {
 /// Loop-carried pagination state threaded through
 /// [`WordProcessorWidget::paginate_blocks`]'s per-block-kind handlers.
 struct PageCursor {
-    /// Current page index.
-    cur_page: usize,
+    /// Where the next block goes and how it breaks across page sheets.
+    flow: PageFlow,
+    /// The `laid` entries of each block placed through `flow`, in its order,
+    /// so a heading carried to the next page with its text can follow it.
+    flow_laid: Vec<std::ops::Range<usize>>,
     /// Highest page named by an out-of-flow object. It keeps the paper stack
     /// present even when normal text flow has not reached that page yet.
     max_object_page: usize,
-    /// Whether anything has landed on the current page yet (the first item
-    /// on a page never breaks, so an over-tall block simply overflows its
-    /// own page — acceptable for v1).
-    placed_on_page: bool,
-    /// The running content y.
-    y: f64,
     /// The currently-active floated image (anchor=paragraph/page,
     /// wrap=left/right), if any: subsequent paragraphs on its page are
     /// narrowed to flow beside it (coarse wrap — see [`FloatReserve`]).
@@ -2510,7 +2508,6 @@ struct ParagraphPlacement {
     size: f32,
     bullet: Option<String>,
     ink: Color,
-    space_after: f32,
 }
 
 /// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects

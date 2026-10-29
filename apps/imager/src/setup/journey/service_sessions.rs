@@ -3,11 +3,11 @@
 #[path = "login_tests.rs"]
 mod login_tests;
 mod logins;
-use crate::setup::{account_transfer::Candidate, service_sessions::PreparedSessions};
 use imager_backend::browser_selection::Service;
 use imager_backend::service_selection::{
     self as service_profiles, CookieProfile, Material, Presence,
 };
+use imager_backend::{account_transfer::Candidate, setup::service_sessions::PreparedSessions};
 use std::{io, path::Path, sync::Arc};
 use ui::{
     tokens::{Rhythm, TextRole},
@@ -448,7 +448,7 @@ mod portable_tests {
 #[cfg(target_os = "linux")]
 mod tests {
     use super::*;
-    use crate::setup::account_transfer::{self, SourceRoots};
+    use imager_backend::account_transfer::{self, SourceRoots};
     use std::os::unix::fs::PermissionsExt;
 
     pub(super) fn firefox(home: &Path, name: &str, with_slack: bool) -> rusqlite::Connection {
@@ -619,7 +619,7 @@ mod tests {
             );
             let destination = target.path().join("custody");
             assert!(
-                crate::setup::service_sessions::import(
+                imager_backend::setup::service_sessions::import(
                     &artifact,
                     &declaration,
                     b"private synthetic transfer password",
@@ -630,7 +630,7 @@ mod tests {
                 .is_err()
             );
             assert!(!destination.exists());
-            crate::setup::service_sessions::import(
+            imager_backend::setup::service_sessions::import(
                 &artifact,
                 &declaration,
                 b"private synthetic transfer password",
@@ -990,7 +990,9 @@ mod tests {
     fn migrate_all_includes_current_discord_origin_without_guessing_cookie_material() {
         let home = tempfile::tempdir().unwrap();
         let profile = home.path().join(".config/discord");
-        crate::setup::service_sessions::source::discord_origin::fixture_selected_origin(&profile);
+        imager_backend::setup::service_sessions::source::discord_origin::fixture_selected_origin(
+            &profile,
+        );
         let inventory = account_transfer::discover(&SourceRoots {
             home: home.path().to_owned(),
             config: home.path().join(".config"),

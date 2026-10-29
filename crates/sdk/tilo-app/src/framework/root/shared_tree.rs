@@ -371,13 +371,8 @@ impl ResourceRoot {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }
-            // A hosted surface has already admitted what it adds.
-            let extra = if surface {
-                extra
-            } else {
-                outside_document(extra)
-            };
-            extras.push(SharedResource::from_resource(extra));
+            // Never a document action: those are the resource's own.
+            extras.push(SharedResource::from_resource(outside_document(extra)));
         }
         let mut resources = vec![SharedResource::new(root.0, root.1)];
         resources.append(&mut extras);

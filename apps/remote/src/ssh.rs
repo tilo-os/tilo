@@ -903,7 +903,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = KnownHostStore::in_settings(
             ui::storage::Settings::for_app(crate::resource::REMOTE_APP_ID)
-                .in_file(directory.path().join("settings.json")),
+                .in_profile(directory.path()),
         );
         (store, directory)
     }
@@ -951,9 +951,7 @@ mod tests {
 
             // The pin is this device's: a device-local setting, never one
             // that roams to the person's other devices.
-            let document: serde_json::Value =
-                serde_json::from_slice(&fs::read(directory.path().join("settings.json")).unwrap())
-                    .unwrap();
+            let document = serde_json::Value::Object(ui::storage::settings_at(directory.path()));
             assert_eq!(
                 document["app_device_local"][crate::resource::REMOTE_APP_ID]["entries"][0]["identity"]
                     ["fingerprint"],
@@ -969,16 +967,17 @@ mod tests {
         eprintln!("phase corrupt_known_hosts_store_fails_closed");
         {
             let (store, directory) = test_known_hosts();
-            fs::write(
-                directory.path().join("settings.json"),
-                serde_json::to_vec(&serde_json::json!({
-                    "app_device_local": {
+            ui::storage::SettingsSection::named("app_device_local")
+                .in_profile(directory.path())
+                .update(
+                    serde_json::json!({
                         crate::resource::REMOTE_APP_ID: { "entries": "not a list" }
-                    }
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                )
+                .unwrap();
             assert!(
                 store.load().is_err(),
                 "corrupt trust state cannot be treated as empty"

@@ -469,9 +469,9 @@ impl SetupApp {
                     ));
                 }
                 let directory = zeroize::Zeroizing::new(directory);
-                let intent = super::migration_intent::MigrationIntent::load(std::path::Path::new(
-                    directory.as_str(),
-                ))
+                let intent = imager_backend::setup::migration_intent::MigrationIntent::load(
+                    std::path::Path::new(directory.as_str()),
+                )
                 .map_err(|_| super::strings::t("imager-setup-error-migration-intent-invalid"))?;
                 self.internal_install.set_migration_intent(Some(intent))?;
                 return Ok(self.setup_projection().value());

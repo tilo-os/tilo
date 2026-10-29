@@ -209,7 +209,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         self.state.request_witness(caller, None, request)
     }
 }
@@ -308,7 +308,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         self.state.request_witness(caller, None, request)
     }
 }

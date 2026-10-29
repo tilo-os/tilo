@@ -18,7 +18,7 @@ pub(crate) struct ReviewedOriginalImage {
     #[cfg(all(target_os = "linux", feature = "installation"))]
     source: crate::model::Source,
     proof: ConsumerCapability,
-    applications: Option<super::applications_admission::ConsumerCapability>,
+    applications: Option<imager_backend::applications_admission::ConsumerCapability>,
 }
 impl ReviewedOriginalImage {
     pub(crate) fn review(
@@ -62,7 +62,7 @@ impl ReviewedOriginalImage {
     pub(crate) fn require_applications(&self) -> io::Result<()> {
         self.require_protocol(6)?;
         let proof = self.applications.as_ref();
-        super::applications_admission::require(proof, Some(2))
+        imager_backend::applications_admission::require(proof, Some(2))
     }
     #[cfg(all(target_os = "linux", feature = "installation"))]
     pub(crate) fn source(&self) -> &crate::model::Source {
@@ -76,7 +76,7 @@ impl ReviewedOriginalImage {
         use sha2::{Digest, Sha256};
         use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
         self.proof.validate()?;
-        super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
@@ -94,7 +94,7 @@ impl ReviewedOriginalImage {
         let mut offset = 0_u64;
         let mut buffer = [0_u8; 128 * 1024];
         loop {
-            super::migration::check_cancel(cancel)?;
+            imager_backend::migration::check_cancel(cancel)?;
             let count = file.read_at(&mut buffer, offset)?;
             if count == 0 {
                 break;
@@ -128,7 +128,7 @@ impl ReviewedOriginalImage {
         {
             return Err(invalid());
         }
-        super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         let stamp = ImageStamp::from_metadata(&after);
         let verified = VerifiedOriginalImage {
             file,

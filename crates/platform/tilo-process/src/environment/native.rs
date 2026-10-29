@@ -103,8 +103,6 @@ pub fn process_environment() -> super::HostEnvironment {
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
-        // `settings_store::SESSION_SETTINGS_ENV`. Empty is unset.
-        session_settings: path("TILO_SESSION_SETTINGS"),
     }
 }
 

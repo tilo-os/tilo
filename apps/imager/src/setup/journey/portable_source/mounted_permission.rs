@@ -302,7 +302,7 @@ fn prepare(
         .grant
         .validate()
         .map_err(|_| ReviewFailure::SourceChanged)?;
-    crate::setup::migration::check_cancel(cancel).map_err(ReviewFailure::home)?;
+    imager_backend::migration::check_cancel(cancel).map_err(ReviewFailure::home)?;
     let original = Arc::new(OriginalSource::from_native(super::NativeOriginalSource {
         grant: context.grant.clone(),
         choices: context.choices.clone(),

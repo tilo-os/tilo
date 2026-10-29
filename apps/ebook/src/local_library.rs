@@ -115,8 +115,8 @@ impl LocalLibrary {
     }
 
     #[cfg(test)]
-    fn in_file(path: &Path) -> ui::storage::Settings<Stored> {
-        ui::storage::Settings::for_app(APP_ID).in_file(path)
+    fn in_profile(path: &Path) -> ui::storage::Settings<Stored> {
+        ui::storage::Settings::for_app(APP_ID).in_profile(path)
     }
 }
 
@@ -146,10 +146,10 @@ mod tests {
         // --- phase: paths_round_trip_only_in_private_settings ---
         {
             let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("settings.json");
+            let path = directory.path().to_path_buf();
             let books = directory.path().join("books");
             let book = books.join("a.epub");
-            let mut registry = LocalLibrary::load(LocalLibrary::in_file(&path));
+            let mut registry = LocalLibrary::load(LocalLibrary::in_profile(&path));
             registry.remember_book("book:0123456789abcdef0123456789abcdef", &book);
             registry.toggle_watch(&books);
             assert_eq!(registry.books.len(), 1);
@@ -162,7 +162,7 @@ mod tests {
                 "the paths are the device's own"
             );
 
-            let restored = LocalLibrary::load(LocalLibrary::in_file(&path));
+            let restored = LocalLibrary::load(LocalLibrary::in_profile(&path));
             assert_eq!(
                 restored.books.get("book:0123456789abcdef0123456789abcdef"),
                 Some(&book)

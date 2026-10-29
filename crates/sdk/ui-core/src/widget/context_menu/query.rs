@@ -148,7 +148,7 @@ impl ContextMenu {
             self.items.iter().take(owned).map(|item| {
                 let label = match item {
                     MenuItem::Action { label, .. } => Some(label.as_str()),
-                    MenuItem::Separator | MenuItem::Caption(_) => None,
+                    MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
                 };
                 label
                     .into_iter()
@@ -263,7 +263,7 @@ impl ContextMenu {
     pub(super) fn edit_query(
         &mut self,
         event: &WindowEvent,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
     ) -> bool {
         let command = self.platform.command_modifier_down(modifiers.state());
         let shift = modifiers.state().shift_key();

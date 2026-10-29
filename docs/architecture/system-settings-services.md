@@ -73,8 +73,11 @@ hands it to the app (`TILO_SVC_SYSTEM-STATS_FD`) before the sandbox starts.
 
 ## Ownership and roaming
 
-Every leaf in the shared `settings.json` contract has an explicit entry in
-`settings_store::continuity`. The registry is the boundary, not a section-name
+The settings are two Automerge documents per profile, the person's and the
+device's (`settings_store::Store`, under `<config root>/records/`). The
+session holds them; every other process reads the same documents and sends
+its writes to the session. Every leaf has an explicit entry in
+`settings_store::continuity`, which decides the document it lives in. The registry is the boundary, not a section-name
 convention. A new leaf that has not been reviewed is readable by its owner but
 is excluded from personal-device continuity.
 
@@ -83,7 +86,7 @@ The scopes are deliberately distinct:
 | Scope | Owner and transport |
 | --- | --- |
 | Personal | Converges only between devices certified to the same identity. |
-| Workspace | Lives in the workspace record plane and follows its collaborators and permissions, never the personal settings file. |
+| Workspace | Lives in the workspace record plane and follows its collaborators and permissions, never the person's settings. |
 | Device-local | Remains on the machine whose hardware or local environment gives it meaning. |
 | Secret | Uses a purpose-built sealed transport or local credential vault; never ordinary settings sync. |
 | Derived | Recomputed/runtime history and never treated as durable personal intent. |

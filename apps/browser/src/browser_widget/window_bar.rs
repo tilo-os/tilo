@@ -25,24 +25,24 @@ use crate::omnibox::{Row, RowKind};
 
 use super::BrowserWidget;
 
-/// The action ids the browser's slots answer to.
-const RELOAD: &str = "reload";
-const STOP: &str = "stop";
-const BOOKMARK: &str = "bookmark";
-const LIBRARY: &str = "library";
-const DOWNLOADS: &str = "downloads";
-const READER_VIEW: &str = "reader-view";
-const PICTURE_IN_PICTURE: &str = "picture-in-picture";
-const DEVELOPER_TOOLS: &str = "developer-tools";
-const ZOOM_IN: &str = "zoom-in";
-const ZOOM_OUT: &str = "zoom-out";
-const ZOOM_RESET: &str = "zoom-reset";
-const SITE_INFORMATION: &str = "site-information";
-const ADS_AND_TRACKERS: &str = "ads-and-trackers";
-const PAUSE_HISTORY: &str = "pause-history";
-const PRIVATE_WINDOW: &str = "private-window";
-const SETTINGS: &str = "settings";
-const MANAGE_EXTENSIONS: &str = "manage-extensions";
+/// What an entry of the window's bar runs: the command its row in the
+/// window's own More menu runs.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum BarCommand {
+    /// The resource's operation with no arguments.
+    Unit(&'static str, &'static str),
+    Bookmark,
+    Library,
+    DeveloperTools,
+    /// Zoom in, out (by the step) or back to 100 % (0).
+    Zoom(i32),
+    /// The site's information, or its ads and trackers.
+    Site {
+        information: bool,
+    },
+    PrivateWindow,
+    Settings,
+}
 
 fn t(key: &str) -> String {
     crate::resource::CATALOG.t(key)
@@ -206,70 +206,83 @@ impl BrowserWidget {
         actions.extend(self.extensions.bar_offer());
         // An extension's side panel beside the page closes from the row.
         actions.extend(self.extensions.bar_side_panel());
+        let bar = &self.bar_entries;
+        let entry = |icon: &str, key: &str, command| bar.entry(icon, t(key), command);
+        let unit = |icon: &str, key: &str, resource, action| {
+            entry(icon, key, BarCommand::Unit(resource, action))
+        };
         actions.extend([
-            ToolbarAction::new(
-                if loading { STOP } else { RELOAD },
-                if loading { "x" } else { "refresh" },
-                t(if loading {
-                    "browser-stop"
-                } else {
-                    "browser-reload"
-                }),
-            ),
-            ToolbarAction::new(
-                BOOKMARK,
+            if loading {
+                unit("x", "browser-stop", "browser.page", "stop")
+            } else {
+                unit("refresh", "browser-reload", "browser.page", "reload")
+            },
+            bar.entry(
                 "star",
                 t(if bookmarked {
                     "browser-page-bookmarked"
                 } else {
                     "browser-bookmark-page"
                 }),
+                BarCommand::Bookmark,
             )
             .enabled(page && !bookmarked)
             .on(bookmarked),
-            ToolbarAction::new(
-                LIBRARY,
+            bar.entry(
                 "history",
                 t(if self.show_library {
                     "browser-library-close"
                 } else {
                     "browser-library-open"
                 }),
+                BarCommand::Library,
             )
             .on(self.show_library),
         ]);
         if let Some(status) = self.capabilities.toolbar_status() {
-            actions.push(ToolbarAction::new(DOWNLOADS, "download", status));
+            let downloads = BarCommand::Unit("browser.downloads", "show-downloads");
+            actions.push(bar.entry("download", status, downloads));
         }
-        let item = |id: &str, icon: &str, key: &str| ToolbarAction::new(id, icon, t(key));
         actions.push(
             ToolbarAction::new("page", "globe", t("browser-menu-page"))
                 .with_items(vec![
-                    item(READER_VIEW, "file-text", "browser-menu-reader-view").on(self.reader_view),
-                    item(
-                        PICTURE_IN_PICTURE,
+                    unit(
+                        "file-text",
+                        "browser-menu-reader-view",
+                        "browser.page",
+                        "reader-view",
+                    )
+                    .on(self.reader_view),
+                    unit(
                         "picture-in-picture-2",
                         "browser-menu-picture-in-picture",
+                        "browser.page",
+                        "picture-in-picture",
                     )
                     .on(self.active_pip),
-                    item(DEVELOPER_TOOLS, "code", "browser-menu-developer-tools"),
+                    entry(
+                        "code",
+                        "browser-menu-developer-tools",
+                        BarCommand::DeveloperTools,
+                    ),
                 ])
                 .in_menu(),
         );
         actions.push(
             ToolbarAction::new("zoom", "plus", t("browser-menu-zoom"))
                 .with_items(vec![
-                    item(ZOOM_IN, "plus", "browser-menu-zoom-in"),
-                    item(ZOOM_OUT, "minus", "browser-menu-zoom-out"),
-                    ToolbarAction::new(ZOOM_RESET, "rotate-ccw", self.daily.zoom_label()),
+                    entry("plus", "browser-menu-zoom-in", BarCommand::Zoom(1)),
+                    entry("minus", "browser-menu-zoom-out", BarCommand::Zoom(-1)),
+                    bar.entry("rotate-ccw", self.daily.zoom_label(), BarCommand::Zoom(0)),
                 ])
                 .in_menu(),
         );
         let mut extensions = self.extensions.bar_items();
-        extensions.push(item(
-            MANAGE_EXTENSIONS,
+        extensions.push(unit(
             "settings",
             "browser-menu-manage-extensions",
+            "browser.extensions",
+            "show-extensions",
         ));
         actions.push(
             ToolbarAction::new("extensions", "box", t("browser-menu-extensions"))
@@ -279,23 +292,42 @@ impl BrowserWidget {
         actions.push(
             ToolbarAction::new("privacy", "shield", t("browser-menu-privacy"))
                 .with_items(vec![
-                    item(SITE_INFORMATION, "info", "browser-menu-site-information").enabled(page),
-                    item(ADS_AND_TRACKERS, "shield", "browser-menu-ads-and-trackers").enabled(page),
-                    item(PAUSE_HISTORY, "pause", "browser-menu-pause-history")
-                        .on(self.history_paused()),
-                    item(PRIVATE_WINDOW, "eye-off", "browser-menu-new-private-window"),
+                    entry(
+                        "info",
+                        "browser-menu-site-information",
+                        BarCommand::Site { information: true },
+                    )
+                    .enabled(page),
+                    entry(
+                        "shield",
+                        "browser-menu-ads-and-trackers",
+                        BarCommand::Site { information: false },
+                    )
+                    .enabled(page),
+                    unit(
+                        "pause",
+                        "browser-menu-pause-history",
+                        "browser.session",
+                        "toggle-pause",
+                    )
+                    .on(self.history_paused()),
+                    entry(
+                        "eye-off",
+                        "browser-menu-new-private-window",
+                        BarCommand::PrivateWindow,
+                    ),
                 ])
                 .in_menu(),
         );
         actions.push(
-            item(
-                SETTINGS,
+            entry(
                 "settings",
                 if self.show_settings {
                     "browser-menu-close-settings"
                 } else {
                     "browser-menu-settings"
                 },
+                BarCommand::Settings,
             )
             .in_menu(),
         );
@@ -389,6 +421,7 @@ impl BrowserWidget {
 
     /// Run one thing the person did in the bar.
     pub(super) fn run_window_toolbar_event(&mut self, event: ToolbarEvent) {
+        let pressed = self.bar_entries.pressed(&event);
         match event {
             // The browser declares no sidebar toggle.
             ToolbarEvent::ToggleSidebar => {}
@@ -417,45 +450,37 @@ impl BrowserWidget {
                 // here discards its retained image and input state per key.
                 return;
             }
-            ToolbarEvent::Action { id } => match id.as_str() {
-                RELOAD => self.queue_unit_operation("browser.page", "reload"),
-                STOP => self.queue_unit_operation("browser.page", "stop"),
-                BOOKMARK => {
+            ToolbarEvent::Action { id } => match pressed {
+                Some(BarCommand::Unit(resource, action)) => {
+                    self.queue_unit_operation(resource, action);
+                }
+                Some(BarCommand::Bookmark) => {
                     if self.person_bookmarks.is_some() {
                         self.queue_unit_operation("browser.page", "bookmark-personal-page");
                     } else if let Some(action) = self.page_bookmark_action() {
                         self.submit(action);
                     }
                 }
-                LIBRARY => {
+                Some(BarCommand::Library) => {
                     let (resource, action) = self.library_command();
                     self.queue_unit_operation(resource, action);
                 }
-                // The More menu's rows run these same commands.
-                DOWNLOADS => self.queue_unit_operation("browser.downloads", "show-downloads"),
-                READER_VIEW => self.queue_unit_operation("browser.page", "reader-view"),
-                PICTURE_IN_PICTURE => {
-                    self.queue_unit_operation("browser.page", "picture-in-picture");
-                }
-                DEVELOPER_TOOLS => self
+                Some(BarCommand::DeveloperTools) => self
                     .engine
                     .send(ui::webview::WebViewCommand::ShowDeveloperTools),
-                ZOOM_IN => (self.daily.command(crate::daily_controls::Action::Zoom(1)))(),
-                ZOOM_OUT => (self.daily.command(crate::daily_controls::Action::Zoom(-1)))(),
-                ZOOM_RESET => (self.daily.command(crate::daily_controls::Action::Zoom(0)))(),
-                SITE_INFORMATION => (self.site.open_command(true))(),
-                ADS_AND_TRACKERS => (self.site.open_command(false))(),
-                PAUSE_HISTORY => self.queue_unit_operation("browser.session", "toggle-pause"),
-                PRIVATE_WINDOW => self.private_window_request.set(true),
-                SETTINGS => {
+                Some(BarCommand::Zoom(step)) => {
+                    (self
+                        .daily
+                        .command(crate::daily_controls::Action::Zoom(step)))();
+                }
+                Some(BarCommand::Site { information }) => (self.site.open_command(information))(),
+                Some(BarCommand::PrivateWindow) => self.private_window_request.set(true),
+                Some(BarCommand::Settings) => {
                     let (resource, action) = self.settings_command();
                     self.queue_unit_operation(resource, action);
                 }
-                MANAGE_EXTENSIONS => {
-                    self.queue_unit_operation("browser.extensions", "show-extensions");
-                }
-                other => {
-                    self.extensions.bar_action(other);
+                None => {
+                    self.extensions.bar_action(&id);
                 }
             },
             // The bar's own search and History control are run by the
@@ -513,14 +538,28 @@ mod more_menu_tests {
     use ui::webview::WebViewCommand;
     use ui::webview::test_engine::TestEngine;
 
-    fn ids(actions: &[ToolbarAction]) -> Vec<String> {
+    fn names(actions: &[ToolbarAction]) -> Vec<String> {
         actions
             .iter()
             .flat_map(|action| {
-                std::iter::once(action.id.clone())
-                    .chain(action.items.iter().map(|item| item.id.clone()))
+                std::iter::once(action.name.clone())
+                    .chain(action.items.iter().map(|item| item.name.clone()))
             })
             .collect()
+    }
+
+    /// Press the entry named by `key` (a menu's item too) in the bar.
+    fn press(widget: &mut BrowserWidget, key: &str) {
+        let name = t(key);
+        let id = widget
+            .window_toolbar()
+            .actions
+            .into_iter()
+            .flat_map(|action| std::iter::once(action.clone()).chain(action.items))
+            .find(|action| action.name == name)
+            .unwrap_or_else(|| panic!("the bar offers {name}"))
+            .id;
+        widget.run_window_toolbar_event(ToolbarEvent::Action { id });
     }
 
     #[test]
@@ -530,80 +569,104 @@ mod more_menu_tests {
         let bounded = declared.clone().bounded();
         // Nothing is cut: no action past the bar's limit, no item whose icon
         // the bar does not know.
-        assert_eq!(ids(&bounded.actions), ids(&declared.actions));
-        for id in [
-            READER_VIEW,
-            PICTURE_IN_PICTURE,
-            DEVELOPER_TOOLS,
-            ZOOM_IN,
-            ZOOM_OUT,
-            ZOOM_RESET,
-            SITE_INFORMATION,
-            ADS_AND_TRACKERS,
-            PAUSE_HISTORY,
-            PRIVATE_WINDOW,
-            SETTINGS,
-            MANAGE_EXTENSIONS,
+        assert_eq!(names(&bounded.actions), names(&declared.actions));
+        for key in [
+            "browser-menu-reader-view",
+            "browser-menu-picture-in-picture",
+            "browser-menu-developer-tools",
+            "browser-menu-zoom-in",
+            "browser-menu-zoom-out",
+            "browser-menu-site-information",
+            "browser-menu-ads-and-trackers",
+            "browser-menu-pause-history",
+            "browser-menu-new-private-window",
+            "browser-menu-settings",
+            "browser-menu-manage-extensions",
         ] {
-            assert!(
-                ids(&bounded.actions).iter().any(|declared| declared == id),
-                "{id}"
-            );
+            let name = t(key);
+            assert!(names(&bounded.actions).contains(&name), "{name}");
         }
+        assert!(names(&bounded.actions).contains(&widget.daily.zoom_label()));
         // The row keeps reload, bookmark and the library.
         let row: Vec<_> = bounded
             .actions
             .iter()
             .filter(|action| !action.menu)
             .take(ui::window_toolbar::MAX_ACTIONS)
-            .map(|action| action.id.as_str())
+            .map(|action| action.name.clone())
             .collect();
-        assert_eq!(row, [RELOAD, BOOKMARK, LIBRARY]);
+        assert_eq!(
+            row,
+            [
+                t("browser-reload"),
+                t("browser-bookmark-page"),
+                t("browser-library-open")
+            ]
+        );
     }
 
     #[test]
     fn a_bar_command_does_what_its_menu_row_does() {
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-        let run = |widget: &mut BrowserWidget, id: &str| {
-            widget.run_window_toolbar_event(ToolbarEvent::Action { id: id.into() });
-            super::super::tests::layout_at(widget, 1200.0, 800.0);
-        };
-        let sends = |widget: &mut BrowserWidget, id: &str, command: WebViewCommand| {
+        let sends = |widget: &mut BrowserWidget, name: &str, command: WebViewCommand| {
             let before = engine.commands().len();
-            run(widget, id);
+            let id = widget
+                .window_toolbar()
+                .actions
+                .into_iter()
+                .flat_map(|action| std::iter::once(action.clone()).chain(action.items))
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the bar offers {name}"))
+                .id;
+            widget.run_window_toolbar_event(ToolbarEvent::Action { id });
+            super::super::tests::layout_at(widget, 1200.0, 800.0);
             let after = engine.commands().split_off(before);
-            assert!(after.contains(&command), "{id}: {command:?} in {after:?}");
+            assert!(after.contains(&command), "{name}: {command:?} in {after:?}");
         };
-        sends(&mut widget, ZOOM_IN, WebViewCommand::SetZoomLevel(1.0));
-        sends(&mut widget, ZOOM_RESET, WebViewCommand::SetZoomLevel(0.0));
         sends(
             &mut widget,
-            DEVELOPER_TOOLS,
+            &t("browser-menu-zoom-in"),
+            WebViewCommand::SetZoomLevel(1.0),
+        );
+        let reset = widget.daily.zoom_label();
+        sends(&mut widget, &reset, WebViewCommand::SetZoomLevel(0.0));
+        sends(
+            &mut widget,
+            &t("browser-menu-developer-tools"),
             WebViewCommand::ShowDeveloperTools,
         );
         // The rest queue the canonical action the More menu's row queues.
-        for (id, resource, action) in [
-            (READER_VIEW, "browser.page", "reader-view"),
-            (PICTURE_IN_PICTURE, "browser.page", "picture-in-picture"),
-            (PAUSE_HISTORY, "browser.session", "toggle-pause"),
-            (SETTINGS, "browser.settings", "show-settings"),
-            (DOWNLOADS, "browser.downloads", "show-downloads"),
-            (MANAGE_EXTENSIONS, "browser.extensions", "show-extensions"),
+        for (key, resource, action) in [
+            ("browser-menu-reader-view", "browser.page", "reader-view"),
+            (
+                "browser-menu-picture-in-picture",
+                "browser.page",
+                "picture-in-picture",
+            ),
+            (
+                "browser-menu-pause-history",
+                "browser.session",
+                "toggle-pause",
+            ),
+            ("browser-menu-settings", "browser.settings", "show-settings"),
+            (
+                "browser-menu-manage-extensions",
+                "browser.extensions",
+                "show-extensions",
+            ),
         ] {
             let mut page = BrowserWidget::new_headless();
-            page.run_window_toolbar_event(ToolbarEvent::Action { id: id.into() });
+            press(&mut page, key);
             assert!(
                 page.pending_controls.iter().any(|invocation| {
                     invocation.address.resource == resource && invocation.address.action == action
                 }),
-                "{id} reaches {resource}/{action}"
+                "{key} reaches {resource}/{action}"
             );
         }
         let mut page = BrowserWidget::new_headless();
-        page.run_window_toolbar_event(ToolbarEvent::Action {
-            id: PRIVATE_WINDOW.into(),
-        });
+        press(&mut page, "browser-menu-new-private-window");
         assert!(page.private_window_request.get());
     }
 
@@ -644,7 +707,7 @@ mod more_menu_tests {
                 .window_toolbar()
                 .actions
                 .iter()
-                .all(|action| action.icon != "x" || action.id == STOP),
+                .all(|action| action.icon != "x" || action.name == t("browser-stop")),
             "no Clear filter of its own beside the bar's search"
         );
         ui::widget::apply_filter(&mut widget, "");

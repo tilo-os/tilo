@@ -63,8 +63,11 @@ impl Checker<'_> {
                     return None;
                 };
                 let field = self.env.type_info(key)?.field(&name.name)?;
-                matches!(field.ty, Ty::Int | Ty::Float | Ty::Text | Ty::Bool)
-                    .then(|| SortKey::Field(field.id.clone()))
+                matches!(
+                    field.ty,
+                    Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Date | Ty::Time
+                )
+                .then(|| SortKey::Field(field.id.clone()))
             }
             _ => None,
         }
@@ -101,54 +104,6 @@ impl Checker<'_> {
             Ty::Text,
         );
         Ex::new(Ek::Seq(vec![set], Box::new(chosen)), Ty::Text)
-    }
-
-    /// `sorted`, the items sorted by the loop (ascending), latest first when `descending`.
-    pub(super) fn maybe_reversed(&mut self, sorted: Ex, elem: &Ty, descending: bool) -> Ex {
-        if !descending {
-            return sorted;
-        }
-        let out_ty = sorted.ty.clone();
-        let out = self.fresh(out_ty.clone());
-        let mut fl = self.new_for(sorted, elem);
-        let (get, get_conv) = super::load_op(elem, Imp::ListGetI, Imp::ListGetF, Imp::ListGetH);
-        let back = Ex::new(
-            Ek::Bin(
-                ir::BinOp::Sub,
-                Box::new(Ex::new(
-                    Ek::Bin(
-                        ir::BinOp::Sub,
-                        Box::new(Ex::local(fl.len_local, Ty::Int)),
-                        Box::new(Ex::int(1)),
-                    ),
-                    Ty::Int,
-                )),
-                Box::new(Ex::local(fl.idx_local, Ty::Int)),
-            ),
-            Ty::Int,
-        );
-        let raw = if get_conv.is_some() {
-            Ty::Int
-        } else {
-            elem.clone()
-        };
-        let item = super::conv(
-            get_conv,
-            Ex::host(get, vec![Ex::local(fl.list_local, Ty::Text), back], raw),
-            elem.clone(),
-        );
-        fl.body.push(Stmt::Eval(Self::push_item(
-            Ex::local(out, out_ty.clone()),
-            item,
-        )));
-        let stmts = vec![
-            Stmt::Set(out, Ex::host(Imp::ListNew, Vec::new(), out_ty.clone())),
-            Stmt::ForList(Box::new(fl)),
-        ];
-        Ex::new(
-            Ek::Seq(stmts, Box::new(Ex::local(out, out_ty.clone()))),
-            out_ty,
-        )
     }
 
     /// `looped`, the loop of a `sort_by` over the collection `held` (kept in the local `list`,

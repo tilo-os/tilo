@@ -495,6 +495,8 @@ pub struct BrowserWidget {
     pip_choice: ui::LocalState<Option<PipChoice>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
     private_window_request: ui::LocalState<bool>,
+    /// The window bar's entries, each carrying what it runs.
+    bar_entries: ui::framework::BarCommands<window_bar::BarCommand>,
     private_window_notice: Option<String>,
     /// The device scale the page lands on screen with, as of the last draw:
     /// what a rebuilt page view starts at. The view keeps its own scale
@@ -1389,6 +1391,7 @@ impl BrowserWidget {
             pip_choice: ui::LocalState::new(None),
             pending_chrome_focus: None,
             private_window_request: ui::LocalState::new(false),
+            bar_entries: ui::framework::BarCommands::new(),
             private_window_notice: None,
             window_scale: 1.0,
             native_closed: false,

@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn the_pane_follows_the_bindings() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = ShortcutPane::new(cx.clone());
         assert_eq!(
             pane.chords[&ShortcutAction::Search].get(),
@@ -634,7 +634,7 @@ mod tests {
                     .sum::<usize>()
         }
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let settings = cx.storage().settings::<InputPrefs>();
         let mut input = settings.get();
         input

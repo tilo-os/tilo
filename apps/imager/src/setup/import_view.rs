@@ -28,13 +28,13 @@ use super::import_actions::{
     self, ContinuationProjection, FolderProjection, ImportEffect, ImportProjection,
     ImportStatusPhase, IssueProjection, OperationProjection, SelectionProjection,
 };
-use super::migration_store::{
+use super::view::system_folder_reason;
+use imager_backend::migration_store::{
     IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
 };
-use super::migration_worker::{
+use imager_backend::migration_worker::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
 };
-use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use crate::resource::Imager;
 
@@ -287,7 +287,7 @@ impl ImportApp {
         match scenario {
             "import-first-login" | "import-first-login-waiting" | "import-first-login-later" => {
                 let choices = vec![super::controller::FolderChoice {
-                    scan: super::folders::FolderScan {
+                    scan: imager_backend::folders::FolderScan {
                         source: source.clone(),
                         file_count: 1,
                         bytes: 8,
@@ -1373,7 +1373,7 @@ impl ImportApp {
                         let parent = tilo_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("tilo/files");
-                        super::migration_store::ensure_private_root(&parent)
+                        imager_backend::migration_store::ensure_private_root(&parent)
                             .map_err(|e| e.to_string())?;
                         parent
                     };
@@ -1547,9 +1547,9 @@ impl ImportApp {
             }
             Err(error) => {
                 if let Some(operation) = self.operations.get_mut(index) {
-                    operation.apply_outcome(super::migration_worker::WorkerOutcome::Failed(
-                        error.clone(),
-                    ));
+                    operation.apply_outcome(
+                        imager_backend::migration_worker::WorkerOutcome::Failed(error.clone()),
+                    );
                 }
                 let _ = self.persist();
                 Err(error)
@@ -1612,9 +1612,9 @@ impl ImportApp {
             }
             Err(error) => {
                 if let Some(operation) = self.operations.get_mut(index) {
-                    operation.apply_outcome(super::migration_worker::WorkerOutcome::Failed(
-                        error.clone(),
-                    ));
+                    operation.apply_outcome(
+                        imager_backend::migration_worker::WorkerOutcome::Failed(error.clone()),
+                    );
                 }
                 let _ = self.persist();
                 Err(error)
@@ -3450,7 +3450,7 @@ mod tests {
 
     fn continuation_choice(source: &Path) -> super::super::controller::FolderChoice {
         super::super::controller::FolderChoice {
-            scan: super::super::folders::scan_folder(source).unwrap(),
+            scan: imager_backend::folders::scan_folder(source).unwrap(),
             destination: super::super::controller::FolderDestination::Unresolved,
             mode: super::super::model::FolderMode::Copy,
             mode_overridden: false,
@@ -4027,7 +4027,7 @@ mod tests {
             let (_temp, mut app, source, parent) = fixture();
             settle_index(&mut app);
             let choice = super::super::controller::FolderChoice {
-                scan: super::super::folders::scan_folder(&source).unwrap(),
+                scan: imager_backend::folders::scan_folder(&source).unwrap(),
                 destination: super::super::controller::FolderDestination::Unresolved,
                 mode: super::super::model::FolderMode::Copy,
                 mode_overridden: false,
@@ -4565,7 +4565,7 @@ mod tests {
                 settle_index(&mut app);
                 fs::write(source.join("hello"), b"original").unwrap();
                 let choice = super::super::controller::FolderChoice {
-                    scan: super::super::folders::scan_folder(&source).unwrap(),
+                    scan: imager_backend::folders::scan_folder(&source).unwrap(),
                     destination: super::super::controller::FolderDestination::Unresolved,
                     mode: super::super::model::FolderMode::Copy,
                     mode_overridden: false,
@@ -4633,7 +4633,7 @@ mod tests {
             let choices: Vec<_> = [&source, &second]
                 .into_iter()
                 .map(|path| super::super::controller::FolderChoice {
-                    scan: super::super::folders::scan_folder(path).unwrap(),
+                    scan: imager_backend::folders::scan_folder(path).unwrap(),
                     destination: super::super::controller::FolderDestination::Unresolved,
                     mode: super::super::model::FolderMode::Copy,
                     mode_overridden: false,
@@ -4687,7 +4687,7 @@ mod tests {
             settle_index(&mut app);
             fs::write(source.join("hello"), b"hello").unwrap();
             let choice = super::super::controller::FolderChoice {
-                scan: super::super::folders::FolderScan {
+                scan: imager_backend::folders::FolderScan {
                     source: source.clone(),
                     file_count: 1,
                     bytes: 5,
@@ -4748,7 +4748,7 @@ mod tests {
             settle_index(&mut app);
             fs::write(source.join("hello"), b"original").unwrap();
             let choice = super::super::controller::FolderChoice {
-                scan: super::super::folders::FolderScan {
+                scan: imager_backend::folders::FolderScan {
                     source: source.clone(),
                     file_count: 1,
                     bytes: 8,
@@ -4801,13 +4801,13 @@ mod tests {
         // The save stays held until this thread releases it. A UI call that
         // waited for it would only return once the hold timed out, which
         // drops the release receiver and fails the send below.
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
+        let (entered, release) = imager_backend::migration_store::test_support::hold_save(&root, 1);
         app.start_copy(0).unwrap();
         tilo_test_env::recv("the save hook", &entered);
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
         assert!(app.cancel_active());
-        let ownership_released = super::super::migration_store::test_support::ownership_release(
+        let ownership_released = imager_backend::migration_store::test_support::ownership_release(
             app.store.as_deref().unwrap(),
         );
         drop(app);
@@ -4839,7 +4839,7 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
+        let (entered, release) = imager_backend::migration_store::test_support::hold_save(&root, 2);
         app.start_copy(0).unwrap();
         // Native durability includes directory fsyncs; allow slower virtual
         // disks to reach the terminal checkpoint without weakening the state
@@ -4869,7 +4869,7 @@ mod tests {
             settle_index(&mut app);
             let root = app.store.as_ref().unwrap().root().to_owned();
             let (entered, release) =
-                super::super::migration_store::test_support::hold_save(&root, 2);
+                imager_backend::migration_store::test_support::hold_save(&root, 2);
             app.start_copy(0).unwrap();
             // Native durability includes directory fsyncs; allow slower virtual
             // disks to reach the terminal checkpoint without weakening the state

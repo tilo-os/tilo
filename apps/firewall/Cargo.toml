@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["firewall-samples"]
+
 [lib]
 name = "firewall"
 path = "src/lib.rs"
@@ -38,7 +42,10 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-firewall = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `firewall` claims `--features firewall/thin` in the
+# collection build, and the app then links the whole runtime statically.
+firewall-samples = { package = "firewall", path = ".", features = ["samples"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

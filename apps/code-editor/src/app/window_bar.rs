@@ -6,12 +6,9 @@
 //! action. The window's search finds and replaces in the buffer
 //! ([`super::find_workflow`]). The editor draws no header row of its own.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::CodeApp;
-
-/// The bar action that shows and hides the bottom panel.
-pub(crate) const BOTTOM_PANEL: &str = "code.bottom-panel";
 
 impl CodeApp {
     /// The window bar's slots for what the window shows now: the shell's,
@@ -35,7 +32,8 @@ impl CodeApp {
         // A capture or a past version has no executor for the panel's
         // effect: the action shows, but cannot act.
         toolbar.actions.push(
-            ToolbarAction::new(BOTTOM_PANEL, "panel-bottom", panel)
+            self.panel_entry
+                .entry("panel-bottom", panel, ())
                 .on(self.panel_visible)
                 .enabled(self.live),
         );
@@ -57,10 +55,7 @@ impl CodeApp {
         if self.bar.as_ref().is_some_and(|bar| bar.event(event)) {
             return;
         }
-        if let ToolbarEvent::Action { id } = event
-            && id == BOTTOM_PANEL
-            && self.live
-        {
+        if self.panel_entry.pressed(event).is_some() && self.live {
             self.toggle_bottom_panel();
         }
     }

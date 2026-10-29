@@ -160,7 +160,6 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: device_cert(),
                 revocations: Vec::new(),
-                successions: Vec::new(),
             },
             None,
         ),

@@ -251,14 +251,17 @@ mod tests {
     #[test]
     fn an_unreadable_key_reads_as_its_default() {
         let profile = tempfile::tempdir().unwrap();
-        let path = profile.path().join("settings.json");
-        std::fs::write(
-            &path,
-            r#"{"locale":{"currency":"XXX","date_format":"US","time_format":"H24","measurement":"Metric"}}"#,
-        )
-        .unwrap();
+        ui::storage::SettingsSection::named("locale")
+            .in_profile(profile.path())
+            .update(
+                serde_json::json!({"currency":"XXX","date_format":"US","time_format":"H24","measurement":"Metric"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
         let locale = ui::storage::Settings::<Locale>::shared()
-            .in_file(path)
+            .in_profile(profile.path())
             .get();
         assert_eq!(locale.currency, Currency::USD);
         assert_eq!(locale.date_format, DateStyle::Us);

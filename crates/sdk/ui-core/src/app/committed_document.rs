@@ -21,6 +21,7 @@ impl App {
         }
         self.refresh_document_routes();
         let pending = std::mem::take(&mut self.committed_documents);
+        let mut deferred = false;
         for (route, read) in pending {
             if !read.is_current() {
                 continue;
@@ -203,7 +204,10 @@ impl App {
                         self.layout.layout_dirty = true;
                     }
                 }
-                Ok(Ok(None)) => self.committed_documents.push((route, read)),
+                Ok(Ok(None)) => {
+                    deferred = true;
+                    self.committed_documents.push((route, read));
+                }
                 Ok(Err(error)) | Err(error) => {
                     tracing::warn!(%error,"committed history remains blocked at document owner");
                     // Preserve unfinished local work and this exact immutable
@@ -211,6 +215,16 @@ impl App {
                     self.committed_documents.push((route, read));
                 }
             }
+        }
+        if deferred {
+            // A read waits for what this pass may only now provide: its
+            // owner, installed once the window's tree holds the record, or
+            // the primary route the connection acknowledges. Nothing else
+            // need wake an embedded window once that lands, so the read
+            // stayed queued and the window never became ready to publish
+            // its actions. Ask for the next pass now.
+            let _entry = self.enter_wake_scope();
+            crate::wake::WakeHandle::new().notify_events();
         }
     }
 }

@@ -452,8 +452,6 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
-# The write faults the settings-copy repair tests inject.
-settings-store = { path = "../../system/settings-store", features = ["watch", "test-support"] }
 # The calibrated test panels the presenter tests render through.
 tilo-output-passes = { path = "../output-passes", features = ["test-support"] }
 # The radio fixture and panel hooks the chrome tests drive Quick Settings with.

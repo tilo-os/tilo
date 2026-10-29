@@ -9,22 +9,16 @@
 
 use std::collections::BTreeMap;
 
-use tilo_doc::document::MarkValue;
 use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{AttrVal as ActionAttr, MarkVal};
 use ui::widget::BlockContent;
-use ui::widget::marks::{Mark, MarkSpan};
-use ui::widget::{BlockKind, CalloutKind};
+use ui::widget::BlockKind;
+use ui::widget::marks::Mark;
 
-/// The deepest list indent the editor draws.
-const MAX_INDENT: i64 = 5;
-
-/// The byte offset of character `chars` in `text`.
-pub(crate) fn byte_of_char(text: &str, chars: usize) -> usize {
-    text.char_indices()
-        .nth(chars)
-        .map_or(text.len(), |(byte, _)| byte)
-}
+pub(crate) use ui::widget::rich_doc::{
+    CALLOUT, PAGE_LINK_PREFIX, TABLE_SOURCE, bool_attr, int_attr,
+};
+pub use ui::widget::rich_doc::{RESOURCE_LINK_SCHEME, content_of, editor_mark, is_resource_link};
 
 /// The character offset of byte `byte` in `text`.
 pub(crate) fn char_of_byte(text: &str, byte: usize) -> usize {
@@ -34,109 +28,6 @@ pub(crate) fn char_of_byte(text: &str, byte: usize) -> usize {
 /// Number of characters in `text`.
 pub(crate) fn chars(text: &str) -> usize {
     text.chars().count()
-}
-
-fn int_attr(view: &BlockView, key: &str) -> Option<i64> {
-    view.int_attr(key)
-}
-
-fn bool_attr(view: &BlockView, key: &str) -> Option<bool> {
-    match view.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
-        _ => None,
-    }
-}
-
-fn str_attr<'a>(view: &'a BlockView, key: &str) -> Option<&'a str> {
-    view.str_attr(key)
-}
-
-fn indent_of(view: &BlockView) -> u8 {
-    u8::try_from(int_attr(view, "level").unwrap_or(0).clamp(0, MAX_INDENT)).unwrap_or(0)
-}
-
-/// The editor kind a paragraph shows as.
-pub(crate) fn kind_of(view: &BlockView) -> BlockKind {
-    match view.kind.as_str() {
-        "heading" => BlockKind::Heading(
-            u8::try_from(int_attr(view, "level").unwrap_or(1).clamp(1, 3)).unwrap_or(1),
-        ),
-        "quote" | "blockquote" => str_attr(view, CALLOUT)
-            .and_then(CalloutKind::from_name)
-            .map_or(BlockKind::Quote, BlockKind::Callout),
-        "list_item" => {
-            let indent = indent_of(view);
-            match bool_attr(view, "checked") {
-                Some(done) => BlockKind::Checklist { indent, done },
-                None if bool_attr(view, "ordered") == Some(true) => BlockKind::Numbered { indent },
-                None => BlockKind::Bullet { indent },
-            }
-        }
-        "divider" => BlockKind::Divider,
-        _ if bool_attr(view, "code") == Some(true) => BlockKind::CodeBlock {
-            lang: str_attr(view, "lang").map(str::to_owned),
-        },
-        _ => match bool_attr(view, TABLE_SOURCE) {
-            Some(visual) => BlockKind::Table { visual },
-            None => BlockKind::Paragraph,
-        },
-    }
-}
-
-/// A table the editor keeps as its Markdown source is a paragraph of that
-/// source with this attribute, `true` while it shows as a grid.
-pub(crate) const TABLE_SOURCE: &str = "table_source";
-
-/// The attribute that makes a quote a callout: the alert's name (`warning`).
-pub(crate) const CALLOUT: &str = "alert";
-
-/// An internal link to another page is a `link` to this fragment prefix and
-/// the page's id, which the document's link validation accepts.
-pub(crate) const PAGE_LINK_PREFIX: &str = "#page-";
-
-/// The scheme a resource link is written with in a `link` mark's target, in
-/// the one form every document codec already round-trips: `tilo://open#…`,
-/// the native link `tilo_reference::link::Link::to_native` makes. A link
-/// mark whose target starts with this scheme names a resource, so it is
-/// shown as a [`Mark::ResourceLink`] rather than an external URL.
-pub const RESOURCE_LINK_SCHEME: &str = "tilo://open#";
-
-/// The editor mark a tilo-doc mark shows as, when it has one.
-pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
-    match (name, value) {
-        (_, MarkValue::Bool(false)) => None,
-        ("strong", _) => Some(Mark::Bold),
-        ("em", _) => Some(Mark::Italic),
-        ("underline", _) => Some(Mark::Underline),
-        ("strike", _) => Some(Mark::Strikethrough),
-        ("fontFamily", MarkValue::Str(family)) if family == "mono" => Some(Mark::Code),
-        ("link", MarkValue::Str(target)) => Some(
-            target
-                .strip_prefix(PAGE_LINK_PREFIX)
-                .and_then(|id| id.parse().ok())
-                .map_or_else(
-                    || {
-                        if is_resource_link(target) {
-                            Mark::ResourceLink(target.clone())
-                        } else {
-                            Mark::ExternalLink(target.clone())
-                        }
-                    },
-                    Mark::Link,
-                ),
-        ),
-        ("transclusion", MarkValue::Str(page)) => page.parse().ok().map(Mark::Transclusion),
-        ("mention", MarkValue::Str(id)) if !id.is_empty() => Some(Mark::Mention(id.clone())),
-        _ => None,
-    }
-}
-
-/// Whether a `link` target names a resource of this desktop
-/// ([`RESOURCE_LINK_SCHEME`]) rather than a web address.
-pub fn is_resource_link(target: &str) -> bool {
-    target
-        .strip_prefix(RESOURCE_LINK_SCHEME)
-        .is_some_and(|route| !route.is_empty())
 }
 
 /// The tilo-doc mark an editor mark is stored as: its name and value, for an
@@ -243,46 +134,6 @@ pub fn clip_of_content(content: &BlockContent) -> tilo_document::ClipBlock {
             align: None,
             attrs: BTreeMap::new(),
         })
-}
-
-/// What a paragraph shows as in the editor.
-pub fn content_of(view: &BlockView) -> BlockContent {
-    let text = view.text.clone();
-    let mut marks: Vec<MarkSpan> = view
-        .marks
-        .iter()
-        .filter(|span| span.start < span.end)
-        .filter_map(|span| {
-            let mark = editor_mark(&span.name, &span.value)?;
-            let start = byte_of_char(&text, span.start);
-            let end = byte_of_char(&text, span.end);
-            (start < end).then(|| MarkSpan::new(start..end, mark))
-        })
-        .collect();
-    marks.sort_by_key(|span| (span.range.start, span.range.end));
-    let kind = kind_of(view);
-    let nesting = if kind.supports_indent() {
-        0
-    } else {
-        u8::try_from(int_attr(view, "nesting").unwrap_or(0).clamp(0, MAX_INDENT)).unwrap_or(0)
-    };
-    let code_group = matches!(kind, BlockKind::CodeBlock { .. })
-        .then(|| str_attr(view, "code_group").map(str::to_owned))
-        .flatten();
-    let authors = tilo_doc::document::author_runs(&view.marks)
-        .into_iter()
-        .map(|(start, end, author)| (byte_of_char(&text, start)..byte_of_char(&text, end), author))
-        .filter(|(range, _)| range.start < range.end)
-        .collect();
-    BlockContent {
-        id: view.id.clone(),
-        kind,
-        text,
-        marks,
-        nesting,
-        code_group,
-        authors,
-    }
 }
 
 /// How an editor block is stored: the paragraph's kind with its `level` and
@@ -470,6 +321,9 @@ pub(crate) fn mark_runs(want: &MarkRuns, have: &MarkRuns) -> Vec<MarkEdit> {
 mod tests {
     use super::*;
     use tilo_doc::document::MarkSpan as DocMark;
+    use tilo_doc::document::MarkValue;
+    use ui::widget::CalloutKind;
+    use ui::widget::marks::MarkSpan;
 
     fn view(kind: &str, text: &str, attrs: &[(&str, tilo_doc::AttrVal)]) -> BlockView {
         BlockView {

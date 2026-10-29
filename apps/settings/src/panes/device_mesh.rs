@@ -1092,7 +1092,7 @@ impl DeviceMeshModel {
 
     #[cfg(test)]
     fn with_path(path: &std::path::Path) -> Self {
-        let cx = PaneCx::in_file(path.with_file_name("settings.json"));
+        let cx = PaneCx::in_profile(path.parent().unwrap().to_path_buf());
         let mut pane = Self::from_path(cx, path.to_path_buf(), false);
         pane.roaming_provenance_path =
             Some(path.with_file_name(settings_store::roaming_provenance::FILE_NAME));
@@ -2987,7 +2987,7 @@ mod tests {
     #[test]
     fn the_area_builds_its_model_from_the_read_it_started() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = DeviceMeshArea::new(&cx);
         assert!(area.start_read(), "the first read starts");
         assert!(!area.start_read(), "one read at a time");
@@ -3011,7 +3011,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay.toml");
         std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
-        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let cx = PaneCx::in_profile(dir.path().to_path_buf());
         let here = DeviceMeshModel::from_path(cx.clone(), path.clone(), false);
         let read = MeshRead::of(path, false, ui::time::wall());
         let there = DeviceMeshModel::from_read(cx, read);

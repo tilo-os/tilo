@@ -12,7 +12,7 @@
 //!   (low-warning + critical auto-suspend, with hysteresis).
 //! * [`inhibit`] — the [`InhibitRegistry`], the ref-counted "don't suspend"
 //!   API the shell and apps hold while media plays / a task runs.
-//! * [`config`] — reading the policy from the shared `settings.json` the
+//! * [`config`] — reading the policy from the person's settings the
 //!   Settings pane writes.
 //! * [`logind`] / [`upower`] — the `zbus` proxies (suspend, inhibit
 //!   locks, battery + lid reads, sleep signals).

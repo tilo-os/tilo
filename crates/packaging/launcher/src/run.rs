@@ -3698,9 +3698,11 @@ pub(crate) fn run_with_context(
     // join, and dropping the guards stops the proxies before any sandbox
     // exists.
     let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
+    let media_player = dbus_proxy::media_player_for(manifest);
+    let media_player = media_player.as_deref();
     let ((dbus_plan, _dbus_guards), host, optional_runtimes) = std::thread::scope(|scope| {
         let dbus = spawn_beside(scope, "launch-dbus", move || {
-            let bind = resolve_dbus_bind(portals, graphical);
+            let bind = resolve_dbus_bind(portals, graphical, media_player);
             tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
             bind
         })?;
@@ -4549,8 +4551,11 @@ fn run_with_capture_spawn<T>(
         .map(|(p, v)| (p.as_path(), v.as_str()));
     preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
     // D-Bus plan (same decision path as `run_with`).
-    let (dbus_plan, _dbus_guards) =
-        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
+    let (dbus_plan, _dbus_guards) = resolve_dbus_bind(
+        &manifest.sandbox.portals,
+        opts.wayland_socket.is_some(),
+        dbus_proxy::media_player_for(manifest).as_deref(),
+    );
     // As in `run_with_context`, cold runtime checks precede service handoff.
     // Capture must not start the executing-task deadline during verification.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
@@ -4852,6 +4857,7 @@ pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
+    media_player: Option<&str>,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
     let (runtime, pid) = (dbus_proxy::session_runtime_dir(), std::process::id());
     let sockets = ProxySockets {
@@ -4859,7 +4865,7 @@ fn resolve_dbus_bind(
         atspi: dbus_proxy::atspi_proxy_socket_path(&runtime, pid),
         ready_within: dbus_proxy::PROXY_READY_TIMEOUT,
     };
-    resolve_dbus_bind_at(portals, graphical, &sockets)
+    resolve_dbus_bind_at(portals, graphical, media_player, &sockets)
 }
 
 /// Where one launch's D-Bus proxies listen on the host, and how long each
@@ -4873,10 +4879,11 @@ struct ProxySockets {
 fn resolve_dbus_bind_at(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
+    media_player: Option<&str>,
     sockets: &ProxySockets,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
     let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_portals && !graphical {
+    if !wants_portals && !graphical && media_player.is_none() {
         return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
@@ -4908,11 +4915,13 @@ fn resolve_dbus_bind_at(
                 spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             })
         });
+        let filter = dbus_proxy::session_filter_args(wants_portals, graphical, media_player);
+        let filter = filter.iter().map(String::as_str).collect::<Vec<_>>();
         let session = dbus_proxy::spawn_filtered_proxy_within(
             &binary,
             &bus_addr,
             &sockets.session,
-            &dbus_proxy::session_filter_args(wants_portals, graphical),
+            &filter,
             sockets.ready_within,
         );
         let atspi = match atspi {
@@ -5009,7 +5018,7 @@ mod dbus_resolution_tests {
             PortalPolicy::ViaHost,
         )]);
 
-        let (plan, guards) = resolve_dbus_bind(&portals, true);
+        let (plan, guards) = resolve_dbus_bind(&portals, true, None);
 
         assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
         assert!(guards.is_empty(), "no proxy process should have started");
@@ -5060,7 +5069,7 @@ exec sleep infinity
         };
 
         let (plan, guards) =
-            resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, &sockets);
+            resolve_dbus_bind_at(&std::collections::BTreeMap::new(), true, None, &sockets);
 
         let plan = plan.expect("both proxies became ready together");
         assert_eq!(plan.host_socket, sockets.session);
@@ -5694,9 +5703,9 @@ mod app_dir_tests {
         // The settings document is the shell's: Settings reaches it through
         // the settings service on its channel, like every app, not a bind.
         assert!(
-            !argv.iter().any(|arg| arg == "TILO_SESSION_SETTINGS"
-                || arg.ends_with("/session")
-                || arg.ends_with("/session/settings.json")),
+            !argv
+                .iter()
+                .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person.automerge")),
             "Settings must not bind or name the session document: {argv:?}"
         );
         assert_eq!(argv.last().map(String::as_str), Some("/entry"));

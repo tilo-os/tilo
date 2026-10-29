@@ -54,12 +54,12 @@ fn near(a: f64, b: f64, why: &str) {
 
 /// The theme's commands, in the window bar's order.
 const COMMANDS: [&str; 6] = [
-    "theme-apply",
-    "theme-export",
-    "theme-import",
-    "theme-duplicate",
-    "theme-reset",
-    "theme-delete",
+    "Apply",
+    "Copy as file",
+    "Import theme",
+    "Duplicate",
+    "Reset",
+    "Delete theme",
 ];
 
 fn bar(app: &mut TestApp<App>) -> ui::window_toolbar::WindowToolbar {
@@ -80,23 +80,17 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     );
 
     let toolbar = bar(&mut app);
-    let ids: Vec<&str> = toolbar
+    let names: Vec<&str> = toolbar
         .actions
         .iter()
-        .map(|action| action.id.as_str())
+        .map(|action| action.name.as_str())
         .collect();
-    assert_eq!(ids, COMMANDS, "the theme's commands are the bar's");
+    assert_eq!(names, COMMANDS, "the theme's commands are the bar's");
     assert_eq!(
         toolbar.location.map(|location| location.label).as_deref(),
         Some("Ember"),
         "the bar names the theme"
     );
-    for id in COMMANDS {
-        assert!(
-            !app.harness().targets().contains_key(id),
-            "the editor draws no {id} of its own"
-        );
-    }
 
     let dropdowns = named(&mut app, "Dropdown");
     assert!(

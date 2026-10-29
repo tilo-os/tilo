@@ -13,16 +13,19 @@
 //!   out of reach may be reached ([`crate::shell::network::ShellNetwork`]
 //!   asks what is [`Standing::Asking`]);
 //! - the changes this device shows ahead of the host (a sandbox capability
-//!   taken back, an effect receipt it recorded) stay in force over every
-//!   projection until the room's document carries them;
+//!   taken back, a grant revoked, an effect receipt it recorded) stay in
+//!   force over every projection until the room's document carries them;
 //! - a refusal is said ([`WorkspaceTree::take_governance_refusals`]), and
 //!   ends the entry, except a capability taken back: what this device no
 //!   longer lets its apps do never comes back from the room it was asked of;
 //!   and a share whose window is gone, which is said once and asked again
-//!   on the host's next event until the room no longer holds it.
+//!   on the host's next event until the room no longer holds it. A grant
+//!   whose revocation the governor refused is the room's again: only the
+//!   governor decides the room's grants.
 use serde::{Deserialize, Serialize};
 
 use super::{CapOverride, GovernanceRefusal, GovernanceRequest, RoomId, Workspace, WorkspaceTree};
+use tilo_action_policy::{Change, GrantId};
 use tilo_desktop_model::WorkspaceEffectReceipt;
 
 /// What an entry asks of its room's host.
@@ -68,6 +71,12 @@ pub struct Outgoing {
     /// it. None when the room never carried it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takes_back: Option<CapOverride>,
+    /// The grant a revocation ended here at once, which the workspace here
+    /// held: kept out of its policy until the room no longer carries it, so
+    /// nothing is admitted on it while the governor commits the revocation.
+    /// None when the workspace here held no such grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revokes: Option<GrantId>,
     #[serde(default)]
     pub standing: Standing,
     /// The host refused it once already, and that was said: asked again,
@@ -86,7 +95,12 @@ pub enum HostAnswer {
 }
 
 impl Outgoing {
-    fn new(room: RoomId, change: RoomChange, takes_back: Option<CapOverride>) -> Self {
+    fn new(
+        room: RoomId,
+        change: RoomChange,
+        takes_back: Option<CapOverride>,
+        revokes: Option<GrantId>,
+    ) -> Self {
         let id = match &change {
             RoomChange::Receipt(receipt) => receipt.invocation.0,
             RoomChange::Governance(_) | RoomChange::WindowUnshare { .. } => uuid::Uuid::new_v4(),
@@ -96,6 +110,7 @@ impl Outgoing {
             room,
             change,
             takes_back,
+            revokes,
             standing: Standing::Asking,
             refused_once: false,
         }
@@ -104,13 +119,20 @@ impl Outgoing {
     /// Whether what this entry changes shows here ahead of the room's
     /// document, and so stays in force until the document carries it.
     fn shown_ahead(&self) -> bool {
-        matches!(self.change, RoomChange::Receipt(_)) || self.takes_back.is_some()
+        matches!(self.change, RoomChange::Receipt(_))
+            || self.takes_back.is_some()
+            || self.revokes.is_some()
     }
 
     /// Whether `document`, the room's admitted document, carries this entry.
     fn carried_by(&self, document: &automerge::AutoCommit) -> bool {
         if let Some(capability) = &self.takes_back {
             return !tilo_desktop_model::projection::room_sandbox_of(document).contains(capability);
+        }
+        if let Some(revoked) = &self.revokes {
+            let policy =
+                tilo_desktop_model::projection::room_policy_of(document, &self.room.to_string());
+            return !policy.grants.iter().any(|grant| &grant.id == revoked);
         }
         match &self.change {
             RoomChange::Receipt(receipt) => {
@@ -134,7 +156,8 @@ impl Outgoing {
 /// Take what `document`, `workspace`'s room's admitted document, says
 /// about it ([`tilo_peer_state::room::adopt_room`]), with what `outbox`
 /// shows ahead of the room still in force: its receipts recorded, its
-/// capabilities taken back. Returns whether the workspace changed.
+/// capabilities taken back, its grants revoked. Returns whether the
+/// workspace changed.
 pub(crate) fn adopt_room_document(
     workspace: &mut Workspace,
     document: &automerge::AutoCommit,
@@ -153,19 +176,20 @@ pub(crate) fn adopt_room_document(
     changed
 }
 
-/// Keep out of `workspace` every capability `outbox` took back in its room.
-/// Returns whether anything was taken out.
+/// Keep out of `workspace` every capability `outbox` took back and every
+/// grant it revoked in its room. Returns whether anything was taken out.
 pub(crate) fn keep_taken_back(workspace: &mut Workspace, outbox: &[Outgoing]) -> bool {
     let room = workspace.room();
-    let before = workspace.sandbox.len();
-    for capability in outbox
-        .iter()
-        .filter(|entry| entry.room == room)
-        .filter_map(|entry| entry.takes_back.as_ref())
-    {
-        workspace.sandbox.retain(|held| held != capability);
+    let before = (workspace.sandbox.len(), workspace.policy.grants.len());
+    for entry in outbox.iter().filter(|entry| entry.room == room) {
+        if let Some(capability) = &entry.takes_back {
+            workspace.sandbox.retain(|held| held != capability);
+        }
+        if let Some(revoked) = &entry.revokes {
+            workspace.policy.grants.retain(|grant| &grant.id != revoked);
+        }
     }
-    workspace.sandbox.len() != before
+    (workspace.sandbox.len(), workspace.policy.grants.len()) != before
 }
 
 impl WorkspaceTree {
@@ -177,18 +201,46 @@ impl WorkspaceTree {
         change: RoomChange,
         takes_back: Option<CapOverride>,
     ) {
-        if let RoomChange::Governance(GovernanceRequest::GrantSandbox(capability)) = &change {
-            // Granting a capability again is the person's newer word on it.
-            self.room_outbox.retain(|entry| {
-                entry.room != room
-                    || entry
-                        .takes_back
-                        .as_ref()
-                        .is_none_or(|taken| taken.id != capability.id)
-            });
+        self.send_to_room_revoking(room, change, takes_back, None);
+    }
+
+    /// [`Self::send_to_room`] for a revocation that ended the grant
+    /// `revokes` here at once ([`Outgoing::revokes`]).
+    pub(crate) fn send_to_room_revoking(
+        &mut self,
+        room: RoomId,
+        change: RoomChange,
+        takes_back: Option<CapOverride>,
+        revokes: Option<GrantId>,
+    ) {
+        match &change {
+            RoomChange::Governance(GovernanceRequest::GrantSandbox(capability)) => {
+                // Granting a capability again is the person's newer word on it.
+                self.room_outbox.retain(|entry| {
+                    entry.room != room
+                        || entry
+                            .takes_back
+                            .as_ref()
+                            .is_none_or(|taken| taken.id != capability.id)
+                });
+            }
+            RoomChange::Governance(GovernanceRequest::Policy(Change::Grant(grant))) => {
+                // So is granting a revoked grant again: it is the room's to
+                // carry once the governor commits it. A revocation still to
+                // be asked is asked first, as it was made; one the host took
+                // no longer waits for anything.
+                self.room_outbox.retain_mut(|entry| {
+                    if entry.room != room || entry.revokes.as_ref() != Some(&grant.id) {
+                        return true;
+                    }
+                    entry.revokes = None;
+                    entry.standing == Standing::Asking
+                });
+            }
+            _ => {}
         }
         self.room_outbox
-            .push(Outgoing::new(room, change, takes_back));
+            .push(Outgoing::new(room, change, takes_back, revokes));
         self.queue_save();
     }
 

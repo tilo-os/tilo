@@ -641,17 +641,17 @@ fn memory_ends_a_launch_only_when_the_launch_did_not_end_on_its_own() {
 #[test]
 fn an_authenticated_window_without_an_app_id_proves_its_launch_opened() {
     clear_launched_for_test();
-    // glxgears' X11 window names no class, so the compositor sees `anon-<id>`;
-    // its connection's launch identity still names the launch.
-    attribute_surface_launch(7 << 32 | 0x9, "glxgears");
+    // A Wayland client that sets no app id shows as `anon-<id>`; its
+    // connection's launch identity still names the launch.
+    attribute_surface_launch(7 << 32 | 0x9, "imv");
     record_host_window_open(7 << 32 | 0x9, "anon-73014444068");
     assert!(
-        take_launch_presented("glxgears"),
+        take_launch_presented("imv"),
         "its exit after the window was up is not a crash before opening"
     );
     record_host_window_open(7 << 32 | 0xa, "anon-73014444069");
     assert!(
-        !take_launch_presented("glxgears"),
+        !take_launch_presented("imv"),
         "an anonymous window no launch owns proves nothing"
     );
 }

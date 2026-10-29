@@ -459,7 +459,7 @@ impl Joined {
             return replay;
         }
         let author = input.author();
-        collab_inbound::deliver(
+        let delivered = collab_inbound::deliver(
             &self.channels,
             &self.fanout,
             RemoteDocument {
@@ -472,7 +472,9 @@ impl Joined {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
-        replay
+        // A write sealed before its writer caught up with the channel's
+        // latest membership change is taken from the host's replay.
+        replay || delivered == collab_inbound::Delivery::SealedBehind
     }
 
     /// `room`'s connected session, while there is one.

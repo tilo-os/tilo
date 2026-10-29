@@ -344,6 +344,7 @@ doc = false
 "fluent-bundle-0_16_0" = { package = "fluent-bundle", version = "^0.16.0", default-features = false, features = ["default"] }
 "fluent-langneg-0_13_1" = { package = "fluent-langneg", version = "^0.13.1", default-features = false, features = ["default"] }
 "fluent-syntax-0_12_0" = { package = "fluent-syntax", version = "^0.12.0", default-features = false, features = ["default"] }
+"fluent-uri-0_1_4" = { package = "fluent-uri", version = "^0.1.4", default-features = false, features = ["default", "std"] }
 "flume-0_12_0" = { package = "flume", version = "^0.12.0", default-features = false, features = ["async", "futures-core", "futures-sink"] }
 "fnv-1_0_7" = { package = "fnv", version = "^1.0.7", default-features = false, features = ["default", "std"] }
 "foldhash-0_1_5" = { package = "foldhash", version = "^0.1.5", default-features = false, features = ["std"] }
@@ -615,6 +616,7 @@ doc = false
 "lru-0_16_3" = { package = "lru", version = "^0.16.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-0_18_3" = { package = "lru", version = "^0.18.3", default-features = false, features = ["default", "hashbrown"] }
 "lru-slab-0_1_2" = { package = "lru-slab", version = "^0.1.2", default-features = false, features = [] }
+"lsp-types-0_97_0" = { package = "lsp-types", version = "^0.97.0", default-features = false, features = ["default"] }
 "lzma-rust2-0_23_0" = { package = "lzma-rust2", version = "^0.23.0", default-features = false, features = ["optimization", "sha2", "std", "xz"] }
 "mac-addr-0_3_0" = { package = "mac-addr", version = "^0.3.0", default-features = false, features = ["default", "std"] }
 "mail" = { path = "../../../apps/mail", default-features = false, features = ["default", "live", "samples"] }
@@ -735,7 +737,7 @@ doc = false
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
 "pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
-"pdf-viewer" = { path = "../../../apps/pdf-viewer", default-features = false, features = [] }
+"pdf-viewer" = { path = "../../../apps/pdf-viewer", default-features = false, features = ["samples"] }
 "pdf-writer-0_15_0" = { package = "pdf-writer", version = "^0.15.0", default-features = false, features = [] }
 "pdfium-render-0_8_37" = { package = "pdfium-render", version = "^0.8.37", default-features = false, features = ["pdfium_7543", "pdfium_latest"] }
 "pem-3_0_6" = { package = "pem", version = "^3.0.6", default-features = false, features = ["default", "std"] }
@@ -965,7 +967,7 @@ doc = false
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "test-support", "watch"] }
+"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }

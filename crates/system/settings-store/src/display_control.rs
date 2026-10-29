@@ -638,7 +638,7 @@ mod tests {
 #[cfg(test)]
 mod compare_tests {
     use super::*;
-    use crate::{HostDocument, SessionPaths, SessionSettings};
+    use crate::HostDocument;
     use serde_json::json;
 
     fn refuses_stale_confirmation(source: &dyn SettingsSource) {
@@ -694,39 +694,11 @@ mod compare_tests {
     #[test]
     fn session_records_do_not_overwrite_a_newer_compositor_decision() {
         let directory = crate::test_dir();
-        let paths = SessionPaths::beside(directory.path().join("settings.json"));
-        let session = SessionSettings::open(paths).unwrap();
+        let session = crate::Store::open(directory.path()).unwrap();
         refuses_stale_confirmation(&session);
-        let reopened = SessionSettings::open(session.paths().clone()).unwrap();
+        session.flush_pending();
+        drop(session);
+        let reopened = crate::Store::open(directory.path()).unwrap();
         assert_eq!(reopened.load()["display_transaction"]["state"], "reverted");
-    }
-
-    #[test]
-    fn host_transaction_accepts_durable_state_when_the_copy_needs_repair() {
-        let directory = crate::test_dir();
-        let paths = SessionPaths::beside(directory.path().join("settings.json"));
-        let session = SessionSettings::open(paths.clone()).unwrap();
-        let before = session.load();
-        let copy = std::fs::read(&paths.copy).unwrap();
-        tilo_files::native::atomic::test_support::with_failure_on_nth(
-            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-            2,
-            || {
-                session.compare_display_transaction(
-                    before.get("display_transaction"),
-                    json!({"id":7,"state":"requested"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                )
-            },
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&paths.copy).unwrap(), copy);
-        let durable = crate::load_at(&paths.device);
-        assert_eq!(durable["display_transaction"]["id"], 7);
-        assert_eq!(durable["display_transaction"]["state"], "requested");
-        assert_eq!(session.load(), durable);
-        assert_eq!(crate::load_at(&paths.copy), durable);
     }
 }

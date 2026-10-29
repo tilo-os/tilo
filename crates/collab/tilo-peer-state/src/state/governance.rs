@@ -662,7 +662,7 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_member_writer(key, now)?;
         let mut doc = self
             .peer
             .core
@@ -695,7 +695,7 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_member_writer(key, now)?;
         let mut doc = self
             .peer
             .core
@@ -738,7 +738,7 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_member_writer(key, now)?;
         if user_public_key == self.peer.core.authority.user_public_key {
             return Err("workspace owner cannot be removed".into());
         }

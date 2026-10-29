@@ -1,9 +1,9 @@
 use super::*;
-use crate::setup::{
-    account_transfer::{self, SourceRoots},
-    browser_transfer,
-};
 use imager_backend::setup::browser_profiles;
+use imager_backend::{
+    account_transfer::{self, SourceRoots},
+    setup::browser_transfer,
+};
 use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]

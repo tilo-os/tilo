@@ -356,6 +356,14 @@ fn build_meta(
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
     meta.roots = env.roots.iter().map(type_id).collect();
+    meta.uses = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Use(u) => Some(u.app.clone()),
+            _ => None,
+        })
+        .collect();
     meta.named_roots = env
         .named_roots
         .iter()

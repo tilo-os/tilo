@@ -331,3 +331,13 @@ search.md, "What a type declares" and "Types, references and paths".
   type with one field, `items`, which code never names: the resource is used as the container
   where one goes. Any other `type X = T` is another name for `T`. A root is named
   (`root notes: Notes`) and reached as `notes`, or `alias.notes` from another package.
+- **A label that interpolates is read where it can be.** Over the subject alone it follows the
+  subject in the action's presentation view, as an `if` label does. Over other arguments
+  (`"Move to {col.title}"`) it is read where the action is applied with them,
+  `button(move_to(b, card, col))`; elsewhere the action's name stands in.
+- **Views are components in slots.** A slot that holds one toolkit component takes a view of
+  the package whose body is that one component (`view card_tile(...) { ui.BoardCard(...) }`).
+- **The ids lock is checked, not written, by `check`.** `check` fails while the lock is out of
+  date and lists each change with why it is there; `check --write-ids` and `build` write it,
+  drawing new ids at random so packages never share one. `build` writes its module to `--out`
+  (default `target/tilolang`), never into the package.

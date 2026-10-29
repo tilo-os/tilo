@@ -5,7 +5,7 @@ const PUK: &str = "12345678";
 
 fn cx() -> PaneCx {
     let profile = tempfile::tempdir().unwrap().keep();
-    PaneCx::in_file(profile.join("settings.json"))
+    PaneCx::in_profile(profile.to_path_buf())
 }
 
 fn scripted(sample: Option<MobileSample>) -> (Arc<ScriptedModem>, MobileModel) {

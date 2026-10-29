@@ -168,6 +168,8 @@ pub struct CodeApp {
     explorer_events: ExplorerEvents,
     /// The shell around the editor: its sidebar, open or put away.
     bar: Option<WindowBarLink>,
+    /// The window bar's toggle of the bottom panel.
+    panel_entry: ui::framework::BarCommands<()>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
@@ -584,6 +586,7 @@ impl CodeApp {
             explorer,
             explorer_events: ExplorerEvents::default(),
             bar: None,
+            panel_entry: ui::framework::BarCommands::new(),
             editor: EditorView::new(),
             status: StatusModel::new(),
             panel: BottomPanel::new(),

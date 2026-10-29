@@ -48,6 +48,9 @@ pub enum UiEvent {
     Fire(String, String, Option<Value>),
     /// A row of a resource was activated: show the resource.
     Open(crate::ResourceRef),
+    /// A reference in rich text was activated: open what it refers to (the `mention` mark's
+    /// value).
+    OpenReference(String),
 }
 
 /// Where controls report what the person did.
@@ -97,6 +100,7 @@ pub fn display(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
+        Value::Rich(rich) => rich.plain_text(),
         _ => String::new(),
     }
 }
@@ -204,6 +208,13 @@ fn position(node: &UiNode) -> Option<At> {
 /// within another view's layout takes the width that layout offers and adds no second gutter.
 #[must_use]
 pub fn normalize(node: &UiNode) -> UiNode {
+    let mut out = page_once(node);
+    crate::attach::hoist_in(&mut out);
+    out
+}
+
+/// The tree with a page inside another page, or inside a block's view, a plain stack.
+fn page_once(node: &UiNode) -> UiNode {
     fn walk(node: &UiNode, inside: bool) -> UiNode {
         let nested = inside || node.kind == "page" || node.kind == "embed";
         let mut out = node.clone();

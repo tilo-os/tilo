@@ -1,10 +1,10 @@
 use super::*;
-use crate::setup::{
+use crate::setup::journey::{browser::SelectedSources, prepared_media::MediaSelections};
+use imager_backend::setup::browser_profiles;
+use imager_backend::{
     account_transfer::{self, SourceRoots},
-    journey::{browser::SelectedSources, prepared_media::MediaSelections},
     prepared_identity::PreparedIdentity,
 };
-use imager_backend::setup::browser_profiles;
 use std::{fs, os::unix::fs::PermissionsExt};
 use zeroize::Zeroizing;
 fn fixture(root: &Path) -> Arc<PreparedMedia> {
@@ -122,7 +122,7 @@ fn desktop_delivery_publishes_private_ciphertext_idempotently_without_activation
         fs::read(&browser.source_path).unwrap()
     );
     assert_eq!(
-        serde_json::from_slice::<super::super::browser_transfer::Expectation>(
+        serde_json::from_slice::<imager_backend::setup::browser_transfer::Expectation>(
             &fs::read(target.join("expectation.json")).unwrap()
         )
         .unwrap(),
@@ -172,7 +172,7 @@ fn cancellation_before_readiness_removes_new_payloads_and_preserves_existing_dir
     let private = root();
     let prepared = fixture(private.path());
     let artifact = prepared.staging_artifact().unwrap();
-    let caller = super::super::staging::prepared_setup::caller_uid().unwrap();
+    let caller = imager_backend::staging::prepared_setup::caller_uid().unwrap();
     let setup = artifact.read(caller).unwrap();
     let browser = artifact.browser.as_ref().unwrap().read(caller).unwrap();
     let destination = private.path().join("pending-target");

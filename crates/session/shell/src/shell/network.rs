@@ -2159,6 +2159,7 @@ impl ShellNetwork {
             Some(tilo_network_actor::Hosting {
                 host: local_host.clone(),
                 protocols: host_protocols,
+                held_writes: state_dir.join("held-sealed-writes"),
             }),
         );
         let lan_discovery = host_identity
@@ -3205,6 +3206,10 @@ impl ShellNetwork {
         record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        #[cfg(test)]
+        if test_withheld_records::withholds(record_id) {
+            return;
+        }
         if self.is_local_person_room(&cluster_id) {
             self.publish_person_document(app_id, &cluster_id, record_id, envelope);
             return;
@@ -6571,21 +6576,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Move every room whose governor its root revoked and replaced to the
-    /// successor the person's devices announced.
-    fn follow_revoked_governors(&self) {
-        let successions = self.peer_identities.successions();
-        if successions.is_empty() {
-            return;
-        }
-        let owner = self.tree.read().installed_native_owner();
-        if let Some(owner) = owner
-            && let Err(error) = owner.follow_successions(&successions, std::time::SystemTime::now())
-        {
-            tracing::warn!(%error, "a room could not follow its revoked governor's successor");
-        }
-    }
-
     /// Send this device's whole workspace list, signed with its device key,
     /// on the person's own topic.
     fn publish_personal_workspaces(&self) {
@@ -6711,7 +6701,6 @@ impl ShellNetwork {
             due
         });
         if upkeep {
-            self.follow_revoked_governors();
             self.publish_personal_continuity_if_changed();
         }
         let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
@@ -7398,7 +7387,6 @@ impl ShellNetwork {
             protocol,
             cert,
             revocations,
-            successions,
         } = &msg
         {
             // A new hello is a full replacement attempt for this exact route.
@@ -7418,8 +7406,7 @@ impl ShellNetwork {
                 );
                 return;
             }
-            self.accept_identity_hello(ws, &origin, &peer, cert, revocations, successions);
-            self.follow_revoked_governors();
+            self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
             if self.peer_identities.get(&origin).is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
             {
@@ -8039,12 +8026,8 @@ impl ShellNetwork {
         peer: &iroh::EndpointId,
         cert: &tilo_user_identity::DeviceCert,
         revocations: &[tilo_user_identity::RevocationEntry],
-        successions: &[tilo_user_identity::GovernorSuccession],
     ) {
-        if cert.device_public_key != *peer.as_bytes()
-            || revocations.len() > 4096
-            || successions.len() > tilo_user_identity::MAX_SUCCESSIONS
-        {
+        if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
             self.drop_held_remote_actions(*peer);
@@ -8052,18 +8035,8 @@ impl ShellNetwork {
         }
         let now_ns = now_unix_nanos();
         let mut list = tilo_user_identity::RevocationList::new();
-        // A succession carries the revocation of the device it replaces.
-        let entries = revocations
-            .iter()
-            .chain(successions.iter().map(|succession| &succession.revocation));
-        let valid = successions.iter().all(|succession| {
-            succession.previous.user_public_key == cert.user_public_key
-                && succession.verify_at(now_ns).is_ok()
-        });
-        for entry in entries {
-            if !valid
-                || entry.user_public_key != cert.user_public_key
-                || list.insert(entry.clone()).is_err()
+        for entry in revocations {
+            if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
             {
                 tracing::warn!(peer = %peer, "rejecting peer identity with invalid revocation set");
                 self.peer_identities.remove(origin);
@@ -8073,7 +8046,6 @@ impl ShellNetwork {
         }
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
-        self.peer_identities.add_successions(successions);
         self.learn_own_revocations(&list);
         let was_known = self.peer_identities.get(origin).is_some();
         if self
@@ -10315,7 +10287,6 @@ mod tests {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
-                successions: Vec::new(),
             },
         );
     }
@@ -13650,7 +13621,6 @@ mod tests {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: Vec::new(),
-                successions: Vec::new(),
             },
         );
         phone.dispatch_neighbour_msg(
@@ -13731,8 +13701,14 @@ mod tests {
                     "history",
                 )
             };
-            earlier.record_history(&route(person_room), &person_op);
-            earlier.record_history(&route(shared_room), &shared_op);
+            earlier
+                .record_history(&route(person_room), &person_op)
+                .sync()
+                .expect("history synced");
+            earlier
+                .record_history(&route(shared_room), &shared_op)
+                .sync()
+                .expect("history synced");
         }
 
         let (net, _commands) = personal_continuity_network_for_test(user);
@@ -14291,5 +14267,46 @@ mod tests {
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
         to.dispatch_neighbour_msg(ws, from.public(), None, false, msg);
+    }
+}
+
+/// Crash journeys only: the writes of a record this device does not hand to
+/// the room's host while a [`TestWithheldRecord`] for it lives, so a process
+/// killed meanwhile left them nowhere durable but its own storage.
+#[cfg(test)]
+pub(crate) mod test_withheld_records {
+    use std::sync::Mutex;
+
+    static WITHHELD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub(crate) struct TestWithheldRecord(String);
+
+    impl TestWithheldRecord {
+        pub(crate) fn new(record_id: &str) -> Self {
+            WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(record_id.to_owned());
+            Self(record_id.to_owned())
+        }
+    }
+
+    impl Drop for TestWithheldRecord {
+        fn drop(&mut self) {
+            let mut withheld = WITHHELD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(index) = withheld.iter().position(|record| *record == self.0) {
+                withheld.swap_remove(index);
+            }
+        }
+    }
+
+    pub(crate) fn withholds(record_id: &str) -> bool {
+        WITHHELD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|record| record == record_id)
     }
 }

@@ -72,6 +72,30 @@ pub struct HostIdentity {
     pub managed_agent_context: bool,
 }
 
+/// The MPRIS bus name of the media player a launched package publishes:
+/// `org.mpris.MediaPlayer2.<package id>`.
+///
+/// The toolkit's media session requests this name for the package it runs
+/// as, and a sandbox's session-bus filter lets the package own exactly this
+/// name and no other. Both name it here so the request and the grant cannot
+/// drift apart; a mismatch would have the bus refuse the player and leave
+/// it out of the desktop's now-playing controls.
+#[must_use]
+pub fn media_player_bus_name(package_id: &str) -> String {
+    format!("org.mpris.MediaPlayer2.{package_id}")
+}
+
+impl HostIdentity {
+    /// The MPRIS bus name this process's media player goes by: its
+    /// package's ([`media_player_bus_name`]) when launched as one, else
+    /// `fallback_app_id`'s, so an app run outside a launcher still names
+    /// its player.
+    #[must_use]
+    pub fn media_player_bus_name(&self, fallback_app_id: &str) -> String {
+        media_player_bus_name(self.package_id.as_deref().unwrap_or(fallback_app_id))
+    }
+}
+
 /// Where this process's user files live.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostPaths {
@@ -188,10 +212,6 @@ pub struct HostEnvironment {
     /// Directory of live `ui/*.json` screens. Absent when the app uses the
     /// graph embedded in its binary.
     pub ui_graph_dir: Option<PathBuf>,
-    /// Session `settings.json` the launcher named for this process
-    /// (`TILO_SESSION_SETTINGS`). Present when this process paints the same
-    /// document the shell chrome watches.
-    pub session_settings: Option<PathBuf>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);

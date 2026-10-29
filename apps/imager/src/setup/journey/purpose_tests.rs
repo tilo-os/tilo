@@ -66,7 +66,7 @@ fn legacy_purpose_values_remain_readable_but_are_not_asked() {
     preview.journey.name = "Ada".into();
     let profile = preview.public_install_profile().unwrap();
     let encoded = serde_json::to_vec(&profile).unwrap();
-    let decoded: crate::setup::prepared_setup::PublicInstallProfile =
+    let decoded: imager_backend::setup::prepared_setup::PublicInstallProfile =
         serde_json::from_slice(&encoded).unwrap();
     let draft = decoded.to_draft().unwrap();
     assert_eq!(draft.purpose, "server");

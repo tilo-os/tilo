@@ -16,13 +16,11 @@
 //! Reads are forgiving like every read in this crate: an absent leaf, or one
 //! whose value does not have the key's type, reads as the default.
 
-use std::path::Path;
-
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use crate::ChangeOrigin;
+use crate::{ChangeOrigin, SettingsSource};
 
 /// One setting: its section, leaf name, value type and default.
 pub struct Key<T: 'static> {
@@ -80,16 +78,16 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         }
     }
 
-    /// The current value, from the installed source or the settings file.
+    /// The current value, from this process's settings ([`crate::source`]).
     #[must_use]
     pub fn get(&self) -> T {
         self.from_section(&crate::load_section(self.section))
     }
 
-    /// The value in the settings file at `path`.
+    /// The value in `source`.
     #[must_use]
-    pub fn get_at(&self, path: &Path) -> T {
-        self.from_section(&crate::load_section_at(path, self.section))
+    pub fn get_in(&self, source: &dyn SettingsSource) -> T {
+        self.from_section(&crate::load_section_in(source, self.section))
     }
 
     /// Store `value`, leaving every other leaf alone.
@@ -109,12 +107,12 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         crate::update_section_by(self.section, self.leaf(value)?, origin)
     }
 
-    /// [`Self::set`] on the settings file at `path`.
+    /// [`Self::set`] in `source`.
     ///
     /// # Errors
-    /// As [`crate::update_section_at`].
-    pub fn set_at(&self, path: &Path, value: T) -> std::io::Result<()> {
-        crate::update_section_at(path, self.section, self.leaf(value)?)
+    /// As [`SettingsSource::update_section`].
+    pub fn set_in(&self, source: &dyn SettingsSource, value: T) -> std::io::Result<()> {
+        source.update_section(self.section, self.leaf(value)?)
     }
 
     /// Replace the value with what `change` makes of it, as one step no
@@ -144,14 +142,18 @@ impl<T: Serialize + DeserializeOwned> Key<T> {
         Self::stored(stored)
     }
 
-    /// [`Self::update`] on the settings file at `path`, under its lock.
+    /// [`Self::update`] in `source`.
     ///
     /// # Errors
-    /// As [`crate::update_section_with_at`].
-    pub fn update_at(&self, path: &Path, change: impl FnOnce(T) -> T) -> std::io::Result<T> {
+    /// As [`SettingsSource::update_section_with`].
+    pub fn update_in(
+        &self,
+        source: &dyn SettingsSource,
+        change: impl FnOnce(T) -> T,
+    ) -> std::io::Result<T> {
         let mut change = Some(change);
         let mut stored = None;
-        crate::update_section_with_at(path, self.section, &mut |section| {
+        source.update_section_with(self.section, &ChangeOrigin::default(), &mut |section| {
             self.step(section, &mut change, &mut stored)
         })?;
         Self::stored(stored)
@@ -286,45 +288,42 @@ mod tests {
 
     #[test]
     fn get_returns_default_for_absent_and_mistyped() {
-        let dir = crate::test_dir();
-        let path = dir.path().join("settings.json");
+        let doc = crate::HostDocument::new(Map::new(), |_| Ok(()));
         assert!(
-            TOUCHPAD_ENABLED.get_at(&path),
-            "no file reads as the default"
+            TOUCHPAD_ENABLED.get_in(&doc),
+            "nothing stored reads as the default"
         );
-        std::fs::write(&path, r#"{"input":{"touchpad_enabled":"false"}}"#).unwrap();
+        doc.update_section("input", object(json!({"touchpad_enabled": "false"})))
+            .unwrap();
         assert!(
-            TOUCHPAD_ENABLED.get_at(&path),
+            TOUCHPAD_ENABLED.get_in(&doc),
             "a string where a bool belongs reads as the default, not as false"
         );
-        std::fs::write(&path, r#"{"input":"broken"}"#).unwrap();
-        assert!(
-            TOUCHPAD_ENABLED.get_at(&path),
-            "a section of the wrong type"
-        );
-        std::fs::write(&path, r#"{"input":{"touchpad_enabled":false}}"#).unwrap();
-        assert!(!TOUCHPAD_ENABLED.get_at(&path), "a stored value wins");
+        doc.update_section("input", object(json!({"touchpad_enabled": false})))
+            .unwrap();
+        assert!(!TOUCHPAD_ENABLED.get_in(&doc), "a stored value wins");
     }
 
     #[test]
     fn set_writes_one_leaf_in_the_shape_untyped_readers_expect() {
         let dir = crate::test_dir();
-        let path = dir.path().join("settings.json");
-        std::fs::write(
-            &path,
-            r#"{"input":{"tap_to_click":true},"display":{"night_light":true}}"#,
-        )
-        .unwrap();
-        TOUCHPAD_ENABLED.set_at(&path, false).unwrap();
+        let store = crate::profile(dir.path());
+        store
+            .update_section("input", object(json!({"tap_to_click": true})))
+            .unwrap();
+        store
+            .update_section("display", object(json!({"night_light": true})))
+            .unwrap();
+        TOUCHPAD_ENABLED.set_in(&*store, false).unwrap();
         assert_eq!(
-            Value::Object(crate::load_at(&path)),
+            Value::Object(store.load()),
             json!({
                 "input": {"tap_to_click": true, "touchpad_enabled": false},
                 "display": {"night_light": true},
             })
         );
         assert_eq!(
-            crate::bool_at(&crate::load_at(&path), "input", "touchpad_enabled"),
+            crate::bool_at(&store.load(), "input", "touchpad_enabled"),
             Some(false),
             "the untyped reader the compositor uses sees the typed write"
         );
@@ -333,14 +332,13 @@ mod tests {
     #[test]
     fn update_is_atomic_under_concurrency() {
         let dir = crate::test_dir();
-        // No directory yet: the first flips race to create it, under the lock.
-        let path = Arc::new(dir.path().join("fresh/tilo/settings.json"));
+        let store = crate::profile(&dir.path().join("fresh/tilo"));
         let threads: Vec<_> = (0..2)
             .map(|_| {
-                let path = Arc::clone(&path);
+                let store = Arc::clone(&store);
                 std::thread::spawn(move || {
                     for _ in 0..100 {
-                        TOUCHPAD_ENABLED.update_at(&path, |on| !on).unwrap();
+                        TOUCHPAD_ENABLED.update_in(&*store, |on| !on).unwrap();
                     }
                 })
             })
@@ -350,9 +348,9 @@ mod tests {
         }
         // 200 flips from the default (on) land back on on only if no flip
         // was built on a value another flip was replacing.
-        assert!(TOUCHPAD_ENABLED.get_at(&path));
+        assert!(TOUCHPAD_ENABLED.get_in(&*store));
         assert_eq!(
-            crate::load_at(&path)["input"]["touchpad_enabled"],
+            store.load()["input"]["touchpad_enabled"],
             json!(true),
             "the leaf is stored, not merely defaulted"
         );

@@ -240,7 +240,6 @@ fn update_owned_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SessionPaths, SessionSettings, load_at};
     use serde_json::json;
 
     fn object(value: Value) -> Map<String, Value> {
@@ -250,8 +249,8 @@ mod tests {
         }
     }
 
-    fn session(dir: &std::path::Path) -> SessionSettings {
-        SessionSettings::open(SessionPaths::beside(dir.join("settings.json"))).unwrap()
+    fn session(dir: &std::path::Path) -> std::sync::Arc<crate::Store> {
+        crate::profile(dir)
     }
 
     #[test]
@@ -303,10 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn an_apps_write_reaches_the_record_its_scope_names_and_the_copy() {
+    fn an_apps_writes_keep_each_others_keys() {
         let dir = crate::test_dir();
         let session = session(dir.path());
-        let paths = session.paths().clone();
         update_for_app(
             &session,
             "so.tilo.monitor",
@@ -329,18 +327,15 @@ mod tests {
         )
         .unwrap();
 
+        let document = session.load();
         assert_eq!(
-            Value::Object(load_at(&paths.person)),
-            json!({"app_personal": {"so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000}}}),
-            "both writes' keys are kept, in the record that roams"
+            document["app_personal"],
+            json!({"so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000}}),
+            "both writes' keys are kept"
         );
         assert_eq!(
-            Value::Object(load_at(&paths.device)),
-            json!({"app_device_local": {"so.tilo.monitor": {"column": "cpu"}}})
-        );
-        assert_eq!(
-            load_at(&paths.copy)["app_personal"]["so.tilo.monitor"]["interval_ms"],
-            2000
+            document["app_device_local"],
+            json!({"so.tilo.monitor": {"column": "cpu"}})
         );
     }
 

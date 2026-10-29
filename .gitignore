@@ -98,8 +98,6 @@ __pycache__/
 !.claude/settings.json
 .pi/
 
-# `tilolang build` output next to a package's sources.
-/apps/tl/*/app.wasm
 
 # Core dumps a crashing process writes into its working directory; a
 # directory named `core` stays tracked.

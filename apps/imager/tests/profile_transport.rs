@@ -112,13 +112,14 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
 fn public_profiles(
     draft: &model::InstallProfile,
 ) -> Result<(model::InstallProfile, model::InstallProfile), Box<dyn std::error::Error>> {
-    let authenticated = imager::setup::prepared_setup::PublicInstallProfile::from_draft(draft)?;
+    let authenticated =
+        imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(draft)?;
     let restored = authenticated.to_draft()?;
     let mut legacy = serde_json::to_value(&authenticated)?;
     let object = legacy.as_object_mut().ok_or("profile must be an object")?;
     object.remove("purpose");
     object.remove("device_label");
-    let legacy: imager::setup::prepared_setup::PublicInstallProfile =
+    let legacy: imager_backend::setup::prepared_setup::PublicInstallProfile =
         serde_json::from_value(legacy)?;
     Ok((restored, legacy.to_draft()?))
 }

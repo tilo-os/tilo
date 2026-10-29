@@ -5541,75 +5541,6 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn published_display_keep_waits_for_durability_without_blocking_dispatch() {
-        use settings_store::SettingsSource as _;
-        use settings_store::hardware::{
-            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
-        };
-        use std::sync::mpsc;
-        let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
-        let mut transaction =
-            DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default()).unwrap();
-        transaction.state = DisplayTransactionState::AwaitingConfirmation;
-        transaction.save().unwrap();
-        let chrome = chrome_with_room();
-        let results = action_results(&ActionsProvider::new(), &chrome);
-        let action = results
-            .iter()
-            .find(|row| row.id == DISPLAY_KEEP_ID)
-            .expect("published Keep action");
-        let lock_path = paths.copy.with_file_name("settings.json.lock");
-        let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
-        let lock =
-            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-        let (sent, received) = mpsc::channel();
-        let release = std::thread::spawn(move || {
-            // Held until the dispatch returns: a dispatch that waits on it
-            // only ends at the hang bound, and then fails below.
-            let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
-            drop(lock);
-            responsive
-        });
-        let mut doc = AutoCommit::new();
-        let mut edits = ui::widget::Edits::lend(&mut doc);
-        let disposition = if let Some(begin) = &action.on_begin_invoke {
-            begin(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap()
-        } else {
-            (action.on_open)(&mut edits, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
-            crate::shell::search::InvocationDisposition::Accepted(
-                crate::shell::search::ActionReceipt::completed(),
-            )
-        };
-        if let crate::shell::search::InvocationDisposition::Pending(ticket) = &disposition {
-            assert!(
-                ticket().unwrap().is_none(),
-                "held storage cannot already complete the job"
-            );
-        }
-        let _ = sent.send(());
-        let responsive = release.join().unwrap();
-        drop(settings);
-        assert!(
-            responsive,
-            "published Keep dispatch blocked on the real storage lock"
-        );
-        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
-            panic!("a storage command must retain its published job until durable completion");
-        };
-        crate::shell::durable_writer::global().flush();
-        assert!(ticket().unwrap().is_some());
-        let reopened = settings_store::SessionSettings::open(paths).unwrap();
-        assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
-        assert_eq!(
-            reopened.load()["display_transaction"]["state"],
-            "confirm_requested"
-        );
-    }
-
     fn begin_display_answer(chrome: &Chrome, id: &str) -> crate::shell::search::PendingInvocation {
         let results = action_results(&ActionsProvider::new(), chrome);
         let row = results
@@ -5628,91 +5559,6 @@ mod tests {
             panic!("storage must retain a real job");
         };
         ticket
-    }
-
-    #[test]
-    fn published_display_answers_refuse_a_replacement_adopted_under_the_copy_lock() {
-        use settings_store::SettingsSource as _;
-        use settings_store::hardware::{
-            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
-        };
-        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
-            let _home = tilo_test_env::TestHome::new().unwrap();
-            let paths = settings_store::SessionPaths::configured().unwrap();
-            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            let settings =
-                crate::shell::test_support::install_settings(session.host_view().unwrap());
-            let mut transaction =
-                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
-                    .unwrap();
-            transaction.state = DisplayTransactionState::AwaitingConfirmation;
-            transaction.save().unwrap();
-            let lock_path = paths.copy.with_file_name("settings.json.lock");
-            let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
-            let lock =
-                tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-            let ticket = begin_display_answer(&chrome_with_room(), id);
-            assert!(ticket().unwrap().is_none());
-            let mut replacement = transaction.clone();
-            replacement.id += 100;
-            replacement.state = DisplayTransactionState::Requested;
-            let copy = serde_json::json!({"display_transaction": replacement});
-            // The external writer owns the same canonical lock. Its copy is
-            // adopted by SessionSettings before the conditional comparison.
-            tilo_files::native::atomic::write_creating_parent(
-                &paths.copy,
-                &serde_json::to_vec(&copy).unwrap(),
-            )
-            .unwrap();
-            drop(lock);
-            crate::shell::durable_writer::global().flush();
-            assert!(
-                matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("replaced"))
-            );
-            let reopened = settings_store::SessionSettings::open(paths).unwrap();
-            assert_eq!(
-                reopened.load()["display_transaction"],
-                copy["display_transaction"]
-            );
-            drop(settings);
-        }
-    }
-
-    #[test]
-    fn published_display_answers_report_real_record_failure_and_preserve_old_intent() {
-        use settings_store::SettingsSource as _;
-        use settings_store::hardware::{
-            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
-        };
-        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
-            let _home = tilo_test_env::TestHome::new().unwrap();
-            let paths = settings_store::SessionPaths::configured().unwrap();
-            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            let settings =
-                crate::shell::test_support::install_settings(session.host_view().unwrap());
-            let mut transaction =
-                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
-                    .unwrap();
-            transaction.state = DisplayTransactionState::AwaitingConfirmation;
-            transaction.save().unwrap();
-            std::fs::remove_file(&paths.device).unwrap();
-            std::fs::create_dir(&paths.device).unwrap();
-            let ticket = begin_display_answer(&chrome_with_room(), id);
-            crate::shell::durable_writer::global().flush();
-            assert!(matches!(ticket(), Err(ActionError::Refused(_))));
-            assert_eq!(
-                session.load()["display_transaction"],
-                serde_json::to_value(&transaction).unwrap()
-            );
-            std::fs::remove_dir(&paths.device).unwrap();
-            transaction.save().unwrap();
-            let reopened = settings_store::SessionSettings::open(paths).unwrap();
-            assert_eq!(
-                reopened.load()["display_transaction"],
-                serde_json::to_value(&transaction).unwrap()
-            );
-            drop(settings);
-        }
     }
 
     #[test]
@@ -5768,61 +5614,6 @@ mod tests {
             "confirm_requested"
         );
         drop(settings);
-    }
-
-    #[test]
-    fn published_display_answers_accept_real_durable_record_with_copy_repair_pending() {
-        use settings_store::SettingsSource as _;
-        use settings_store::hardware::{
-            DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
-        };
-        for id in [DISPLAY_KEEP_ID, DISPLAY_REVERT_ID] {
-            let _home = tilo_test_env::TestHome::new().unwrap();
-            let paths = settings_store::SessionPaths::configured().unwrap();
-            let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-            let settings =
-                crate::shell::test_support::install_settings(session.host_view().unwrap());
-            let mut transaction =
-                DisplayTransaction::request(DisplaySet::default(), DisplayConfig::default())
-                    .unwrap();
-            transaction.state = DisplayTransactionState::AwaitingConfirmation;
-            transaction.save().unwrap();
-            // The copy stays readable (an unreadable copy may hold another
-            // process's edit and blocks the write), but its replacement
-            // fails, so only the copy is left to repair.
-            let refused = settings_store::faults::refuse_copy_writes(&paths.copy);
-            let stale_copy = std::fs::read(&paths.copy).unwrap();
-            let ticket = begin_display_answer(&chrome_with_room(), id);
-            crate::shell::durable_writer::global().flush();
-            let accepted = ticket();
-            drop(refused);
-            assert!(accepted.unwrap().is_some());
-            assert_eq!(std::fs::read(&paths.copy).unwrap(), stale_copy);
-            let state = if id == DISPLAY_KEEP_ID {
-                "confirm_requested"
-            } else {
-                "revert_requested"
-            };
-            assert_eq!(session.load()["display_transaction"]["state"], state);
-            let record: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&paths.device).unwrap()).unwrap();
-            assert_eq!(record["display_transaction"]["id"], transaction.id);
-            assert_eq!(record["display_transaction"]["state"], state);
-            let accepted_revision = session.revision();
-            session.refresh();
-            assert_eq!(
-                session.revision(),
-                accepted_revision,
-                "copy repair must not republish unchanged committed state"
-            );
-            let repaired: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&paths.copy).unwrap()).unwrap();
-            assert_eq!(
-                repaired["display_transaction"],
-                record["display_transaction"]
-            );
-            drop(settings);
-        }
     }
 
     #[test]
@@ -7382,9 +7173,9 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
         // The session keeps the person's settings, as it does in a session.
-        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths).expect("records");
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+        let paths = config.path().to_path_buf();
+        let records = settings_store::Store::open(&paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(records.clone());
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -7466,9 +7257,9 @@ mod tests {
         // The person's settings records, kept apart from every other test's.
         let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
-        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+        let paths = config.path().to_path_buf();
+        let records = settings_store::Store::open(&paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(records.clone());
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -7489,16 +7280,11 @@ mod tests {
         settings_store::appearance::HIGH_CONTRAST
             .set(true)
             .expect("high contrast on");
-        let before =
-            std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
+        let before = records.change_log().len();
         invoke_action(&rows, "appearance.theme.light", &chrome);
 
-        let log = std::fs::read_to_string(paths.change_log()).expect("change log");
-        let entries: Vec<serde_json::Value> = log
-            .lines()
-            .skip(before)
-            .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
-            .collect();
+        let entries: Vec<serde_json::Value> =
+            records.change_log().into_iter().skip(before).collect();
         let mut leaves: Vec<_> = entries
             .iter()
             .map(|entry| {
@@ -7513,7 +7299,6 @@ mod tests {
                     serde_json::json!({ "action": "appearance.theme.light" }),
                     "{entry}"
                 );
-                assert_eq!(entry["via"], "session");
                 (
                     entry["leaf"].as_str().unwrap_or_default(),
                     entry["after"].clone(),
@@ -7530,9 +7315,9 @@ mod tests {
             "the action sets both leaves, each attributed to its field edit and the palette action"
         );
         assert_eq!(
-            settings_store::load_at(&paths.copy)["appearance"]["mode"],
+            settings_store::SettingsSource::load(&records)["appearance"]["mode"],
             "light",
-            "processes reading the copy see the typed write"
+            "every reader sees the typed write"
         );
     }
 

@@ -355,6 +355,43 @@ impl ShellOverlayHost {
         }
     }
 
+    /// A key on a confirmation showing its draft. Every key is the sheet's:
+    /// Tab moves between the fields and the answers, Space ticks a check
+    /// row or chooses an answer, Enter answers (a new line in a prose
+    /// field, where Ctrl+Enter answers), Page Down and Up turn the pages of
+    /// a long draft, and everything else is typing in the focused field.
+    fn portal_draft_key(
+        &mut self,
+        event: &WindowEvent,
+        logical_key: &Key,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        let state = ctx.modifiers.state();
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                self.portal_dialogs.select_next(state.shift_key());
+            }
+            Key::Named(NamedKey::Escape) => {
+                self.portal_dialogs.cancel();
+            }
+            Key::Named(NamedKey::Enter)
+                if state.control_key() || !self.portal_dialogs.draft_takes_new_line() =>
+            {
+                self.portal_dialogs.confirm();
+            }
+            Key::Named(NamedKey::PageDown) if self.portal_dialogs.reviewing_more() => {
+                self.portal_dialogs.confirm();
+            }
+            Key::Named(NamedKey::PageUp) => {
+                self.portal_dialogs.review_back();
+            }
+            Key::Named(NamedKey::Space) if self.portal_dialogs.toggle_draft_focus() => {}
+            _ => {
+                self.portal_dialogs.edit_secret(event, ctx);
+            }
+        }
+    }
+
     /// Portal sheets are modal: the keyboard and pointer remain in shell
     /// chrome until the person explicitly confirms or cancels.
     pub(super) fn route_portal_dialog_event(
@@ -414,7 +451,14 @@ impl ShellOverlayHost {
             } => {
                 // Holding Enter must not traverse the disclosure and approve
                 // it with the same physical key press.
-                if *repeat && self.portal_dialogs.review_pages().is_some() {
+                let answers = matches!(
+                    logical_key,
+                    Key::Named(NamedKey::Enter | NamedKey::PageDown)
+                );
+                if *repeat
+                    && (self.portal_dialogs.review_pages().is_some()
+                        || (answers && self.portal_dialogs.is_draft_sheet()))
+                {
                     *ctx.handled = true;
                     return true;
                 }
@@ -424,7 +468,9 @@ impl ShellOverlayHost {
                         || state.alt_key()
                         || state.shift_key()
                         || state.super_key());
-                if self.portal_dialogs.is_text_entry() {
+                if self.portal_dialogs.is_draft_sheet() {
+                    self.portal_draft_key(event, logical_key, ctx);
+                } else if self.portal_dialogs.is_text_entry() {
                     // Every key belongs to a sheet that takes typed text
                     // while it is up; none reaches an application.
                     match logical_key {
@@ -475,6 +521,18 @@ impl ShellOverlayHost {
         let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
             return;
         };
+        if let (
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            },
+            Some(point),
+        ) = (event, self.last_cursor)
+        {
+            // The field pressed takes the keyboard before the press places
+            // its caret.
+            self.portal_dialogs.focus_draft_at(point, &layout);
+        }
         let used = self.portal_dialogs.field_pointer_event(event, ctx, &layout);
         if !used
             && let (

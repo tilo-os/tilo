@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,6 +201,41 @@ pub enum Accepts {
     View,
     /// Only the component of this name, whose props the slot's owner reads.
     Component(String),
+    /// Any of the components of these names, in any order (a menu's commands, separators and
+    /// emoji bar), whose props the slot's owner reads.
+    OneOf(Vec<String>),
+}
+
+impl Accepts {
+    /// Whether the slot holds components whose props its owner reads, rather than views.
+    #[must_use]
+    pub fn reads_components(&self) -> bool {
+        !matches!(self, Self::View)
+    }
+
+    /// Whether a component of the name `name` may stand in the slot.
+    #[must_use]
+    pub fn takes(&self, name: &str) -> bool {
+        match self {
+            Self::View => true,
+            Self::Component(want) => want == name,
+            Self::OneOf(names) => names.iter().any(|want| want == name),
+        }
+    }
+
+    /// What it takes, for messages: `a view`, `` `ui.MenuItem` `` or a list of them.
+    #[must_use]
+    pub fn show(&self) -> String {
+        match self {
+            Self::View => "a view".to_owned(),
+            Self::Component(name) => format!("`ui.{name}`"),
+            Self::OneOf(names) => names
+                .iter()
+                .map(|name| format!("`ui.{name}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
 }
 
 /// Something that happens to a component. What it does is data: an action reference, invoked
@@ -259,6 +294,11 @@ pub struct Semantics {
     /// The prop holding the resource the component presents, when it presents one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presents: Option<String>,
+    /// The component draws nothing where it stands: it gives the view it stands in something
+    /// to do (a context menu, a toolbar on hover, a swipe). Wherever a view's body puts it, it
+    /// belongs to that view; a list item holds those of its row.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub attaches: bool,
 }
 
 /// The type of a prop, an event's value, a binding or a piece of state: the language's types.
@@ -277,6 +317,8 @@ pub enum Type {
     Time,
     /// One of the platform's icons, by its kebab-case name.
     Icon,
+    /// Rich text, with how its references read for the person reading it.
+    RichText,
     /// One of a closed set of cases: the design system's roles and tokens.
     Choice {
         name: String,
@@ -299,6 +341,7 @@ impl Type {
             Self::Resource => "a resource".into(),
             Self::Time => "Time".into(),
             Self::Icon => "Icon".into(),
+            Self::RichText => "RichText".into(),
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
             Self::List(inner) => format!("List<{}>", inner.show()),
@@ -325,6 +368,8 @@ pub enum Value {
     Icon(String),
     /// A case of a choice, by name.
     Choice(String),
+    /// Rich text, with how its references read for the person reading it.
+    Rich(crate::rich::RichText),
     /// An `Option` that holds nothing.
     None,
     List(Vec<Value>),
@@ -344,6 +389,7 @@ impl Value {
             Self::Resource(_) => "a resource",
             Self::Icon(_) => "Icon",
             Self::Choice(_) => "a case",
+            Self::Rich(_) => "RichText",
             Self::None => "nothing",
             Self::List(_) => "List",
         }

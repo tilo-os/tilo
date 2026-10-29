@@ -90,7 +90,7 @@ fn text_size_ftl(english: &str) -> &'static str {
 /// Map a text-scale factor to the closest offered label (defaults to
 /// "Default").
 pub fn text_size_label(scale: f64) -> String {
-    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited setting
     // could hold a non-finite scale, and this must degrade to Default
     // rather than panic the pane.
     let english = TEXT_SIZES
@@ -927,7 +927,7 @@ mod tests {
             "a11y.switch_scan",
         ];
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = AccessibilityPane::new(cx.clone(), Software::installed());
         let off = shown(&mut pane);
         for option in options {
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn the_pane_follows_both_sections() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         cx.settings::<AccessibilitySettings>()
             .set(&AccessibilitySettings {
                 magnifier_zoom: 5,

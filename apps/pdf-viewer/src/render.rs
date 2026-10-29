@@ -1,6 +1,5 @@
-//! Page rendering: lays a [`crate::model::Page`] out with the toolkit's
-//! text engine and paints it onto its paper, then overlays annotations and
-//! signatures.
+//! Page rendering: paints a [`crate::model::Page`]'s engine pixels onto its
+//! paper, then overlays annotations and signatures.
 //!
 //! Coordinate convention: page geometry is in PDF points; `scale` is
 //! pixels-per-point (1.0 == 100% zoom). A point `(px, py)` on the page
@@ -12,9 +11,9 @@
 //! Everything here is document content. The page *paper* and *ink* do not
 //! follow the OS theme — they are the document's own, exactly as a real
 //! rasterised PDF renders dark glyphs on white paper regardless of the
-//! desktop palette — and markup keeps the colour it is saved with. Text is
-//! set at the document's own sizes ([`TextStyle::content`]), scaled by the
-//! zoom alone. What the reader adds over the content (find matches, the
+//! desktop palette — and markup keeps the colour it is saved with. Text the
+//! reader sets (free text, signatures) is at the document's own sizes
+//! ([`TextStyle::content`]), scaled by the zoom alone. What the reader adds over the content (find matches, the
 //! selection, selection handles) takes its colours from the theme.
 
 use vello::Scene;
@@ -25,19 +24,17 @@ use ui::paint::{PaintCtx, with_alpha};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
-use crate::model::{
-    AnnoKind, Annotation, Block, MARGIN, MarkupStyle, PAGE_W, Page, Signature, SignatureInk, Swatch,
-};
+use crate::model::{AnnoKind, Annotation, MarkupStyle, Page, Signature, SignatureInk, Swatch};
 
-/// The document's ink: headings and signatures.
+/// The document's ink: signatures and note folds.
 pub fn ink() -> Color {
     Color::from_rgb8(28, 33, 47)
 }
-/// The document's body ink.
+/// A signature's signer line.
 pub fn ink_soft() -> Color {
     Color::from_rgb8(71, 85, 105)
 }
-/// The document's captions, rules and figure frames.
+/// A signature's rule and date.
 pub fn ink_faint() -> Color {
     Color::from_rgb8(148, 163, 184)
 }
@@ -66,88 +63,6 @@ pub fn alpha(c: Color, a: u8) -> Color {
 /// saved annotation's opacity.
 const HIGHLIGHT_ALPHA: u8 = 92;
 
-/// A block's typographic spec, in points.
-struct Spec {
-    size: f32,
-    weight: TextWeight,
-    italic: bool,
-    color: Color,
-    /// Space after the block.
-    after: f64,
-    /// Indent of the text past a quote's rule.
-    indent: f64,
-}
-
-impl Spec {
-    /// The block's type at `scale` (screen pixels per point).
-    fn style(&self, scale: f64) -> TextStyle {
-        TextStyle::content(self.size * scale as f32)
-            .with_weight(self.weight)
-            .with_italic(self.italic)
-    }
-}
-
-fn body_spec(block: &Block) -> Option<Spec> {
-    let spec = |size, weight, color, after| Spec {
-        size,
-        weight,
-        italic: false,
-        color,
-        after,
-        indent: 0.0,
-    };
-    Some(match block {
-        Block::Title(_) => spec(24.0, TextWeight::Bold, ink(), 6.0),
-        Block::H1(_) => spec(17.0, TextWeight::Semibold, ink(), 5.0),
-        Block::H2(_) => spec(13.5, TextWeight::Semibold, ink(), 3.0),
-        Block::Body(_) => spec(10.5, TextWeight::Regular, ink_soft(), 6.0),
-        Block::Caption(_) => spec(9.5, TextWeight::Regular, ink_faint(), 4.0),
-        Block::Quote(_) => Spec {
-            italic: true,
-            indent: 14.0,
-            ..spec(12.0, TextWeight::Regular, ink(), 8.0)
-        },
-        _ => return None,
-    })
-}
-
-/// The type of a figure's caption, in points.
-const FIGURE_CAPTION_CONTENT_PX: f32 = 9.5;
-
-/// Break `text` into lines no wider than `max_w` in `style`, at spaces:
-/// each line's byte range (trailing spaces included, so the ranges tile the
-/// text). Laying lines out here, rather than handing the paragraph to the
-/// engine's wrapper, gives the painter and the geometry (find matches, the
-/// highlight tool's snap bands) one set of lines.
-fn wrap_lines(
-    tr: &mut TextRenderer,
-    text: &str,
-    style: &TextStyle,
-    max_w: f64,
-) -> Vec<std::ops::Range<usize>> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut end = 0;
-    let mut words = text.split_inclusive(' ').peekable();
-    while let Some(word) = words.next() {
-        let next = end + word.len();
-        let candidate = text.get(start..next).unwrap_or("").trim_end();
-        let (w, _) = tr.measure_style(candidate, None, style);
-        if f64::from(w) > max_w && end > start {
-            lines.push(start..end);
-            start = end;
-        }
-        end = next;
-        if words.peek().is_none() {
-            lines.push(start..end);
-        }
-    }
-    if lines.is_empty() {
-        lines.push(0..text.len());
-    }
-    lines
-}
-
 /// The drawn screen rect for the page card at the given page size (points).
 pub fn page_card_rect(origin: Point, scale: f64, page_w: f64, page_h: f64) -> Rect {
     Rect::new(
@@ -174,22 +89,12 @@ impl PageFrame {
     }
 }
 
-/// The raster backend's pixels for one page: the whole-page bitmap and, for
-/// a zoomed page, its sharp tiles. Both absent on the vector-text path.
+/// The engine's pixels for one page: the whole-page bitmap and, for a
+/// zoomed page, its sharp tiles. Both absent until they arrive.
 #[derive(Clone, Copy)]
 pub struct PageRaster<'a> {
     pub image: Option<&'a PenikoImage>,
     pub tiles: Option<&'a PageTiles>,
-}
-
-/// One find match on a page of the block model: the byte span of a block's
-/// text, and whether it is the current match.
-#[derive(Clone, Copy, Debug)]
-pub struct FoundSpan {
-    pub block: usize,
-    pub start: usize,
-    pub len: usize,
-    pub current: bool,
 }
 
 /// The document's markup — every annotation and signature, each drawn on
@@ -199,174 +104,6 @@ pub struct Markup<'a> {
     pub annotations: &'a [Annotation],
     pub signatures: &'a [Signature],
     pub selected: Option<&'a str>,
-}
-
-/// The running layout cursor down a page's content column, in screen space:
-/// the column's left edge and width, the zoom, and the next block's top.
-struct ColumnCursor {
-    x: f64,
-    w: f64,
-    scale: f64,
-    y: f64,
-}
-
-/// One laid-out line of body text, in **page-point** space (origin =
-/// page top-left, independent of zoom and scroll). The smart highlight
-/// tool snaps a drag onto these bands so a marker sticks to text exactly
-/// where the glyphs sit.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TextLine {
-    /// Index of the source block on the page (for de-duping / debugging).
-    pub block: usize,
-    pub x: f64,
-    /// Right edge of the actual glyphs on this line (text extent, not the
-    /// full column), in page points.
-    pub x_end: f64,
-    /// Line-box top in page points.
-    pub y: f64,
-    pub h: f64,
-    /// Each word's `[x0, x1)` extent on the line, in page points, in order.
-    pub words: Vec<(f64, f64)>,
-}
-
-impl TextLine {
-    pub fn rect(&self) -> Rect {
-        Rect::new(self.x, self.y, self.x_end, self.y + self.h)
-    }
-
-    /// Widen `[x0, x1)` to whole words: from the start of the first word it
-    /// reaches into to the end of the last. Unchanged when the line has no
-    /// word boxes or the span falls between words.
-    pub fn snap_to_words(&self, x0: f64, x1: f64) -> (f64, f64) {
-        let first = self.words.iter().find(|(_, e)| *e > x0);
-        let last = self.words.iter().rev().find(|(s, _)| *s < x1);
-        match (first, last) {
-            (Some((s, _)), Some((_, e))) if s < e => (*s, *e),
-            _ => (x0, x1),
-        }
-    }
-}
-
-/// The `[x0, x1)` extent of each word of `line` (set in `style`, starting at
-/// `x`), measured from the line's own start.
-fn word_boxes(tr: &mut TextRenderer, line: &str, style: &TextStyle, x: f64) -> Vec<(f64, f64)> {
-    let mut boxes = Vec::new();
-    let mut offset = 0;
-    for word in line.split(' ') {
-        let start = offset;
-        let end = start + word.len();
-        offset = end + 1;
-        if word.is_empty() {
-            continue;
-        }
-        let x0 = tr
-            .measure_style(line.get(..start).unwrap_or(""), None, style)
-            .0;
-        let x1 = tr
-            .measure_style(line.get(..end).unwrap_or(""), None, style)
-            .0;
-        boxes.push((x + f64::from(x0), x + f64::from(x1)));
-    }
-    boxes
-}
-
-/// Replay [`draw_page`]'s block layout *without drawing* to recover the
-/// page-point rectangle of every rendered text line. The text engine
-/// (`tr`) is needed because line breaking depends on real glyph advances,
-/// so this must run where a [`TextRenderer`] is available (the draw pass).
-/// It breaks lines with the same `wrap_lines` the painter uses, so the snap
-/// geometry matches the painted glyphs.
-pub fn collect_text_lines(tr: &mut TextRenderer, page: &Page) -> Vec<TextLine> {
-    let content_x = MARGIN;
-    let content_w = PAGE_W - 2.0 * MARGIN;
-    let mut y = 0.0f64; // running page-point top, mirrors draw_page's `y`
-    let mut out = Vec::new();
-    for (bi, block) in page.blocks.iter().enumerate() {
-        match block {
-            Block::Spacer(h) => y += h,
-            Block::Divider => y += 16.0,
-            Block::Figure { height, label } => {
-                y += height + 4.0;
-                let style = TextStyle::content(FIGURE_CAPTION_CONTENT_PX).with_italic(true);
-                let (_, ch) = tr.measure_style(label, Some(content_w as f32), &style);
-                y += f64::from(ch) + 8.0;
-            }
-            _ => {
-                let Some(spec) = body_spec(block) else {
-                    continue;
-                };
-                let text = block.search_text().unwrap_or("");
-                let style = spec.style(1.0);
-                let x = content_x + spec.indent;
-                let line_h = f64::from(style.line_height_px());
-                let lines = wrap_lines(tr, text, &style, content_w - spec.indent);
-                for (li, range) in lines.iter().enumerate() {
-                    let line = text.get(range.clone()).unwrap_or("").trim_end();
-                    let (w, _) = tr.measure_style(line, None, &style);
-                    out.push(TextLine {
-                        block: bi,
-                        x,
-                        x_end: (x + f64::from(w)).min(content_x + content_w),
-                        y: y + li as f64 * line_h,
-                        h: line_h,
-                        words: word_boxes(tr, line, &style, x),
-                    });
-                }
-                y += lines.len() as f64 * line_h + spec.after;
-            }
-        }
-    }
-    out
-}
-
-/// The glyphs of the line of `page` that holds `needle`, each with its box
-/// in page points, as the page draws them: a glyph layer for the block
-/// model's staged selection. Empty when no text block holds `needle`.
-pub fn line_glyphs(
-    tr: &mut TextRenderer,
-    page: &Page,
-    needle: &str,
-) -> Vec<(char, crate::model::PtRect)> {
-    let Some((bi, block, at)) = page.blocks.iter().enumerate().find_map(|(bi, b)| {
-        let at = b.search_text()?.find(needle)?;
-        Some((bi, b, at))
-    }) else {
-        return Vec::new();
-    };
-    let Some(spec) = body_spec(block) else {
-        return Vec::new();
-    };
-    let style = spec.style(1.0);
-    let text = block.search_text().unwrap_or("");
-    let wrapped = wrap_lines(tr, text, &style, PAGE_W - 2.0 * MARGIN - spec.indent);
-    let Some((li, range)) = wrapped
-        .into_iter()
-        .enumerate()
-        .find(|(_, r)| r.contains(&at))
-    else {
-        return Vec::new();
-    };
-    let lines = collect_text_lines(tr, page);
-    let Some(line) = lines.iter().filter(|l| l.block == bi).nth(li) else {
-        return Vec::new();
-    };
-    let line_text = text.get(range).unwrap_or("");
-    let mut out = Vec::new();
-    let mut x = line.x;
-    for (i, ch) in line_text.char_indices() {
-        let end = i + ch.len_utf8();
-        let advance = f64::from(
-            tr.measure_style(line_text.get(..end).unwrap_or(""), None, &style)
-                .0,
-        ) + line.x
-            - x;
-        out.push((
-            ch,
-            crate::model::PtRect::new(x, line.y, advance.max(0.0), line.h),
-        ));
-        x += advance.max(0.0);
-    }
-    out
 }
 
 /// The paper a page is printed on. Returns the shape its content is clipped
@@ -417,7 +154,7 @@ fn draw_page_border(scene: &mut Scene, theme: &Theme, base: Affine, card_rr: &Ro
 }
 
 /// The annotations + signatures anchored to `page`, drawn on top of its
-/// content — shared by the raster and vector-text draw paths.
+/// content.
 fn draw_page_markup(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, markup: Markup<'_>) {
     let (origin, scale) = (frame.origin, frame.scale);
     for a in markup.annotations.iter().filter(|a| a.page == page.number) {
@@ -434,154 +171,13 @@ fn draw_page_markup(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, marku
     }
 }
 
-/// Draw a figure block (frame, diagram, caption) `height` points tall at the
-/// cursor, and advance the cursor past it.
-fn draw_page_figure(ctx: &mut PaintCtx<'_>, at: &mut ColumnCursor, height: f64, label: &str) {
-    let (scene, base, tr) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text);
-    let (content_x, content_w, y, scale) = (at.x, at.w, at.y, at.scale);
-    let h = height * scale;
-    let box_rect = Rect::new(content_x, y, content_x + content_w, y + h);
-    let frame = RoundedRect::from_rect(box_rect, 2.0 * scale);
-    scene.fill(Fill::NonZero, base, alpha(ink_faint(), 28), None, &frame);
-    scene.stroke(
-        &Stroke::new(scale.max(0.5)),
-        base,
-        ink_faint(),
-        None,
-        &frame,
-    );
-    draw_figure_glyph(scene, base, box_rect, scale);
-    let y = y + h + 4.0 * scale;
-    let style = TextStyle::content(FIGURE_CAPTION_CONTENT_PX * scale as f32).with_italic(true);
-    tr.draw_style(
-        scene,
-        label,
-        ink_faint(),
-        base * Affine::translate((content_x, y)),
-        Some(content_w as f32),
-        &style,
-    );
-    let (_, ch) = tr.measure_style(label, Some(content_w as f32), &style);
-    at.y = y + f64::from(ch) + 8.0 * scale;
-}
-
-/// Draw one heading/body/quote/caption block's text at the cursor, line by
-/// line, with its find matches over exactly their glyphs, and advance the
-/// cursor past it.
-fn draw_page_text_block(
-    ctx: &mut PaintCtx<'_>,
-    at: &mut ColumnCursor,
-    block: &Block,
-    spec: &Spec,
-    found: &[FoundSpan],
-) {
-    let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let (content_x, content_w, y, scale) = (at.x, at.w, at.y, at.scale);
-    let text = block.search_text().unwrap_or("");
-    // Lines break at the document's own size, so they break where the
-    // highlight tool's snap bands say; each is then set at the zoomed size.
-    let lines = wrap_lines(tr, text, &spec.style(1.0), content_w / scale - spec.indent);
-    let style = spec.style(scale);
-    let line_h = f64::from(style.line_height_px());
-    let x = content_x + spec.indent * scale;
-
-    if matches!(block, Block::Quote(_)) {
-        let rule = Rect::new(
-            content_x,
-            y,
-            content_x + 3.0 * scale,
-            y + line_h * lines.len() as f64,
-        );
-        scene.fill(Fill::NonZero, base, ink_faint(), None, &rule);
-    }
-    for (li, range) in lines.iter().enumerate() {
-        let ly = y + li as f64 * line_h;
-        let line = text.get(range.clone()).unwrap_or("");
-        // Find matches on this line: one highlight over the matched glyphs,
-        // measured from the line's own start.
-        for m in found {
-            let (s, e) = (m.start.max(range.start), (m.start + m.len).min(range.end));
-            if s >= e {
-                continue;
-            }
-            let x0 = tr
-                .measure_style(text.get(range.start..s).unwrap_or(""), None, &style)
-                .0;
-            let x1 = tr
-                .measure_style(text.get(range.start..e).unwrap_or(""), None, &style)
-                .0;
-            ui::widget::paint_find_match(
-                scene,
-                base,
-                Rect::new(x + f64::from(x0), ly, x + f64::from(x1), ly + line_h),
-                m.current,
-                theme,
-            );
-        }
-        tr.draw_style(
-            scene,
-            line.trim_end(),
-            spec.color,
-            base * Affine::translate((x, ly)),
-            None,
-            &style,
-        );
-    }
-    at.y = y + line_h * lines.len() as f64 + spec.after * scale;
-}
-
-/// Lay out and draw every content block of a vector (non-raster) page —
-/// spacers, dividers, figures and styled text — updating the running
-/// screen-space `y` as it goes.
-fn draw_page_blocks(ctx: &mut PaintCtx<'_>, page: &Page, frame: PageFrame, found: &[FoundSpan]) {
-    let (origin, scale) = (frame.origin, frame.scale);
-    let mut at = ColumnCursor {
-        x: origin.x + MARGIN * scale,
-        w: (frame.page_w - 2.0 * MARGIN) * scale,
-        scale,
-        y: origin.y,
-    };
-
-    for (bi, block) in page.blocks.iter().enumerate() {
-        match block {
-            Block::Spacer(h) => {
-                at.y += h * scale;
-            }
-            Block::Divider => {
-                let dy = at.y + 7.0 * scale;
-                let line = Line::new((at.x, dy), (at.x + at.w, dy));
-                ctx.scene.stroke(
-                    &Stroke::new(scale.max(0.5)),
-                    ctx.transform,
-                    ink_faint(),
-                    None,
-                    &line,
-                );
-                at.y += 16.0 * scale;
-            }
-            Block::Figure { height, label } => {
-                draw_page_figure(ctx, &mut at, *height, label);
-            }
-            _ => {
-                let Some(spec) = body_spec(block) else {
-                    continue;
-                };
-                let spans: Vec<FoundSpan> =
-                    found.iter().filter(|m| m.block == bi).copied().collect();
-                draw_page_text_block(ctx, &mut at, block, &spec, &spans);
-            }
-        }
-    }
-}
-
-/// Draw one page: paper, content, find matches, then the annotations +
+/// Draw one page: paper, the engine's pixels, then the annotations +
 /// signatures that live on it.
 pub fn draw_page(
     ctx: &mut PaintCtx<'_>,
     page: &Page,
     frame: PageFrame,
     raster: PageRaster<'_>,
-    found: &[FoundSpan],
     markup: Markup<'_>,
 ) {
     let base = ctx.transform;
@@ -592,39 +188,20 @@ pub fn draw_page(
     ctx.scene
         .push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
-    // Raster backend: paint the page bitmap (engine output) scaled to fill the
-    // card width — for a zoomed page, a lower-resolution placeholder under
-    // its sharp tiles — then let the shared markup overlay draw on top.
-    if raster.image.is_some() || raster.tiles.is_some() {
-        if let Some(img) = raster.image {
-            draw_page_raster_image(ctx.scene, base, card, img);
-        }
-        if let Some(tiles) = raster.tiles {
-            tiles.paint(ctx.scene, base);
-        }
-    } else {
-        draw_page_blocks(ctx, page, frame, found);
+    // The page bitmap (engine output) scaled to fill the card width — for a
+    // zoomed page, a lower-resolution placeholder under its sharp tiles —
+    // then the markup overlay on top. A page whose pixels have not arrived
+    // yet shows its bare paper.
+    if let Some(img) = raster.image {
+        draw_page_raster_image(ctx.scene, base, card, img);
+    }
+    if let Some(tiles) = raster.tiles {
+        tiles.paint(ctx.scene, base);
     }
     draw_page_markup(ctx, page, frame, markup);
 
     ctx.scene.pop_layer();
     draw_page_border(ctx.scene, ctx.theme, base, &card_rr);
-}
-
-/// The sample document's diagram: two nodes and the link between them.
-fn draw_figure_glyph(scene: &mut Scene, base: Affine, b: Rect, scale: f64) {
-    let cy = f64::midpoint(b.y0, b.y1);
-    let w = b.width();
-    let r = (b.height().min(w) * 0.16).max(8.0 * scale);
-    let lx = b.x0 + w * 0.32;
-    let rx = b.x0 + w * 0.68;
-    let line_w = 1.5 * scale;
-    let conn = Line::new((lx + r, cy), (rx - r, cy));
-    scene.stroke(&Stroke::new(line_w), base, ink_soft(), None, &conn);
-    for cx in [lx, rx] {
-        let node = RoundedRect::from_rect(Rect::new(cx - r, cy - r, cx + r, cy + r), r * 0.25);
-        scene.stroke(&Stroke::new(line_w), base, ink_soft(), None, &node);
-    }
 }
 
 fn pt(origin: Point, scale: f64, x: f64, y: f64) -> Point {
@@ -1118,7 +695,6 @@ impl Thumbnail<'_> {
                 image: self.raster,
                 tiles: None,
             },
-            &[],
             self.markup,
         );
         ctx.scene.pop_layer();
@@ -1172,7 +748,6 @@ pub fn crop_page_region(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::sample_document;
 
     /// The page card's outline is chrome: it must clear the non-text floor
     /// on the paper under every shipped theme, including high contrast.
@@ -1189,51 +764,5 @@ mod tests {
                 contrast_ratio(edge, paper())
             );
         }
-    }
-
-    #[test]
-    fn collect_text_lines_produces_bands_inside_the_page() {
-        let mut tr = TextRenderer::new();
-        let doc = sample_document();
-        let page = doc.page(1).unwrap();
-        let lines = collect_text_lines(&mut tr, page);
-        assert!(!lines.is_empty(), "page 1 has body text -> some lines");
-        for l in &lines {
-            assert!(l.x >= MARGIN - 0.5, "line left {} inside margin", l.x);
-            assert!(
-                l.x_end <= PAGE_W - MARGIN + 0.5,
-                "line right {} inside margin",
-                l.x_end
-            );
-            assert!(
-                l.y >= 0.0 && l.y + l.h <= crate::model::PAGE_H,
-                "line within page height"
-            );
-            assert!(l.h > 0.0);
-        }
-    }
-
-    /// Lines tile the text and none is wider than the column, except a
-    /// single word that cannot break.
-    #[test]
-    fn wrapped_lines_tile_the_text_and_fit_the_column() {
-        let mut tr = TextRenderer::new();
-        let style = TextStyle::content(10.5);
-        let text = "A collaborative reader keeps every comment, highlight and signature \
-                    in one shared document so reviewers never merge copies by hand.";
-        let lines = wrap_lines(&mut tr, text, &style, 180.0);
-        assert!(lines.len() > 1, "a long paragraph wraps");
-        let mut next = 0;
-        for range in &lines {
-            assert_eq!(range.start, next, "lines tile the text");
-            next = range.end;
-            let line = text.get(range.clone()).unwrap().trim_end();
-            let (w, _) = tr.measure_style(line, None, &style);
-            assert!(
-                f64::from(w) <= 180.0 || !line.contains(' '),
-                "{line:?} is {w} wide"
-            );
-        }
-        assert_eq!(next, text.len());
     }
 }

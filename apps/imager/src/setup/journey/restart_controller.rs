@@ -1,8 +1,6 @@
 //! Device-local restart review. Opening an installer never adopts a persona.
-use super::{
-    super::prepared_identity::PreparedIdentity,
-    draft::{DraftStatus, DraftStore, IdentityKind, PublicChoices, ReadyDraft},
-};
+use super::draft::{DraftStatus, DraftStore, IdentityKind, PublicChoices, ReadyDraft};
+use imager_backend::prepared_identity::PreparedIdentity;
 use std::sync::{Arc, mpsc};
 
 pub(super) struct Resumed {

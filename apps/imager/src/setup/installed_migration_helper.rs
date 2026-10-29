@@ -1,11 +1,13 @@
 //! Native target-user continuation. The same durable coordinator and promotion
 //! witness serve this bounded headless protocol and installer actions.
-use super::{
+use imager_backend::{
     destination_security,
     home_transfer::promotion::{PromotionEvent, PromotionReview, PromotionWorker},
     migration::PinnedDirectory,
-    migration_handoff::{self, Plan},
-    user_transfer::{TransferEvent, TransferReview, TransferWorker},
+    setup::{
+        migration_handoff::{self, Plan},
+        user_transfer::{TransferEvent, TransferReview, TransferWorker},
+    },
 };
 use std::{
     ffi::OsString,
@@ -41,7 +43,7 @@ fn child(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let pin = PinnedDirectory::open_absolute(parent)?;
     pin.validate_destination()?;
     destination_security::check_private_file(&pin.file)?;
-    match super::nofollow::metadata_nofollow(&pin.file, Path::new(name)) {
+    match imager_backend::nofollow::metadata_nofollow(&pin.file, Path::new(name)) {
         Ok(metadata) => {
             let next = pin.open_child(std::ffi::OsStr::new(name), &metadata)?;
             destination_security::check_private_file(&next.file)?;

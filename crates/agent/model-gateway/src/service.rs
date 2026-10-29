@@ -114,6 +114,7 @@ struct Handoff {
 
 pub fn main() {
     let cli = Cli::parse();
+    crate::follow_session_settings();
     let result = match cli.action {
         Action::Serve { socket } => serve(&socket),
         Action::SecretStatus { profile } => control(Request::SecretStatus {
@@ -1418,13 +1419,12 @@ impl FileStamp {
     }
 }
 
-/// The settings document and the vault, as a reading of both found them.
-type SourceStamp = (FileStamp, Option<FileStamp>);
+/// The settings and the vault, as a reading of both found them.
+type SourceStamp = (settings_store::SettingsStamp, Option<FileStamp>);
 
-/// The files a resolved profile is read from: the settings document
-/// `ProviderConfig::load` reads and the credential store decrypts.
+/// What a resolved profile is read from: the settings `ProviderConfig::load`
+/// reads and the credential store it decrypts.
 struct ProfileSources {
-    settings: PathBuf,
     vault: PathBuf,
 }
 
@@ -1433,18 +1433,14 @@ impl ProfileSources {
     /// nothing is kept.
     fn current() -> Option<Self> {
         let root = accounts::config_root()?;
-        // The session document a sandbox names, else the shared config root.
         Some(Self {
-            settings: settings_store::settings_path()?,
             vault: accounts::vault_dir_in(&root).join("vault.enc"),
         })
     }
 
-    /// `None` when either file cannot be told, or there is no settings
-    /// document: one that is not there configured nothing, so a profile read
-    /// meanwhile came from elsewhere and is not kept.
+    /// `None` when the vault cannot be told, or there are no settings.
     fn stamp(&self) -> Option<SourceStamp> {
-        let settings = FileStamp::of(&self.settings).ok()??;
+        let settings = settings_store::stamp()?;
         let vault = FileStamp::of(&self.vault).ok()?;
         Some((settings, vault))
     }
@@ -3111,7 +3107,7 @@ mod tests {
     #[test]
     fn existing_user_profile_requires_explicit_original_endpoint_migration() {
         let root = tempfile::tempdir().unwrap();
-        let settings = root.path().join("settings.json");
+        let settings = settings_store::profile(root.path());
         let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
         profile.endpoint = "https://original.example/v1".into();
         let config = ProviderConfig {
@@ -3119,7 +3115,7 @@ mod tests {
             default_profile: Some(profile.id.clone()),
             ..Default::default()
         };
-        config.save_at(&settings).unwrap();
+        config.save_in(&settings).unwrap();
         let store = ServiceCredentials::open_in(root.path());
         assert_eq!(
             credential_status_in(&store, &profile).unwrap(),
@@ -3130,7 +3126,7 @@ mod tests {
         let mut vault = accounts::SecretVault::open_in(root.path());
         vault.put(&legacy, &accounts::Secret::password("old-key"));
         vault.try_save().unwrap();
-        let mut loaded = ProviderConfig::load_at(&settings).profiles.remove(0);
+        let mut loaded = ProviderConfig::load_in(&settings).profiles.remove(0);
         assert_eq!(
             credential_status_in(&store, &loaded).unwrap(),
             crate::CredentialStatus::MigrationRequired

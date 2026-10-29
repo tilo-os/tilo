@@ -2,7 +2,7 @@
 //! them: the runtime's native prompt, answered for that one action.
 
 use tilo_action_broker::app_actions::{
-    AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
 };
 use tokio::sync::oneshot;
 
@@ -37,7 +37,7 @@ struct ConfirmationPrompt {
 }
 
 impl AppActionConsentPrompter for ConfirmationPrompt {
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>> {
+    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionAnswer>> {
         // Only a confirmation of the person's own agent: a grant to another
         // application is not asked here, and so stays refused.
         if !request.confirming || request.person != self.person {
@@ -56,11 +56,13 @@ impl AppActionConsentPrompter for ConfirmationPrompt {
                         tracing::warn!(%error, "the confirmation prompt could not be shown");
                         false
                     });
-                let _ = answer.send(if allowed {
+                // The native prompt shows the draft read-only: an answer here
+                // changes nothing in it.
+                let _ = answer.send(AppActionAnswer::unedited(if allowed {
                     AppActionConsent::Once
                 } else {
                     AppActionConsent::Deny
-                });
+                }));
             })
             .ok()?;
         Some(answered)

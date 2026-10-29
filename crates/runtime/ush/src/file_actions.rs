@@ -49,6 +49,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub mod cli;
+pub mod command;
 pub mod watch;
 
 use collab_types::caps::Access;
@@ -708,6 +709,7 @@ pub fn invoke(
     records: &Records,
     key: &str,
     invoker: &Invoker,
+    run: Option<&crate::broker::RunGroup>,
     invoke: Option<Invoke<Environment>>,
     device: &str,
     store: &Recoverable,
@@ -715,7 +717,7 @@ pub fn invoke(
     let _held = store
         .lock()
         .map_err(|e| RecordError::Store(format!("the recoverable store: {e}")))?;
-    records.act(key, invoker, |replica| {
+    records.act_within(key, invoker, run, |replica| {
         let entry = match invoke {
             Some(invoke) => {
                 let envelope = replica
@@ -806,13 +808,18 @@ pub fn store_in(environment: &EnvironmentHandle) -> PathBuf {
 /// The broker's answer to [`Request::FileAction`](crate::broker::Request):
 /// invoke the record's verb as the session's person, carry it out on this
 /// device, and record it in the audit log however it went.
-pub fn brokered(state: &BrokerState, action: &FileAction) -> Response {
+pub fn brokered(
+    state: &BrokerState,
+    action: &FileAction,
+    run: Option<&crate::broker::RunGroup>,
+) -> Response {
     let store = Recoverable::at(store_in(&state.environment));
     let invoker = Invoker::Person(state.person.clone());
     let answer = invoke(
         &state.environment.records,
         &state.environment.key,
         &invoker,
+        run,
         Some(Environment::file_invoke(&state.device, action)),
         &state.device,
         &store,

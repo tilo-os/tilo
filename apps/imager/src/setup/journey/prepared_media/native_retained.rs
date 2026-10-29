@@ -37,17 +37,17 @@ mod actor {
         let grants = root.join("grants");
         std::fs::create_dir(&grants).unwrap();
         std::fs::set_permissions(&grants, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let intent = crate::setup::migration_intent::MigrationIntent::capture_with_policy(
+        let intent = imager_backend::setup::migration_intent::MigrationIntent::capture_with_policy(
             &home,
             &grants,
             [true, false, false],
             vec![],
-            crate::setup::migration_handoff::HomePolicy::AccessReadWrite,
+            imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite,
         )
         .unwrap();
         let expected = intent.for_media().unwrap();
         let mut copy = expected.clone();
-        copy.home_policy = crate::setup::migration_handoff::HomePolicy::Copy;
+        copy.home_policy = imager_backend::setup::migration_handoff::HomePolicy::Copy;
         assert!(prepared_setup::RetainedHomePlan::new(copy).is_err());
         let mut no_home = expected.clone();
         no_home.categories.home = false;

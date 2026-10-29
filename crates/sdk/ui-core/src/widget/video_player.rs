@@ -600,17 +600,17 @@ impl VideoPlayer {
         &self.now_playing
     }
 
-    /// `app_id` is the MPRIS bus suffix (`org.mpris.MediaPlayer2.<app_id>`),
-    /// `identity` the human-readable player name. Without the `mpris` feature
-    /// (or a session bus) this is an inert no-op, so the call is always safe.
+    /// Publish the player to the desktop's media controls as `identity`.
+    /// The bus name is the launched package's; `app_id` names it only for an
+    /// app run outside a launcher (see [`crate::mpris::MprisConfig::new`]).
+    /// Without the `mpris` feature (or a session bus) this is an inert no-op,
+    /// so the call is always safe.
     pub fn enable_mpris(&mut self, app_id: &str, identity: &str) {
+        let config = crate::mpris::MprisConfig::new(app_id, identity);
         if let Some(engine) = self.engine.as_mut() {
-            engine.set_handoff_controller(Some(format!("org.mpris.MediaPlayer2.{app_id}")));
+            engine.set_handoff_controller(Some(config.bus_name.clone()));
         }
-        self.mpris = crate::mpris::MprisHandle::spawn(
-            crate::mpris::MprisConfig::new(app_id, identity),
-            self.mpris_snapshot(),
-        );
+        self.mpris = crate::mpris::MprisHandle::spawn(config, self.mpris_snapshot());
     }
 
     /// Call once per frame; inert without an active MPRIS service.

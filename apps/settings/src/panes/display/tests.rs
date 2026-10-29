@@ -506,7 +506,7 @@ fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes
 
 fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
     let profile = tempfile::tempdir().unwrap().keep();
-    DisplayModel::detached(PaneCx::in_file(profile.join("settings.json"))).with_outputs(outputs)
+    DisplayModel::detached(PaneCx::in_profile(profile.to_path_buf())).with_outputs(outputs)
 }
 
 /// An output named after the DRM connector `conn` (`card0-eDP-1`, with the
@@ -1707,8 +1707,8 @@ fn resolution_and_refresh_rate_each_choose_one_mode() {
 fn the_pending_display_change_is_read_through_the_settings_document() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let profile = tempfile::tempdir().unwrap().keep();
-    let file = profile.join("settings.json");
-    let mut pane = DisplayModel::detached(PaneCx::in_file(file.clone()))
+    let file = settings_store::profile(&profile);
+    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile.clone()))
         .with_outputs(laptop_with_monitor().outputs);
     pane.of_device = true;
     assert!(pane.transaction().is_none());
@@ -1716,7 +1716,7 @@ fn the_pending_display_change_is_read_through_the_settings_document() {
         DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
     transaction.state = DisplayTransactionState::AwaitingConfirmation;
     let section = serde_json::to_value(&transaction).unwrap();
-    settings_store::update_section_at(
+    settings_store::SettingsSource::update_section(
         &file,
         "display_transaction",
         section.as_object().unwrap().clone(),
@@ -1749,8 +1749,8 @@ fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
 fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let profile = tempfile::tempdir().unwrap().keep();
-    let file = profile.join("settings.json");
-    let mut pane = DisplayModel::detached(PaneCx::in_file(file.clone()))
+    let file = settings_store::profile(&profile);
+    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile.clone()))
         .with_outputs(laptop_with_monitor().outputs);
     pane.of_device = true;
     let diagnostic = "Rejected unsupported display plan: UnsupportedMode(\"DP-1\")";
@@ -1781,7 +1781,7 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         transaction.state = state;
         transaction.message = Some(diagnostic.into());
         let section = serde_json::to_value(&transaction).unwrap();
-        settings_store::update_section_at(
+        settings_store::SettingsSource::update_section(
             &file,
             "display_transaction",
             section.as_object().unwrap().clone(),

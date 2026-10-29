@@ -8,9 +8,11 @@ use super::text_runs::{
     note_numbering, note_text, running_head_runs,
 };
 use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE};
+use super::window_bar::BarCommand;
 use super::*;
 use crate::compact_swatch_palette::PaletteKind;
 use crate::effects::WordProcessorEffect;
+use crate::file_menu::FileChoice;
 use crate::style_menu::StyleMenuAction;
 use ui::{PresenceCtx, clipboard_paste};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
@@ -699,8 +701,11 @@ fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
     wp.model_mut().set_caret(Caret { block, offset: end });
 }
 
-/// The window bar's slot with `id`: an action, or an item of a menu button.
-fn bar_slot(wp: &WordProcessorWidget, id: &str) -> Option<ui::window_toolbar::ToolbarAction> {
+/// The window bar's slots, menu buttons' items with them, each with the
+/// command it runs (none for a menu button).
+fn bar_slots(
+    wp: &WordProcessorWidget,
+) -> Vec<(ui::window_toolbar::ToolbarAction, Option<BarCommand>)> {
     wp.window_bar()
         .actions
         .into_iter()
@@ -708,27 +713,56 @@ fn bar_slot(wp: &WordProcessorWidget, id: &str) -> Option<ui::window_toolbar::To
             let items = action.items.clone();
             std::iter::once(action).chain(items)
         })
-        .find(|slot| slot.id == id)
+        .map(|slot| {
+            let event = ui::window_toolbar::ToolbarEvent::Action {
+                id: slot.id.clone(),
+            };
+            let command = wp.bar.pressed(&event);
+            (slot, command)
+        })
+        .collect()
 }
 
-/// The ids of the items a menu button of the window bar lists.
-fn bar_items(wp: &WordProcessorWidget, menu: &str) -> Vec<String> {
-    wp.window_bar()
-        .actions
+/// The window bar's slot that runs the toolbar command `action`.
+fn bar_slot(
+    wp: &WordProcessorWidget,
+    action: ToolAction,
+) -> Option<ui::window_toolbar::ToolbarAction> {
+    bar_slots(wp)
         .into_iter()
-        .find(|action| action.id == menu)
-        .map(|action| action.items.into_iter().map(|item| item.id).collect())
-        .unwrap_or_default()
+        .find(|(_, command)| *command == Some(BarCommand::Tool(action)))
+        .map(|(slot, _)| slot)
 }
 
-/// Press the window bar's slot `id` as the person does: the bar sends its
-/// id, which the editor runs with the document in hand.
-fn press_bar(wp: &mut WordProcessorWidget, state: &mut ui::State, id: &str) {
-    assert!(bar_slot(wp, id).is_some(), "the window bar offers {id}");
-    wp.bar_commands = wp.window_bar_commands().1;
+/// The commands of the items the window bar's menu button `menu` lists.
+fn bar_items(wp: &WordProcessorWidget, menu: &str) -> Vec<BarCommand> {
+    let bar = wp.window_bar();
+    let items = bar
+        .actions
+        .iter()
+        .find(|action| action.name == menu)
+        .map(|action| action.items.clone())
+        .unwrap_or_default();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            wp.bar
+                .pressed(&ui::window_toolbar::ToolbarEvent::Action { id: item.id })
+        })
+        .collect()
+}
+
+/// Press the window bar's slot named `name` as the person does: the bar
+/// sends its id, which the editor runs with the document in hand.
+fn press_bar(wp: &mut WordProcessorWidget, state: &mut ui::State, name: &str) {
+    let slot = bar_slots(wp)
+        .into_iter()
+        .find(|(slot, command)| slot.name == name && command.is_some())
+        .unwrap_or_else(|| panic!("the window bar offers {name}"))
+        .0;
     wp.window_toolbar_event(
         &mut edits(&mut state.doc),
-        &ui::window_toolbar::ToolbarEvent::Action { id: id.into() },
+        &ui::window_toolbar::ToolbarEvent::Action { id: slot.id },
     );
 }
 
@@ -742,20 +776,14 @@ fn ask_to_replace(wp: &mut WordProcessorWidget) {
     assert!(wp.file_menu.is_open(), "the question is open");
 }
 
-/// The bar slot id of a toolbar command.
-fn tool_id(action: ToolAction) -> String {
-    super::accessibility::tool_action_id(action)
-}
-
 /// The commands the window bar offers this frame, in order: the Format and
 /// Insert menus' items, then the trailing toggles.
 fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
-    let (_, commands) = wp.window_bar_commands();
-    commands
+    bar_slots(wp)
         .into_iter()
         .filter_map(|(_, command)| match command {
-            super::window_bar::BarCommand::Tool(action) => Some(action),
-            super::window_bar::BarCommand::File(_) => None,
+            Some(BarCommand::Tool(action)) => Some(action),
+            _ => None,
         })
         .collect()
 }
@@ -806,7 +834,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             },
         );
 
-        press_bar(&mut wp, &mut state, &tool_id(ToolAction::InsertTable));
+        press_bar(&mut wp, &mut state, &t("toolbar-table"));
         let from_toolbar = wp
             .last_dispatched_for_test()
             .cloned()
@@ -960,7 +988,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         assert!(!expected.is_empty());
         for action in expected {
             assert!(
-                bar_slot(wp, &tool_id(action)).is_some(),
+                bar_slot(wp, action).is_some(),
                 "command {action:?} is reachable in the window bar"
             );
         }
@@ -1407,13 +1435,13 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
 
         // The window bar's Format menu offers selection-scoped A−/A+; the
         // dedicated direct-formatting test above proves they do not edit Style.
-        let format = bar_items(wp, super::window_bar::FORMAT_MENU);
+        let format = bar_items(wp, &t("toolbar-format"));
         assert!(
-            format.contains(&tool_id(ToolAction::FontSizeDec)),
+            format.contains(&BarCommand::Tool(ToolAction::FontSizeDec)),
             "A− remains available for direct character formatting"
         );
         assert!(
-            format.contains(&tool_id(ToolAction::FontSizeInc)),
+            format.contains(&BarCommand::Tool(ToolAction::FontSizeInc)),
             "A+ remains available for direct character formatting"
         );
     }
@@ -1542,7 +1570,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             (ToolAction::TextColorPalette, "toolbar-text-color"),
             (ToolAction::HighlightPalette, "toolbar-highlight"),
         ] {
-            let slot = bar_slot(wp, &tool_id(action)).expect(key);
+            let slot = bar_slot(wp, action).expect(key);
             assert_eq!(slot.name, t(key), "the window bar's Format menu names it");
         }
 
@@ -2349,15 +2377,15 @@ fn the_window_bar_picks_the_font_and_makes_lists_and_is_the_one_place_for_emphas
             .into_iter()
             .map(|family| {
                 let action = ToolAction::SetFont(family);
-                let slot = bar_slot(wp, &tool_id(action)).expect("the Format menu offers the font");
+                let slot = bar_slot(wp, action).expect("the Format menu offers the font");
                 assert_eq!(slot.name, super::controls::font_label(family));
                 (action, slot.on)
             })
             .collect()
     };
-    let format = bar_items(wp, super::window_bar::FORMAT_MENU);
+    let format = bar_items(wp, &t("toolbar-format"));
     assert!(
-        format.contains(&tool_id(ToolAction::SetFont(FontFamily::Mono))),
+        format.contains(&BarCommand::Tool(ToolAction::SetFont(FontFamily::Mono))),
         "the fonts are the Format menu's: {format:?}"
     );
     assert_eq!(
@@ -5948,15 +5976,6 @@ fn a_selection_can_be_linked() {
     );
 }
 
-/// The window bar's File menu item that starts from `template`.
-fn template_slot(template: crate::Template) -> String {
-    let index = crate::Template::all()
-        .iter()
-        .position(|t| *t == template)
-        .expect("a template of the menu");
-    format!("file-template:{index}")
-}
-
 /// The window's zoom gestures reach the page: a hosted window offers
 /// Ctrl+Plus, Ctrl+Minus and Ctrl+0 to a widget whose content zooms by
 /// itself before it grows its own chrome, so the editor provides
@@ -6028,20 +6047,22 @@ fn the_file_commands_are_the_window_bars_file_menu() {
     let (state, wp) = bound();
     let mut framed = mount(state, wp, 1200, 700);
     let (wp, state) = Framed::split(&mut framed);
-    let items = bar_items(wp, super::window_bar::FILE_MENU);
-    for id in ["file-open", "file-save", "file-save-as"] {
+    let items = bar_items(wp, &t("toolbar-file"));
+    for choice in [FileChoice::Open, FileChoice::Save, FileChoice::SaveAs]
+        .into_iter()
+        .chain(
+            crate::Template::all()
+                .iter()
+                .copied()
+                .map(FileChoice::Template),
+        )
+    {
         assert!(
-            items.iter().any(|item| item == id),
-            "File offers {id}: {items:?}"
+            items.contains(&BarCommand::File(choice)),
+            "File offers {choice:?}: {items:?}"
         );
     }
-    for template in crate::Template::all() {
-        assert!(
-            items.contains(&template_slot(*template)),
-            "File offers {template:?}"
-        );
-    }
-    press_bar(wp, state, &template_slot(crate::Template::Report));
+    press_bar(wp, state, &crate::Template::Report.display_title());
     assert!(
         !wp.file_menu.is_open(),
         "nothing to replace: nothing to ask"
@@ -6065,7 +6086,7 @@ fn a_template_asks_before_replacing_and_answers_by_keyboard() {
         wp.refresh_blocks(&state.doc);
         let mut framed = mount_themed(state, wp, 1200, 700, &theme);
         let (wp, state) = Framed::split(&mut framed);
-        press_bar(wp, state, &template_slot(crate::Template::Report));
+        press_bar(wp, state, &crate::Template::Report.display_title());
         assert!(wp.file_menu.is_asking(), "a template asks before replacing");
         let mut tr = TextRenderer::new();
         let mut before = Scene::new();
@@ -6119,7 +6140,7 @@ fn a_template_asks_before_replacing_and_answers_by_keyboard() {
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
         wp.lifecycle.focused = true;
-        press_bar(wp, state, &template_slot(crate::Template::Report));
+        press_bar(wp, state, &crate::Template::Report.display_title());
         assert!(wp.file_menu.is_asking());
         press_named(wp, state, NamedKey::Backspace);
         assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
@@ -6156,7 +6177,7 @@ fn templates_replace_the_document_only_when_chosen() {
         wp.refresh_blocks(&state.doc);
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
-        press_bar(wp, state, &template_slot(crate::Template::Report));
+        press_bar(wp, state, &crate::Template::Report.display_title());
         let keep = wp
             .file_menu
             .cancel_center()
@@ -6165,7 +6186,7 @@ fn templates_replace_the_document_only_when_chosen() {
         assert!(!wp.file_menu.is_open());
         assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
 
-        press_bar(wp, state, &template_slot(crate::Template::Report));
+        press_bar(wp, state, &crate::Template::Report.display_title());
         assert_eq!(
             wp.file_menu.menu_mut().hovered(),
             None,
@@ -6178,7 +6199,7 @@ fn templates_replace_the_document_only_when_chosen() {
             "Escape works even without editor focus"
         );
 
-        press_bar(wp, state, &template_slot(crate::Template::Report));
+        press_bar(wp, state, &crate::Template::Report.display_title());
         let caret = wp.inner.caret.clone();
         left_click(wp, state, Point::new(900.0, 500.0));
         assert!(!wp.file_menu.is_open());
@@ -6221,7 +6242,7 @@ fn a_confirmed_template_replaces_the_draft() {
     wp.refresh_blocks(&state.doc);
     let mut framed = mount(state, wp, 1200, 700);
     let (wp, state) = Framed::split(&mut framed);
-    press_bar(wp, state, &template_slot(crate::Template::Report));
+    press_bar(wp, state, &crate::Template::Report.display_title());
     assert!(
         wp.file_menu.is_asking(),
         "on a document with words the editor asks before replacing it"
@@ -6297,9 +6318,9 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
     {
         let (mut state, mut wp) = bound();
         assert!(wp.view.ruler_visible, "ruler defaults ON (discoverable)");
-        press_bar(&mut wp, &mut state, &tool_id(ToolAction::ToggleRuler));
+        press_bar(&mut wp, &mut state, &t("toolbar-ruler"));
         assert!(!wp.view.ruler_visible, "the bar's toggle hides the ruler");
-        press_bar(&mut wp, &mut state, &tool_id(ToolAction::ToggleRuler));
+        press_bar(&mut wp, &mut state, &t("toolbar-ruler"));
         assert!(wp.view.ruler_visible, "toggles back on");
     }
 
@@ -6796,18 +6817,18 @@ fn the_window_bar_names_its_commands_for_assistive_technology() {
     let (state, wp) = populated();
     let mut framed = mount(state, wp, 1100, 760);
     let (wp, state) = Framed::split(&mut framed);
-    let bold = bar_slot(wp, &tool_id(ToolAction::Bold)).expect("Format offers Bold");
+    let bold = bar_slot(wp, ToolAction::Bold).expect("Format offers Bold");
     assert_eq!(bold.name, "Bold");
     assert!(!bold.on);
-    let styles = bar_slot(wp, &tool_id(ToolAction::ToggleStyles)).expect("the inspector toggle");
+    let styles = bar_slot(wp, ToolAction::ToggleStyles).expect("the inspector toggle");
     assert!(!styles.on);
-    press_bar(wp, state, &tool_id(ToolAction::ToggleStyles));
+    press_bar(wp, state, &t("a11y-styles-panel"));
     assert!(
         wp.view.styles_panel_visible,
         "the bar's toggle shows the inspector"
     );
     assert!(
-        bar_slot(wp, &tool_id(ToolAction::ToggleStyles)).is_some_and(|slot| slot.on),
+        bar_slot(wp, ToolAction::ToggleStyles).is_some_and(|slot| slot.on),
         "the toggle says it is on"
     );
 }

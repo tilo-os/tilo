@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["typst-editor-samples"]
+
 [lib]
 name = "typst_editor"
 path = "src/lib.rs"
@@ -54,7 +58,10 @@ tilo-typst-fonts = { path = "../../crates/platform/tilo-typst-fonts" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-typst-editor = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `typst-editor` claims `--features typst-editor/thin` in the
+# collection build, and the app then links the whole runtime statically.
+typst-editor-samples = { package = "typst-editor", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

@@ -456,7 +456,7 @@ impl OriginalReadClaim {
         }
         if let Some(expected) = expected {
             expected.validate()?;
-            if expected.consumer_protocol != 2
+            if expected.kind.consumer_protocol != 2
                 || expected.operation != self.applications_operation()?
                 || expected.setup_binding != self.setup_binding
                 || expected
@@ -653,10 +653,7 @@ mod tests {
         // This is the production pre-journal validator, using the same decoded
         // claim as the signed worker request above; it grants no source authority.
         let applications = crate::setup::flatpak_transfer::portable::Expectation {
-            schema: 1,
-            consumer_protocol: 2,
             operation: baseline.applications_operation().unwrap().into(),
-            purpose: crate::setup::portable_transfer::Purpose::FlatpakApplications,
             filename: format!(
                 "applications-{}.sealed",
                 baseline.applications_operation().unwrap()
@@ -666,11 +663,14 @@ mod tests {
             plaintext_bytes: 1024,
             entries: 1,
             ciphertext_sha256: [2; 32],
-            manifest_sha256: [3; 32],
             limits: crate::setup::portable_transfer::Limits {
                 plaintext_bytes: 8192,
                 entries: 16,
                 metadata_bytes: 4096,
+            },
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: 2,
+                manifest_sha256: [3; 32],
             },
         };
         baseline
@@ -680,7 +680,7 @@ mod tests {
         for altered in [
             {
                 let mut value = applications.clone();
-                value.consumer_protocol = 1;
+                value.kind.consumer_protocol = 1;
                 value
             },
             {
@@ -923,21 +923,19 @@ mod tests {
         let review = || serde_json::from_value::<Request>(review_wire.clone()).unwrap();
         let request = review();
         let expected = Expectation {
-            schema: 1,
             operation: request.operation.clone(),
-            purpose: crate::setup::portable_transfer::Purpose::Home,
             filename: format!("home-{}.sealed", request.operation),
             setup_binding: "bound-setup".into(),
             sealed_bytes: 4096,
             plaintext_bytes: 1024,
             entries: 1,
-            runtime_sockets: 0,
             ciphertext_sha256: [1; 32],
             limits: crate::setup::portable_transfer::Limits {
                 plaintext_bytes: 8192,
                 entries: 16,
                 metadata_bytes: 4096,
             },
+            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
         };
         let request = request
             .into_validate(expected.clone(), Zeroizing::new(b"synthetic-only".to_vec()))
@@ -1019,21 +1017,19 @@ mod tests {
             );
         }
         let home = Expectation {
-            schema: 1,
             operation: request.operation.clone(),
-            purpose: crate::setup::portable_transfer::Purpose::Home,
             filename: format!("home-{}.sealed", request.operation),
             setup_binding: "bound-setup".into(),
             sealed_bytes: 4096,
             plaintext_bytes: 1024,
             entries: 1,
-            runtime_sockets: 0,
             ciphertext_sha256: [1; 32],
             limits: crate::setup::portable_transfer::Limits {
                 plaintext_bytes: 8192,
                 entries: 16,
                 metadata_bytes: 4096,
             },
+            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
         };
         assert!(
             review()
@@ -1041,8 +1037,6 @@ mod tests {
                 .is_err()
         );
         let apps = crate::setup::flatpak_transfer::portable::Expectation {
-            schema: 1,
-            consumer_protocol: 1,
             operation: request
                 .command
                 .original_authority()
@@ -1050,7 +1044,6 @@ mod tests {
                 .applications_operation()
                 .unwrap()
                 .into(),
-            purpose: crate::setup::portable_transfer::Purpose::FlatpakApplications,
             filename: format!(
                 "applications-{}.sealed",
                 request
@@ -1065,8 +1058,11 @@ mod tests {
             plaintext_bytes: 1024,
             entries: 1,
             ciphertext_sha256: [2; 32],
-            manifest_sha256: [3; 32],
             limits: home.limits,
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: 1,
+                manifest_sha256: [3; 32],
+            },
         };
         let selected = review()
             .into_validate_selected(

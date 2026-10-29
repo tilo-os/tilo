@@ -112,9 +112,7 @@ def measure(args: argparse.Namespace) -> dict:
         ctl = root / "run/control.sock"
         args.outputs = None
         env = latency.session_env(root, args, ctl)
-        settings = root / "config/tilo/session/settings.json"
-        settings.parent.mkdir(parents=True)
-        settings.write_text(json.dumps({"appearance": {"mode": "dark"}}))
+        latency.set_settings(shell, root / "config/tilo", "appearance", {"mode": "dark"})
         with log.open("wb") as sink:
             proc = subprocess.Popen(
                 [str(shell), "--backend", "headless", "--disable-peer-sync"],

@@ -299,6 +299,9 @@ pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f6
 pub struct DayDivider {
     label: String,
     rect: Rect,
+    /// It was drawn, and shows the same since: a divider never changes, so it repaints only
+    /// where it moved.
+    drawn: bool,
 }
 
 impl DayDivider {
@@ -307,6 +310,7 @@ impl DayDivider {
         Self {
             label: label.into(),
             rect: Rect::ZERO,
+            drawn: false,
         }
     }
 }
@@ -355,6 +359,14 @@ impl crate::widget::Widget for DayDivider {
 
     fn name(&self) -> &'static str {
         "DayDivider"
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.drawn
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = true;
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

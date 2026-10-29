@@ -957,17 +957,7 @@ impl Checker<'_> {
                 let v = self.expr_as(&a.value, t);
                 Ex::host(Imp::CollRemove, vec![b, fid, v], Ty::Unit)
             }
-            (Ty::Collection(t), "move") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(a), Some(i)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let item = self.expr_as(&a.value, t);
-                let idx = self.expr_as(&i.value, &Ty::Int);
-                Ex::host(Imp::CollMove, vec![b, fid, item, idx], Ty::Unit)
-            }
+            (Ty::Collection(t), "move") => self.move_item(b, fid, t, args, span),
             (Ty::Collection(t), "remove_where") => self.remove_where(b, f, t, name, args, span),
             (Ty::Set(t), "add" | "remove") => {
                 if !self.arity(name, args, 1, span) {
@@ -1007,6 +997,43 @@ impl Checker<'_> {
             }
             _ => Ex::error(),
         }
+    }
+
+    /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
+    /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
+    fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
+        let usage = "write `.move(item, after: other)` or `.move(item, before: other)`";
+        let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
+            self.err(
+                "E022",
+                span,
+                format!("`.move` takes the item and its new neighbour: {usage}"),
+            );
+            return Ex::error();
+        };
+        let side = place.name.as_ref().map(|n| n.name.as_str());
+        let after = match side {
+            Some("after") => true,
+            Some("before") => false,
+            _ => {
+                let what = if place.name.is_none() {
+                    "a position"
+                } else {
+                    "this"
+                };
+                self.err(
+                    "E107",
+                    place.value.span,
+                    format!("{what} is counted on what this device sees, so a move made at the same time elsewhere puts the item in the wrong place; name its neighbour: {usage}"),
+                );
+                let _ = self.expr(&place.value, None);
+                return Ex::error();
+            }
+        };
+        let item = self.expr_as(&item.value, t);
+        let neighbour = self.expr_as(&place.value, t);
+        let side = Ex::new(Ek::I32(i32::from(after)), Ty::Bool);
+        Ex::host(Imp::CollMove, vec![b, fid, item, neighbour, side], Ty::Unit)
     }
 
     /// `items.remove_where(x -> x.done)`: removes every item the predicate holds of and gives how
@@ -1305,26 +1332,26 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
-        // `desc` after the key: the latest or largest first.
-        let (args, descending) = match args {
-            [key, order]
-                if order.name.is_none()
-                    && matches!(&order.value.kind, ExprKind::Ident(w) if w == "desc" || w == "asc") =>
+        // `sort_by(key)` or `sort_by(key, desc)`: latest, largest or last first.
+        let (key_arg, desc) = match args {
+            [a] if a.name.is_none() => (Some(a), false),
+            [a, d]
+                if a.name.is_none()
+                    && matches!(&d.value.kind, ExprKind::Ident(w) if w == "desc" || w == "asc") =>
             {
-                let desc = matches!(&order.value.kind, ExprKind::Ident(w) if w == "desc");
-                (std::slice::from_ref(key), desc)
+                (
+                    Some(a),
+                    matches!(&d.value.kind, ExprKind::Ident(w) if w == "desc"),
+                )
             }
-            _ => (args, false),
+            _ => (None, false),
         };
-        let lambda = match args {
-            [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
-            _ => None,
-        };
+        let lambda = key_arg.and_then(|a| super::optional::lambda_of(&a.value));
         let Some((param, body)) = lambda else {
             self.err(
                 "E051",
                 span,
-                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`, and `desc` for the latest or largest first",
+                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`, and `desc` for the largest or latest first: `.sort_by(.due, desc)`",
             );
             return Ex::error();
         };
@@ -1352,6 +1379,11 @@ impl Checker<'_> {
             }
             _ => self.expr(&body, None),
         };
+        // A Date or a Time is ISO text, which sorts in time order.
+        let key = match key.ty {
+            Ty::Date | Ty::Time => key.typed(Ty::Text),
+            _ => key,
+        };
         if !matches!(
             key.ty,
             Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Error
@@ -1360,7 +1392,7 @@ impl Checker<'_> {
             self.err(
                 "E020",
                 name.span,
-                format!("`sort_by` keys must be Int, Float, Text or Bool, found {t}"),
+                format!("`sort_by` keys must be Int, Float, Text, Bool, Date or Time, found {t}"),
             );
         }
         let keys_ty = Ty::List(Box::new(key.ty.clone()));
@@ -1377,16 +1409,18 @@ impl Checker<'_> {
             Stmt::Set(keys, Ex::host(Imp::ListNew, Vec::new(), keys_ty.clone())),
             Stmt::ForList(Box::new(fl)),
         ];
-        let sorted = Ex::host(
+        let mut sorted = Ex::host(
             Imp::ListSortByKey,
             vec![Ex::local(list_local, Ty::Text), Ex::local(keys, keys_ty)],
             out_ty.clone(),
         );
+        if desc {
+            sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
+        }
         let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
-        let looped = self.maybe_reversed(looped, elem, descending);
         match (native, held) {
             (Some(key), Some((local, held))) => {
-                self.ordered_or_loop(local, held, &key, descending, looped)
+                self.ordered_or_loop(local, held, &key, desc, looped)
             }
             _ => looped,
         }

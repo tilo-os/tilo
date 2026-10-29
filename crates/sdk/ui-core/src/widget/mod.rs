@@ -3232,6 +3232,8 @@ pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
 pub mod block_editor;
 pub mod paint_damage;
+pub mod rich_doc;
+pub use block_editor::references::{OPEN_REFERENCE, RichTextProps};
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CalloutKind, CursorPlacement,
     DocumentPosition, DocumentSelection, EditScope, PresenceKeyFn, SlashRequest,
@@ -3313,6 +3315,15 @@ pub use primitives::{
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
+pub mod attached;
+mod hover_toolbar;
+pub use hover_toolbar::HoverToolbar;
+mod swipe_row;
+pub use attached::{
+    Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
+    SwipeProps,
+};
+pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
 pub(crate) mod block_editor_table;

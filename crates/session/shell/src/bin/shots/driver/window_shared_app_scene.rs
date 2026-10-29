@@ -194,4 +194,37 @@ impl ShellDriver {
             "window-shared-app scene: the shared Notes window opens here as Notes"
         );
     }
+
+    /// A Notes window in the Lounge, with its History open, while this
+    /// device holds a write to the room that no host has kept and the room
+    /// tells the window so.
+    pub(super) fn scene_window_held_write(&mut self) {
+        if self.shared_app_in_lounge().is_none() {
+            return;
+        }
+        let told = ui::floating_surface::FloatingSurfaceHostMessage::Appearance {
+            theme: None,
+            network_status: None,
+            workspace_hue: None,
+            your_colour: None,
+            room_sync: Some(ui::room_sync::RoomSync {
+                state: ui::room_sync::RoomSyncState::Synced,
+                workspace: "Lounge".into(),
+                writable: Some(true),
+                unsynced_writes: 1,
+                cannot_keep_writes: false,
+            }),
+            corner_radius: None,
+        };
+        for app in &mut self.own_process {
+            app.tell(&told);
+        }
+        // The window says how its changes stand in its History bar: open
+        // it from the window's History button.
+        self.step_frames(30);
+        self.click_at(vello::kurbo::Point::new(1481.0, 57.0));
+        self.move_cursor(vello::kurbo::Point::new(800.0, 600.0));
+        self.step_frames(120);
+        let _ = self.paint_settled();
+    }
 }

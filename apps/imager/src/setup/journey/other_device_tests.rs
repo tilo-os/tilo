@@ -6,11 +6,11 @@
 use super::belongings::Belongings;
 use super::prepared_media::PreparedMedia;
 use super::*;
-use crate::setup::{account_transfer, home_transfer};
 use imager_backend::prepared_identity::PreparedIdentity;
 use imager_backend::setup::other_device::{
     HandoffIdentity, PublicHandoff, Receiver, ReceiverIdentity, Source, SourceState,
 };
+use imager_backend::{account_transfer, home_transfer};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 

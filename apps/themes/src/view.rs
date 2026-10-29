@@ -85,11 +85,6 @@ impl Ui {
         self.dispatcher
             .effect(&crate::effects::ThemesEffect::ApplyTheme { theme });
     }
-
-    fn export(&self, theme: String) {
-        self.dispatcher
-            .effect(&crate::effects::ThemesEffect::Export { theme });
-    }
 }
 
 /// The theme the editor writes: one in the studio, or a draft whose first
@@ -316,7 +311,7 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         .with_pane_state(&ui.pane)
         .sidebar(nav)
         .content(content);
-    Box::new(window_bar::StudioWindow { shell, ui })
+    Box::new(window_bar::StudioWindow::new(shell, ui))
 }
 
 fn notice(ui: &Ui) -> Text {

@@ -118,6 +118,10 @@ struct FnState {
 
 /// Where the UI being lowered stands, saved and restored around each block.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each says one independent thing about where the UI stands"
+)]
 pub(crate) struct UiPlace {
     /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
     /// `inspector` sit directly in a frame, a fact directly in `facts`.
@@ -131,6 +135,8 @@ pub(crate) struct UiPlace {
     /// Whether it is in a named slot of a `ui.*` component: what a loop makes there are parts
     /// of the component (a menu's commands), so the loop lowers in place.
     parts: bool,
+    /// Whether it is in a composer: text typed here is one person's until it is sent.
+    composer: bool,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.

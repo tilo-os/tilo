@@ -117,7 +117,7 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             )
             .unwrap();
     }
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let area = InputArea::new(&cx);
     let mut pane = MouseKeyboardPane::new(cx, &area);
     pane.dictionary = Some(reader.snapshot().unwrap());
@@ -301,7 +301,7 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
 
 fn pane_with(input: &InputPrefs, catalog: Vec<CatalogEntry>) -> MouseKeyboardPane {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     cx.settings::<InputPrefs>().set(input).unwrap();
     let area = InputArea {
         catalog: SourceCatalog::ready(catalog, None),

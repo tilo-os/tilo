@@ -4,10 +4,12 @@
 //! `xdg-dbus-proxy`, and each filtered to an explicit allowlist:
 //!
 //! - **Session bus.** Portal-adjacent names when the manifest declares a
-//!   `via-host` portal, and for every graphical app exactly the two
+//!   `via-host` portal, for every graphical app exactly the two
 //!   read-only questions an accessibility client must ask
 //!   `org.a11y.Bus`: where the AT-SPI bus is (`GetAddress`) and whether
-//!   assistive technology is on (the `org.a11y.Status` properties).
+//!   assistive technology is on (the `org.a11y.Status` properties), and
+//!   for an app declaring `media.session` ownership of its own MPRIS name,
+//!   `org.mpris.MediaPlayer2.<package id>` and no other.
 //! - **AT-SPI bus.** Flatpak's filter, verbatim: the app may embed its
 //!   accessibility root in the registry, read which events listeners want,
 //!   and notify device-event listeners. Assistive technology then calls
@@ -78,17 +80,61 @@ pub const A11Y_STATUS_FILTER_ARGS: &[&str] = &[
     "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
 ];
 
-/// The session-bus filter for one launch: the bus daemon for `Hello`, the
-/// portal names when the manifest declares a `via-host` portal, and the
-/// accessibility status rules when the app has a display.
+/// The manifest capability that lets an app publish its player to the
+/// desktop's now-playing controls.
+pub const MEDIA_SESSION_CAPABILITY: &str = "media.session";
+
+/// The one MPRIS name an app may own on the session bus:
+/// `org.mpris.MediaPlayer2.<package id>`, the name the toolkit's media
+/// session requests for a launched package (both take it from
+/// [`tilo_process::environment::media_player_bus_name`]). `None` for a
+/// package id that does not make a valid bus name.
+///
+/// Exactly this name, never a `.*` wildcard: xdg-dbus-proxy's
+/// `--own=org.mpris.MediaPlayer2.so.tilo.music.*` would also cover the
+/// player of a package `so.tilo.music.extra`, and an app may only speak as
+/// itself. A second running instance of the same package therefore finds
+/// the name taken and publishes no second player.
 #[must_use]
-pub fn session_filter_args(portals: bool, graphical: bool) -> Vec<&'static str> {
+pub fn media_player_name(package_id: &str) -> Option<String> {
+    let name = tilo_process::environment::media_player_bus_name(package_id);
+    zbus::names::WellKnownName::try_from(name.as_str()).ok()?;
+    Some(name)
+}
+
+/// The MPRIS name a launch of `manifest` may own: its own player name when
+/// it declares [`MEDIA_SESSION_CAPABILITY`], otherwise none. Media sessions
+/// need no consent (`tilo_caps`), so the declaration is the grant.
+#[must_use]
+pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<String> {
+    manifest
+        .declares_capability(MEDIA_SESSION_CAPABILITY)
+        .then(|| media_player_name(&manifest.package_id))
+        .flatten()
+}
+
+/// The session-bus filter for one launch: the bus daemon for `Hello`, the
+/// portal names when the manifest declares a `via-host` portal, the
+/// accessibility status rules when the app has a display, and ownership of
+/// `media_player` (see [`media_player_for`]) when the app publishes its
+/// player. Without that ownership the bus refuses the player's name and it
+/// never reaches the desktop's now-playing controls.
+#[must_use]
+pub fn session_filter_args(
+    portals: bool,
+    graphical: bool,
+    media_player: Option<&str>,
+) -> Vec<String> {
     let mut args = vec!["--filter", "--see=org.freedesktop.DBus"];
     if portals {
         args.extend(DEFAULT_FILTER_ARGS.iter().skip(2));
     }
     if graphical {
         args.extend(A11Y_STATUS_FILTER_ARGS);
+    }
+    let mut args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    if let Some(name) = media_player {
+        args.push(format!("--own={name}"));
     }
     args
 }
@@ -471,7 +517,7 @@ mod tests {
         // A portal-less graphical app: the bus daemon and the accessibility
         // status questions, nothing else.
         assert_eq!(
-            session_filter_args(false, true),
+            session_filter_args(false, true, None),
             [
                 "--filter",
                 "--see=org.freedesktop.DBus",
@@ -482,7 +528,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            session_filter_args(true, true),
+            session_filter_args(true, true, None),
             [
                 "--filter",
                 "--see=org.freedesktop.DBus",
@@ -495,12 +541,28 @@ mod tests {
                 "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
             ]
         );
-        assert_eq!(session_filter_args(true, false), DEFAULT_FILTER_ARGS);
+        assert_eq!(session_filter_args(true, false, None), DEFAULT_FILTER_ARGS);
+        // An app publishing its player owns exactly its own MPRIS name.
+        assert_eq!(
+            session_filter_args(false, false, Some("org.mpris.MediaPlayer2.so.tilo.music")),
+            [
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--own=org.mpris.MediaPlayer2.so.tilo.music",
+            ]
+        );
+        assert_eq!(
+            media_player_name("so.tilo.music").as_deref(),
+            Some("org.mpris.MediaPlayer2.so.tilo.music")
+        );
+        assert_eq!(media_player_name("so tilo"), None);
+        assert_eq!(media_player_name(""), None);
         // No rule anywhere grants a whole name on the accessibility side, and
-        // nothing ever widens to ownership or to the raw bus.
-        for arg in session_filter_args(true, true)
+        // nothing else ever widens to ownership or to the raw bus.
+        for arg in session_filter_args(true, true, None)
             .iter()
-            .chain(ATSPI_FILTER_ARGS)
+            .map(String::as_str)
+            .chain(ATSPI_FILTER_ARGS.iter().copied())
         {
             assert!(!arg.starts_with("--own"), "{arg}");
             assert!(

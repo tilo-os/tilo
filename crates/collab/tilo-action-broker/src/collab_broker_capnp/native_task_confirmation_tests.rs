@@ -202,6 +202,12 @@ pub(super) fn ask_append(f: &Fixture, text: &str) -> TrackerQuestion {
 
 /// The person answers the run's question on the issue.
 pub(super) fn answer(f: &Fixture, answer: TrackerAnswer) {
+    answer_with(f, answer);
+}
+
+/// [`answer`], under a name a test that names its sheet's answer `answer`
+/// can still call.
+pub(super) fn answer_with(f: &Fixture, answer: TrackerAnswer) {
     f.on_run(|run| {
         if let Some(question) = run.question.as_mut() {
             question.answer = answer;
@@ -310,6 +316,285 @@ async fn the_tasks_app_has_a_runs_question_put_to_its_person_on_the_hosts_sheet(
         .await;
 }
 
+/// The Tasks app's tracker on peer 300, publishing the answer to a run's
+/// question its people give.
+async fn tracker_target(f: &Fixture) -> (channel_handle::Client, invocation_stream::Client) {
+    use crate::services::TRACKER_APP;
+    let target = f.app_channel(300, TRACKER_APP, false);
+    let mut publish = target.publish_actions_request();
+    publish.get().set_app_id(TRACKER_APP);
+    {
+        let mut row = publish.get().init_actions(1).get(0);
+        row.set_resource("tasks.tracker");
+        row.set_action("answer-confirmation");
+        row.set_resource_kind("tracker");
+        row.set_resource_label("Tasks");
+        row.set_action_label("Answer");
+        row.set_operation_kind("effect");
+        let params = vec![
+            tilo_actions::ActionParam::required("issue", tilo_actions::ParamType::Text, "Issue"),
+            tilo_actions::ActionParam::required(
+                "confirm",
+                tilo_actions::ParamType::Boolean,
+                "Confirm",
+            ),
+            tilo_actions::ActionParam::optional("edits", tilo_actions::ParamType::Array, "Edits"),
+            tilo_actions::ActionParam::optional("reason", tilo_actions::ParamType::Text, "Why"),
+        ];
+        row.set_params_json(serde_json::to_string(&params).unwrap());
+        let contract = tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Undoable,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            ..Default::default()
+        };
+        row.set_contract_json(serde_json::to_string(&contract).unwrap());
+    }
+    publish.send().promise.await.unwrap();
+    let mut subscribe = target.subscribe_invocations_request();
+    subscribe.get().set_stable_invocation_ids(true);
+    let stream = subscribe
+        .send()
+        .promise
+        .await
+        .unwrap()
+        .get()
+        .unwrap()
+        .get_stream()
+        .unwrap();
+    (target, stream)
+}
+
+/// The arguments of the next invocation `stream` delivers.
+async fn next_arguments(stream: &invocation_stream::Client) -> serde_json::Value {
+    let delivered = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_request().send().promise,
+    )
+    .await
+    .expect("an invocation is delivered")
+    .unwrap();
+    let wire = delivered.get().unwrap();
+    let text = wire.get_argument().unwrap().to_str().unwrap();
+    serde_json::from_str(
+        text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .unwrap_or(text),
+    )
+    .unwrap()
+}
+
+/// The Tasks app's answer button, as the app sends it through its door:
+/// its own word on the edits, which is never the person's.
+fn press_answer(
+    tracker: &channel_handle::Client,
+) -> tokio::task::JoinHandle<tilo_actions::remote::RemoteActionMessage> {
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    let request = tilo_actions::remote::InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::OWN_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new("tasks.tracker", "answer-confirmation"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(
+            serde_json::json!({
+                "issue": "release",
+                "confirm": true,
+                "edits": [{"path": ["text"], "text": "The app's word"}],
+            })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        ),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
+        .encode()
+        .unwrap();
+    let mut call = tracker.remote_action_request();
+    call.get().set_frame(&frame);
+    let reply = call.send().promise;
+    tokio::task::spawn_local(async move {
+        let reply = reply.await.unwrap();
+        RemoteActionFrame::decode(reply.get().unwrap().get_frame().unwrap())
+            .unwrap()
+            .message
+    })
+}
+
+/// The question the Tasks app's press put on the sheet, and where its answer
+/// goes; the press's reply, from here on.
+async fn sheet_asked(
+    asked: &mut tokio::sync::mpsc::UnboundedReceiver<(
+        crate::app_actions::AppActionConsentRequest,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
+    )>,
+    reply: tokio::task::JoinHandle<tilo_actions::remote::RemoteActionMessage>,
+) -> (
+    (
+        crate::app_actions::AppActionConsentRequest,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
+    ),
+    tokio::task::JoinHandle<tilo_actions::remote::RemoteActionMessage>,
+) {
+    let mut reply = reply;
+    tokio::select! {
+        question = asked.recv() => (question.expect("the person is asked"), reply),
+        replied = &mut reply => panic!("answered without asking the person: {replied:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("nobody was asked"),
+    }
+}
+
+/// The press's reply, once the host has admitted the answer it carries on
+/// (the broker's own turn, which a test takes).
+async fn press_replied(
+    f: &Fixture,
+    mut reply: tokio::task::JoinHandle<tilo_actions::remote::RemoteActionMessage>,
+) -> tilo_actions::remote::RemoteActionMessage {
+    let deadline = tokio::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(5))
+        .unwrap();
+    loop {
+        tokio::select! {
+            replied = &mut reply => return replied.unwrap(),
+            () = tokio::time::sleep(std::time::Duration::from_millis(5)) => {
+                f.state.drain_action_directory_bridge(&f.directories);
+                assert!(tokio::time::Instant::now() < deadline, "the press is answered");
+            }
+        }
+    }
+}
+
+/// A run's step asks first; its person changes the draft on the host's
+/// sheet and allows it. The tracker is given the person's edits, never the
+/// app's, and the step runs with exactly the arguments they make; a step
+/// with any other arguments is not what they confirmed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_runs_step_edited_on_the_sheet_runs_exactly_as_the_person_changed_it() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, notes) = append_target(&f).await;
+            let (tracker, answers) = tracker_target(&f).await;
+            ask_first_for_notes(&f);
+            let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
+            f.state
+                .set_app_action_consent(Arc::new(super::store_witness::Sheet(sheet)));
+
+            assert!(append(&agent, &run, 9300, "Draft line").await.is_err());
+            ask(
+                &f,
+                ("notes:release", "append"),
+                serde_json::json!({ "text": "Draft line" })
+                    .as_object()
+                    .unwrap(),
+            );
+            let reply = press_answer(&tracker);
+            let ((question, answer), reply) = sheet_asked(&mut asked, reply).await;
+            let draft = question.draft.expect("the sheet shows the step's draft");
+            assert!(draft.fields[0].editable, "{draft:?}");
+            answer
+                .send(crate::app_actions::AppActionAnswer {
+                    consent: crate::app_actions::AppActionConsent::Once,
+                    edits: vec![tilo_actions::DraftEdit {
+                        path: vec!["text".into()],
+                        text: "Reviewed line".into(),
+                    }],
+                })
+                .unwrap();
+            let replied = press_replied(&f, reply).await;
+            assert!(
+                !matches!(
+                    replied,
+                    tilo_actions::remote::RemoteActionMessage::Receipt(
+                        tilo_actions::remote::InvocationReceipt {
+                            status: tilo_actions::remote::ReceiptStatus::Rejected { .. },
+                            ..
+                        }
+                    )
+                ),
+                "{replied:?}"
+            );
+            let given = next_arguments(&answers).await;
+            assert_eq!(given["confirm"], true);
+            assert_eq!(
+                given["edits"],
+                serde_json::json!([{"path": ["text"], "text": "Reviewed line"}]),
+                "the person's edits, not the app's"
+            );
+            // The tracker records the answer it was given.
+            answer_with(
+                &f,
+                TrackerAnswer::Confirmed {
+                    edits: given["edits"].clone(),
+                },
+            );
+
+            let other = append(&agent, &run, 9301, "Something else")
+                .await
+                .unwrap_err();
+            assert!(
+                other
+                    .to_string()
+                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
+                "{other}"
+            );
+            assert!(
+                nothing_delivered(),
+                "other arguments are not what they confirmed"
+            );
+            append(&agent, &run, 9300, "Draft line").await.unwrap();
+            assert_eq!(
+                next_arguments(&notes).await["text"],
+                "Reviewed line",
+                "exactly what the person made"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+/// The person allows the step as it is: the tracker is given no edits, as
+/// before there were any, even when the app supplied some.
+#[tokio::test(flavor = "current_thread")]
+async fn a_runs_step_allowed_unedited_gives_the_tracker_no_edits() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let (_target, _notes) = append_target(&f).await;
+            let (tracker, answers) = tracker_target(&f).await;
+            let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
+            f.state
+                .set_app_action_consent(Arc::new(super::store_witness::Sheet(sheet)));
+            ask(
+                &f,
+                ("notes:release", "append"),
+                serde_json::json!({ "text": "Draft line" })
+                    .as_object()
+                    .unwrap(),
+            );
+            let reply = press_answer(&tracker);
+            let ((_question, answer), reply) = sheet_asked(&mut asked, reply).await;
+            answer
+                .send(crate::app_actions::AppActionConsent::Once.into())
+                .unwrap();
+            press_replied(&f, reply).await;
+            let given = next_arguments(&answers).await;
+            assert_eq!(given["confirm"], true);
+            assert!(given.get("edits").is_none(), "{given}");
+            drop(f);
+        })
+        .await;
+}
+
 /// What the run's person is told without being interrupted.
 #[derive(Default)]
 struct Notices {
@@ -321,7 +606,7 @@ impl crate::app_actions::AppActionConsentPrompter for Notices {
     fn ask(
         &self,
         _request: crate::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
         panic!("a run's question never raises the sheet on its own")
     }
 

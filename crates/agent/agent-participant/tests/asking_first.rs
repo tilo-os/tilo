@@ -30,7 +30,8 @@ use std::sync::{Arc, Mutex};
 use common::{KeywordModel, catalogue};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, Pending, pending,
+    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    pending,
 };
 use tilo_agent_participant::{
     AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig,
@@ -48,7 +49,8 @@ const EBOOK: &str = "so.tilo.ebook";
 #[derive(Default)]
 struct PersonHost {
     asked: Mutex<Vec<(Caller, InvokeRequest)>>,
-    answers: Mutex<Vec<tilo_actions::remote::Completer<Result<Confirmation, ActionHostError>>>>,
+    answers:
+        Mutex<Vec<tilo_actions::remote::Completer<Result<ConfirmedInvocation, ActionHostError>>>>,
 }
 
 impl ActionHost for PersonHost {
@@ -84,7 +86,7 @@ impl ActionHost for PersonHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         self.asked
             .lock()
             .unwrap()
@@ -98,7 +100,7 @@ impl ActionHost for PersonHost {
 impl PersonHost {
     fn answer(&self, answer: Result<Confirmation, ActionHostError>) {
         let completer = self.answers.lock().unwrap().remove(0);
-        completer.complete(answer);
+        completer.complete(answer.map(ConfirmedInvocation::unchanged));
     }
 }
 

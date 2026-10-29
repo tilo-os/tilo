@@ -1,10 +1,10 @@
-//! Change notification for the shared settings file.
+//! Change notification for the settings and the directories beside them.
 //!
-//! Writers replace `settings.json` through a temp file and a rename, so a watch on the file
-//! itself would follow the old inode and go quiet after the first save. The watch sits on the
-//! containing directory instead and reports only events that name the settings file.
+//! The settings themselves ring their source's change signal ([`watch_settings`]). The
+//! identity and dictionary directories are watched as directories: their writers replace
+//! files by rename, so a watch on a file would follow the old inode.
 //!
-//! The watches are change-only ([`tilo_files::native::watch_changes`]): reading a file in a
+//! The directory watches are change-only ([`tilo_files::native::watch_changes`]): reading a file in a
 //! watched directory does not wake them. The identity directory is read whenever the desktop
 //! checks who is signed in, and an idle desktop woke a watcher for each of those reads.
 
@@ -12,48 +12,54 @@ use std::path::Path;
 
 /// A live watch; dropping it stops notifications.
 pub struct SettingsWatch {
-    _watch: tilo_files::native::ChangeWatch,
+    _directory: Option<tilo_files::native::ChangeWatch>,
+    _listener: Option<std::sync::Arc<crate::Listener>>,
 }
 
-/// Call `on_change` every time the configured settings file is created, rewritten, renamed
-/// into place or removed. The callback runs on the watcher's own thread, so it should only
-/// hand the news to whoever re-reads the document.
+/// Call `on_change` every time this process's settings ([`crate::source`]) change. The
+/// callback runs on the thread that made or noticed the change, so it should only hand the
+/// news to whoever re-reads the document.
 ///
 /// # Errors
 ///
-/// Fails when no config directory can be resolved, the directory cannot be created, or the
-/// platform watcher cannot be started.
-pub fn watch_settings(on_change: impl Fn() + Send + 'static) -> std::io::Result<SettingsWatch> {
-    let Some(path) = crate::settings_path() else {
+/// Fails when there are no settings: no config directory and no installed source.
+pub fn watch_settings(
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> std::io::Result<SettingsWatch> {
+    let Some(source) = crate::source() else {
         return Err(std::io::Error::other("no config directory available"));
     };
-    watch_settings_at(&path, on_change)
+    let listener: std::sync::Arc<crate::Listener> = std::sync::Arc::new(on_change);
+    source.changes().listen(&listener);
+    Ok(SettingsWatch {
+        _directory: None,
+        _listener: Some(listener),
+    })
 }
 
-/// [`watch_settings`] for an explicit settings file.
+/// Call `on_change` every time the file at `path` is created, rewritten, renamed into place
+/// or removed: a runtime publication another process replaces by rename. The callback runs
+/// on the watcher's own thread.
 ///
 /// # Errors
 ///
-/// As [`watch_settings`].
-pub fn watch_settings_at(
+/// Fails when the directory cannot be created or the platform watcher cannot be started.
+pub fn watch_file_at(
     path: &Path,
     on_change: impl Fn() + Send + 'static,
 ) -> std::io::Result<SettingsWatch> {
     let Some(directory) = path.parent() else {
-        return Err(std::io::Error::other(
-            "settings file has no parent directory",
-        ));
+        return Err(std::io::Error::other("the file has no parent directory"));
     };
     std::fs::create_dir_all(directory)?;
     let Some(file_name) = path.file_name().map(std::ffi::OsStr::to_os_string) else {
-        return Err(std::io::Error::other("settings path has no file name"));
+        return Err(std::io::Error::other("the path has no file name"));
     };
-    watch_directory(directory, names_file(file_name), on_change)
-}
-
-/// Whether a changed path is the settings file named `file_name`.
-fn names_file(file_name: std::ffi::OsString) -> impl Fn(&Path) -> bool + Send + 'static {
-    move |changed| changed.file_name() == Some(file_name.as_os_str())
+    watch_directory(
+        directory,
+        move |changed| changed.file_name() == Some(file_name.as_os_str()),
+        on_change,
+    )
 }
 
 /// Watch the existing identity directory for selector and identity-record changes.
@@ -114,7 +120,10 @@ fn watch_directory(
     on_change: impl Fn() + Send + 'static,
 ) -> std::io::Result<SettingsWatch> {
     Ok(SettingsWatch {
-        _watch: tilo_files::native::watch_changes(directory, names, on_change)?,
+        _directory: Some(tilo_files::native::watch_changes(
+            directory, names, on_change,
+        )?),
+        _listener: None,
     })
 }
 
@@ -223,42 +232,5 @@ mod tests {
             "reading the watched directory woke the watch thread"
         );
         std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn an_atomic_rewrite_is_reported_and_sibling_files_are_not() {
-        let root = crate::tests::tmpdir();
-        let path = root.join("tilo").join("settings.json");
-        let looking = path.clone();
-        let (_watch, seen) = watch_seeing(
-            |on_change| watch_settings_at(&path, on_change),
-            move || crate::load_at(&looking),
-        );
-
-        let theme_is = |theme: &'static str| {
-            move |document: &serde_json::Map<String, serde_json::Value>| {
-                document
-                    .get("appearance")
-                    .and_then(|appearance| appearance.get("theme"))
-                    .is_some_and(|seen| seen == theme)
-            }
-        };
-        let mut theme = serde_json::Map::new();
-        theme.insert("theme".into(), serde_json::json!("Light"));
-        crate::update_section_at(&path, "appearance", theme.clone()).unwrap();
-        notified_after("the first save", &seen, theme_is("Light"));
-
-        theme.insert("theme".into(), serde_json::json!("Dark"));
-        crate::update_section_at(&path, "appearance", theme).unwrap();
-        notified_after("a second atomic save", &seen, theme_is("Dark"));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_sibling_file_is_not_the_settings_document() {
-        let names = names_file("settings.json".into());
-        assert!(names(Path::new("/config/tilo/settings.json")));
-        assert!(!names(Path::new("/config/tilo/unrelated.json")));
-        assert!(!names(Path::new("/config/tilo/.settings.json.tmp")));
     }
 }

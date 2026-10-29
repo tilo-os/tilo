@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn the_language_is_chosen_among_the_installed_ones() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let pane = RegionPane::new(cx, None);
         let language = AppearancePrefs::paths().language;
         let label = |language: &Option<String>| {
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn the_date_format_and_clock_default_to_following_the_language() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let pane = RegionPane::new(cx, None);
         assert_eq!(pane.locale().date_format, DateStyle::Language);
         let paths = Locale::paths();
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn the_pane_follows_the_locale() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         cx.settings::<Locale>()
             .set(&Locale {
                 currency: Currency::EUR,

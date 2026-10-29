@@ -83,7 +83,7 @@ fn absent(app: &mut App, id: &str) {
 fn profile(
     app: &mut App,
     picture: &Path,
-) -> Arc<super::super::prepared_identity::PreparedIdentity> {
+) -> Arc<imager_backend::prepared_identity::PreparedIdentity> {
     app.effect(&InstallerPreviewEffect::SetPreviewName {
         value: "Ada's new computing life".into(),
     })
@@ -127,7 +127,8 @@ fn profile(
 }
 
 pub(in crate::setup) fn fixture_host_facts() -> Option<super::super::staging::probe::HostFacts> {
-    use super::super::staging::{plan, platform::Partition, probe::HostFacts};
+    use super::super::staging::{plan, probe::HostFacts};
+    use imager_backend::platform::Partition;
     fixture_mount_root()?;
     Some(HostFacts {
         basis: Some(plan::tests::linux_basis(
@@ -393,7 +394,7 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
         .unwrap();
     assert_eq!(
         intent.source_plan().home_policy,
-        super::super::migration_handoff::HomePolicy::AccessReadWrite
+        imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite
     );
     assert!(
         intent.application_minimum()
@@ -406,7 +407,7 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
     assert!(!intent.source_plan().categories.flatpak);
     assert!(intent.source_plan().categories.accounts);
     let plan = serde_json::to_value(intent.source_plan()).unwrap();
-    let relative: super::super::migration_store::NativePath =
+    let relative: imager_backend::migration_store::NativePath =
         serde_json::from_value(plan["home"]["relative"].clone()).unwrap();
     let source_mount =
         std::path::PathBuf::from(std::env::var_os("TILO_ORIGINAL_SOURCE_GPT_STORE").unwrap());
@@ -424,7 +425,7 @@ fn story_accounts_and_storage(app: &mut App, home: &Path) {
                     .candidates
                     .iter()
                     .find(|candidate| candidate.provider
-                        == super::super::account_transfer::Provider::Nextcloud)
+                        == imager_backend::account_transfer::Provider::Nextcloud)
                     .unwrap()
                     .id
             )
@@ -780,7 +781,7 @@ fn prepare_native_portable_story_source(
     std::fs::copy(prepared.package(), destination).unwrap();
     std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o600)).unwrap();
     let review_root = destination.parent().unwrap().join("guided-parent-review");
-    let setup = super::super::prepared_setup::PreparedSetupReview::open(
+    let setup = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
         destination,
         password.as_bytes(),
         &review_root,
@@ -818,7 +819,7 @@ fn prepare_portable_story(
     app: &mut App,
     home: &Path,
     password: &str,
-) -> Arc<super::super::portable_home_media::HomeSource> {
+) -> Arc<imager_backend::setup::portable_home_media::HomeSource> {
     for choice in ["another", "migrate", "new"] {
         choose(app, choice);
     }
@@ -868,7 +869,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     ) {
         return;
     }
-    use super::super::prepared_identity::PreparedIdentity;
+    use imager_backend::prepared_identity::PreparedIdentity;
     use std::os::unix::fs::PermissionsExt as _;
     let temporary = prepared_media::native_retained::journey_directory();
     let root = temporary.path().canonicalize().unwrap();
@@ -994,7 +995,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
             let intent = v.migration_selection.reviewed_intent().unwrap();
             assert_eq!(
                 intent.source_plan().home_policy,
-                super::super::migration_handoff::HomePolicy::AccessReadWrite
+                imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite
             );
             assert!(intent.source_plan().categories.home);
             intent

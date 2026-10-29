@@ -3315,6 +3315,10 @@ pub struct CapnpBrokerState {
     stopped: AtomicBool,
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
     channels: Mutex<HashMap<String, ChannelSubscribers>>,
+    /// The held committed-read waits (`Await`) of each channel, by
+    /// `channel_id`: a write fanned out on a channel's route changes what
+    /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
+    committed_waits: Mutex<HashMap<String, Vec<Weak<tokio::sync::Notify>>>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.
@@ -4106,6 +4110,7 @@ impl CapnpBrokerState {
         (
             Arc::new(Self {
                 channels: Mutex::new(HashMap::new()),
+                committed_waits: Mutex::new(HashMap::new()),
                 lifecycle: RwLock::new(()),
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),
@@ -7305,6 +7310,7 @@ impl CapnpBrokerState {
                 from_user_id,
                 ..
             } => {
+                self.wake_committed_reads(route);
                 Self::fanout_signed_incremental(
                     channels,
                     except,
@@ -12726,8 +12732,8 @@ fn handle_signed_op_send_for_artifact(
     };
     match validation {
         Ok(()) => {
-            if let Ok(mut ch) = state.broker_channels.lock() {
-                ch.record_history(route, &envelope);
+            let unsynced = state.broker_channels.lock().ok().map(|mut ch| {
+                let unsynced = ch.record_history(route, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.kind == collab_types::OpKind::Compaction
@@ -12735,6 +12741,12 @@ fn handle_signed_op_send_for_artifact(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
+                unsynced
+            });
+            // Synced outside the channels' lock, which the main loop takes
+            // too, and before the op is republished or fanned out.
+            if let Some(unsynced) = unsynced {
+                unsynced.finish();
             }
             if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -16119,6 +16131,7 @@ pub mod tests {
         pub resolve_mode: DirectoryResolveMode,
         result: tilo_actions::ResultSpec,
         confirmation_required: bool,
+        params: Vec<tilo_actions::ActionParam>,
         query_count: usize,
         resolve_count: usize,
     }
@@ -16151,7 +16164,7 @@ pub mod tests {
                 icon: None,
                 description: Some("Open the Atlas workspace".into()),
                 operation_kind: tilo_actions::OperationKind::View,
-                params: Vec::new(),
+                params: self.params.clone(),
                 contract: contract.clone(),
                 input: runtime_collab::ExportedInput::None,
                 view: None,
@@ -16276,6 +16289,8 @@ pub mod tests {
         source_identity: Option<AdmittedJoinIdentity>,
     }
 
+    include!("local_directory_surface.rs");
+
     impl LocalDirectoryFixture {
         /// Install the source only after the production certificate, signature,
         /// enrolled-device and current workspace admission checks succeed.
@@ -16320,6 +16335,11 @@ pub mod tests {
 
         pub fn set_confirmation_required(&self, required: bool) {
             self.directory_state.borrow_mut().confirmation_required = required;
+        }
+
+        /// The parameters the directory's action takes.
+        pub fn set_params(&self, params: Vec<tilo_actions::ActionParam>) {
+            self.directory_state.borrow_mut().params = params;
         }
 
         pub fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
@@ -16826,6 +16846,7 @@ pub mod tests {
             resolve_mode: DirectoryResolveMode::Found,
             result: tilo_actions::ResultSpec::None,
             confirmation_required: false,
+            params: Vec::new(),
             query_count: 0,
             resolve_count: 0,
         }));

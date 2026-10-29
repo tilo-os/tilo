@@ -312,6 +312,23 @@ impl Runtime {
         Ok(self.core.store.borrow_mut().create(&record)?)
     }
 
+    /// Create the per-room root of a type, by id or by a name one loaded package declares: the
+    /// resource `root T` and a named root reach (`root-<type id>`).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an unknown or ambiguous type; a store failure, or a root that exists.
+    pub fn create_root(&self, ty: &str) -> Result<ResourceRef, RuntimeError> {
+        let record = {
+            let reg = self.core.registry.borrow();
+            let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
+            reg.new_record(&id)
+                .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))?
+        };
+        let id = format!("root-{}", record.ty);
+        Ok(self.core.store.borrow_mut().create_with_id(&record, &id)?)
+    }
+
     /// Read a field of a resource, by field id or name.
     ///
     /// # Errors

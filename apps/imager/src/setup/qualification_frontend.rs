@@ -16,7 +16,7 @@ fn native_fixture() {
             let home = std::path::Path::new(request["home"].as_str().unwrap());
             // Rediscover from the same actual user's installation; do not pass
             // synthetic inventory into the UI just to satisfy the native gate.
-            let inventory = super::flatpak_transfer::discover(&super::flatpak_transfer::NativeRunner, home).unwrap();
+            let inventory = imager_backend::setup::flatpak_transfer::discover(&imager_backend::setup::flatpak_transfer::NativeRunner, home).unwrap();
             super::journey::paint_native_flatpak_inventory(home, &inventory);
             serde_json::Value::Null
         }

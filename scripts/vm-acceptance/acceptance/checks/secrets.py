@@ -282,7 +282,7 @@ echo "END"
 # First use, through the onboarding actions a person's clicks reach: acknowledge once,
 # then go forward; a backup is declined with its own acknowledgement, the tour skipped.
 ACKNOWLEDGE = {"onboarding.understood": {"checked": True},
-               "onboarding.backup.skip-acknowledged": {"acknowledge_without_backup": True}}
+               "onboarding.backup.skip-acknowledged": {"checked": True}}
 FORWARD = ["onboarding.finish", "onboarding.tour.skip", "onboarding.codecs.skip",
            "onboarding.codecs.continue", "onboarding.backup.continue", "onboarding.create",
            "onboarding.begin", "migration.later"]

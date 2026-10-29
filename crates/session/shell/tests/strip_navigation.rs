@@ -1877,11 +1877,8 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
     let mut h = Harness::new();
     let super_alt = ModifiersState::SUPER | ModifiersState::ALT;
     let shown = |h: &Harness| h.chrome.borrow().osd.map(|osd| osd.kind);
-    let saved = || {
-        let path = settings_store::settings_path().expect("settings path");
-        MagnifierState::from_section(&settings_store::load_section_at(&path, magnifier::SECTION))
-            .zoom
-    };
+    let saved =
+        || MagnifierState::from_section(&settings_store::load_section(magnifier::SECTION)).zoom;
 
     h.key(Key::Character("=".into()), super_alt);
     assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 2 }));

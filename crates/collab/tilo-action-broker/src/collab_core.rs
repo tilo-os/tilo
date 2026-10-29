@@ -12,6 +12,8 @@ use collab_types::{
     SignedOp, ValidationError, parse_redact_payload,
 };
 
+use super::collab_history::Unsynced;
+
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -174,26 +176,36 @@ impl BrokerChannels {
 
     /// Append an op validated on `route` to durable history when it belongs
     /// there, bound to its record and room. Failure is logged, never fatal:
-    /// the op is still delivered live.
-    pub fn record_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) {
+    /// the op is still delivered live. The caller syncs what this wrote once
+    /// it has released the channels' lock, and before it delivers the op
+    /// ([`Unsynced`]).
+    pub fn record_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) -> Unsynced {
         if self.routes.get(&op.artifact) != Some(route) {
             self.routes.insert(op.artifact, route.clone());
         }
-        if super::collab_history::CollabHistoryStore::retains(op)
-            && let Some(history) = self.history.as_mut()
-            && let Err(error) = history.bind_record(
+        let Some(history) = self.history.as_mut() else {
+            return Unsynced::default();
+        };
+        let mut unsynced = Unsynced::default();
+        if super::collab_history::CollabHistoryStore::retains(op) {
+            match history.bind_record(
                 op.artifact,
                 &route.cluster_id,
                 &route.app_id,
                 &route.record_id,
-            )
-        {
-            tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
+            ) {
+                Ok(binding) => unsynced = unsynced.join(binding),
+                Err(error) => {
+                    tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
+                }
+            }
         }
-        if let Some(history) = self.history.as_mut()
-            && let Err(error) = history.record(op)
-        {
-            tracing::warn!(%error, artifact = ?op.artifact, "collab history: append failed");
+        match history.record(op) {
+            Ok(appended) => unsynced.join(appended),
+            Err(error) => {
+                tracing::warn!(%error, artifact = ?op.artifact, "collab history: append failed");
+                unsynced
+            }
         }
     }
 
@@ -377,26 +389,36 @@ impl BrokerChannels {
     /// Take history ops a peer sent in answer to an outstanding request into
     /// durable history. Only signed content-key ciphertext of the requested
     /// artifact below the requested bound is kept; returns how many ops were
-    /// new. The broker still holds no key: these are opaque to it.
-    pub fn accept_peer_history(&mut self, artifact: ArtifactId, ops: &[SignedOp]) -> usize {
+    /// new. The broker still holds no key: these are opaque to it. The
+    /// caller syncs what this wrote once it has released the channels' lock
+    /// ([`Unsynced`]).
+    pub fn accept_peer_history(
+        &mut self,
+        artifact: ArtifactId,
+        ops: &[SignedOp],
+    ) -> (usize, Unsynced) {
         let Some((bound, at)) = self.peer_history_requests.get(&artifact).copied() else {
-            return 0;
+            return (0, Unsynced::default());
         };
         if std::time::Instant::now().saturating_duration_since(at) > PEER_HISTORY_WINDOW {
             self.peer_history_requests.remove(&artifact);
-            return 0;
+            return (0, Unsynced::default());
         }
         let room = self
             .routes
             .get(&artifact)
             .map(|route| route.cluster_id.clone());
         let Some(history) = self.history.as_mut() else {
-            return 0;
+            return (0, Unsynced::default());
         };
-        if let Some(room) = room
-            && let Err(error) = history.bind_room(artifact, &room)
-        {
-            tracing::warn!(%error, ?artifact, "collab history: room binding failed");
+        let mut unsynced = Unsynced::default();
+        if let Some(room) = room {
+            match history.bind_room(artifact, &room) {
+                Ok(binding) => unsynced = binding,
+                Err(error) => {
+                    tracing::warn!(%error, ?artifact, "collab history: room binding failed");
+                }
+            }
         }
         let page: Vec<&SignedOp> = ops
             .iter()
@@ -408,12 +430,13 @@ impl BrokerChannels {
             })
             .collect();
         // One data sync for the whole page rather than one per op.
-        history
-            .record_all_if_new(artifact, &page)
-            .unwrap_or_else(|error| {
+        match history.record_all_if_new(artifact, &page) {
+            Ok((stored, appended)) => (stored, unsynced.join(appended)),
+            Err(error) => {
                 tracing::warn!(%error, ?artifact, "collab history: peer page not stored");
-                0
-            })
+                (0, unsynced)
+            }
+        }
     }
 }
 

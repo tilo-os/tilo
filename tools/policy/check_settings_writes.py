@@ -10,9 +10,8 @@ leaf) or ``settings_store::SectionWrite`` (several leaves of one section), or,
 for a writer that owns a whole section, through the schema's own constant.
 
 This check refuses a string literal as the section argument of the raw writes
-(``update_section``, ``update_section_by``, ``update_section_report``,
-``compare_update_section`` and their ``_at`` forms, whose section is the
-second argument) in production sources outside ``settings-store`` itself.
+(``update_section``, ``update_section_by`` and ``compare_update_section``) in
+production sources outside ``settings-store`` itself.
 Test modules and test files are exempt: a test seeds the document it reads.
 """
 
@@ -33,11 +32,9 @@ SCANNED = (Path("crates"), Path("apps"))
 ALLOWED = (Path("crates/system/settings-store"),)
 
 # Writes whose first argument is the section.
-SECTION_FIRST = ("update_section", "update_section_by", "update_section_report", "compare_update_section")
-# Writes whose first argument is a path and second the section.
-SECTION_SECOND = ("update_section_at", "compare_update_section_at")
+SECTION_FIRST = ("update_section", "update_section_by", "compare_update_section")
 CALL = re.compile(
-    r"\b(?P<name>" + "|".join(sorted(SECTION_FIRST + SECTION_SECOND, key=len, reverse=True)) + r")\s*\("
+    r"\b(?P<name>" + "|".join(sorted(SECTION_FIRST, key=len, reverse=True)) + r")\s*\("
 )
 STRING_LITERAL = re.compile(r'^(?:b?"|b?r#*")')
 
@@ -100,8 +97,7 @@ def audit_file(root: Path, path: Path) -> list[Violation]:
         if re.search(r"\bfn\s+$", text[max(0, call.start() - 8) : call.start()]):
             continue
         args = arguments(text, call.end() - 1)
-        position = 1 if name in SECTION_SECOND else 0
-        if len(args) > position and STRING_LITERAL.match(args[position]):
+        if args and STRING_LITERAL.match(args[0]):
             violations.append(Violation(relative.as_posix(), line_number(text, call.start()), name))
     return violations
 

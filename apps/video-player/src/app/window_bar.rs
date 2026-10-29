@@ -11,12 +11,10 @@
 //! ([`crate::actions::VideoEffect`]) through the framework's door, so a press
 //! in the bar, an assistive technology and an agent take one path.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::PlayerApp;
-
-/// The bar action that opens a video.
-pub(crate) const OPEN: &str = "video-player.open";
+use crate::actions::VideoEffect;
 
 impl PlayerApp {
     /// The window bar's slots for what the player shows now.
@@ -28,31 +26,30 @@ impl PlayerApp {
                 ..ToolbarLocation::default()
             }),
             actions: vec![
-                ToolbarAction::new(OPEN, "folder-open", "Open video")
+                self.bar
+                    .entry(
+                        "folder-open",
+                        "Open video",
+                        VideoEffect::OpenVideo { path: None },
+                    )
                     .enabled(self.portal_open.is_none()),
             ],
             ..WindowToolbar::default()
         }
     }
 
-    /// Run what the person did in the window's bar, then declare the slots
-    /// for what the player shows now.
+    /// Run what the person did in the window's bar (the sidebar shows or
+    /// hides the library, Open opens a video, as their published actions
+    /// do), then declare the slots for what the player shows now.
     pub(super) fn run_window_toolbar(&self) {
         for event in ui::window_toolbar::take_events() {
-            self.run_window_bar_event(&event);
+            if event == ToolbarEvent::ToggleSidebar {
+                self.request_library_visibility_change();
+            } else if let Some(effect) = self.bar.pressed(&event) {
+                self.request(&effect);
+            }
         }
         ui::window_toolbar::declare(Some(self.window_toolbar()));
-    }
-
-    /// Run one thing the person did in the window's bar: the sidebar shows
-    /// or hides the library and Open opens a video, as their published
-    /// actions do.
-    pub(crate) fn run_window_bar_event(&self, event: &ToolbarEvent) {
-        match event {
-            ToolbarEvent::ToggleSidebar => self.request_library_visibility_change(),
-            ToolbarEvent::Action { id } if id == OPEN => self.request_open_action(),
-            _ => {}
-        }
     }
 }
 

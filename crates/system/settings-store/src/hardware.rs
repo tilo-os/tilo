@@ -2081,9 +2081,9 @@ impl QuickSettingsConfig {
         Self::from_section(super::load_section("quick_settings"))
     }
 
-    /// [`Self::load`] from an explicit settings file.
-    pub fn load_at(path: &std::path::Path) -> Self {
-        Self::from_section(super::load_section_at(path, "quick_settings"))
+    /// [`Self::load`] from `source`.
+    pub fn load_in(source: &dyn crate::SettingsSource) -> Self {
+        Self::from_section(super::load_section_in(source, "quick_settings"))
     }
 
     fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
@@ -2099,13 +2099,13 @@ impl QuickSettingsConfig {
         super::update_section("quick_settings", self.section()?)
     }
 
-    /// [`Self::save`] into an explicit settings file.
+    /// [`Self::save`] into `source`.
     ///
     /// # Errors
     ///
     /// Returns an error if the setting cannot be serialized or persisted.
-    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
-        super::update_section_at(path, "quick_settings", self.section()?)
+    pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
+        source.update_section("quick_settings", self.section()?)
     }
 
     fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
@@ -2148,9 +2148,9 @@ mod quick_settings_tests {
         }
         {
             let temp = crate::test_dir();
-            let path = temp.path().join("tilo/settings.json");
-            crate::update_section_at(
-                &path,
+            let store = crate::profile(temp.path());
+            crate::SettingsSource::update_section(
+                &*store,
                 "appearance",
                 serde_json::json!({"theme": "dark"})
                     .as_object()
@@ -2165,11 +2165,11 @@ mod quick_settings_tests {
                     QuickSettingsControl::Bluetooth,
                 ],
             };
-            expected.save_at(&path).unwrap();
+            expected.save_in(&*store).unwrap();
 
-            assert_eq!(QuickSettingsConfig::load_at(&path), expected);
+            assert_eq!(QuickSettingsConfig::load_in(&*store), expected);
             assert_eq!(
-                crate::load_at(&path)["appearance"]["theme"],
+                crate::SettingsSource::load(&*store)["appearance"]["theme"],
                 serde_json::json!("dark")
             );
         }
@@ -2730,9 +2730,9 @@ impl ShortcutConfig {
         Self::from_section(super::load_section("shortcuts"))
     }
 
-    /// [`Self::load`] from an explicit settings file.
-    pub fn load_at(path: &std::path::Path) -> Self {
-        Self::from_section(super::load_section_at(path, "shortcuts"))
+    /// [`Self::load`] from `source`.
+    pub fn load_in(source: &dyn crate::SettingsSource) -> Self {
+        Self::from_section(super::load_section_in(source, "shortcuts"))
     }
 
     /// The configuration a `shortcuts` section holds, repaired as
@@ -2805,14 +2805,14 @@ impl ShortcutConfig {
         super::update_section("shortcuts", self.section()?)
     }
 
-    /// [`Self::save`] into an explicit settings file.
+    /// [`Self::save`] into `source`.
     ///
     /// # Errors
     ///
     /// Returns an error if `self` can't be serialised or the section can't
     /// be written.
-    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
-        super::update_section_at(path, "shortcuts", self.section()?)
+    pub fn save_in(&self, source: &dyn crate::SettingsSource) -> std::io::Result<()> {
+        source.update_section("shortcuts", self.section()?)
     }
 
     /// The `shortcuts` section holding this configuration.
@@ -3356,14 +3356,14 @@ mod tests {
         }
         {
             let dir = crate::test_dir();
-            let path = dir.path().join("tilo/settings.json");
+            let store = crate::profile(dir.path());
 
             let mut saved = ShortcutConfig::default();
             saved
                 .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
                 .unwrap();
-            saved.save_at(&path).unwrap();
-            let reloaded = ShortcutConfig::load_at(&path);
+            saved.save_in(&*store).unwrap();
+            let reloaded = ShortcutConfig::load_in(&*store);
 
             assert_eq!(reloaded, saved);
             assert!(reloaded.validate().is_ok());
@@ -3459,7 +3459,7 @@ mod tests {
     #[test]
     fn a_chord_runs_any_published_action_but_never_takes_a_desktop_chord() {
         let dir = crate::test_dir();
-        let path = dir.path().join("tilo/settings.json");
+        let store = crate::profile(dir.path());
         let target = |resource: &str| ActionChordTarget {
             provider: "workspace:room".into(),
             resource: resource.into(),
@@ -3499,8 +3499,8 @@ mod tests {
             Err(ShortcutConfigError::TakenByAction),
             "a desktop action cannot take an action's chord either"
         );
-        cfg.save_at(&path).unwrap();
-        let reloaded = ShortcutConfig::load_at(&path);
+        cfg.save_in(&*store).unwrap();
+        let reloaded = ShortcutConfig::load_in(&*store);
         assert_eq!(reloaded, cfg);
         assert!(reloaded.validate().is_ok());
         assert!(cfg.remove_action(&target("shortcuts.shortcut:a")));

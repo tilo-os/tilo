@@ -49,9 +49,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         let due = app.last_theme_store_check + Duration::from_millis(750);
         assert!(app.reconcile_configured_theme_with(
             due,
-            || Some(settings_store::SettingsStamp::Modified(
-                std::time::SystemTime::UNIX_EPOCH
-            )),
+            || Some(settings_store::SettingsStamp(0)),
             |app| {
                 app.accessibility.base_theme = Theme::light();
             },
@@ -79,9 +77,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
             due,
             || {
                 checks.set(checks.get() + 1);
-                Some(settings_store::SettingsStamp::Modified(
-                    std::time::SystemTime::UNIX_EPOCH,
-                ))
+                Some(settings_store::SettingsStamp(0))
             },
             |app| {
                 applies.set(applies.get() + 1);
@@ -117,9 +113,7 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         let start = app.last_theme_store_check;
         let checks = std::cell::Cell::new(0);
         let applies = std::cell::Cell::new(0);
-        let stamp = Some(settings_store::SettingsStamp::Modified(
-            std::time::SystemTime::UNIX_EPOCH,
-        ));
+        let stamp = Some(settings_store::SettingsStamp(0));
         for (millis, source_stamp, expected_checks, expected_applies, expected_changed) in [
             (749, stamp, 0, 0, false),
             (750, stamp, 1, 1, true),
@@ -206,22 +200,14 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
     // is the one the compositor watches. A write that leaves this surface
     // on the old theme is the failure.
     let session = tempfile::tempdir().expect("session settings");
-    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
-    let session_file = session.path().join("settings.json");
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", app_xdg.path())
-        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+    env.set("XDG_CONFIG_HOME", session.path());
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
         values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
-        assert_eq!(
-            settings_store::settings_path().as_deref(),
-            Some(session_file.as_path()),
-            "the write must land on the session document, not the remapped XDG copy"
-        );
     };
 
     write("dark");
@@ -260,10 +246,6 @@ fn settings_file_write_rethemes_the_sampled_app_surface() {
         "light and dark sampled surfaces must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
     );
     assert_eq!(app.theme.name, Theme::light().name);
-    assert!(
-        !app_xdg.path().join("tilo/settings.json").exists(),
-        "the remapped XDG copy must stay unused"
-    );
 }
 
 #[test]
@@ -275,12 +257,18 @@ fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
     // U02 samples the centre of that window: it stays on the dark raised
     // surface unless the session document wins.
     let session = tempfile::tempdir().expect("session settings");
-    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
-    let session_file = session.path().join("settings.json");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove("XDG_CURRENT_DESKTOP")
-        .set("XDG_CONFIG_HOME", app_xdg.path())
-        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+        .set("XDG_CONFIG_HOME", session.path());
+    // The session's settings, as the app's channel to the shell gives them.
+    struct RestoreSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
+    impl Drop for RestoreSource {
+        fn drop(&mut self) {
+            settings_store::install_source(self.0.take());
+        }
+    }
+    let _restore = RestoreSource(settings_store::installed_source());
+    settings_store::install_source(Some(settings_store::profile(session.path())));
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();

@@ -391,43 +391,33 @@ impl Store {
         if record.grant.operation != self.operation {
             return Err(failure("capture record operation changed"));
         }
-        let bytes = serde_json::to_vec(record)?;
-        if bytes.len() as u64 > MAX_RECORD {
-            return Err(failure("capture record exceeds bound"));
-        }
         let storage = storage(&self.records)?;
         storage.validate_privacy(Privacy::OwnerOnly)?;
-        storage
-            .publish(
-                OsStr::new(&format!("{}.json", self.operation)),
-                &bytes,
-                if initial {
-                    PublishMode::IfAbsent
-                } else {
-                    PublishMode::Replace
-                },
-                Privacy::OwnerOnly,
-            )
-            .map_err(io::Error::other)?;
+        crate::record::publish(
+            &storage,
+            &format!("{}.json", self.operation),
+            record,
+            MAX_RECORD,
+            if initial {
+                PublishMode::IfAbsent
+            } else {
+                PublishMode::Replace
+            },
+            || failure("capture record exceeds bound"),
+        )?;
         self.records.validate_destination()
     }
 
     pub(super) fn load(&self) -> io::Result<Option<Record>> {
-        let storage = storage(&self.records)?;
-        let file = match storage.open_read(
-            OsStr::new(&format!("{}.json", self.operation)),
-            Privacy::OwnerOnly,
-        ) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(bytes) = crate::record::read_optional(
+            &storage(&self.records)?,
+            &format!("{}.json", self.operation),
+            MAX_RECORD,
+            || failure("capture record exceeds bound"),
+        )?
+        else {
+            return Ok(None);
         };
-        if file.metadata()?.len() > MAX_RECORD {
-            return Err(failure("capture record exceeds bound"));
-        }
-        let bytes = crate::record::read_bounded(file, MAX_RECORD, || {
-            failure("capture record exceeds bound")
-        })?;
         let record = match serde_json::from_slice::<DurableRecord>(&bytes)? {
             DurableRecord::Capture(record) => record,
             DurableRecord::Original(_) => {

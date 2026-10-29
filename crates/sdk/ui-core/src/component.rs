@@ -372,6 +372,17 @@ impl Event {
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
     }
+
+    /// The action the event runs, when it is known to run one: an exported action by its
+    /// address, a view intent by what its host said it runs.
+    #[must_use]
+    pub fn invokes(&self) -> Option<&tilo_actions::ActionAddress> {
+        match self {
+            Self::None => None,
+            Self::Action(binding) => Some(binding.address()),
+            Self::View(intent) => intent.invokes.as_ref(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Event {
@@ -398,6 +409,9 @@ pub struct Fired {
 pub struct Intent {
     queue: crate::Intents<Fired>,
     fired: Fired,
+    /// The action the host's view attached to the event runs, when it runs one: what a menu
+    /// tells its placed commands from those the system adds by.
+    invokes: Option<tilo_actions::ActionAddress>,
 }
 
 impl Intent {
@@ -411,7 +425,22 @@ impl Intent {
                 event: event.to_owned(),
                 value: None,
             },
+            invokes: None,
         }
+    }
+
+    /// The intent, saying that what it fires runs the action `action` on the resource
+    /// `resource` (both by id).
+    #[must_use]
+    pub fn invoking_action(self, resource: &str, action: &str) -> Self {
+        self.invoking(Some(tilo_actions::ActionAddress::new(resource, action)))
+    }
+
+    /// The intent, saying that what it fires runs `action`.
+    #[must_use]
+    pub fn invoking(mut self, action: Option<tilo_actions::ActionAddress>) -> Self {
+        self.invokes = action;
+        self
     }
 
     /// Queue the intent, carrying `value`.
@@ -860,6 +889,7 @@ pub fn registry() -> &'static [Entry] {
             entry::<Avatar>(),
             entry::<crate::widget::Board>(),
             entry::<crate::widget::Chip>(),
+            entry::<crate::widget::BlockEditor>(),
         ]
     })
 }
@@ -890,16 +920,22 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 }
 
 /// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places, a menu's commands, a row's swipe and the items of a
-/// virtual list.
+/// list's facts, a navigation list's places, a menu's commands, separators and emoji bar, a
+/// row's swipe, the items of a virtual list, and what a view attaches to the element it stands
+/// in (its context menu, hover toolbar and swipe).
 #[must_use]
-pub fn parts() -> [fn() -> Description; 7] {
+pub fn parts() -> [fn() -> Description; 12] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
         crate::widget::MenuItemProps::describe,
+        crate::widget::MenuSeparatorProps::describe,
+        crate::widget::EmojiBarProps::describe,
         crate::widget::SwipeActionProps::describe,
         crate::widget::ListItemProps::describe,
+        crate::widget::ContextMenuProps::describe,
+        crate::widget::HoverToolbarProps::describe,
+        crate::widget::SwipeProps::describe,
         crate::widget::BoardLaneProps::describe,
         crate::widget::BoardCardProps::describe,
     ]

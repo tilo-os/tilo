@@ -132,7 +132,7 @@ impl InstalledCopyReceiveSession {
                         "Application archive belongs to another installed operation",
                     ));
                 }
-                if expected.consumer_protocol == 2 {
+                if expected.kind.consumer_protocol == 2 {
                     crate::setup::applications_admission::installed()?;
                 }
                 Some(ApplicationImport::review_received(

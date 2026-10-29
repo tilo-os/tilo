@@ -245,7 +245,7 @@ fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it
 struct Sheet(
     tokio::sync::mpsc::UnboundedSender<(
         crate::app_actions::AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<crate::app_actions::AppActionConsent>,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
     )>,
 );
 
@@ -253,7 +253,7 @@ impl crate::app_actions::AppActionConsentPrompter for Sheet {
     fn ask(
         &self,
         request: crate::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
         let (answer, receive) = tokio::sync::oneshot::channel();
         self.0.send((request, answer)).ok()?;
         Some(receive)
@@ -291,10 +291,14 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     assert_eq!(draft.fields[0].value.line(), "Buy milk");
     assert!(draft.fields[0].editable, "{draft:?}");
     answer
-        .send(crate::app_actions::AppActionConsent::Once)
+        .send(crate::app_actions::AppActionConsent::Once.into())
         .unwrap();
     let witnessed = witness.await.expect("answered").expect("witnessed");
-    invoke.confirmation = Some(witnessed);
+    assert_eq!(
+        witnessed.arguments, None,
+        "an unedited answer changes nothing"
+    );
+    witnessed.apply(&mut invoke);
     assert!(matches!(
         state
             .action_invoke(&agent, None, None, &invoke)
@@ -302,6 +306,161 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
         PendingPoll::Ready(Ok(_))
     ));
     assert!(app.try_recv().is_ok(), "it runs on the person's answer");
+}
+
+/// The arguments `envelope` hands its application.
+fn delivered_arguments(envelope: &InvocationEnvelope) -> serde_json::Value {
+    let slot = envelope
+        .argument
+        .as_deref()
+        .expect("it carries its arguments");
+    let json = slot
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .unwrap_or(slot);
+    serde_json::from_str(json).unwrap()
+}
+
+/// An agent asks to set `text` and to `pin` it; its person is asked.
+fn ask_to_update(
+    state: &Arc<CapnpBrokerState>,
+    person: &Caller,
+) -> (
+    Caller,
+    InvokeRequest,
+    tokio::sync::mpsc::UnboundedReceiver<(
+        crate::app_actions::AppActionConsentRequest,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
+    )>,
+) {
+    let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
+    state.set_app_action_consent(Arc::new(Sheet(sheet)));
+    let agent = Caller::local_agent("scribe")
+        .acting_for("a1".repeat(32))
+        .in_room(person.room().unwrap().to_owned())
+        .in_new_execution();
+    let mut invoke = request();
+    invoke.argument = InvokeArgument::Json(
+        serde_json::json!({"text": "Buy milk", "pin": false})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    );
+    (agent, invoke, asked)
+}
+
+fn text_and_pin() -> Vec<tilo_actions::ActionParam> {
+    vec![
+        tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "Text"),
+        tilo_actions::ActionParam::required("pin", tilo_actions::ParamType::Boolean, "Pin it"),
+    ]
+}
+
+/// The person changes the draft on the sheet before allowing it: the agent
+/// is handed exactly the arguments they made, the confirmation is bound to
+/// those, and those are what the application runs.
+#[tokio::test]
+async fn an_agents_ask_edited_on_the_sheet_runs_exactly_the_edited_arguments() {
+    let (state, person, mut app) =
+        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
+    let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
+    let witness = state.request_witness(&agent, None, &invoke);
+    let (_question, answer) = asked.recv().await.expect("the person is asked");
+    answer
+        .send(crate::app_actions::AppActionAnswer {
+            consent: crate::app_actions::AppActionConsent::Once,
+            edits: vec![
+                tilo_actions::DraftEdit {
+                    path: vec!["text".into()],
+                    text: "Buy oat milk".into(),
+                },
+                tilo_actions::DraftEdit {
+                    path: vec!["pin".into()],
+                    text: "true".into(),
+                },
+            ],
+        })
+        .unwrap();
+    let witnessed = witness.await.expect("answered").expect("witnessed");
+    let edited = serde_json::json!({"text": "Buy oat milk", "pin": true});
+    assert_eq!(
+        witnessed.arguments.clone().map(serde_json::Value::Object),
+        Some(edited.clone()),
+        "the agent is handed the person's arguments"
+    );
+    witnessed.apply(&mut invoke);
+    assert!(matches!(
+        state
+            .action_invoke(&agent, None, None, &invoke)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let ran = app.try_recv().expect("it runs on the person's answer");
+    assert_eq!(delivered_arguments(&ran), edited, "exactly what they made");
+}
+
+/// A confirmation is bound to the arguments the person allowed: the same
+/// token with any others (the agent's own, from before the edit, or one
+/// changed after it) finds nothing to admit, and nothing runs.
+#[tokio::test]
+async fn arguments_changed_after_the_person_allowed_them_are_refused() {
+    let (state, person, mut app) =
+        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
+    for tampered in [
+        // The agent's own arguments, ignoring the person's edit.
+        serde_json::json!({"text": "Buy milk", "pin": false}),
+        // The edit, changed again after the person allowed it.
+        serde_json::json!({"text": "Buy oat milk and wine", "pin": false}),
+    ] {
+        let (agent, mut invoke, mut asked) = ask_to_update(&state, &person);
+        let witness = state.request_witness(&agent, None, &invoke);
+        let (_question, answer) = asked.recv().await.expect("the person is asked");
+        answer
+            .send(crate::app_actions::AppActionAnswer {
+                consent: crate::app_actions::AppActionConsent::Once,
+                edits: vec![tilo_actions::DraftEdit {
+                    path: vec!["text".into()],
+                    text: "Buy oat milk".into(),
+                }],
+            })
+            .unwrap();
+        let witnessed = witness.await.expect("answered").expect("witnessed");
+        invoke.confirmation = Some(witnessed.confirmation);
+        invoke.argument = InvokeArgument::Json(tampered.as_object().cloned().unwrap());
+        assert!(
+            matches!(
+                state
+                    .action_invoke(&agent, None, None, &invoke)
+                    .poll_ready(),
+                PendingPoll::Ready(Err(_))
+            ),
+            "{tampered} was not what the person allowed"
+        );
+        assert!(app.try_recv().is_err(), "nothing runs");
+    }
+}
+
+/// An edit to what the draft does not offer for editing confirms nothing.
+#[tokio::test]
+async fn an_edit_the_draft_does_not_offer_confirms_nothing() {
+    let (state, person, mut app) =
+        fixture_with(vec![tilo_actions::ATTENDED_TAG.to_owned()], text_and_pin());
+    let (agent, invoke, mut asked) = ask_to_update(&state, &person);
+    let witness = state.request_witness(&agent, None, &invoke);
+    let (_question, answer) = asked.recv().await.expect("the person is asked");
+    answer
+        .send(crate::app_actions::AppActionAnswer {
+            consent: crate::app_actions::AppActionConsent::Once,
+            edits: vec![tilo_actions::DraftEdit {
+                path: vec!["owner".into()],
+                text: "mallory".into(),
+            }],
+        })
+        .unwrap();
+    assert!(matches!(
+        witness.await,
+        Some(Err(ActionHostError::InvalidRequest { .. }))
+    ));
+    assert!(app.try_recv().is_err(), "nothing runs");
 }
 
 #[test]

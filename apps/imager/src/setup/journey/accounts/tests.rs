@@ -1,6 +1,6 @@
 use super::*;
-use crate::setup::account_transfer::Connector;
 use accounts::SecretVault;
+use imager_backend::account_transfer::Connector;
 use std::sync::Mutex;
 
 #[test]
@@ -13,7 +13,7 @@ fn detected_foreign_profiles_do_not_offer_or_prepare_a_replacement_login() {
         std::fs::write(config.join(relative).join("session"), b"private original").unwrap();
     }
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     assert_eq!(inventory.candidates.len(), 2);
     let ids = inventory
         .candidates
@@ -86,7 +86,7 @@ fn settle(accounts: &mut Accounts) {
 #[test]
 #[cfg(unix)]
 fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
-    let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
+    let dav_server = super::dav_readiness::test_server();
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("source-home");
     let config = home.join(".config");
@@ -108,7 +108,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         home: home.clone(),
         config,
     };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let id = inventory.candidates[0].id.clone();
     let browser = Browser::new(false);
     let mut accounts = Accounts::default();
@@ -194,7 +194,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     }
     #[cfg(not(unix))]
     std::fs::create_dir(&journal_dir).unwrap();
-    let review = super::super::super::home_transfer::review(
+    let review = imager_backend::home_transfer::review(
         &home,
         &target_home,
         &journal_dir.join("home-transfer.json"),
@@ -203,12 +203,12 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
     let mut worker = review.start().unwrap();
     let until = std::time::Instant::now() + tilo_test_env::hang_bound();
     loop {
-        if let Some(super::super::super::migration_worker::WorkerEvent::Finished(outcome)) =
+        if let Some(imager_backend::migration_worker::WorkerEvent::Finished(outcome)) =
             worker.try_next()
         {
             assert!(matches!(
                 outcome,
-                super::super::super::migration_worker::WorkerOutcome::Complete(_)
+                imager_backend::migration_worker::WorkerOutcome::Complete(_)
             ));
             break;
         }
@@ -533,7 +533,7 @@ fn dav_and_nextcloud_guided_public_fields_save_exact_private_credentials_without
         ("webdav", accounts::cloud_types::WEBDAV),
         ("nextcloud", accounts::cloud_types::NEXTCLOUD),
     ] {
-        let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
+        let dav_server = super::dav_readiness::test_server();
         let endpoint = format!("{}/dav", dav_server.url());
         let browser = Browser::new(false);
         let mut preview = InstallerPreview {
@@ -693,9 +693,10 @@ impl NextcloudFixture {
                 ("PROPFIND", "/remote.php/dav/files/ada/") => {
                     assert_eq!(request.header("depth"), Some("0"));
                     assert!(request.header("authorization").is_some());
-                    Some(test_http::Reply::status(dav_status).body(
-                        crate::setup::account_transfer::dav_readiness::collection(&request.target),
-                    ))
+                    Some(
+                        test_http::Reply::status(dav_status)
+                            .body(super::dav_readiness::collection(&request.target)),
+                    )
                 }
                 ("DELETE", "/ocs/v2.php/core/apppassword") => {
                     revocations.fetch_add(1, Ordering::SeqCst);
@@ -1018,7 +1019,7 @@ fn removing_prepared_import_requires_confirmation_and_preserves_original_credent
         home: source,
         config,
     };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let candidate = inventory
         .candidates
         .iter()
@@ -1348,7 +1349,7 @@ fn tilo_source(with_grant: bool) -> TiloSource {
 fn guided_selected_tilo_connection_imports_usable_grant_and_preserves_source_bytes() {
     let source = tilo_source(true);
     let root = source.roots.config.join("tilo");
-    let inventory = super::super::super::account_transfer::discover(&source.roots);
+    let inventory = imager_backend::account_transfer::discover(&source.roots);
     assert_eq!(inventory.tilo_accounts.len(), 1);
     assert!(inventory.unreadable_sources.is_empty());
     let selected = inventory.tilo_accounts[0].source_id.clone();
@@ -1407,7 +1408,7 @@ fn selected_tilo_metadata_change_and_unavailable_custody_never_claim_connection(
     for change_metadata in [false, true] {
         let source = tilo_source(change_metadata);
         let root = source.roots.config.join("tilo");
-        let inventory = super::super::super::account_transfer::discover(&source.roots);
+        let inventory = imager_backend::account_transfer::discover(&source.roots);
         assert_eq!(
             inventory.tilo_accounts.len(),
             1,
@@ -1483,14 +1484,14 @@ fn saved_tilo_source_redirects_cannot_escape_the_consented_config_root() {
     use std::os::unix::fs::symlink;
     let source = tilo_source(true);
     let root = source.roots.config.join("tilo");
-    let inventory = super::super::super::account_transfer::discover(&source.roots);
+    let inventory = imager_backend::account_transfer::discover(&source.roots);
     let selected = inventory.tilo_accounts[0].source_id.clone();
     let saved = source._temp.path().join("outside-consented-config");
     std::fs::rename(&root, &saved).unwrap();
     let original = std::fs::read(accounts::store_path_in(&saved)).unwrap();
     let ciphertext = std::fs::read(accounts::vault_dir_in(&saved).join("vault.enc")).unwrap();
     symlink(&saved, &root).unwrap();
-    let refused = super::super::super::account_transfer::discover(&source.roots);
+    let refused = imager_backend::account_transfer::discover(&source.roots);
     assert!(refused.tilo_accounts.is_empty());
     assert!(refused.unreadable_sources.contains(&"Tilo accounts"));
     assert!(
@@ -1524,7 +1525,7 @@ fn detected_oauth_profile_obeys_configuration_in_rows_and_semantic_actions() {
     std::fs::create_dir_all(&profile).unwrap();
     std::fs::write(profile.join("session"), b"preserved profile").unwrap();
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let candidate = inventory.candidates[0].clone();
     assert!(can_connect_candidate(&candidate));
     assert!(!candidate.can_import_credentials);
@@ -1600,7 +1601,7 @@ fn configured_detected_oauth_profile_offers_the_real_confirmation_path() {
     let candidate = Candidate {
         id: "configured-source".into(),
         provider: Provider::Google,
-        origin: super::super::super::account_transfer::Origin::Application,
+        origin: imager_backend::account_transfer::Origin::Application,
         label: "Google Drive".into(),
         identity: None,
         server: None,
@@ -1748,7 +1749,7 @@ struct CheckpointFixture {
 }
 #[cfg(target_os = "linux")]
 fn checkpoint_grants(root: &Path) -> CheckpointFixture {
-    let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
+    let dav_server = super::dav_readiness::test_server();
     use account_custody::{Custodian, TokenSet};
     let source = root.join("source");
     let copied = Connector::new(source.clone())
@@ -1906,7 +1907,7 @@ fn account_provider_confirmation_back_returns_to_the_service_choice() {
 fn spotify_connection_success_describes_the_actual_library_grant() {
     let temp = tempfile::tempdir().unwrap();
     let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
-    let (endpoint, api) = crate::setup::account_transfer::spotify_identity::profile_server(vec![
+    let (endpoint, api) = imager_backend::account_transfer::spotify_identity::profile_server(vec![
         serde_json::json!({"id":"ada-spotify", "account_id":"stable-ada"}),
     ]);
     let browser = Browser::new(true);
@@ -2109,7 +2110,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
     );
     assert!(!checkpoint_root.exists());
     let identity = std::sync::Arc::new(
-        crate::setup::prepared_identity::PreparedIdentity::create(
+        imager_backend::prepared_identity::PreparedIdentity::create(
             &pending.identity_directory(),
             "Chosen person",
             [20, 80, 140],
@@ -2187,7 +2188,7 @@ fn unavailable_native_nextcloud_sign_in_offers_explicit_reconnect_with_bound_ser
     let original = "[Accounts]\n0\\url=https://cloud.example.test/base\n0\\http_user=ada\n0\\authType=http\n0\\displayName=My files\n";
     std::fs::write(&source, original).unwrap();
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let candidate = inventory
         .candidates
         .iter()
@@ -2256,7 +2257,7 @@ struct SavedBatchFixture {
 #[cfg(target_os = "linux")]
 impl SavedBatchFixture {
     fn new() -> Self {
-        let dav_server = crate::setup::account_transfer::dav_readiness::test_server();
+        let dav_server = super::dav_readiness::test_server();
         use std::os::unix::fs::PermissionsExt;
         let temporary = tempfile::tempdir().unwrap();
         let home = temporary.path().join("original-home");
@@ -2281,18 +2282,18 @@ impl SavedBatchFixture {
             .as_str()
             .to_owned();
         let roots = SourceRoots { home, config };
-        let inventory = super::super::super::account_transfer::discover(&roots);
+        let inventory = imager_backend::account_transfer::discover(&roots);
         let rclone_id = inventory
             .candidates
             .iter()
-            .find(|c| c.origin == super::super::super::account_transfer::Origin::Rclone)
+            .find(|c| c.origin == imager_backend::account_transfer::Origin::Rclone)
             .unwrap()
             .id
             .clone();
         let nextcloud_id = inventory
             .candidates
             .iter()
-            .find(|c| c.origin == super::super::super::account_transfer::Origin::Nextcloud)
+            .find(|c| c.origin == imager_backend::account_transfer::Origin::Nextcloud)
             .unwrap()
             .id
             .clone();
@@ -2536,7 +2537,7 @@ fn unavailable_saved_rclone_cloud_grants_offer_explicit_reconnect_without_openin
     let original = "[Drive]\ntype=drive\ntoken=invalid-source-grant\n[Microsoft]\ntype=onedrive\ntoken={}\n[Dropbox]\ntype=dropbox\ntoken={}\n";
     std::fs::write(&source, original).unwrap();
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
     let browser = Browser::new(false);
     for candidate in &inventory.candidates {
@@ -2605,7 +2606,7 @@ fn unavailable_selected_goa_credentials_offer_explicit_bound_reconnect_without_k
     // An uncontrolled config is refused before asking the actual owner keyring.
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o666)).unwrap();
     let roots = SourceRoots { home, config };
-    let inventory = super::super::super::account_transfer::discover(&roots);
+    let inventory = imager_backend::account_transfer::discover(&roots);
     let selected = inventory.candidates[0].clone();
     assert!(selected.can_import_credentials);
     let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -2700,7 +2701,7 @@ fn detected_account_label_preserves_provider_display_name_and_known_identity() {
     let candidate = Candidate {
         id: "metadata-source".into(),
         provider: Provider::Nextcloud,
-        origin: super::super::super::account_transfer::Origin::Nextcloud,
+        origin: imager_backend::account_transfer::Origin::Nextcloud,
         label: "Team files".into(),
         identity: Some("ada@example.test".into()),
         server: Some("https://cloud.example.test".into()),
@@ -2732,7 +2733,7 @@ fn detected_spotify_profiles_offer_configured_playback_without_moving_the_source
         let original = b"opaque desktop profile, not an OAuth grant";
         std::fs::write(&session, original).unwrap();
         let roots = SourceRoots { home, config };
-        let inventory = super::super::super::account_transfer::discover(&roots);
+        let inventory = imager_backend::account_transfer::discover(&roots);
         let candidate = inventory
             .candidates
             .iter()

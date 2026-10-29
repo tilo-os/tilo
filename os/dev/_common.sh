@@ -238,7 +238,7 @@ composefs_sealed_digest() {
 
 # `podman run` flags that give files a build container writes to bind mounts this user's
 # ownership. Rootless, --userns=keep-id does it; as root (a build container's root, such as
-# the rcargo builder's, whose user namespace maps only 65536 ids) there is nothing to keep,
+# a remote builder's, whose user namespace maps only 65536 ids) there is nothing to keep,
 # and keep-id would make podman copy and re-own each image layer, which fails there on ids
 # outside that range.
 keep_id_args() {

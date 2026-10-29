@@ -328,7 +328,29 @@ impl McpClient {
     }
 
     /// One tool call: the text the agent reads, and whether it is an error.
+    /// An action the door answers as still pending (its wait for the job
+    /// ran out, as it does on a loaded machine) is followed as an agent
+    /// follows it, through `tilo_status`, until it settles.
     fn tool(&mut self, name: &str, arguments: &serde_json::Value) -> (String, bool) {
+        let answer = self.call_tool(name, arguments);
+        if name != "tilo_do" {
+            return answer;
+        }
+        let deadline = tilo_test_env::hang_deadline();
+        let mut answer = answer;
+        while let Some(job) = pending_job(&answer.0) {
+            assert!(
+                Instant::now() < deadline,
+                "{name} {arguments} never settled: {}",
+                answer.0
+            );
+            std::thread::sleep(Duration::from_millis(200));
+            answer = self.call_tool("tilo_status", &serde_json::json!({"invocation_id": job}));
+        }
+        answer
+    }
+
+    fn call_tool(&mut self, name: &str, arguments: &serde_json::Value) -> (String, bool) {
         self.next_id = self.next_id.checked_add(1).expect("request ids left");
         let id = self.next_id;
         self.send(
@@ -581,6 +603,13 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
         busy.is_empty(),
         "the state file's writer lease was taken:\n{busy}"
     );
+}
+
+/// The job an action's answer says has not finished yet.
+fn pending_job(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("pending ")?;
+    let (job, _) = rest.split_once(':')?;
+    Some(job.to_owned())
 }
 
 /// What the agent reads names resources as a person does: never by a bound

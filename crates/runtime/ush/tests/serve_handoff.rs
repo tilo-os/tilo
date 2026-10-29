@@ -371,7 +371,7 @@ fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
     .unwrap();
 
     let key = "k3y0fth1ss3ss10n";
-    let (_stream, master) = open_marked_session(&socket, Some(key));
+    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Linux);
     let fd = master.as_raw_fd();
     let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
     assert!(prompt.contains("Fixture"), "no prompt appeared:\n{prompt}");
@@ -395,6 +395,49 @@ fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
         seen.contains(&mark),
         "the guest's shell marks the run it finished:\n{seen:?}"
     );
+}
+
+/// A new session's shell is ush's own: in a real guest, `ls | wc -l` runs as
+/// two of Tilo's own commands over the guest's files, and the run is marked
+/// with its line, directory and status.
+#[test]
+fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, _store, socket, granted) = serve_fixture(dir.path());
+    for name in ["one", "two", "three"] {
+        std::fs::write(granted.join(name), name).unwrap();
+    }
+    let key = "k3y0fth1ss3ss10n";
+    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Ush);
+    let fd = master.as_raw_fd();
+    let prompt = format!("\x1b]133;A;k={key}\x07");
+    let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
+    assert!(seen.contains(&prompt), "no prompt mark:\n{seen:?}");
+
+    let line = format!("cd {} && ls | wc -l\r", granted.display());
+    // SAFETY: `fd` is a live pty master.
+    let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+    assert!(written > 0, "could not write to the pty");
+    let ended = format!("\x1b]133;D;0;k={key};t=1\x07");
+    let seen = read_until(fd, &ended, tilo_test_env::hang_bound());
+    assert!(
+        seen.contains(&ended),
+        "the run is marked as it ends:\n{seen:?}"
+    );
+    assert!(seen.contains("133;C;"), "and as it starts:\n{seen:?}");
+    let printed = seen.rsplit('\x07').nth(1).unwrap_or_default();
+    assert!(printed.contains('3'), "three files in the grant:\n{seen:?}");
 }
 
 /// The installed public spelling creates Default on first use and runs a
@@ -497,15 +540,21 @@ fn fixture_environment(store: &Store, granted: &Path) {
 }
 
 /// Ask for the default environment and receive its pty master.
+/// The default environment as a full Linux session: bash in the guest,
+/// which is what these tests type at.
 fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
-    open_marked_session(socket, None)
+    open_marked_session(socket, None, tilo_environment::Shell::Linux)
 }
 
-/// [`open_default_session`], whose shell marks its runs with `runs`.
-fn open_marked_session(socket: &Path, runs: Option<&str>) -> (UnixStream, OwnedFd) {
+/// The default environment in `shell`, marking its runs with `runs`.
+fn open_marked_session(
+    socket: &Path,
+    runs: Option<&str>,
+    shell: tilo_environment::Shell,
+) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
-        target: Target::default_environment(),
+        target: Target::default_environment_in(shell),
         cols: 100,
         rows: 30,
         term: Some("xterm-256color".into()),

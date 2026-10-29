@@ -34,25 +34,18 @@ class SettingsWriteContractTests(unittest.TestCase):
             "}\n"
             "fn b(source: &dyn SettingsSource) {\n"
             "    source\n"
-            "        .update_section_report(\n"
+            "        .compare_update_section(\n"
             '            "display_transaction",\n'
+            "            &expected,\n"
             "            values,\n"
             "        );\n"
-            "}\n"
-            "fn c() {\n"
-            "    settings_store::update_section_at(\n"
-            '        file.ok_or_else(|| Error::other("no, (storage)"))?,\n'
-            '        "display_tools",\n'
-            "        values,\n"
-            "    );\n"
             "}\n"
         )
         self.assertEqual(
             self.violations({"crates/x/src/lib.rs": source}),
             [
                 ("crates/x/src/lib.rs", 2, "update_section"),
-                ("crates/x/src/lib.rs", 6, "update_section_report"),
-                ("crates/x/src/lib.rs", 12, "update_section_at"),
+                ("crates/x/src/lib.rs", 6, "compare_update_section"),
             ],
         )
 
@@ -61,7 +54,6 @@ class SettingsWriteContractTests(unittest.TestCase):
             "const SECTION: &str = \"input\";\n"
             "fn a() {\n"
             "    settings_store::update_section(SECTION, values);\n"
-            "    settings_store::update_section_at(Path::new(\"/x\"), Self::SECTION, values);\n"
             "    settings_store::hardware::TOUCHPAD_ENABLED.set(false);\n"
             "}\n"
             "pub fn update_section(name: &str, values: Map) {}\n"

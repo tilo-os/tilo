@@ -189,7 +189,7 @@ impl ActionHost for GatedHost {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
         self.stub.confirm(caller, request)
     }
 

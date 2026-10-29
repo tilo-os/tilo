@@ -423,6 +423,7 @@ pub fn open_ush_session(
         target: tilo_environment::Target::Environment {
             record: Some(record_key.to_owned()),
             location: tilo_environment::Location::ThisDevice,
+            shell: tilo_environment::Shell::Linux,
         },
         cols: request.size.cols,
         rows: request.size.rows,
@@ -1046,6 +1047,7 @@ mod tests {
                 tilo_environment::Target::Environment {
                     record: Some("relay-key".into()),
                     location: tilo_environment::Location::ThisDevice,
+                    shell: tilo_environment::Shell::Linux,
                 }
             );
             let (master, slave) = openpty();

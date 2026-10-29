@@ -365,24 +365,30 @@ fn the_sample_calendar_opens_with_its_curated_notes() {
     assert!(notes.contains("Confirm the launch timeline."), "{notes}");
 }
 
-/// The view the window bar's switcher shows chosen.
+/// The name of the view the window bar's switcher shows chosen.
 fn bar_view() -> Option<String> {
-    ui::window_toolbar::declared()
-        .and_then(|toolbar| toolbar.views)
-        .map(|views| views.chosen)
+    let views = ui::window_toolbar::declared().and_then(|toolbar| toolbar.views)?;
+    views
+        .choices
+        .into_iter()
+        .find(|choice| choice.id == views.chosen)
+        .map(|choice| choice.label)
 }
 
 /// Choose `view` in the window bar's switcher, as the desktop hands the
 /// press to the app, and let the app apply it.
 fn choose_view_in_bar(app: &mut TestApp<CalendarShell>, view: crate::model::View) {
-    let slot = crate::window_bar::view_slot(view);
-    assert!(
-        ui::window_toolbar::declared()
-            .and_then(|toolbar| toolbar.views)
-            .is_some_and(|views| views.choices.iter().any(|choice| choice.id == slot)),
-        "the window bar's switcher offers {slot}"
-    );
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: slot });
+    let name = view.display_label();
+    let slot = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.views)
+        .and_then(|views| {
+            views
+                .choices
+                .into_iter()
+                .find(|choice| choice.label == name)
+        })
+        .unwrap_or_else(|| panic!("the window bar's switcher offers {name}"));
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: slot.id });
     app.settle();
 }
 
@@ -395,9 +401,9 @@ fn the_bars_view_switcher_navigates_live_and_preserves_document() {
     app.settle();
     let before = app.peer_document().get_heads();
     choose_view_in_bar(&mut app, View::Week);
-    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Week)));
+    assert_eq!(bar_view(), Some(View::Week.display_label()));
     choose_view_in_bar(&mut app, View::Month);
-    assert_eq!(bar_view(), Some(crate::window_bar::view_slot(View::Month)));
+    assert_eq!(bar_view(), Some(View::Month.display_label()));
     assert_eq!(app.peer_document().get_heads(), before);
     assert!(!app.undo(), "view changes create no document undo step");
 }
@@ -1069,8 +1075,7 @@ mod tasks_screen {
                 .is_some_and(|views| views
                     .choices
                     .iter()
-                    .any(|choice| choice.id
-                        == crate::window_bar::view_slot(crate::model::View::Tasks))),
+                    .any(|choice| choice.label == crate::model::View::Tasks.display_label())),
             "the bar's Tasks tab is not the task list"
         );
         choose_place(&mut app, "Today");
@@ -1103,7 +1108,7 @@ mod tasks_screen {
         }
         assert_eq!(
             bar_view(),
-            Some(crate::window_bar::view_slot(crate::model::View::Tasks)),
+            Some(crate::model::View::Tasks.display_label()),
             "the bar's Tasks tab is chosen"
         );
 

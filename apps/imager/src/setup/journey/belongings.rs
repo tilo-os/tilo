@@ -1,13 +1,13 @@
 //! Read-only inventory after migration consent. Credentials stay in their
 //! source stores until a reviewed import or connection is executed.
 
-use super::super::{account_transfer, flatpak_transfer, home_transfer};
 use super::source_selection::{SourceSelection, SourceSet};
+use imager_backend::{account_transfer, home_transfer, setup::flatpak_transfer};
 use std::path::PathBuf;
 
 #[derive(Default)]
 pub(super) struct Belongings {
-    pub windows: Option<super::super::windows_inventory::Inventory>,
+    pub windows: Option<imager_backend::windows_inventory::Inventory>,
     pub home: Option<PathBuf>,
     pub roots: Option<account_transfer::SourceRoots>,
     pub accounts: account_transfer::Inventory,
@@ -33,9 +33,9 @@ impl Belongings {
     /// Windows inventory accepts only individually selected exact roots. This
     /// does not invoke host Home, Linux account, browser or Flatpak discovery.
     pub fn from_windows_roots(
-        selected: &[super::super::windows_inventory::SelectedRoot],
+        selected: &[imager_backend::windows_inventory::SelectedRoot],
     ) -> Result<Self, String> {
-        let windows = super::super::windows_inventory::Inventory::discover(selected)?;
+        let windows = imager_backend::windows_inventory::Inventory::discover(selected)?;
         let accounts = account_transfer::discover_windows_sources(&windows);
         let mut belongings = Self {
             windows: Some(windows),
@@ -134,7 +134,7 @@ impl Belongings {
     /// Keep identifying labels in the account review, not the overview.
     pub(super) fn accounts_overview_hint(&self) -> String {
         use super::super::strings::{t, t_args};
-        use account_transfer::Provider;
+        use imager_backend::account_transfer::Provider;
 
         let providers = self
             .accounts

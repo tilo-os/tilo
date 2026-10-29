@@ -774,8 +774,17 @@ impl DrainQueues {
                     )
                 },
             );
-            if !delivered {
-                return false;
+            match delivered {
+                tilo_action_broker::collab_inbound::Delivery::Done => {}
+                tilo_action_broker::collab_inbound::Delivery::Halted => return false,
+                tilo_action_broker::collab_inbound::Delivery::SealedBehind => {
+                    // Its writer sealed it before catching up with the
+                    // channel's latest membership change; the room's host
+                    // kept it, and its replay is taken as history.
+                    if let Some(room) = crate::shell::state::RoomId::parse(&cluster_id) {
+                        self.net.request_native_replay(room);
+                    }
+                }
             }
             // After it is admitted: a window that subscribes from now on is
             // told it with the records its room holds
@@ -859,8 +868,15 @@ impl DrainQueues {
         for entry in drained_resp {
             // Pages this device asked for land in durable history, where the
             // requesting endpoint's next page request finds them.
-            if let Ok(mut ch) = self.channels.lock() {
-                let stored = ch.accept_peer_history(entry.artifact, &entry.ops);
+            let accepted = self
+                .channels
+                .lock()
+                .ok()
+                .map(|mut ch| ch.accept_peer_history(entry.artifact, &entry.ops));
+            // Synced once the channels' lock, which the main loop takes too,
+            // is released, and before the page's requester is answered.
+            if let Some((stored, unsynced)) = accepted {
+                unsynced.finish();
                 if stored > 0 {
                     tracing::debug!(artifact = ?entry.artifact, stored, "collab history: stored peer page");
                 }

@@ -213,12 +213,6 @@ pub(in crate::state) fn restore(
             .map_err(|error| governance_error(&error))?;
             core.certificates = imported.certificates;
             core.revocations = imported.revocations;
-            if core
-                .revocations
-                .is_revoked(&core.authority.device_public_key)
-            {
-                return Err(invalid(BoundedPeerInvalid::AuthorityRevoked));
-            }
             // Shared partial-binding semantics preserve data restore when an
             // exact plaintext Chat has not arrived yet.
             super::media::bindings(policy, false, |app, record| {

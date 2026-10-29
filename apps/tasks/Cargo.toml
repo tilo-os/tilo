@@ -6,6 +6,10 @@ publish = false
 license.workspace = true
 description = "Issue tracker of a workspace: nested issues on a list and a board, handed to agents"
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["tasks-samples"]
+
 [lib]
 name = "tasks"
 path = "src/lib.rs"
@@ -29,7 +33,10 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
-tasks = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `tasks` claims `--features tasks/thin` in the
+# collection build, and the app then links the whole runtime statically.
+tasks-samples = { package = "tasks", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../crates/dev/test-env" }
 

@@ -285,14 +285,18 @@ impl Compositor {
         ));
         std::fs::create_dir_all(&runtime_dir).expect("create private runtime dir");
         if let Some(settings) = settings {
-            let settings_path = runtime_dir.join("config/tilo/settings.json");
-            let parent = settings_path.parent().expect("settings parent");
-            std::fs::create_dir_all(parent).expect("create fixture config root");
-            std::fs::write(
-                &settings_path,
-                serde_json::to_vec(&settings).expect("encode fixture settings"),
-            )
-            .expect("write fixture settings");
+            // Written and let go before the shell starts, which then holds them.
+            let store = settings_store::Store::open(&runtime_dir.join("config/tilo"))
+                .expect("fixture settings");
+            for (section, values) in settings.as_object().expect("fixture sections") {
+                settings_store::SettingsSource::update_section(
+                    &*store,
+                    section,
+                    values.as_object().expect("a section").clone(),
+                )
+                .expect("write fixture settings");
+            }
+            settings_store::SettingsSource::flush_pending(&*store);
         }
         let control_socket = runtime_dir.join("ctl");
         // Production first boot is intentionally empty. This harness predates

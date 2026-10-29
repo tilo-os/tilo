@@ -42,6 +42,8 @@ pub struct Replica<R: Resource> {
     app: Option<(String, String)>,
     /// What a bot shows for later actions instead of its own name.
     appearance: Option<tilo_actions::Appearance>,
+    /// The work unit later actions belong to (id, label, kind).
+    group: Option<(String, String, String)>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -90,6 +92,7 @@ impl<R: Resource> Replica<R> {
             invoker: None,
             app: None,
             appearance: None,
+            group: None,
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
@@ -163,6 +166,15 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn in_app(mut self, id: &str, label: &str) -> Self {
         self.app = Some((id.to_owned(), label.to_owned()));
+        self
+    }
+
+    /// Stamp later actions as part of the work unit `id` (labelled `label`,
+    /// of kind `kind`), as a shell does for every action one command line
+    /// asks for: History attributes and undoes them as one.
+    #[must_use]
+    pub fn within_group(mut self, id: &str, label: &str, kind: &str) -> Self {
+        self.group = Some((id.to_owned(), label.to_owned(), kind.to_owned()));
         self
     }
 
@@ -248,6 +260,12 @@ impl<R: Resource> Replica<R> {
             });
         let ambient = match &self.app {
             Some((id, label)) => Some(ambient.unwrap_or_default().with_app(id, label)),
+            None => ambient,
+        };
+        let ambient = match &self.group {
+            Some((id, label, kind)) => {
+                Some(ambient.unwrap_or_default().with_group(id, label, kind))
+            }
             None => ambient,
         };
         let mut transport = LocalTransport::new();

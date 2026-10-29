@@ -686,7 +686,7 @@ mod tests {
         flow.require_account_protocol(Some(1));
         assert!(flow.start_install().is_err());
         assert!(!flow.has_pending_operation());
-        let proof = crate::setup::account_admission::ConsumerCapability {
+        let proof = imager_backend::account_admission::ConsumerCapability {
             schema: 1,
             protected_grant_protocol: 1,
             credential_helper_sha256: "1".repeat(64),

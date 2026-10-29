@@ -8,6 +8,7 @@ use crate::widget::ListRowProps;
 fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     let shipped = tilo_ui_graph::component::SHIPPED;
     let generated = catalogue().to_json();
+    eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
     assert!(
         shipped == generated,
         "crates/dev/ui-graph/components.json is stale; write it again with \
@@ -36,10 +37,15 @@ fn every_description_is_documented_and_consistent() {
         assert_eq!(names.len(), all, "{} names each part once", d.name);
         assert!(d.slots.iter().filter(|s| s.default).count() <= 1);
         for slot in &d.slots {
-            if let Accepts::Component(name) = &slot.accepts {
+            let names = match &slot.accepts {
+                Accepts::View => Vec::new(),
+                Accepts::Component(name) => vec![name.clone()],
+                Accepts::OneOf(names) => names.clone(),
+            };
+            for name in names {
                 assert!(
-                    catalogue.get(name).is_some(),
-                    "{}.{} accepts a described component",
+                    catalogue.get(&name).is_some(),
+                    "{}.{} accepts described components, and {name} is one",
                     d.name,
                     slot.name
                 );
@@ -116,6 +122,7 @@ fn sample(ty: &Type) -> Value {
         Type::Resource => Value::Resource("r".into()),
         Type::Time => Value::Text("2026-06-30T08:42:00Z".into()),
         Type::Icon => Value::Icon("pin".into()),
+        Type::RichText => Value::Rich(tilo_ui_graph::rich::RichText::default()),
         Type::Choice { cases, .. } => Value::Choice(cases.first().cloned().unwrap_or_default()),
         Type::Option(_) => Value::None,
         Type::List(_) => Value::List(Vec::new()),
@@ -242,6 +249,7 @@ impl Source for ItemSource<'_> {
     fn slot_kinds(&mut self, slot: &str) -> Vec<Option<String>> {
         match slot {
             "row" => vec![Some("ListRow".to_owned())],
+            "menu" => vec![Some("MenuItem".to_owned())],
             _ => Vec::new(),
         }
     }

@@ -69,6 +69,17 @@ impl ShellOverlayHost {
         self.portal_dialogs.pump()
     }
 
+    /// Operate the sheet on screen as an assistive technology does, by its
+    /// action `target`: a harness drives it as a person would.
+    pub fn perform_portal_dialog_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        self.portal_dialogs
+            .perform_accessibility_action(target, action)
+    }
+
     /// The compositor-owned sheet on screen, for `state-dump`; masked
     /// values appear only as their length.
     pub fn portal_dialog_state_json(&self) -> serde_json::Value {

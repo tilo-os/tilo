@@ -30,6 +30,9 @@
 //! A connection is one window of one app: a patch can only name nodes of the trees that
 //! window's app sent.
 
+/// Rich text as a window shows it ([`Value::Rich`]).
+pub use tilo_ui_graph::rich;
+
 use serde::{Deserialize, Serialize};
 
 use crate::WireError;
@@ -150,6 +153,8 @@ pub enum Value {
     Enum(String),
     Ref(ResourceRef),
     Principal(Principal),
+    /// Rich text, with how each reference in it reads for the person reading it.
+    Rich(rich::RichText),
     /// What a failed or refused part of a view shows.
     Error(String),
 }
@@ -188,10 +193,13 @@ impl Binding {
 /// An event a node's view gave it. What it does is the app's: the host reports the event by
 /// the node's key and name, and the app applies the action reference its view attached. The
 /// host knows only, when that action toggles a field of a resource (`pin` toggles `pinned`),
-/// which, so a header does not repeat a control that stands for it.
+/// which, so a header does not repeat a control that stands for it; and which action on which
+/// resource it runs, so a menu the system completes does not offer it twice.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     pub toggles: Option<(String, String)>,
+    /// The resource (by id) and the action the event runs, when it runs an action on one.
+    pub invokes: Option<(String, String)>,
 }
 
 /// One change of a lane's tree, against the tree the ones before it left. Paths are keys from
@@ -490,6 +498,11 @@ pub enum ToApp {
     /// A component presenting `resource` was activated: show it.
     Open {
         resource: ResourceRef,
+    },
+    /// A reference in rich text was activated: open what it refers to, `reference` being the
+    /// `mention` mark's value (`tilo_reference::embed`).
+    OpenReference {
+        reference: String,
     },
     /// Back from the detail lane.
     Back,

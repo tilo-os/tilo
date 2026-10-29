@@ -97,7 +97,9 @@ fn edit(writer: &mut StatePeer, key: &SigningKey, now: SystemTime) -> crate::Nei
     reason = "one scenario from admission to expiry: its steps and assertions stay together"
 )]
 fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
-    let (mut governor, authority, other_device, _, now) = crate::admission_tests::seeded();
+    let (mut governor, authority, own_device, _, now) = crate::admission_tests::seeded();
+    // A device the room has no certificate for: not one of the owner's.
+    let other_device = SigningKey::from_bytes(&[0x5a; 32]);
     let room = governor.room().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (key, cert) = agent(&person, 8);
@@ -106,7 +108,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let granted = delegation(&person, device, &room, now - Duration::from_secs(1), until);
     let mut member = governor.clone();
 
-    // Only the pinned authority admits, and only within the delegation.
+    // Only the owner's devices admit, and only within the delegation.
     assert!(
         governor
             .governance_mut()
@@ -223,7 +225,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     ));
     assert!(
         member
-            .permissions(other_device.verifying_key().to_bytes(), now)
+            .permissions(own_device.verifying_key().to_bytes(), now)
             .unwrap()
             .allows(&governance, tilo_action_policy::roles::GOVERNANCE_KIND, now),
         "the person's own device governs"
@@ -328,7 +330,9 @@ fn admit_agent_refuses_a_bot_delegation() {
 
 #[test]
 fn a_withdrawn_agent_is_dead_at_once_and_never_readmitted() {
-    let (mut governor, authority, other_device, _, now) = crate::admission_tests::seeded();
+    let (mut governor, authority, _, _, now) = crate::admission_tests::seeded();
+    // A device the room has no certificate for: not one of the owner's.
+    let other_device = SigningKey::from_bytes(&[0x5a; 32]);
     let room = governor.room().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (key, cert) = agent(&person, 8);
