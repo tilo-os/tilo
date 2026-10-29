@@ -286,15 +286,36 @@ pub struct Preview {
 /// Nothing the asking agent sent decides either.
 #[must_use]
 pub fn confirmation_preview(question: &TrackerQuestion) -> (tilo_actions::Draft, Option<Preview>) {
-    (
-        serde_json::from_value(question.draft.clone()).unwrap_or_default(),
-        // A preview this build cannot read is no preview: the person is
-        // asked on the draft alone rather than on a difference shown wrong.
-        question
-            .before
-            .clone()
-            .and_then(|preview| serde_json::from_value(preview).ok()),
-    )
+    let draft = match serde_json::from_value(question.draft.clone()) {
+        Ok(draft) => draft,
+        Err(error) => {
+            // The sheet then shows no fields to review, only the action.
+            tracing::warn!(
+                question = %question.id,
+                app = %question.app,
+                action = %question.action,
+                %error,
+                "the run's recorded draft does not decode"
+            );
+            tilo_actions::Draft::default()
+        }
+    };
+    // A preview this build cannot read is no preview: the person is
+    // asked on the draft alone rather than on a difference shown wrong.
+    let preview = question.before.clone().and_then(|preview| {
+        match serde_json::from_value(preview) {
+            Ok(preview) => Some(preview),
+            Err(error) => {
+                tracing::warn!(
+                    question = %question.id,
+                    %error,
+                    "the run's recorded change preview does not decode; asking on the draft alone"
+                );
+                None
+            }
+        }
+    });
+    (draft, preview)
 }
 
 /// An agent's run of one issue, as the Tasks app's record holds it.

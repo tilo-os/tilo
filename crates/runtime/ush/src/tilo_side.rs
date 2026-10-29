@@ -1182,7 +1182,6 @@ impl Session {
         let egress = Arc::new(egress);
         let seccomp_blob = crate::seccomp::write_guest_filter(&session_dir)?;
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
-        plan.runs = None;
         plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
         if !plan.home_by_grants {

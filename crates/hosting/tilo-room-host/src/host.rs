@@ -883,8 +883,18 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
     let mut roots = HashSet::from([own_user]);
     if let TrustPolicy::AllowList { users } = policy {
         roots.extend(users.iter().filter_map(|encoded| {
-            let bytes = hex::decode(encoded).ok()?;
-            <[u8; 32]>::try_from(bytes).ok()
+            let key = hex::decode(encoded)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    <[u8; 32]>::try_from(bytes).map_err(|_| "not 32 bytes".to_owned())
+                });
+            match key {
+                Ok(key) => Some(key),
+                Err(error) => {
+                    tracing::error!(user = %encoded, %error, "a trusted user in the host's allow list is not a key; it is not trusted");
+                    None
+                }
+            }
         }));
     }
     roots

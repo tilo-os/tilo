@@ -21,6 +21,7 @@
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
+pub mod form;
 #[cfg(feature = "room")]
 pub mod room;
 pub mod rows;
@@ -291,6 +292,10 @@ pub struct Instance {
     /// them it told the window it ran (`ToUi::Took`).
     fired: u64,
     fired_told: u64,
+    /// The form open in the window: an action waiting for its arguments.
+    form: Option<form::Pending>,
+    /// How many forms the window was sent: the next one's id.
+    forms: u64,
 }
 
 impl Instance {
@@ -355,6 +360,8 @@ impl Instance {
             composing: false,
             fired: 0,
             fired_told: 0,
+            form: None,
+            forms: 0,
         }
     }
 
@@ -1427,6 +1434,18 @@ impl Instance {
                 self.answer(answer);
                 Ok(())
             }
+            ToApp::FormEdit { form, field, text } => {
+                self.form_edit(form, &field, text);
+                Ok(())
+            }
+            ToApp::FormSubmit { form } => self.form_submit(form, &mut ran),
+            ToApp::FormCancel { form } => {
+                if self.form.as_ref().is_some_and(|open| open.id == form) {
+                    self.form = None;
+                    self.out.push(ToUi::Form(None));
+                }
+                Ok(())
+            }
             ToApp::Undo => {
                 self.undo = true;
                 Ok(())
@@ -1514,6 +1533,15 @@ impl Instance {
             return Ok(());
         };
         let value = value.and_then(wire::runtime_value);
+        let wanting = view
+            .borrow()
+            .wanting_arguments(key, name, value.as_ref())
+            .map_err(|error| Words::Plain(error.to_string()))?;
+        if let Some(aref) = wanting
+            && self.open_form(lane, key, Rc::clone(&view), aref)
+        {
+            return Ok(());
+        }
         let action = view.borrow().event_action(key, name);
         let fired = view.borrow().fire_with(key, name, value.as_ref());
         match fired {
@@ -1527,6 +1555,105 @@ impl Instance {
             }
             Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
             Err(error) => Err(Words::Plain(error.to_string())),
+        }
+    }
+
+    /// Show the form of `aref`, which the control `key` of the view of `lane` ran and which
+    /// still needs arguments, instead of running it. Whether it has one: what it needs is
+    /// what a form can ask for.
+    fn open_form(
+        &mut self,
+        lane: Lane,
+        key: &str,
+        view: Rc<RefCell<ViewInstance>>,
+        aref: ActionRef,
+    ) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let Some(meta) = host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta)
+            .find(|meta| meta.actions.iter().any(|action| action.id == aref.action))
+        else {
+            return false;
+        };
+        let Some(pending) = form::Pending::new(
+            self.forms.saturating_add(1),
+            (lane, key.to_owned()),
+            view,
+            aref,
+            meta,
+        ) else {
+            return false;
+        };
+        self.forms = pending.id;
+        self.out.push(ToUi::Form(Some(Box::new(
+            pending.shown(&host, &*self.names),
+        ))));
+        self.form = Some(pending);
+        true
+    }
+
+    /// The field `field` of the form `id` now holds `text`: kept, and the form shown as it
+    /// reads now.
+    fn form_edit(&mut self, id: u64, field: &str, text: String) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {
+            return;
+        };
+        pending.edit(field, text);
+        self.out.push(ToUi::Form(Some(Box::new(
+            pending.shown(&host, &*self.names),
+        ))));
+    }
+
+    /// The form `id` was submitted: run its action with what it holds, once. A refusal shows in
+    /// the form, which stays open.
+    fn form_submit(&mut self, id: u64, ran: &mut Option<(ActionRef, Value)>) -> Result<(), Words> {
+        let Some(host) = self.host() else {
+            return Ok(());
+        };
+        let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {
+            return Ok(());
+        };
+        let aref = match pending.completed(&host) {
+            Ok(aref) => aref,
+            Err((_, why)) => {
+                pending.error = Some(why);
+                self.out.push(ToUi::Form(Some(Box::new(
+                    pending.shown(&host, &*self.names),
+                ))));
+                return Ok(());
+            }
+        };
+        let outcome = pending.view.borrow().invoke(&aref);
+        match outcome {
+            Ok(InvokeOutcome::Done(result)) => {
+                pending.forget();
+                self.form = None;
+                self.out.push(ToUi::Form(None));
+                *ran = Some((aref, result));
+                Ok(())
+            }
+            Ok(InvokeOutcome::Suggested(suggestion)) => {
+                pending.forget();
+                self.form = None;
+                self.out.push(ToUi::Form(None));
+                self.ask_for(suggestion);
+                Ok(())
+            }
+            Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
+            Err(error) => {
+                pending.error = Some(refusal(&error));
+                self.out.push(ToUi::Form(Some(Box::new(
+                    pending.shown(&host, &*self.names),
+                ))));
+                Ok(())
+            }
         }
     }
 
@@ -1942,6 +2069,16 @@ impl Drop for Instance {
         if let Some(host) = self.host() {
             host.persist_index();
         }
+    }
+}
+
+/// Why an action refused, as its form says it: what its `require` said, else the error.
+fn refusal(error: &crate::runtime::RuntimeError) -> String {
+    match error {
+        crate::runtime::RuntimeError::Trap(why) | crate::runtime::RuntimeError::BadArgs(why) => {
+            why.clone()
+        }
+        other => other.to_string(),
     }
 }
 

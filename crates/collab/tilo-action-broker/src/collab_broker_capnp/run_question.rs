@@ -276,7 +276,21 @@ impl CapnpBrokerState {
         };
         let issue = issue.to_owned();
         runtime.spawn(async move {
-            let answer = answer.await.unwrap_or(AppActionAnswer::DENY);
+            // Resolved by the sheet: the person's answer, or its sender
+            // dropped with the sheet (the session went away). That is no
+            // answer of theirs: nothing is told to the tracker, the question
+            // stays asked, and the next round notifies it again.
+            let Ok(answer) = answer.await else {
+                tracing::warn!(
+                    handle = %request.handle,
+                    "the sheet closed without the person's answer; the run's question stays asked"
+                );
+                self.run_question_notices
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&request.handle);
+                return;
+            };
             self.record_answer(&request, grant, answer.consent).await;
             let invoke = match self.tracker_answer(&request, &issue, &answer) {
                 Ok(Some(invoke)) => invoke,
@@ -413,7 +427,19 @@ pub(super) fn serve_answered(
             grant,
             answer,
         } = *pending;
-        let answer = answer.await.unwrap_or(AppActionAnswer::DENY);
+        // Resolved by the sheet: the person's answer, or its sender dropped
+        // with the sheet. A sheet that closed unanswered is no denial of
+        // theirs: the tracker's call is refused with why, and the question
+        // stays asked.
+        let Ok(answer) = answer.await else {
+            let refused = tilo_actions::remote::refuse(
+                &message,
+                tilo_actions::remote::ActionHostError::Unavailable {
+                    reason: "the sheet closed without the person's answer".into(),
+                },
+            );
+            return send_reply(results, refused);
+        };
         state.record_answer(&request, grant, answer.consent).await;
         let message = match message {
             RemoteActionMessage::Invoke(mut invoke) => {

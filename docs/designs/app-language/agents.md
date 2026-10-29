@@ -45,6 +45,27 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    origins (convergence.md). A preview is a provisional run of those invocations; `confirm`
    sends the same program again.
 
+### Reading records outside their app
+
+A room's records are sealed per app: today only a connection holding that app's launch custody
+opens them. The task host is not an app, so it gets its own admission instead of borrowing one:
+
+- **Admission.** The broker admits a task host's connection as *the agent acting for the
+  person* (`BrokerActor` agent for person, never session-delegated, so no preset widens it).
+  It holds no app's route and publishes nothing.
+- **Reads, per record.** Each record the program reads is decided by the same check every
+  reader goes through (`check_document_read` with that actor: the lesser of the agent's and
+  the person's grants). When allowed, the identity service hands the task host that record
+  channel's read key, for that record only and for the task's lifetime. A revoked grant or a
+  removed member cuts it like any other reader's. Index queries (`find`, `grep`) answer only
+  from records the same check allows.
+- **Changes, never writes.** The task host gets no write custody. It runs the action's code
+  from the app's package provisionally (preview) and sends the invocation (action, arguments,
+  package version) to the record's origin, which orders and applies it like any device's
+  action (convergence.md). An app's own instance is never asked to act for the program.
+- **Native apps.** Their types and views come from the published catalogue the same way. Their
+  action code is the app's Rust, so the origin routes the invocation to whatever executes it.
+
 ## 2. What the agent knows from the start
 
 The session's first message says where it is: the workspace, who it acts for, the task's limits,

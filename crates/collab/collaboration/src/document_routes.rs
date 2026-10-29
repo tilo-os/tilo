@@ -46,8 +46,15 @@ pub fn validated_route_payload_with(
     ) {
         return None;
     }
-    let mutation = collab_types::DocumentMutation::decode(complete).ok()?;
-    Some(collab_types::WholeDocumentPayload::Cleartext(mutation))
+    // The segments belong to `route`: a transfer that reassembles into no
+    // mutation is a fault of its sender, not a change for another route.
+    match collab_types::DocumentMutation::decode(complete) {
+        Ok(mutation) => Some(collab_types::WholeDocumentPayload::Cleartext(mutation)),
+        Err(error) => {
+            tracing::warn!(app = %route.app_id, %error, "collab: a reassembled document transfer does not decode");
+            None
+        }
+    }
 }
 
 /// The mutation `payload` carries on `route`: the cleartext one, or the

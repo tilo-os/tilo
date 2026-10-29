@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! MAGIC  "TLOPKG\0\0"   (8 bytes)
-//! u32 LE format_version = 2
+//! u32 LE format_version       (1 or 2: see crate::tapp::READABLE_FORMATS)
 //! [u8; 32] manifest_hash       (BLAKE3 of the manifest TOML bytes)
 //! [u8; 32] payload_root_hash   (BLAKE3 of the encoded Collection)
 //! u8       has_signature       (0 / 1)
@@ -40,8 +40,6 @@ use thiserror::Error;
 use crate::blobs::BlobHash;
 
 const MAGIC: &[u8; 8] = b"TLOPKG\0\0";
-/// The signed root is part of the package format and carries its version.
-const FORMAT_VERSION: u32 = crate::tapp::TAPP_FORMAT_VERSION;
 
 pub const SIGNED_ROOT_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32 + 64;
 pub const SIGNING_PREFIX_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32; // 109 bytes
@@ -49,6 +47,11 @@ pub const SIGNING_PREFIX_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32; // 109 bytes
 /// The on-disk signed-root blob.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedRoot {
+    /// The package format the root was written at. It is part of the bytes
+    /// the package id hashes and the publisher signs, so a root read at an
+    /// earlier format is kept at it: rewriting it would make another package.
+    /// Every root this build writes is at [`crate::TAPP_FORMAT_VERSION`].
+    pub format: u32,
     pub manifest_hash: BlobHash,
     pub payload_root_hash: BlobHash,
     pub publisher_identity: [u8; 32],
@@ -77,6 +80,7 @@ impl SignedRoot {
         publisher_identity: [u8; 32],
     ) -> Self {
         Self {
+            format: crate::tapp::TAPP_FORMAT_VERSION,
             manifest_hash,
             payload_root_hash,
             publisher_identity,
@@ -89,7 +93,7 @@ impl SignedRoot {
     pub fn signing_bytes(&self) -> [u8; SIGNING_PREFIX_LEN] {
         let mut out = [0u8; SIGNING_PREFIX_LEN];
         out[0..8].copy_from_slice(MAGIC);
-        out[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        out[8..12].copy_from_slice(&self.format.to_le_bytes());
         out[12..44].copy_from_slice(&self.manifest_hash.0);
         out[44..76].copy_from_slice(&self.payload_root_hash.0);
         out[76] = u8::from(self.signature.is_some());
@@ -115,7 +119,7 @@ impl SignedRoot {
     /// Returns [`SignedRootError::WrongLength`] if `bytes` is not exactly
     /// [`SIGNED_ROOT_LEN`] bytes, [`SignedRootError::BadMagic`] if the
     /// header doesn't match, [`SignedRootError::UnsupportedFormat`] if the
-    /// format version isn't `FORMAT_VERSION`,
+    /// format version is not one of [`crate::tapp::READABLE_FORMATS`],
     /// [`SignedRootError::BadHasSignatureFlag`] if the `has_signature` byte
     /// is neither 0 nor 1, and
     /// [`SignedRootError::NonZeroSignatureWhenUnsigned`] if it is 0 but the
@@ -144,7 +148,7 @@ impl SignedRoot {
             return Err(SignedRootError::BadMagic);
         }
         let format = u32::from_le_bytes(bytes[8..12].try_into().unwrap_or([0; 4]));
-        if format != FORMAT_VERSION {
+        if !crate::tapp::READABLE_FORMATS.contains(&format) {
             return Err(SignedRootError::UnsupportedFormat(format));
         }
         let mut manifest_hash = [0u8; 32];
@@ -170,6 +174,7 @@ impl SignedRoot {
             _ => return Err(SignedRootError::BadHasSignatureFlag(has_sig)),
         };
         Ok(Self {
+            format,
             manifest_hash: BlobHash(manifest_hash),
             payload_root_hash: BlobHash(payload_root_hash),
             publisher_identity,
@@ -190,7 +195,7 @@ pub enum SignedRootError {
     WrongLength { expected: usize, got: usize },
     #[error("missing or wrong magic header")]
     BadMagic,
-    #[error("unsupported signed-root format version {0}")]
+    #[error("{}", crate::tapp::unreadable_format(*.0))]
     UnsupportedFormat(u32),
     #[error("has_signature flag is {0} (expected 0 or 1)")]
     BadHasSignatureFlag(u8),

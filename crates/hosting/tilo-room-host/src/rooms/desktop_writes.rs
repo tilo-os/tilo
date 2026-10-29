@@ -156,6 +156,7 @@ impl Rooms {
         if author == self.inner.host.cert.device_public_key {
             return Ok(());
         }
+        // optional-decode: a classifier; a write that does not decode is reported where the governor takes it in (Rooms::absorb)
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,

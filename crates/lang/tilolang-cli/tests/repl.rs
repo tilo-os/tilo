@@ -208,7 +208,7 @@ fn the_repl_is_admitted_as_the_persons_agent_and_never_writes_their_answers() {
         stderr.contains("has no `tilo` tool"),
         "it got past admission: {stderr}"
     );
-    let seen = seen.lock().unwrap();
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
     let admitted = seen
         .iter()
         .find(|request| request["id"] == "allow-once@p1")

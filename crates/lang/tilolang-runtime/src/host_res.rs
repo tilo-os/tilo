@@ -14,7 +14,7 @@ use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
 use crate::handles::FrameKind;
-use crate::ids::ModuleHash;
+use crate::ids::{ModuleHash, Principal};
 use crate::meta::{FieldKind, Ty};
 use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
@@ -165,11 +165,25 @@ fn key_of(v: &Value) -> Result<String, String> {
         Value::Int(i) => Ok(i.to_string()),
         Value::Float(f) => Ok(f.to_string()),
         Value::Ref(r) => Ok(r.target.id_string()),
+        Value::Principal(p) => Ok(p.0.clone()),
         other => Err(format!(
             "a {} cannot be a set element or map key",
             other.kind_name()
         )),
     }
+}
+
+/// Separates a key of a map of sets from one of its elements in the entry that stores the
+/// element: never part of a key or an element ([`MAP_SET_SEPARATOR`]).
+///
+/// A `Map<Set<T>>` stores each element of each key's set as an entry of its own,
+/// `"{key}\u{1f}{element}" = true`, so two people adding to one key's set at once both stay
+/// (as `tilo_resource::Reactions` keys reactions); reading it groups them again.
+const MAP_SET_SEPARATOR: char = '\u{1f}';
+
+/// The entry that stores `element` in the set of `key`.
+fn map_set_entry(key: &str, element: &str) -> String {
+    format!("{key}{MAP_SET_SEPARATOR}{element}")
 }
 
 fn inner_ty(ty: &Ty) -> Option<&Ty> {
@@ -364,6 +378,28 @@ impl Core {
                 ))
             }
             (FieldKind::Set, FieldValue::Keys(keys)) => self.keys_value(field, keys, author),
+            (FieldKind::Map, FieldValue::Entries(entries))
+                if matches!(inner_ty(&field.ty), Some(Ty::Set(_))) =>
+            {
+                let element = inner_ty(&field.ty).and_then(inner_ty);
+                // Each element is an entry of its own: grouped by key again, in key order.
+                let mut sets: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for (entry, _) in entries {
+                    if let Some((key, el)) = entry.split_once(MAP_SET_SEPARATOR) {
+                        sets.entry(key.to_owned()).or_default().push(el.to_owned());
+                    }
+                }
+                sets.into_iter()
+                    .map(|(key, mut elements)| {
+                        elements.sort();
+                        Ok(Value::Tuple(vec![
+                            Value::Text(key),
+                            self.elements_value(element, elements, author)?,
+                        ]))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                    .map(Value::List)
+            }
             (FieldKind::Map, FieldValue::Entries(entries)) => entries
                 .into_iter()
                 .map(|(k, v)| {
@@ -387,9 +423,20 @@ impl Core {
         keys: Vec<String>,
         author: Option<&ModuleHash>,
     ) -> Result<Value, String> {
+        self.elements_value(inner_ty(&field.ty), keys, author)
+    }
+
+    /// The elements a set of `element` type stores as `keys`.
+    fn elements_value(
+        &self,
+        element: Option<&Ty>,
+        keys: Vec<String>,
+        author: Option<&ModuleHash>,
+    ) -> Result<Value, String> {
         let items = keys
             .into_iter()
-            .map(|k| match inner_ty(&field.ty) {
+            .map(|k| match element {
+                Some(Ty::Principal) => Ok(Value::Principal(Principal::new(k))),
                 Some(Ty::Int) => k
                     .parse::<i64>()
                     .map(Value::Int)
@@ -838,9 +885,13 @@ impl Core {
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()
             }
-            Imp::SetAdd | Imp::SetRemove | Imp::MapPut | Imp::MapRemove => {
-                self.set_map_import(imp, a)
-            }
+            Imp::CollMoveAmong => self.coll_move_among(a),
+            Imp::SetAdd
+            | Imp::SetRemove
+            | Imp::MapPut
+            | Imp::MapRemove
+            | Imp::MapSetAdd
+            | Imp::MapSetRemove => self.set_map_import(imp, a),
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => self.ref_lit(a),
@@ -865,6 +916,55 @@ impl Core {
             }
             _ => trap("not a resource import"),
         }
+    }
+
+    /// `move(x, to: i, among: run)`: to the place `i` among the items of `run` other than `x`
+    /// (a board's lane), as the invoker sees them now: just before the item of the run at
+    /// that place, or just after the run's last. Like `move(x, before: y)`, the store records
+    /// it beside that neighbour; into an empty run it stays where it is.
+    fn coll_move_among(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
+        let item_tys = self.coll_field(&ctx)?;
+        let item = self.moved_arg(&ctx, &item_tys, a.h(2)?)?;
+        let Ok(at) = usize::try_from(a.long(3)?) else {
+            return trap("a run has no place before its first");
+        };
+        let run = match self.val(a.h(4)?)? {
+            Value::List(run) => run,
+            other => return trap(format!("expected a list, got {}", other.kind_name())),
+        };
+        let mut lane = Vec::with_capacity(run.len());
+        for v in &run {
+            let Value::Ref(r) = v else {
+                return trap(format!("a run holds items, not {}", v.kind_name()));
+            };
+            match &r.target.item {
+                Some(id) if *id != item => lane.push(id.clone()),
+                Some(_) => {}
+                None => return trap("a run holds items of this collection"),
+            }
+        }
+        let (neighbour, after) = match lane.get(at).or_else(|| lane.last()) {
+            Some(next) => (next, at >= lane.len()),
+            None => return ret_void(),
+        };
+        let listing = self
+            .store
+            .borrow()
+            .listing(&ctx.target, &spec(&ctx.field))
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item.as_str()).collect();
+        let Some(place) = others.iter().position(|id| **id == *neighbour.as_str()) else {
+            return trap("an item of the run is not in this collection");
+        };
+        let index = if after {
+            place.saturating_add(1)
+        } else {
+            place
+        };
+        let field = ctx.field.id.clone();
+        self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
+        ret_void()
     }
 
     fn set_map_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -895,6 +995,32 @@ impl Core {
                     let elem = inner_ty(&ctx.field.ty).cloned().unwrap_or(Ty::Text);
                     let value = to_scalar(&unboxed(self.val_whole(a.h(3)?)?), &elem)?;
                     Mutation::MapPut { field, key, value }
+                } else {
+                    Mutation::MapRemove { field, key }
+                };
+                self.apply_mut(&ctx, &m)?;
+                ret_void()
+            }
+            Imp::MapSetAdd | Imp::MapSetRemove => {
+                let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
+                if ctx.field.kind != FieldKind::Map
+                    || !matches!(inner_ty(&ctx.field.ty), Some(Ty::Set(_)))
+                {
+                    return trap(format!("field `{}` is not a map of sets", ctx.field.name));
+                }
+                let key = self.text(a.h(2)?)?;
+                if key.contains(MAP_SET_SEPARATOR) {
+                    return trap("a map key cannot hold the unit separator");
+                }
+                let element = key_of(&unboxed(self.val_whole(a.h(3)?)?))?;
+                let key = map_set_entry(&key, &element);
+                let field = ctx.field.id.clone();
+                let m = if imp == Imp::MapSetAdd {
+                    Mutation::MapPut {
+                        field,
+                        key,
+                        value: Scalar::Bool(true),
+                    }
                 } else {
                     Mutation::MapRemove { field, key }
                 };
