@@ -29,10 +29,7 @@ pub(super) fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<Search
                 g.results.push(r);
             }
         } else {
-            groups.push(SearchGroup {
-                kind: r.kind.clone(),
-                results: vec![r],
-            });
+            groups.push(SearchGroup::new(r.kind.clone(), vec![r]));
         }
     }
     // An app's search is about what the app holds: its resources lead, and

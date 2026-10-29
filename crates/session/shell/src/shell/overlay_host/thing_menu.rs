@@ -84,7 +84,7 @@ impl ShellOverlayHost {
         if let Some(seed) = self.notification_at(at) {
             return Some(seed);
         }
-        if let Some((widget, ..)) = self.desk_hit(at) {
+        if let Some((widget, ..)) = self.desk_hit_at(at, ui::time::now()) {
             let id = format!("desk:{}", widget.key());
             return Some(desktop_thing(desktop, id, "desktop.widget", widget.key()));
         }

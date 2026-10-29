@@ -1,6 +1,7 @@
 //! Search and publication follow the room by what changed: one retyped item is reindexed and
 //! republished alone, and what they hold always equals indexing and publishing everything anew.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use automerge::AutoCommit;
@@ -605,7 +606,18 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
         ]
     };
     edit_text(&mut ada, &root, thread_path("draft"), "hel");
-    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    // Whether the draft names the conversation depends on where its field sorts among the
+    // conversation's texts: the record is reported exactly when its tree changed, and is the
+    // very same tree when it did not.
+    let was = Rc::clone(&published.trees()[&root]);
+    let touched = published.update(&ada.host, &planner);
+    let now = &published.trees()[&root];
+    if shape(now) == shape(&was) {
+        assert!(touched.is_empty(), "{touched:?} reported, nothing changed");
+        assert!(Rc::ptr_eq(now, &was), "an unchanged tree is the very one");
+    } else {
+        assert_eq!(touched, vec![root.clone()]);
+    }
     check_kept(&ada, &published, &before, "typing the draft", &anew);
 
     let note_path = vec![

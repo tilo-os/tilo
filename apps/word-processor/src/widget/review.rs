@@ -538,14 +538,14 @@ impl WordProcessorWidget {
             return;
         };
         let draft = self.thread_reply.widget().source();
-        if draft.is_empty() {
+        let Some(text) = ui::tilo_resource::NonBlank::parse(&draft.plain_text()) else {
             return;
-        }
+        };
         self.perform_verb(
             state,
             crate::model::DocumentAction::ReplyToComment(crate::model::document::ReplyToComment {
                 comment: ui::tilo_resource::Id::from_raw(comment),
-                text: draft.plain_text().trim().to_owned(),
+                text,
                 body: Some(draft.clip_blocks()),
             }),
         );

@@ -298,7 +298,7 @@ fn a_renamed_sheet_keeps_the_formulas_that_read_it() {
     write(&mut book, &budget, &[("H1", "=Budget!B2")]);
     book.apply(Workbook::RENAME_SHEET.with(verbs::RenameSheet {
         sheet: budget.clone(),
-        name: " Q3 budget ".into(),
+        name: " Q3 budget ".parse().unwrap(),
     }))
     .unwrap();
     assert_eq!(

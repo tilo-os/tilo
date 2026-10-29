@@ -240,6 +240,12 @@ pub struct Package {
     /// Reverse-DNS identifier — `so.tilo.editor`. Stable across versions;
     /// pinned in CLI/loader/sandbox profile names.
     pub id: String,
+    /// The ids the app was published under before (`previously = ["so.tilo.lang.todo"]`):
+    /// what it keeps of them (its records, grants and windows) is this app's. Signed with the
+    /// manifest, and only honoured for an id the same publisher signed: installing it over an
+    /// app of another publisher's is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previously: Vec<String>,
     /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`. Absent
     /// means derive one from the id's trailing component, which can't
     /// produce e.g. `API` from `api-tester`.

@@ -15,9 +15,11 @@
 //! - the host's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering rooms and letting an app author one,
 //!   which only devices of the relay's own person may, decided as
-//!   [`Rooms::authorize`] decides every [`RoomOp::Host`]. They are asked on any workspace the device holds on
-//!   the relay (its person's continuity workspace, before it holds a room),
-//!   and need the device's certificate as the relay's handshake verified it,
+//!   [`Rooms::authorize`] decides every [`RoomOp::Host`]. They are asked of
+//!   the host itself over the device's session with it, naming no workspace
+//!   (`Envelope::HostAction`, [`AppServingPlane::serve_host`]), or on a room
+//!   the device holds there, and need the device's certificate as the
+//!   relay's handshake verified it,
 //!   which entering admits to the room. Creating a room may issue its first
 //!   invitation and entering answers the invitation the device redeems, so
 //!   a desktop shares a workspace without any governance before it holds
@@ -68,7 +70,6 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod host;
 mod member;
-mod owner;
 
 use super::authority::RoomOp;
 use super::{
@@ -913,12 +914,13 @@ impl Rooms {
     }
 
     /// What `caller`, on the device `certificate` when the transport named
-    /// it, may do here about workspace `workspace_id`: the governance of
-    /// the room it carries, their own business in that room, and the host's
-    /// operations when they are its person's.
+    /// it, may do here about workspace `workspace_id` (`None` when asked of
+    /// the host itself): the governance of the room it carries, their own
+    /// business in that room, and the host's operations when they are its
+    /// person's.
     async fn catalogue(
         &self,
-        workspace_id: u64,
+        workspace_id: Option<u64>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         query: &CatalogueQuery,
@@ -931,6 +933,7 @@ impl Rooms {
         };
         let mut offer = Offer::default();
         if (wants(ROOM_GOVERNANCE_PROVIDER) || wants(MEMBER_ACTIONS_PROVIDER))
+            && let Some(workspace_id) = workspace_id
             && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
             let room = governed.lock().await;
@@ -940,7 +943,7 @@ impl Rooms {
                 let resource = room_governance_resource(room.room());
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
                 let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-                let mut rows: Vec<CatalogueRow> = VERBS
+                let rows: Vec<CatalogueRow> = VERBS
                     .iter()
                     .chain(confirmed)
                     .filter(|verb| {
@@ -948,7 +951,6 @@ impl Rooms {
                     })
                     .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
                     .collect();
-                rows.extend(self.owner_rows(&room, &device, &resource, now));
                 offer.add(GOVERNANCE, room.room(), rows);
             }
             if wants(MEMBER_ACTIONS_PROVIDER) {
@@ -964,21 +966,24 @@ impl Rooms {
     }
 
     /// Run `request` from `caller`, on the device `certificate` when the
-    /// transport named it, by the provider it names.
+    /// transport named it, by the provider it names: a room's on the
+    /// workspace carrying it, the host's own on any workspace or asked of
+    /// the host itself (`None`).
     async fn invoke(
         &self,
-        workspace_id: u64,
+        workspace_id: Option<u64>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
-        match request.target.provider.as_str() {
-            ROOM_GOVERNANCE_PROVIDER if owner::serves(&request.target.address.action) => {
-                self.owner_invoke(workspace_id, caller, request).await
+        match (request.target.provider.as_str(), workspace_id) {
+            (ROOM_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
+                self.governance_invoke(workspace_id, caller, request).await
             }
-            ROOM_GOVERNANCE_PROVIDER => self.governance_invoke(workspace_id, caller, request).await,
-            MEMBER_ACTIONS_PROVIDER => self.member_invoke(workspace_id, caller, request).await,
-            HOST_ACTIONS_PROVIDER => {
+            (MEMBER_ACTIONS_PROVIDER, Some(workspace_id)) => {
+                self.member_invoke(workspace_id, caller, request).await
+            }
+            (HOST_ACTIONS_PROVIDER, _) => {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
@@ -1393,8 +1398,7 @@ impl HostRoomActions {
     }
 
     /// This host for requests about workspace `workspace_id`, from a caller
-    /// whose device certificate the transport did not name: everything but
-    /// the host's own operations.
+    /// whose device certificate the transport did not name.
     #[must_use]
     pub(crate) fn in_workspace(
         &self,
@@ -1402,7 +1406,7 @@ impl HostRoomActions {
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
-            workspace_id,
+            workspace_id: Some(workspace_id),
             certificate: None,
         }
     }
@@ -1418,7 +1422,21 @@ impl HostRoomActions {
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
-            workspace_id,
+            workspace_id: Some(workspace_id),
+            certificate: Some(certificate.clone()),
+        }
+    }
+
+    /// This host for its own operations, asked of it directly by the device
+    /// whose certificate the relay's handshake verified as `certificate`.
+    #[must_use]
+    pub(crate) fn as_host(
+        &self,
+        certificate: &DeviceCert,
+    ) -> impl ActionHost + Clone + Send + 'static {
+        InWorkspace {
+            host: self.clone(),
+            workspace_id: None,
             certificate: Some(certificate.clone()),
         }
     }
@@ -1446,12 +1464,12 @@ impl HostRoomActions {
     }
 }
 
-/// [`HostRoomActions`] for the room one workspace carries, and for the
-/// host's own operations asked on it.
+/// [`HostRoomActions`] for the room one workspace carries, or (with no
+/// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
 struct InWorkspace {
     host: HostRoomActions,
-    workspace_id: u64,
+    workspace_id: Option<u64>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
 }
@@ -1644,6 +1662,18 @@ impl AppServingPlane for GovernedPlane {
         self.apps
             .as_ref()?
             .serve_certified(workspace_id, caller, certificate, message)
+    }
+
+    fn serve_host(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        if !self.governs(caller, &message) {
+            return None;
+        }
+        tilo_actions::remote::serve(&self.governance.as_host(certificate), caller, message)
     }
 }
 

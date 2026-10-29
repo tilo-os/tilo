@@ -2153,6 +2153,7 @@ fn route_keyboard_input(
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || fb.host().banner_owns_key(&key.logical_key)
+            || fb.host().desk_owns_key(&key.logical_key)
             || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
@@ -2218,10 +2219,14 @@ fn route_keyboard_input(
     if opens_chat {
         fb.host_mut().arm_cursor_chat();
     }
+    // Escape folds a desk card the person opened, rather than reaching the
+    // window under it.
+    let desk_owns = fb.host().desk_owns_key(&key.logical_key);
     let shell_owns = captured
         || shell_chord
         || granted
         || banner_owns
+        || desk_owns
         || opens_chat
         || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(

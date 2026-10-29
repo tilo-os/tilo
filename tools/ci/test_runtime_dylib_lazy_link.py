@@ -312,6 +312,64 @@ class RealLink(unittest.TestCase):
         self.assertIn(shared, exported)
         self.assertNotIn(own, exported)
 
+    def link_engine(self, role: str) -> subprocess.CompletedProcess:
+        """An engine library with an entry point, an item of its own crate, an item of a crate
+        linked into it and code nothing exported reaches, linked the way rustc links a dylib."""
+        crate = "_RNvCsabc_20tilo_settings_engine10self_check"
+        linked = "_RNvNtCsdef_8settings5panes4draw"
+        (self.directory / "engine.c").write_text(
+            f"int {linked}(void) {{ return 1; }}\n"
+            f"int {crate}(void) {{ return 2; }}\n"
+            "int unreached(void) { return 3; }\n"
+            f"int tilo_settings_engine_run(void) {{ return {linked}(); }}\n"
+            "char *g_strdup_printf(const char *, ...);\n"
+            "char *engine_glib(void) { return g_strdup_printf(\"x\"); }\n")
+        (self.directory / "list").write_text(
+            f"{{\n  global:\n    tilo_settings_engine_run;\n    engine_glib;\n    {crate};\n    {linked};\n"
+            "  local:\n    *;\n};\n")
+        return subprocess.run([sys.executable, str(SCRIPT), "-shared", "-fPIC", "-ffunction-sections",
+                               "engine.c", "-Wl,--version-script=list", "-L.", "-lglib-2.0",
+                               "-o", "libtilo_settings_engine.so"],
+                              cwd=self.directory, capture_output=True, text=True,
+                              env=dict(os.environ, TILO_LAZY_LINK_CC="cc", TILO_LAZY_LINK_ROLE=role))
+
+    def engine_exports(self) -> str:
+        return subprocess.run(["nm", "-D", "--defined-only", str(self.directory / "libtilo_settings_engine.so")],
+                              capture_output=True, text=True).stdout
+
+    def test_an_engine_keeps_rusts_exports_and_its_libraries(self):
+        # Apps compile against such an engine and may name any item of the
+        # crates in it; GLib stays its DT_NEEDED: only the runtime loads it lazily.
+        linked = self.link_engine("engine")
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        exported = self.engine_exports()
+        for symbol in ("tilo_settings_engine_run", "_RNvCsabc_20tilo_settings_engine10self_check",
+                       "_RNvNtCsdef_8settings5panes4draw"):
+            self.assertIn(symbol, exported)
+        self.assertNotIn("unreached", subprocess.run(["nm", str(self.directory / "libtilo_settings_engine.so")],
+                                                     capture_output=True, text=True).stdout)
+        needed = subprocess.run(["readelf", "-dW", str(self.directory / "libtilo_settings_engine.so")],
+                                capture_output=True, text=True).stdout
+        self.assertIn("libglib-2.0.so.0", needed)
+
+    def test_an_entry_engine_exports_only_its_unmangled_entry_points(self):
+        linked = self.link_engine("entry-engine")
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        exported = self.engine_exports()
+        self.assertIn("tilo_settings_engine_run", exported)
+        self.assertIn("engine_glib", exported)
+        self.assertNotIn("_R", exported)
+        # The crate's own items go with the others; what the entry reaches stays, unexported.
+        symbols = subprocess.run(["nm", str(self.directory / "libtilo_settings_engine.so")],
+                                 capture_output=True, text=True).stdout
+        self.assertNotIn("self_check", symbols)
+        self.assertIn("_RNvNtCsdef_8settings5panes4draw", symbols)
+
+    def test_an_unknown_role_fails(self):
+        linked = self.link_engine("dylib")
+        self.assertNotEqual(linked.returncode, 0)
+        self.assertIn("TILO_LAZY_LINK_ROLE", linked.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ const MAX_TEXT_BYTES: usize = 32 * 1024;
 const MAX_PAGE_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum Direction {
     Incoming,
     Outgoing,
@@ -21,6 +22,7 @@ pub enum Direction {
 
 /// A protocol submission or server acknowledgment never implies delivery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum Delivery {
     Submitted,
     ServerAcknowledged,
@@ -31,6 +33,7 @@ pub enum Delivery {
 
 /// Private transient projection; never a replicated application resource.
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct Message {
     pub id: String,
     pub text: Zeroizing<String>,
@@ -50,6 +53,7 @@ impl std::fmt::Debug for Message {
 /// page). Opaque to the app: it is minted here from a message the host handed
 /// out, and only the host reads it back.
 #[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct HistoryCursor(String);
 
 impl HistoryCursor {
@@ -80,6 +84,7 @@ impl std::fmt::Debug for HistoryCursor {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct HistoryPage {
     pub route: Route,
     pub messages: Vec<Message>,
@@ -95,6 +100,7 @@ impl std::fmt::Debug for HistoryPage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum HistoryError {
     Unavailable,
     Revoked,

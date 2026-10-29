@@ -214,17 +214,19 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
     }
     let painted = canvas::document::read(&path).unwrap();
     let mut app = TestApp::<App>::new().unwrap();
-    app.settings::<canvas::document::RecentArtworks>()
-        .update(|recents| {
-            recents.remember(canvas::document::Recent {
+    app.person::<canvas::document::ArtworkRecents>()
+        .unwrap()
+        .invoke(&canvas::document::ArtworkRecents::REMEMBER.with((
+            "test-device".to_owned(),
+            canvas::document::Recent {
                 path: path.display().to_string(),
                 title: "Valley".into(),
                 width: painted.width,
                 height: painted.height,
                 at_ms: 1,
                 thumbnail: None,
-            });
-        })
+            },
+        )))
         .unwrap();
     let before = app.versions().len();
     app.harness().key("Shift");

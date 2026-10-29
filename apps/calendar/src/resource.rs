@@ -20,8 +20,8 @@ use tilo_document::{RichText, RichTextAction};
 use ui::framework::{Dispatcher, Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
-    self, ActionCx, Demand, Doc, Effect, Id, Invoke, JsonSchema, ModelError, Refusal, ScopeDecl,
-    SearchEntry, resource,
+    self, ActionCx, Demand, Doc, Effect, Id, Invoke, JsonSchema, ModelError, NonBlank, Refusal,
+    ScopeDecl, SearchEntry, resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -167,15 +167,7 @@ impl Calendar {
     ///
     /// Adds a project to file tasks and events under.
     #[action]
-    pub fn new_project(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Its name")] name: String,
-    ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a project needs a name"));
-        }
+    pub fn new_project(&mut self, cx: &mut ActionCx, #[param("Its name")] name: NonBlank) {
         let order = self
             .projects
             .iter()
@@ -185,11 +177,10 @@ impl Calendar {
         let color = Palette::next_after(self.projects.iter().map(|project| project.color));
         self.projects.push(Project {
             id: cx.uuid(),
-            name: name.to_owned(),
+            name: name.into_string(),
             color,
             order,
         });
-        Ok(())
     }
 
     /// Delete event

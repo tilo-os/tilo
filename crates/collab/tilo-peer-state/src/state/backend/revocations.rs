@@ -66,50 +66,5 @@ pub(in crate::state) fn restore_legacy(
         authority,
     )
 }
-pub(in crate::state) struct BoundedRevocations {
-    entries: RevocationList,
-}
-impl BoundedRevocations {
-    /// Only a signature-verified enrollment union. There is no admitted roster
-    /// here, so root binding and pinned-authority denial remain mandatory in
-    /// the actual restore below.
-    pub(in crate::state) fn verified(
-        entries: &[RevocationEntry],
-    ) -> Result<Self, RestoreRevocationsError> {
-        Ok(Self {
-            entries: verified_union(entries.iter().cloned(), |_| None)?,
-        })
-    }
-    pub(in crate::state) fn list(&self) -> &RevocationList {
-        &self.entries
-    }
-    pub(super) fn imported(entries: RevocationList) -> Self {
-        Self { entries }
-    }
-    pub(super) fn restore(
-        stored: &[RevocationEntry],
-        enrollment: &RevocationList,
-        certificates: &super::roster::BoundedRoster,
-        authority: [u8; 32],
-    ) -> Result<Self, RestoreRevocationsError> {
-        let entries = restore(
-            stored.iter().chain(enrollment.iter()).cloned(),
-            |key| {
-                certificates
-                    .certificate(key)
-                    .map(|certificate| certificate.user_public_key)
-            },
-            authority,
-        )?;
-        Ok(Self { entries })
-    }
-    pub(super) fn is_revoked(&self, key: &[u8; 32]) -> bool {
-        self.entries.is_revoked(key)
-    }
-    pub(super) fn iter(&self) -> impl Iterator<Item = &RevocationEntry> {
-        self.entries.iter()
-    }
-}
-
 #[cfg(test)]
 mod tests;

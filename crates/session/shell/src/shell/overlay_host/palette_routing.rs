@@ -111,6 +111,31 @@ impl ShellOverlayHost {
                 crate::compositor::key_latency::KeyHandler::Surface("palette"),
             );
         }
+        // The launcher takes search's input itself: its field, its chips,
+        // its rows. What it asks is answered on the next settle.
+        self.open_launcher_if_asked();
+        if let Some(launcher) = self.launcher.as_mut() {
+            let Some(palette_child) = palette_child else {
+                return false;
+            };
+            // Open search holds the keyboard: the launcher's field types.
+            if !launcher.app.is_focused() {
+                launcher.app.set_focus(true);
+            }
+            launcher
+                .app
+                .handle_event(event, &mut ctx.reborrow(ctx.path, palette_child));
+            // What the launcher asked, answered before the event returns:
+            // a keystroke's rows, a choice's run.
+            self.serve_launcher(&mut ctx.state, ctx.path);
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            ) {
+                *ctx.handled = true;
+            }
+            return *ctx.handled;
+        }
         // Before the row hit-test below so a chip click doesn't fall
         // through to the top result.
         if let WindowEvent::MouseInput {

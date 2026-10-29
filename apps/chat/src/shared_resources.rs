@@ -468,6 +468,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::testing::MountedChat;
 
     #[derive(Default)]
     struct Clipboard(Mutex<Option<String>>);
@@ -564,7 +565,7 @@ mod tests {
             );
             assert!(app.harness().a11y_node_named("Open Plan").is_some());
             let controls: Vec<_> = app
-                .surface_mut::<ChatApp>()
+                .chat()
                 .hits
                 .iter()
                 .filter(|(_, hit)| {
@@ -596,9 +597,9 @@ mod tests {
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
 
-        app.surface_mut::<ChatApp>().begin_resource_navigation(&id);
+        app.chat().begin_resource_navigation(&id);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
-        let surface = app.surface_mut::<ChatApp>();
+        let surface = app.chat();
         assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
         assert_eq!(surface.resource_navigation.label(&id, false), "Link copied");
         assert!(!surface.resource_navigation.pending());
@@ -633,12 +634,12 @@ mod tests {
         let _scope = ui::host::enter(&services);
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
-        app.surface_mut::<ChatApp>().settle_resource_navigation();
-        app.surface_mut::<ChatApp>().settle_resource_navigation();
+        app.chat().settle_resource_navigation();
+        app.chat().settle_resource_navigation();
         let asked = door.asked().len();
         assert_eq!(asked, 1, "asked once, however often the controls painted");
 
-        let surface = app.surface_mut::<ChatApp>();
+        let mut surface = app.chat();
         surface.begin_resource_navigation(&id);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         surface.begin_resource_navigation(&id);
@@ -691,8 +692,8 @@ mod tests {
             ui::host::HostServices::null().with_clipboard(Arc::new(ClickClipboard::default()));
         let _scope = ui::host::enter(&services);
         let id = shared(&mut app);
-        app.surface_mut::<ChatApp>().begin_resource_navigation(&id);
-        assert!(app.surface_mut::<ChatApp>().resource_navigation.pending());
+        app.chat().begin_resource_navigation(&id);
+        assert!(app.chat().resource_navigation.pending());
         assert_eq!(ui::clipboard_paste(), None);
 
         let answers = std::mem::take(&mut *held.lock().unwrap());
@@ -710,8 +711,8 @@ mod tests {
             }));
         }
         app.settle();
-        app.surface_mut::<ChatApp>().settle_resource_navigation();
-        let surface = app.surface_mut::<ChatApp>();
+        app.chat().settle_resource_navigation();
+        let surface = app.chat();
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
         assert!(!surface.resource_navigation.pending());
@@ -730,7 +731,7 @@ mod tests {
         let id = shared(&mut app);
         ui::clipboard_copy("sentinel");
 
-        let surface = app.surface_mut::<ChatApp>();
+        let mut surface = app.chat();
         surface.begin_resource_navigation(&id);
         assert_eq!(
             surface.resource_navigation.status(&id),
@@ -784,7 +785,7 @@ mod tests {
             page.open_target(ROOM, "so.tilo.notes", Some("plan"))
         );
         assert_eq!(asked.argument, InvokeArgument::None);
-        let surface = app.surface_mut::<ChatApp>();
+        let surface = app.chat();
         assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
         assert!(!surface.resource_navigation.pending());
 
@@ -792,7 +793,7 @@ mod tests {
         let _served = RemoteActions::enter(door, Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
         let id = shared(&mut app);
-        let surface = app.surface_mut::<ChatApp>();
+        let mut surface = app.chat();
         surface.open_shared_resource(&id);
         assert_eq!(
             surface.resource_navigation.open_label(&id, "Plan"),

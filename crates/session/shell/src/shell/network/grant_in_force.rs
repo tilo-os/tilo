@@ -35,10 +35,15 @@ impl ShellNetwork {
     ) -> Result<GrantId, String> {
         let id = grant.id.clone();
         let writing = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || writing.write_membership(room, Change::Grant(grant)))
-            .await
-            .map_err(|_| "writing the grant stopped")?
-            .map_err(String::from)?;
+        tokio::task::spawn_blocking(move || {
+            writing.write_governance_change(
+                room,
+                crate::shell::state::GovernanceRequest::Policy(Change::Grant(grant)),
+            )
+        })
+        .await
+        .map_err(|_| "writing the grant stopped")?
+        .map_err(String::from)?;
         // The write projects the room into its workspace as it commits.
         if !self.grant_in_force(room, &id) {
             return Err("the grant was written but is not in force here".into());

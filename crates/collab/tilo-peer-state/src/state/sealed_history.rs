@@ -1,9 +1,9 @@
-//! Shared stored-envelope validation for full and bounded restore.
-use super::backend::{PeerCore, Storage};
+//! Stored-envelope validation for restore.
+use super::backend::PeerCore;
 use super::{DocumentAdmission, MAX_SEALED_BYTES, MAX_SEALED_OPS, err, sealed_compaction};
 
-pub(super) fn restore<S: Storage>(
-    core: &mut PeerCore<S>,
+pub(super) fn restore(
+    core: &mut PeerCore,
     route: &super::Route,
     ops: Vec<collab_types::SignedOp>,
 ) -> Result<(), String> {
@@ -38,8 +38,7 @@ pub(super) fn restore<S: Storage>(
         }
         let admitted =
             DocumentAdmission::from_op(&core.room, &route.app, &route.record, op).map_err(err)?;
-        if S::exact_admission(&core.exact_admissions, &admitted.key) != Some(&admitted.operation_id)
-        {
+        if core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
             return Err("sealed history lacks exact admission evidence".into());
         }
         if document

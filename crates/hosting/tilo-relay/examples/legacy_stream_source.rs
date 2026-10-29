@@ -65,16 +65,13 @@ use anyhow::{Context as _, bail};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use neighbour_wire::NeighbourMsg;
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
-};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_media::realtime::{EncoderConfig, InputFormat, InputFrame, StreamCodec};
 use tilo_relay_protocol::legacy_window::InputEvent;
-use tilo_relay_protocol::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
+use tilo_relay_protocol::transport::Envelope;
 use tilo_relay_session::rooms::{
-    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, ask_host,
 };
 use tilo_relay_session::{AttributedPresence, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -87,9 +84,6 @@ const CODE_BITS: u32 = 20;
 const BITRATE_BPS: u64 = 8_000_000;
 const HARDWARE_FPS: u32 = 60;
 const SOFTWARE_FPS: u32 = 30;
-/// A workspace of the host's person that is no room: where this device asks
-/// the host's own actions before it holds the room.
-const HOME_WORKSPACE: u64 = 0x686f_6d65;
 
 struct Args {
     dev_state: PathBuf,
@@ -556,14 +550,12 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) -> anyhow::Result<()
 }
 
 /// Enter `room`, which the host governs, as one of its owner's devices: the
-/// host's `room.enter` action, asked on a workspace of the person that is no
-/// room, admits it.
+/// host's `room.enter` action, asked of the host directly, admits it.
 async fn enter_room(
     endpoint: &iroh::Endpoint,
     addr: &iroh::EndpointAddr,
     cert: &DeviceCert,
     key: &SigningKey,
-    host: &[u8; 32],
     room: &str,
 ) -> anyhow::Result<()> {
     let home = RelayClient::connect_to_pinned_host(
@@ -575,10 +567,9 @@ async fn enter_room(
     )
     .await
     .context("connect to the host")?;
-    subscribe(&home, HOME_WORKSPACE).await?;
     let mut argument = serde_json::Map::new();
     argument.insert("room".into(), room.into());
-    let invoke = RemoteActionMessage::Invoke(InvokeRequest {
+    let invoke = InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.into(),
@@ -591,43 +582,15 @@ async fn enter_room(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
-    });
-    home.send(Envelope::RemoteAction {
-        workspace_id: HOME_WORKSPACE,
-        version: REMOTE_ACTION_ENVELOPE_VERSION,
-        to_device_public_key: *host,
-        from_device_public_key: [0; 32],
-        from_user_public_key: [0; 32],
-        frame: RemoteActionFrame::new(invoke)
-            .encode()
-            .map_err(|error| anyhow::anyhow!("encode the action: {error:?}"))?,
-    })
-    .map_err(|_| anyhow::anyhow!("the relay session closed"))?;
-    let answer = tokio::time::timeout(Duration::from_secs(30), async {
-        while let Some(envelope) = home.recv().await {
-            match envelope {
-                Envelope::RemoteAction { frame, .. } => {
-                    return RemoteActionFrame::decode(&frame)
-                        .map(|frame| frame.message)
-                        .map_err(|error| anyhow::anyhow!("the host's answer: {error:?}"));
-                }
-                Envelope::RemoteActionUndeliverable { reason, .. } => {
-                    bail!("the host did not take the action: {reason}")
-                }
-                _ => {}
-            }
-        }
-        bail!("the relay session closed before the host answered")
-    })
-    .await
-    .context("the host did not answer within 30 s")??;
-    let RemoteActionMessage::Receipt(receipt) = answer else {
-        bail!("the host answered the action with no receipt");
     };
+    let status = tokio::time::timeout(Duration::from_secs(30), ask_host(&home, invoke))
+        .await
+        .context("the host did not answer within 30 s")?
+        .map_err(|error| anyhow::anyhow!("the host did not take the action: {error}"))?;
     // Admitted: the device may subscribe to the room's workspace now. The
     // invitation it is also handed holds the room for a device that keeps
     // it; a session that streams one window needs no more than admission.
-    let _entered: EnteredRoom = match receipt.status {
+    let _entered: EnteredRoom = match status {
         ReceiptStatus::Completed { output } => {
             serde_json::from_value(output.value.unwrap_or_default())
                 .context("the host's answer is no entered room")?
@@ -656,7 +619,7 @@ async fn run(args: Args) -> anyhow::Result<()> {
     // (`legacy_writer_role`): the session enters the room as one of its
     // owner's devices, as a person's session does when it opens the room's
     // workspace.
-    enter_room(&endpoint, &addr, &cert, &key, &host, &args.room)
+    enter_room(&endpoint, &addr, &cert, &key, &args.room)
         .await
         .context("enter the room")?;
     let client = Arc::new(

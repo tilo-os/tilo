@@ -47,9 +47,6 @@ impl App {
             history.discard_pending_output(self.root_widget.as_mut());
         } else {
             let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
-            crate::bound_dispatch::legacy_document::discard_legacy_controls(
-                self.root_widget.as_mut(),
-            );
             while crate::widget::controls::take_control_invocation(self.root_widget.as_mut())
                 .is_some()
             {}
@@ -87,26 +84,27 @@ impl App {
                 if let Some(original) = original {
                     original.validate_owner(&self.control_domain)?;
                 }
-                let target =
-                    if let Some(original) = original {
-                        original.target.clone()
-                    } else {
-                        match self.actions.action_palette
+                let target = if let Some(original) = original {
+                    original.target.clone()
+                } else {
+                    match self
+                        .actions
+                        .action_palette
                         .as_deref()
                         .and_then(|palette| palette.history_pending_bound_target())
                     {
                         Some(bound) => {
-                            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                            crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                                 bound,
                             )
                         }
-                        None => crate::bound_dispatch::legacy_document::select_local_target(
+                        None => crate::bound_dispatch::local_target::select_local_target(
                             self.root_widget.as_ref(),
                             &self.state.doc,
                             address,
                         )?,
                     }
-                    };
+                };
                 let witness = invocation.as_ref().zip(original_arguments.as_ref()).map(
                     |(invocation, original_arguments)| {
                         crate::bound_dispatch::control_witness_with_arguments(

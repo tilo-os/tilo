@@ -839,6 +839,23 @@ impl PackageStore {
             std::env::var("SOURCE_DATE_EPOCH").ok().as_deref(),
             unix_now(),
         )?;
+        // An app published before under other ids (`previously`) takes over what is kept under
+        // them only from the same publisher: an app of another publisher's installed under one
+        // of them refuses the install.
+        let publisher = hex::encode(meta.publisher());
+        let mut succeeded = Vec::new();
+        for old in &meta.manifest.package.previously {
+            if let Some(row) = registry.find(old) {
+                if row.publisher_key_hex != publisher {
+                    return Err(StoreError::Refused(format!(
+                        "{} names {old} as an id it had before, but {old} is installed from \
+                         another publisher",
+                        meta.manifest.package.id
+                    )));
+                }
+                succeeded.push(old.clone());
+            }
+        }
         let previous = registry.find(&meta.manifest.package.id).cloned();
         let pinned = admission.pinned || previous.as_ref().is_some_and(|row| row.pinned);
         let mut package = self.row_for(
@@ -857,11 +874,21 @@ impl PackageStore {
             package.last_used = self.last_used(previous);
         }
         let replaced = registry.upsert(package.clone());
+        // The app under its earlier id is this one now: one app, not two over the same records.
+        let mut retired = Vec::new();
+        for old in &succeeded {
+            if let Some(row) = registry.remove(old) {
+                retired.push(row);
+            }
+        }
         registry.save(&self.layout.registry())?;
         if let Some(old) = &replaced
             && old.package_id_hex != package.package_id_hex
         {
             self.retire_tree(old)?;
+        }
+        for row in &retired {
+            self.retire_tree(row)?;
         }
         Ok((package, replaced))
     }

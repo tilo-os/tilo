@@ -17,8 +17,8 @@ use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{TableEdit, TocTarget};
 use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState, TextAnchor};
 use ui::tilo_resource::{
-    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Model, ModelError, Place, Reactions,
-    Refusal, Resource, resource,
+    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Model, ModelError, NonBlank, Place,
+    Reactions, Refusal, Resource, resource,
 };
 
 /// The field of [`Document`] the rich text is stored under.
@@ -253,14 +253,11 @@ impl Document {
         block: String,
         start: usize,
         end: usize,
-        text: String,
+        text: NonBlank,
     ) -> Result<(), Refusal> {
-        if text.trim().is_empty() {
-            return Err(Refusal::new("a comment says something"));
-        }
         let anchor = TextAnchor::new(&self.body, &block, start, end).map_err(Refusal::new)?;
         self.comments
-            .push(cx.id(), Comment::written(cx, anchor, text));
+            .push(cx.id(), Comment::written(cx, anchor, text.into_string()));
         Ok(())
     }
 
@@ -273,16 +270,13 @@ impl Document {
         &mut self,
         cx: &mut ActionCx,
         comment: &Id,
-        text: String,
+        text: NonBlank,
         body: Option<Vec<ClipBlock>>,
     ) -> Result<(), Refusal> {
-        if text.trim().is_empty() {
-            return Err(Refusal::new("a reply says something"));
-        }
         let id = cx.id();
         let reply = Reply {
             body: body.unwrap_or_default(),
-            ..Reply::written(cx, text)
+            ..Reply::written(cx, text.into_string())
         };
         let thread = self
             .comments
@@ -1041,7 +1035,7 @@ mod tests {
                 block,
                 start: 4,
                 end: 10,
-                text: "By how much exactly?".into(),
+                text: "By how much exactly?".parse().unwrap(),
             }))
             .unwrap();
         let comment = replica
@@ -1069,7 +1063,7 @@ mod tests {
         replica
             .apply(Document::REPLY_TO_COMMENT.with(document::ReplyToComment {
                 comment,
-                text: "Twice, see the sheet.".into(),
+                text: "Twice, see the sheet.".parse().unwrap(),
                 body: Some(paragraphs.clone()),
             }))
             .unwrap();
@@ -1108,7 +1102,7 @@ mod tests {
                 block: block.clone(),
                 start: 4,
                 end: 10,
-                text: "By how much exactly?".into(),
+                text: "By how much exactly?".parse().unwrap(),
             }))
             .unwrap();
         let after = replica.heads();
@@ -1154,7 +1148,7 @@ mod tests {
             block: block.clone(),
             start: 11,
             end: 17,
-            text: "Friday is a holiday".into(),
+            text: "Friday is a holiday".parse().unwrap(),
         }))
         .unwrap();
         let mut there = here.fork();
@@ -1187,7 +1181,7 @@ mod tests {
                 block,
                 start: 14,
                 end: 19,
-                text: "Seven sharp?".into(),
+                text: "Seven sharp?".parse().unwrap(),
             }))
             .unwrap();
         let file = export_copy(replica.doc()).unwrap();

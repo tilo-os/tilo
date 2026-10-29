@@ -10,11 +10,11 @@ use ui::widget::{Button, DateIndexIntent, DateIndexedScrollbar, Widget};
 use vello::kurbo::Vec2;
 
 use super::{
-    COLLECTION_PAGE_SIZE, CollectionPageHit, LIBRARY_PAGE_SIZE, LibraryDestination, PhotosApp,
+    COLLECTION_PAGE_SIZE, CollectionPageHit, LIBRARY_PAGE_SIZE, LibraryDestination, Photos,
     SELECTION_ALBUMS_PER_PAGE, SLIDE_SHOW_SECONDS, SelectionHit, bound, capture_day,
 };
 
-impl PhotosApp {
+impl Photos {
     /// Drop the open photograph's viewer. The layout tree points at it, so
     /// dropping one that existed asks for a fresh tree.
     pub(super) fn close_viewer(&mut self) {

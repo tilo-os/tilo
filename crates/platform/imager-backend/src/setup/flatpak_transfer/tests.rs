@@ -132,23 +132,6 @@ fn repository_extraction_preserves_existing_key_and_refuses_links_or_unsigned_so
 }
 
 #[test]
-fn standalone_data_selection_preserves_all_app_data_without_duplicate_home_jobs() {
-    let source = Path::new("/source/home");
-    let target = Path::new("/target/home");
-    let journals = Path::new("/private/journals");
-    let jobs = data_subtrees(source, target, journals, false).unwrap();
-    assert_eq!(jobs.len(), 2);
-    assert_eq!(jobs[0].source, source.join(".local/share/flatpak"));
-    assert_eq!(jobs[1].destination, target.join(".var/app"));
-    assert!(
-        data_subtrees(source, target, journals, true)
-            .unwrap()
-            .is_empty()
-    );
-    assert!(data_subtrees(Path::new("../source"), target, journals, false).is_err());
-}
-
-#[test]
 fn custom_installation_root_comes_from_matching_deployment_location() {
     let reference = InstalledRef {
         reference: "app/org.example.App/x86_64/stable".into(),
@@ -173,88 +156,6 @@ fn custom_installation_root_comes_from_matching_deployment_location() {
     );
     let runner = Fake::new(vec![Ok("/mnt/apps/../../other\n")]);
     assert!(installation_roots(&runner, Path::new("/source"), &inventory).is_err());
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn standalone_app_data_uses_verified_home_worker_and_keeps_source_and_existing_target() {
-    use crate::setup::migration_worker::{WorkerEvent, WorkerOutcome};
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().canonicalize().unwrap();
-    let source = root.join("source");
-    let target = root.join("target");
-    let journals = root.join("journals");
-    for directory in [&source, &target, &journals] {
-        std::fs::create_dir(directory).unwrap();
-        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    std::fs::create_dir_all(source.join(".var/app/org.example.Chat/data")).unwrap();
-    std::fs::create_dir_all(target.join(".var")).unwrap();
-    std::fs::write(
-        source.join(".var/app/org.example.Chat/data/session"),
-        b"opaque-account-session",
-    )
-    .unwrap();
-    std::fs::write(
-        source.join(".var/app/org.example.Chat/data/helper"),
-        b"example-data-executable",
-    )
-    .unwrap();
-    std::fs::set_permissions(
-        source.join(".var/app/org.example.Chat/data/helper"),
-        std::fs::Permissions::from_mode(0o750),
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(
-        "session",
-        source.join(".var/app/org.example.Chat/data/latest"),
-    )
-    .unwrap();
-    let jobs = data_subtrees(&source, &target, &journals, false).unwrap();
-    let review = review_subtree(&jobs[1]).unwrap();
-    let mut worker = review.start().unwrap();
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "Flatpak data worker did not finish"
-        );
-        match worker.try_next() {
-            Some(WorkerEvent::Finished(WorkerOutcome::Complete(report))) => {
-                assert!(report.complete());
-                break;
-            }
-            Some(WorkerEvent::Finished(_)) => panic!("Flatpak data transfer did not complete"),
-            _ => std::thread::yield_now(),
-        }
-    }
-    let copied = target.join(".var/app/org.example.Chat/data");
-    assert_eq!(
-        std::fs::read(copied.join("session")).unwrap(),
-        b"opaque-account-session"
-    );
-    assert_eq!(
-        std::fs::read_link(copied.join("latest")).unwrap(),
-        Path::new("session")
-    );
-    assert_eq!(
-        std::fs::metadata(copied.join("helper"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o750
-    );
-    assert_eq!(
-        std::fs::read(source.join(".var/app/org.example.Chat/data/session")).unwrap(),
-        b"opaque-account-session"
-    );
-    assert!(review_subtree(&jobs[1]).is_err());
-    assert_eq!(
-        std::fs::read(copied.join("session")).unwrap(),
-        b"opaque-account-session"
-    );
 }
 
 #[test]

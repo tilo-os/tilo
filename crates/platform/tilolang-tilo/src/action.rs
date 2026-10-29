@@ -24,6 +24,9 @@ use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 /// The registry type id every [`DynAction`] is encoded under.
 pub const ACTION_TYPE: &str = "tl.action";
 
+/// The key of the map in a resource that holds the migrations that ran on it, by action id.
+pub const MIGRATED_KEY: &str = "$migrated";
+
 /// The key of the map in the room record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
@@ -128,6 +131,9 @@ pub enum DynEdit {
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
     In { app: String, edit: Box<DynEdit> },
+    /// Record that the migration `migration` (its action id) ran on the resource `id`, in the
+    /// same change as what it did, so it runs once on each resource an earlier version wrote.
+    Migrated { id: String, migration: String },
 }
 
 impl DynEdit {
@@ -151,7 +157,8 @@ impl DynEdit {
             | Self::Insert { .. }
             | Self::Place { .. }
             | Self::Remove { .. }
-            | Self::OutboxSettle { .. } => false,
+            | Self::OutboxSettle { .. }
+            | Self::Migrated { .. } => false,
         }
     }
 }
@@ -256,6 +263,7 @@ impl DynAction {
                 DynEdit::Remove { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
+                | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
             }
         }
@@ -277,7 +285,8 @@ impl DynAction {
             | DynEdit::Place { id, .. }
             | DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. }) = edit
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. }) = edit
             else {
                 continue;
             };
@@ -313,6 +322,30 @@ pub fn apply_edits(
     Ok(())
 }
 
+/// The records map `edit` writes in: where its resource was stored, under the app's id or under
+/// an id the app had before (`previously:`); what is new goes under the app's id.
+fn target_map(
+    doc: &mut Doc,
+    records: &automerge::ObjId,
+    app: &str,
+    edit: &DynEdit,
+) -> Result<automerge::ObjId, ActionError> {
+    let held = match edit {
+        DynEdit::Create { .. } | DynEdit::In { .. } => None,
+        DynEdit::Edit { id, .. }
+        | DynEdit::Insert { id, .. }
+        | DynEdit::Place { id, .. }
+        | DynEdit::Remove { id }
+        | DynEdit::OutboxPush { id, .. }
+        | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
+    };
+    match held {
+        Some(map) => Ok(map),
+        None => ensure_map(doc, records, app),
+    }
+}
+
 fn apply_one(
     doc: &mut Doc,
     records: &automerge::ObjId,
@@ -323,7 +356,7 @@ fn apply_one(
     if let DynEdit::In { app, edit } = edit {
         return apply_one(doc, records, app, edit, cx);
     }
-    let app = ensure_map(doc, records, app)?;
+    let app = target_map(doc, records, app, edit)?;
     match edit {
         DynEdit::Create { id, record } => {
             let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
@@ -414,9 +447,23 @@ fn apply_one(
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
+        DynEdit::Migrated { id, migration } => {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+            };
+            let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+            doc.put(&done, migration.as_str(), true)?;
+        }
         DynEdit::In { .. } => {}
     }
     Ok(())
+}
+
+/// Whether the migration `migration` (its action id) ran on the resource at the map `obj`.
+#[must_use]
+pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
+    map_in(doc, obj, MIGRATED_KEY)
+        .is_some_and(|done| doc.get(&done, migration).ok().flatten().is_some())
 }
 
 /// The items of each collection of a record being stored, in order, by the item holding the
@@ -597,13 +644,7 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
             _ => None,
         }
     };
-    let Ok(Some((AmValue::Object(ObjType::Map), records))) = doc.get(&ROOT, RECORDS_KEY) else {
-        return Vec::new();
-    };
-    let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, app) else {
-        return Vec::new();
-    };
-    let Ok(Some((AmValue::Object(ObjType::Map), obj))) = doc.get(&app_obj, id) else {
+    let Some(obj) = crate::reads::resource_obj(doc, app, id) else {
         return Vec::new();
     };
     let Ok(Some((AmValue::Object(ObjType::Map), outbox))) = doc.get(&obj, OUTBOX_KEY) else {
@@ -704,7 +745,8 @@ impl DynAction {
             DynEdit::Place { id, item, .. } => (id, Some(item.clone())),
             DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. } => (id, None),
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
         let root = crate::reads::resource_obj(doc, &self.app, id)?;
@@ -753,16 +795,38 @@ pub fn register_actions(registry: &mut ActionRegistry) {
     registry.register::<DynAction>(ACTION_TYPE);
 }
 
-/// The records map of `app` in `doc`, when anything was written there.
-#[must_use]
-pub fn app_records(doc: &Doc, app: &str) -> Option<automerge::ObjId> {
-    let (AmValue::Object(ObjType::Map), records) = doc.get(&ROOT, RECORDS_KEY).ok()?? else {
-        return None;
-    };
-    match doc.get(&records, app).ok()?? {
+fn map_in(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::ObjId> {
+    match doc.get(obj, key).ok()?? {
         (AmValue::Object(ObjType::Map), id) => Some(id),
         _ => None,
     }
+}
+
+/// The records maps of `app` in `doc` that anything was written to: under its id, then under
+/// each id it was published as before (`previously:`), whose records are its own.
+#[must_use]
+pub fn app_records(doc: &Doc, app: &str) -> Vec<automerge::ObjId> {
+    let Some(records) = map_in(doc, &ROOT, RECORDS_KEY) else {
+        return Vec::new();
+    };
+    crate::schema::stored_under(app)
+        .iter()
+        .filter_map(|key| map_in(doc, &records, key))
+        .collect()
+}
+
+/// The records map of `app` (in `records`, the room's `tl` map) that holds the resource `id`:
+/// its own, or that of an id it was published as before.
+fn stored_map(
+    doc: &Doc,
+    records: &automerge::ObjId,
+    app: &str,
+    id: &str,
+) -> Option<automerge::ObjId> {
+    crate::schema::stored_under(app)
+        .iter()
+        .filter_map(|key| map_in(doc, records, key))
+        .find(|map| doc.get(map, id).ok().flatten().is_some())
 }
 
 /// Read the resource `id` of `app` from `doc`.
@@ -770,23 +834,23 @@ pub fn app_records(doc: &Doc, app: &str) -> Option<automerge::ObjId> {
 /// # Errors
 /// The resource is absent, or its type is not registered.
 pub fn read_resource(doc: &Doc, app: &str, id: &str) -> Result<DynRecord, ModelError> {
-    let Some(records) = app_records(doc, app) else {
-        return Err(ModelError::Missing {
-            path: app.to_owned(),
-        });
-    };
-    match doc.get(&records, id)? {
-        Some((AmValue::Object(ObjType::Map), obj)) => DynRecord::read_whole(doc, &obj),
-        _ => Err(ModelError::Missing {
+    match crate::reads::resource_obj(doc, app, id) {
+        Some(obj) => DynRecord::read_whole(doc, &obj),
+        None => Err(ModelError::Missing {
             path: id.to_owned(),
         }),
     }
 }
 
-/// The ids of every resource of `app` in `doc`, in key order.
+/// The ids of every resource of `app` in `doc`, those under its earlier ids included, in key
+/// order.
 #[must_use]
 pub fn resource_ids(doc: &Doc, app: &str) -> Vec<String> {
-    app_records(doc, app)
-        .map(|records| doc.keys(&records).collect())
-        .unwrap_or_default()
+    let mut ids: Vec<String> = app_records(doc, app)
+        .iter()
+        .flat_map(|records| doc.keys(records).collect::<Vec<_>>())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }

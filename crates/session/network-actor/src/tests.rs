@@ -484,6 +484,39 @@ async fn wait_for_event(
     .await;
 }
 
+/// Have `send` publish now, and again each time `publisher` hears a link
+/// come up (`NetEvent::PeerJoined`), until `receiver` hears what `heard`
+/// waits for. A message is sent once: one sent while the link is down, as
+/// when both devices stood still past its idle timeout, is gone, and the
+/// link coming back is what says so. The session states what a peer needs
+/// on every join; this is that.
+pub(crate) async fn publish_until_heard<F: Future<Output = ()> + Send>(
+    what: &str,
+    publisher: &mut mpsc::Receiver<NetEvent>,
+    receiver: &mut mpsc::Receiver<NetEvent>,
+    send: impl Fn() -> F + Send + Sync,
+    mut heard: impl FnMut(&NetEvent) -> bool + Send,
+) {
+    tilo_test_env::within(what, async {
+        send().await;
+        loop {
+            tokio::select! {
+                event = publisher.recv() => {
+                    if matches!(event.expect("the actor is running"), NetEvent::PeerJoined { .. }) {
+                        send().await;
+                    }
+                }
+                event = receiver.recv() => {
+                    if heard(&event.expect("the actor is running")) {
+                        return;
+                    }
+                }
+            }
+        }
+    })
+    .await;
+}
+
 fn fabric_action_from(event: &NetEvent, from: EndpointId, action: &[u8]) -> bool {
     matches!(
         event,
@@ -573,6 +606,140 @@ async fn joined(cmd: &mpsc::Sender<NetCmd>, ws: WorkspaceId) -> mpsc::Receiver<N
         .await
         .unwrap();
     events
+}
+
+/// A device on a runtime of its own, on a thread of its own, that a test
+/// freezes whole, as a laptop with its lid closed: its endpoint, its
+/// connections' timers and its actor all stand still, and on waking each
+/// finds its time has passed.
+struct Sleeper {
+    runtime: tokio::runtime::Handle,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Sleeper {
+    fn new() -> Self {
+        let (runtime_tx, runtime) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime_tx.send(runtime.handle().clone()).unwrap();
+            runtime.block_on(async {
+                let _ = stopped.await;
+            });
+        });
+        Self {
+            runtime: runtime.recv().unwrap(),
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+
+    /// Stand everything on this runtime still until the returned waker is
+    /// dropped.
+    fn freeze(&self) -> std::sync::mpsc::Sender<()> {
+        let (waker, woken) = std::sync::mpsc::channel::<()>();
+        self.runtime.spawn(async move {
+            let _ = woken.recv();
+        });
+        waker
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        let _ = self.stop.take().map(|stop| stop.send(()));
+        let _ = self.thread.take().map(std::thread::JoinHandle::join);
+    }
+}
+
+/// A device asleep for longer than its link's idle timeout loses the link,
+/// and what was sent meanwhile. On waking it is linked again at once, each
+/// side hears the other join, and what the device asks for on that join
+/// reaches its sibling: the join is when the session catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
+    let (a, lookup_a) = endpoint().await;
+    let a_id = a.id();
+    let (cmd_a, _task_a) = Actor::spawn(a, lookup_a);
+    let mut rx_a = joined(&cmd_a, 47).await;
+    let sleeper = Sleeper::new();
+    let (cmd_b, mut rx_b, b_addr, b_id) = sleeper
+        .runtime
+        .spawn(async {
+            let (b, lookup_b) = endpoint().await;
+            let (b_addr, b_id) = (b.addr(), b.id());
+            let (cmd_b, task_b) = Actor::spawn(b, lookup_b);
+            drop(task_b);
+            let rx_b = joined(&cmd_b, 47).await;
+            (cmd_b, rx_b, b_addr, b_id)
+        })
+        .await
+        .unwrap();
+    cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+    wait_for_event(
+        "A hears B join",
+        &mut rx_a,
+        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == b_id),
+    )
+    .await;
+    wait_for_event(
+        "B hears A join",
+        &mut rx_b,
+        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
+    )
+    .await;
+
+    let waker = sleeper.freeze();
+    wait_for_event(
+        "A drops the sleeping device",
+        &mut rx_a,
+        |event| matches!(event, NetEvent::PeerLeft { peer, .. } if *peer == b_id),
+    )
+    .await;
+    let woke = Instant::now();
+    drop(waker);
+
+    wait_for_event(
+        "A hears B join again",
+        &mut rx_a,
+        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == b_id),
+    )
+    .await;
+    wait_for_event(
+        "B hears A join again",
+        &mut rx_b,
+        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
+    )
+    .await;
+    cmd_b
+        .send(NetCmd::PublishPersonalFabric {
+            ws: 47,
+            user_public_key: [0xB7; 32],
+            payload: PersonalFabricPayload::Request,
+        })
+        .await
+        .unwrap();
+    wait_for_event("B's request after waking", &mut rx_a, |event| {
+        matches!(
+            event,
+            NetEvent::PersonalFabric {
+                peer,
+                payload: PersonalFabricPayload::Request,
+                ..
+            } if *peer == b_id
+        )
+    })
+    .await;
+    assert!(
+        woke.elapsed() < PEER_TIMEOUT,
+        "linked again {:?} after waking, as long as a dead link lasts",
+        woke.elapsed()
+    );
 }
 
 /// A device that restarts on the same key hears its sibling's fabric at
@@ -785,68 +952,74 @@ async fn two_actors_exchange_and_announce_identity_over_iroh() {
                 break;
             }
         }
-        cmd_b
-            .send(NetCmd::Publish {
-                at: tokio::time::Instant::now(),
-                ws: 42,
-                msg: NeighbourMsg::SyncReq {
-                    since: vec![],
-                    room: String::new(),
-                    invite_id: None,
-                    nonce: 0,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
-                .await
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SyncReq { .. },
-                    ..
-                }
-            ) {
-                break;
-            }
-        }
+        publish_until_heard(
+            "B's request at A",
+            &mut rx_b,
+            &mut rx_a,
+            || async {
+                cmd_b
+                    .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
+                        ws: 42,
+                        msg: NeighbourMsg::SyncReq {
+                            since: vec![],
+                            room: String::new(),
+                            invite_id: None,
+                            nonce: 0,
+                        },
+                    })
+                    .await
+                    .unwrap();
+            },
+            |event| {
+                matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SyncReq { .. },
+                        ..
+                    }
+                )
+            },
+        )
+        .await;
 
         let dedicated_before =
             DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
-        cmd_a
-            .send(NetCmd::Publish {
-                at: tokio::time::Instant::now(),
-                ws: 42,
-                msg: NeighbourMsg::SurfaceFrame {
-                    surface: 7,
-                    source_peer,
-                    encoded_h264: vec![0, 0, 0, 1, 0x65],
-                    ts: 99,
-                    seq: 0,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
-                .await
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SurfaceFrame {
-                        surface: 7,
-                        ts: 99,
+        publish_until_heard(
+            "A's surface frame at B",
+            &mut rx_a,
+            &mut rx_b,
+            || async {
+                cmd_a
+                    .send(NetCmd::Publish {
+                        at: tokio::time::Instant::now(),
+                        ws: 42,
+                        msg: NeighbourMsg::SurfaceFrame {
+                            surface: 7,
+                            source_peer,
+                            encoded_h264: vec![0, 0, 0, 1, 0x65],
+                            ts: 99,
+                            seq: 0,
+                        },
+                    })
+                    .await
+                    .unwrap();
+            },
+            |event| {
+                matches!(
+                    event,
+                    NetEvent::Msg {
+                        msg: NeighbourMsg::SurfaceFrame {
+                            surface: 7,
+                            ts: 99,
+                            ..
+                        },
                         ..
-                    },
-                    ..
-                }
-            ) {
-                break;
-            }
-        }
+                    }
+                )
+            },
+        )
+        .await;
         assert!(
             DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed)
                 > dedicated_before,
@@ -1116,50 +1289,47 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
         let mut fastest = Duration::MAX;
         for attempt in 0..5_u32 {
             let started = Instant::now();
-            cmd_a
-                .send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws: 44,
-                    msg: NeighbourMsg::SurfaceFrame {
-                        surface: 9 + u64::from(attempt),
-                        source_peer,
-                        encoded_h264: vec![0, 0, 0, 1, 0x65],
-                        ts: 1,
-                        seq: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            cmd_a
-                .send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws: 44,
-                    msg: NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: "responsive".into(),
-                        invite_id: None,
-                        nonce: u64::from(attempt),
-                    },
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within(
-                    "dead media viewer stalled the collaboration actor",
-                    rx_c.recv(),
-                )
-                .await
-                .unwrap();
-                if matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { ref room, .. },
-                        ..
-                    } if room == "responsive"
-                ) {
-                    break;
-                }
-            }
+            publish_until_heard(
+                "dead media viewer stalled the collaboration actor",
+                &mut rx_a,
+                &mut rx_c,
+                || async {
+                    for msg in [
+                        NeighbourMsg::SurfaceFrame {
+                            surface: 9 + u64::from(attempt),
+                            source_peer,
+                            encoded_h264: vec![0, 0, 0, 1, 0x65],
+                            ts: 1,
+                            seq: 0,
+                        },
+                        NeighbourMsg::SyncReq {
+                            since: vec![],
+                            room: "responsive".into(),
+                            invite_id: None,
+                            nonce: u64::from(attempt),
+                        },
+                    ] {
+                        cmd_a
+                            .send(NetCmd::Publish {
+                                at: tokio::time::Instant::now(),
+                                ws: 44,
+                                msg,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                },
+                |event| {
+                    matches!(
+                        event,
+                        NetEvent::Msg {
+                            msg: NeighbourMsg::SyncReq { room, nonce, .. },
+                            ..
+                        } if room == "responsive" && *nonce == u64::from(attempt)
+                    )
+                },
+            )
+            .await;
             fastest = fastest.min(started.elapsed());
         }
         assert!(
@@ -1387,30 +1557,33 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
             NetEvent::PeerJoined { .. }
         ) {}
 
-        cmd_a
-            .send(NetCmd::PublishPersonalFabric {
-                ws: 43,
-                user_public_key: [0xA5; 32],
-                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
-            })
-            .await
-            .unwrap();
-        loop {
-            let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
-                .await
-                .unwrap();
-            if matches!(
-                event,
-                NetEvent::PersonalFabric {
-                    ws: 43,
-                    user_public_key,
-                    payload: PersonalFabricPayload::Snapshot(bytes),
-                    ..
-                } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
-            ) {
-                break;
-            }
-        }
+        publish_until_heard(
+            "A's fabric snapshot at B",
+            &mut rx_a,
+            &mut rx_b,
+            || async {
+                cmd_a
+                    .send(NetCmd::PublishPersonalFabric {
+                        ws: 43,
+                        user_public_key: [0xA5; 32],
+                        payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+                    })
+                    .await
+                    .unwrap();
+            },
+            |event| {
+                matches!(
+                    event,
+                    NetEvent::PersonalFabric {
+                        ws: 43,
+                        user_public_key,
+                        payload: PersonalFabricPayload::Snapshot(bytes),
+                        ..
+                    } if *user_public_key == [0xA5; 32] && *bytes == vec![1, 2, 3]
+                )
+            },
+        )
+        .await;
     }
     // Phase `personal_transfer_streams_in_order_with_a_verified_finish_hash`.
     {

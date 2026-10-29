@@ -110,7 +110,7 @@ impl ShellNetwork {
             tilo_network_actor::behaviour::peer_liveness_handle(endpoint)
         };
         if self.is_local_person_room(&route.cluster_id) {
-            let Some(user) = self.personal_continuity_user else {
+            let Some(user) = self.local_person else {
                 return ContentSources::default();
             };
             if !self.personal_fabric_allowed() {
@@ -379,7 +379,7 @@ impl ShellNetwork {
 
     /// The person's fabric, when this device has a person and may use it.
     fn person_fabric(&self) -> Option<(u64, [u8; 32])> {
-        let user = self.personal_continuity_user?;
+        let user = self.local_person?;
         let ws = personal_continuity_topic_id(&user);
         (self.personal_fabric_allowed() && self.join_topic(ws)).then_some((ws, user))
     }

@@ -85,6 +85,35 @@ pub fn empty(device: &crate::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
     supported(device).then(|| create(device, None))
 }
 
+/// Replace the seed for `device` under `dir` with what `cache` holds,
+/// atomically, readable by every app and writable by its owner only.
+/// `Ok(false)` when the backend has no cache data to share.
+///
+/// # Errors
+/// When the directory or the file cannot be written.
+pub fn publish(
+    device: &crate::gpu::DeviceHandle,
+    cache: &wgpu::PipelineCache,
+    dir: &Path,
+) -> std::io::Result<bool> {
+    let Some(file) = seed_file(dir, &device.adapter.get_info()) else {
+        return Ok(false);
+    };
+    let Some(data) = cache.get_data() else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(dir)?;
+    let staging = file.with_extension("tmp");
+    std::fs::write(&staging, &data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
+    }
+    std::fs::rename(&staging, &file)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

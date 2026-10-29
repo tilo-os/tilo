@@ -18,7 +18,7 @@ aarch64 = "aarch64"
 optional = ["app-files", "notifications", "processes"]
 
 [resources]
-kinds = ["clocks.collection"]
+kinds = ["clocks.collection", "clocks.on-devices"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

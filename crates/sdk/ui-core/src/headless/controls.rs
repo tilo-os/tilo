@@ -559,7 +559,7 @@ impl FrameHarness {
             .transpose()
             .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
         let handled = self
-            .dispatch_semantic_node(owner, verb, |widget, doc, root| {
+            .dispatch_semantic_node(owner, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
                     widget.perform_action(
                         verb,

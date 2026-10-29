@@ -14,7 +14,7 @@ use tilo_desktop::notifications::{Addressed, Notification};
 use tilo_desktop_model::Collaborator;
 use ui::widget::Container;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::keyboard::{Key, NamedKey};
 
 use super::*;
@@ -341,8 +341,8 @@ fn the_team_widget_waits_clear_of_the_strip_switcher() {
     let switcher = zone.union(labels);
     let team = host.desk_slot(WidgetId::Team).expect("team is laid out");
     assert_eq!(
-        host.desk_widget_prefs().team.edge,
-        DockEdge::Right,
+        WidgetId::Team.default_place().0,
+        1.0,
         "the case in question: Team on the switcher's edge"
     );
     assert!(
@@ -439,26 +439,138 @@ fn passing_an_edge_is_not_a_glance_but_reaching_for_it_is() {
     assert_eq!(host.desk_form(WidgetId::Music), Form::Away, "and only it");
 }
 
+/// Between a press on a widget and its release, nothing flips its form:
+/// not typing, not the pointer resting, not time passing. It used to fold
+/// or open under the hand (a hover dwell opened it, leaving folded it),
+/// so the release landed on a different form than the press.
 #[test]
-fn nothing_covers_the_caret() {
-    let (mut host, _chrome, _) = desk();
+fn the_form_never_flips_during_a_press() {
+    let (mut host, _chrome, source) = desk();
     let t0 = Instant::now();
     host.update_desk(t0);
     let music = host.desk_slot(WidgetId::Music).expect("music is laid out");
-    host.set_text_caret(Some(Rect::from_center_size(
-        music.glance.center(),
-        (2.0, 18.0),
-    )));
-    host.update_desk(ms(t0, 10));
-    assert_eq!(host.desk_form(WidgetId::Music), Form::Away);
-    assert_eq!(
-        host.desk_form(WidgetId::Team),
-        Form::Glance,
-        "a widget elsewhere stays"
-    );
-    host.set_text_caret(Some(Rect::new(300.0, 200.0, 302.0, 218.0)));
-    host.update_desk(ms(t0, 20));
+    let play = music_glance_play(music.glance).center();
+    host.desk_pointer(play, ms(t0, 10));
+    host.last_cursor = Some(play);
+    assert!(host.route_desk_event(&ui::synthetic_input::mouse_press()));
+    // Keys reach the window, the pointer rests, seconds pass.
+    for k in 1..=10u64 {
+        host.note_client_typing(Some(ms(t0, 100 * k)), ms(t0, 100 * k));
+        host.update_desk(ms(t0, 100 * k + 50));
+        assert_eq!(host.desk_form(WidgetId::Music), Form::Glance, "step {k}");
+    }
+    host.update_desk(ms(t0, 10_000));
     assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
+    assert!(host.route_desk_event(&ui::synthetic_input::mouse_release()));
+    assert_eq!(
+        source.sent.borrow().last(),
+        Some(&(
+            "org.mpris.MediaPlayer2.spotify".to_string(),
+            PlayerCommand::PlayPause
+        )),
+        "the release lands on the control the press did"
+    );
+}
+
+/// Resting on a glance never opens it; a tap does, and a tap outside (as
+/// the compositor reports every press) or Escape folds it again. Nothing
+/// folds it on a timer.
+#[test]
+fn a_tap_opens_a_glance_and_a_tap_outside_or_escape_folds_it() {
+    let (mut host, _chrome, _) = desk();
+    let mut prefs = host.desk_widget_prefs().clone();
+    prefs.calendar.enabled = true;
+    host.set_desk_widget_prefs(prefs);
+    let t0 = Instant::now();
+    host.update_desk(t0);
+    let calendar = host.desk_slot(WidgetId::Calendar).expect("laid out");
+    host.desk_pointer(calendar.glance.center(), ms(t0, 10));
+    host.update_desk(ms(t0, 5_000));
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Glance,
+        "a rest opens nothing"
+    );
+    host.last_cursor = Some(calendar.glance.center());
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Open,
+        "a tap opens it"
+    );
+    host.desk_pointer(Point::new(300.0, 300.0), ms(t0, 6_000));
+    host.update_desk(ms(t0, 60_000));
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Open,
+        "no timer folds it"
+    );
+    assert!(host.desk_owns_key(&Key::Named(NamedKey::Escape)));
+    assert!(host.route_desk_event(&ui::synthetic_input::key_press(
+        Key::Named(NamedKey::Escape),
+        None
+    )));
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Glance,
+        "Escape folds it"
+    );
+    assert!(
+        !host.desk_owns_key(&Key::Named(NamedKey::Escape)),
+        "Escape is the window's again"
+    );
+
+    host.desk.board.open(WidgetId::Calendar);
+    host.update_desk(ms(t0, 60_100));
+    host.last_cursor = Some(Point::new(300.0, 300.0));
+    host.note_pointer_press();
+    host.update_desk(ms(t0, 60_200));
+    assert_eq!(
+        host.desk_form(WidgetId::Calendar),
+        Form::Glance,
+        "a press outside folds it"
+    );
+}
+
+/// A press that moves past the slop is a drag and never a tap; one let go
+/// within it is a tap, even on a control.
+#[test]
+fn a_tap_acts_and_a_drag_never_does() {
+    let (mut host, _chrome, source) = desk();
+    let t0 = Instant::now();
+    host.update_desk(t0);
+    let music = host.desk_slot(WidgetId::Music).expect("music is laid out");
+    let play = music_glance_play(music.glance).center();
+    // Within the slop: a tap on play/pause.
+    host.last_cursor = Some(play);
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    let jitter = play + Vec2::new(DRAG_SLOP * 0.5, 0.0);
+    host.desk_pointer(jitter, ms(t0, 20));
+    host.last_cursor = Some(jitter);
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    assert_eq!(source.sent.borrow().len(), 1, "a tap acts");
+    assert_eq!(
+        host.desk_slot(WidgetId::Music),
+        Some(music),
+        "and moves nothing"
+    );
+    // Past the slop: the widget moves, the control does nothing.
+    host.last_cursor = Some(play);
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    let far = play - Vec2::new(400.0, 300.0);
+    host.desk_pointer(play - Vec2::new(40.0, 30.0), ms(t0, 400));
+    host.desk_pointer(far, ms(t0, 800));
+    host.desk_pointer(far, ms(t0, 900));
+    host.last_cursor = Some(far);
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    assert_eq!(source.sent.borrow().len(), 1, "a drag never taps");
+    host.force_desk_settled(ms(t0, 2_000));
+    let moved = host.desk_slot(WidgetId::Music).expect("still laid out");
+    assert!(
+        (moved.glance.origin() - (music.glance.origin() - Vec2::new(400.0, 300.0))).hypot() < 1.0,
+        "it rests where it was let go: {moved:?} from {music:?}"
+    );
 }
 
 #[test]
@@ -521,36 +633,192 @@ fn music_controls_reach_the_player_without_switching_workspaces() {
     );
 }
 
+/// Carried, a widget follows the hand 1:1 and lands where it was let go,
+/// drawn onto an edge it lands near; thrown, it carries on with the hand's
+/// momentum. Where it rests is kept.
 #[test]
-fn a_click_opens_a_glance_and_a_drag_moves_it_to_another_edge() {
+fn a_dragged_widget_follows_the_hand_and_rests_where_it_was_let_go() {
     let (mut host, _chrome, _) = desk();
     let t0 = Instant::now();
     host.update_desk(t0);
     let music = host.desk_slot(WidgetId::Music).expect("music is laid out");
-    host.last_cursor = Some(music.glance.center());
-    assert!(host.route_desk_event(&ui::synthetic_input::mouse_press()));
-    assert!(host.route_desk_event(&ui::synthetic_input::mouse_release()));
-    assert_eq!(host.desk_form(WidgetId::Music), Form::Open);
-    host.desk.board.close();
-    host.update_desk(ms(t0, 10));
-
-    host.last_cursor = Some(music.glance.center());
-    assert!(host.route_desk_event(&ui::synthetic_input::mouse_press()));
-    let drop_at = Point::new(60.0, 860.0);
-    host.desk_pointer(drop_at, ms(t0, 40));
-    host.last_cursor = Some(drop_at);
-    assert!(host.route_desk_event(&ui::synthetic_input::mouse_release()));
-    assert_eq!(
-        host.desk_widget_prefs().music.edge,
-        DockEdge::BottomLeft,
-        "it snaps there"
-    );
-    host.update_desk(ms(t0, 60));
-    let moved = host.desk_slot(WidgetId::Music).expect("still laid out");
+    let from = music.glance.center() - Vec2::new(60.0, 0.0);
+    host.last_cursor = Some(from);
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    let mut at = from;
+    for k in 1..=20u32 {
+        at = from - Vec2::new(30.0 * f64::from(k), 15.0 * f64::from(k));
+        host.desk_pointer(at, ms(t0, 16 * u64::from(k)));
+        let drawn = host.drawn_slot(&music, ms(t0, 16 * u64::from(k)));
+        assert!(
+            ((drawn.glance.origin() - music.glance.origin()) - (at - from)).hypot() < 1e-6,
+            "1:1 with the hand at step {k}"
+        );
+    }
+    // Held still before letting go: a set-down, not a throw.
+    host.desk_pointer(at + Vec2::new(0.0, 0.5), ms(t0, 600));
+    host.last_cursor = Some(at + Vec2::new(0.0, 0.5));
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    host.force_desk_settled(ms(t0, 2_000));
+    let rest = host.desk_slot(WidgetId::Music).expect("laid out");
+    let expected = music.glance.origin() + (at + Vec2::new(0.0, 0.5) - from);
     assert!(
-        moved.glance.x0 < 100.0 && moved.glance.y1 > 800.0,
-        "{moved:?}"
+        (rest.glance.origin() - expected).hypot() < 1.0,
+        "{rest:?} vs {expected:?}"
     );
+    let place = host
+        .desk_widget_prefs()
+        .music
+        .places
+        .first()
+        .cloned()
+        .expect("kept");
+    assert_eq!(place.display, "", "the one display here");
+    assert!(
+        place.x > 0.0 && place.x < 1.0 && place.y > 0.0 && place.y < 1.0,
+        "{place:?}"
+    );
+
+    // A throw toward the left edge: it carries on and is drawn onto it.
+    let from = rest.glance.center();
+    host.last_cursor = Some(from);
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    let start = ms(t0, 3_000);
+    for k in 1..=6u32 {
+        let p = from - Vec2::new(60.0 * f64::from(k), 0.0);
+        host.desk_pointer(p, start + Duration::from_millis(16 * u64::from(k)));
+        host.last_cursor = Some(p);
+    }
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    host.force_desk_settled(ms(t0, 5_000));
+    let thrown = host.desk_slot(WidgetId::Music).expect("laid out");
+    assert!(
+        thrown.glance.x0 < from.x - 360.0 - music.glance.width() / 2.0 - 100.0,
+        "momentum carried it past the release: {thrown:?}"
+    );
+}
+
+/// Removing a widget (its control, or thrown off the screen) takes it off
+/// the desk at once with nothing left to press where it was, and Undo
+/// brings it back where it was.
+#[test]
+fn a_removed_widget_leaves_nothing_behind_and_undo_brings_it_back() {
+    let (mut host, chrome, _) = desk();
+    let t0 = Instant::now();
+    host.update_desk(t0);
+    let music = host.desk_slot(WidgetId::Music).expect("music is laid out");
+    host.desk_pointer(music.glance.center(), ms(t0, 10));
+    let badge = badge_rect(music.glance, host.desk_anchor(WidgetId::Music));
+    host.desk_pointer(badge.center(), ms(t0, 20));
+    host.last_cursor = Some(badge.center());
+    assert!(host.route_desk_event(&ui::synthetic_input::mouse_press()));
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    assert!(!host.desk_widget_prefs().music.enabled, "removed");
+    assert_eq!(host.desk_form(WidgetId::Music), Form::Away);
+    for p in [music.glance.center(), badge.center()] {
+        assert!(
+            host.desk_hit_at(p, ms(t0, 30)).is_none(),
+            "no ghost at {p:?}"
+        );
+        assert!(
+            !host.desk_captures_pointer_at(p),
+            "the window under it gets {p:?}"
+        );
+    }
+    let toast = chrome
+        .borrow()
+        .notifications()
+        .last()
+        .map(|n| n.id)
+        .expect("an Undo toast");
+    // Out from under where it comes back, so it is not held for a pointer
+    // resting there.
+    host.desk_pointer(Point::new(300.0, 300.0), ms(t0, 50));
+    assert!(chrome.borrow_mut().activate_notification(toast));
+    host.update_desk(ms(t0, 100));
+    assert!(
+        host.desk_widget_prefs().music.enabled,
+        "Undo brings it back"
+    );
+    assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
+    assert_eq!(
+        host.desk_slot(WidgetId::Music).map(|s| s.glance),
+        Some(music.glance),
+        "where it was"
+    );
+
+    // Thrown off the bottom-right corner it goes too.
+    let from = music.glance.center() - Vec2::new(40.0, 0.0);
+    host.last_cursor = Some(from);
+    host.route_desk_event(&ui::synthetic_input::mouse_press());
+    let start = ms(t0, 1_000);
+    for k in 1..=6u32 {
+        let p = from + Vec2::new(50.0 * f64::from(k), 30.0 * f64::from(k));
+        host.desk_pointer(p, start + Duration::from_millis(16 * u64::from(k)));
+        host.last_cursor = Some(p);
+    }
+    host.route_desk_event(&ui::synthetic_input::mouse_release());
+    assert!(
+        !host.desk_widget_prefs().music.enabled,
+        "a throw off the screen removes it"
+    );
+}
+
+/// Every card resizes from its handle through all its breakpoints, its
+/// height never jumping, and keeps the width it was let go at.
+#[test]
+fn a_card_resizes_continuously_and_keeps_its_width() {
+    let (mut host, _chrome, _) = desk();
+    let mut prefs = host.desk_widget_prefs().clone();
+    prefs.calendar.enabled = true;
+    prefs.system_monitor.enabled = true;
+    host.set_desk_widget_prefs(prefs);
+    let t0 = Instant::now();
+    for (k, id) in WidgetId::ALL.into_iter().enumerate() {
+        let start = ms(t0, 10_000 * k as u64);
+        host.desk.board.open(id);
+        host.force_desk_settled(start);
+        let slot = host.desk_slot(id).expect("laid out");
+        assert_eq!(host.desk_form(id), Form::Open, "{id:?}");
+        let anchor = host.desk_anchor(id);
+        let grip = grip_rect(card_rect(slot.open), anchor).center();
+        host.desk_pointer(grip, start);
+        host.last_cursor = Some(grip);
+        assert!(host.route_desk_event(&ui::synthetic_input::mouse_press()));
+        let sizing = sizing::sizing(id);
+        let toward = if anchor.0 { -1.0 } else { 1.0 };
+        let mut last: Option<Rect> = None;
+        let mut stages = std::collections::BTreeSet::new();
+        // From the narrowest to the widest, a pixel at a time.
+        let span = sizing.max - sizing.min;
+        let steps = span.ceil() as u32;
+        for step in 0..=steps {
+            let width = sizing.min + f64::from(step).min(span);
+            let p = grip + Vec2::new(toward * (width - slot.open.width()), 0.0);
+            host.desk_pointer(p, start + Duration::from_millis(u64::from(step) + 1));
+            let open = host.desk_slot(id).expect("laid out").open;
+            if let Some(last) = last {
+                assert!(
+                    (open.height() - last.height()).abs() < 5.0,
+                    "{id:?} jumps at {width}"
+                );
+            }
+            stages.insert(sizing::dominant(id, open.width()));
+            last = Some(open);
+        }
+        assert_eq!(stages.len(), 3, "{id:?} passes every breakpoint");
+        let keep = sizing.default + 40.0;
+        let p = grip + Vec2::new(toward * (keep - slot.open.width()), 0.0);
+        host.desk_pointer(p, start + Duration::from_secs(5));
+        host.last_cursor = Some(p);
+        host.route_desk_event(&ui::synthetic_input::mouse_release());
+        assert_eq!(
+            host.desk_widget_prefs().get(id).width,
+            Some(keep.round()),
+            "{id:?}"
+        );
+        host.desk.board.close();
+    }
 }
 
 #[test]

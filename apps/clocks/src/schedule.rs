@@ -2,13 +2,16 @@
 //!
 //! What rings is the person's [`Clocks`], the same on every
 //! device. Whether this device has already rung it is not: each device keeps
-//! its own delivery ledger ([`OnThisDevice`]), persisted across restarts and
-//! never synced, so every device rings a deadline exactly once however often
-//! the app is reopened, and no two devices race to write the same marker.
+//! its own delivery ledger ([`OnThisDevice`]) in a record beside the clocks
+//! ([`ClocksOnDevices`]), persisted across restarts, so every device rings a
+//! deadline exactly once however often the app is reopened, and no two
+//! devices race to write the same marker: each writes only its own entry.
 //! Wall time is passed in explicitly, which keeps suspend, clock
 //! corrections, time zone changes and tests deterministic.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
@@ -17,9 +20,9 @@ use ui::prelude::*;
 
 use crate::model::{Alarm, Clocks, instant};
 
-/// What Clocks keeps on this device only: which clocks float above other
-/// windows here, and the delivery ledger of the alarms and timers this
-/// device has rung or handed to the platform's scheduler.
+/// What Clocks keeps for one device alone: which clocks float above other
+/// windows there, and the delivery ledger of the alarms and timers it has
+/// rung or handed to the platform's scheduler.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OnThisDevice {
     /// Timers floating above other windows on this screen.
@@ -31,8 +34,81 @@ pub struct OnThisDevice {
     pub delivery: Delivery,
 }
 
-impl SettingsSchema for OnThisDevice {
-    const SCOPE: Scope = Scope::DeviceLocal;
+tilo_resource::json_model!(OnThisDevice);
+
+/// What each device keeps for itself ([`OnThisDevice`]), by device: a record
+/// Clocks keeps beside the clocks in the workspace, each device reading and
+/// writing only its own entry.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct ClocksOnDevices {
+    pub devices: BTreeMap<String, OnThisDevice>,
+}
+
+#[resource(kind = "clocks.on-devices", label = "Clocks on each device")]
+impl ClocksOnDevices {
+    /// What `device` keeps for itself is now `kept`.
+    #[action(housekeeping)]
+    pub fn keep(
+        &mut self,
+        device: String,
+        #[param("What the device keeps, as it stores it")] kept: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        let kept = serde_json::from_value(kept)
+            .map_err(|error| Refusal::new(format!("not what a device keeps: {error}")))?;
+        self.devices.insert(device, kept);
+        Ok(())
+    }
+}
+
+impl ClocksOnDevices {
+    /// What `device` keeps for itself.
+    #[must_use]
+    pub fn on(&self, device: &str) -> OnThisDevice {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
+}
+
+/// What this device keeps for itself, read and changed: its entry in the
+/// [`ClocksOnDevices`] record in a live window, held in memory where there
+/// is no record (a capture, a past version).
+#[derive(Clone)]
+pub(crate) struct DeviceChoices {
+    record: Option<(PersonRecord<ClocksOnDevices>, String)>,
+    held: Rc<RefCell<OnThisDevice>>,
+}
+
+impl DeviceChoices {
+    pub(crate) fn new(record: Option<(PersonRecord<ClocksOnDevices>, String)>) -> Self {
+        Self {
+            record,
+            held: Rc::default(),
+        }
+    }
+
+    /// What this device keeps now.
+    pub(crate) fn get(&self) -> OnThisDevice {
+        match &self.record {
+            Some((record, device)) => record.with(|kept| kept.on(device)),
+            None => self.held.borrow().clone(),
+        }
+    }
+
+    /// Change what this device keeps.
+    pub(crate) fn update(&self, change: impl FnOnce(&mut OnThisDevice)) -> Result<(), String> {
+        let mut kept = self.get();
+        change(&mut kept);
+        let Some((record, device)) = &self.record else {
+            *self.held.borrow_mut() = kept;
+            return Ok(());
+        };
+        if record.with(|all| all.devices.get(device) == Some(&kept)) {
+            return Ok(());
+        }
+        let kept = serde_json::to_value(&kept).map_err(|error| error.to_string())?;
+        record
+            .invoke(&ClocksOnDevices::KEEP.with((device.clone(), kept)))
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// The delivery ledger of one device.

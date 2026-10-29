@@ -1794,7 +1794,9 @@ impl BrowserShell {
     }
 
     fn apply_pick(&mut self, pick: &OverviewPick) {
-        self.overview.set_open(false, Vec::new());
+        if pick.closes() {
+            self.overview.set_open(false, Vec::new());
+        }
         match pick {
             OverviewPick::Window(tab) => {
                 self.handle.focus_tab(*tab);
@@ -1804,7 +1806,16 @@ impl BrowserShell {
                 workspace: id.0.to_string(),
             }),
             OverviewPick::NewWorkspace => self.new_workspace(),
-            OverviewPick::Dismiss => {}
+            // The page carries out going somewhere; it has no directory to
+            // join from and no window or strip edits through its overview.
+            OverviewPick::JoinWorkspace
+            | OverviewPick::LeaveWorkspace(_)
+            | OverviewPick::CloseWindow(_)
+            | OverviewPick::MoveWindow { .. }
+            | OverviewPick::MoveWindowToStrip { .. }
+            | OverviewPick::RenameStrip { .. }
+            | OverviewPick::MoveStrip { .. }
+            | OverviewPick::Dismiss => {}
         }
     }
 

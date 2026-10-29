@@ -13,7 +13,8 @@ use std::collections::HashSet;
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{
-    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, Refusal, SearchEntry, Set, resource,
+    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, NonBlank, Refusal, SearchEntry, Set,
+    resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -51,15 +52,8 @@ impl Contacts {
     /// A contact with a typed full name: its first word is the first name,
     /// the rest the last name.
     #[action]
-    pub fn new_contact(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Full name")] name: String,
-    ) -> Result<(), Refusal> {
+    pub fn new_contact(&mut self, cx: &mut ActionCx, #[param("Full name")] name: NonBlank) {
         let (first, last) = split_name(&name);
-        if first.is_empty() {
-            return Err(Refusal::new("a new contact has a name"));
-        }
         self.contacts.push(Contact {
             id: cx.uuid(),
             first,
@@ -67,7 +61,6 @@ impl Contacts {
             ..Contact::default()
         });
         self.contacts.settle();
-        Ok(())
     }
 
     /// Add contacts.

@@ -126,7 +126,7 @@ pub use source::{
     flush_pending_writes, install_source, installed_source, merge_section, note_deferred_failure,
     take_deferred_failures,
 };
-pub use store::{RECORDS_DIR, Store, profile};
+pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is

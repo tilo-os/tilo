@@ -3,10 +3,7 @@
 //! Retained invocations are inert data.  A continuation token identifies one
 //! presentation of one item; it never carries authority or confirmation.
 
-use crate::bound_dispatch::{
-    BoundActionTarget,
-    legacy_document::{LegacyResourceTarget, LocalResourceTarget},
-};
+use crate::bound_dispatch::{BoundActionTarget, local_target::LocalResourceTarget};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use tilo_actions::ControlInvocation;
 use uuid::Uuid;
@@ -61,15 +58,13 @@ pub struct ContinuationToken {
 pub(crate) enum PendingControlOrigin {
     Outer { root_lifetime: Uuid },
     Component(BoundActionTarget),
-    Legacy(LegacyResourceTarget),
 }
 
 impl PendingControlOrigin {
-    fn lifetime_id(&self) -> Option<Uuid> {
+    fn lifetime_id(&self) -> Uuid {
         match self {
-            Self::Outer { root_lifetime } => Some(*root_lifetime),
-            Self::Component(target) => Some(target.binding.lifetime_id),
-            Self::Legacy(target) => target.owner.lifetime_id(),
+            Self::Outer { root_lifetime } => *root_lifetime,
+            Self::Component(target) => target.binding.lifetime_id,
         }
     }
 
@@ -77,7 +72,6 @@ impl PendingControlOrigin {
         match self {
             Self::Outer { .. } => LocalResourceTarget::Outer,
             Self::Component(target) => LocalResourceTarget::Component(target.clone()),
-            Self::Legacy(target) => LocalResourceTarget::Legacy(target.clone()),
         }
     }
 
@@ -85,10 +79,6 @@ impl PendingControlOrigin {
         match self {
             Self::Outer { root_lifetime } => format!("outer root {root_lifetime}"),
             Self::Component(target) => format!("component {}", target.binding.lifetime_id),
-            Self::Legacy(target) => target.owner.lifetime_id().map_or_else(
-                || "legacy owner unavailable".to_owned(),
-                |id| format!("legacy owner {id}"),
-            ),
         }
     }
 }
@@ -309,7 +299,7 @@ impl SuspendedLocalControls {
             | PendingControlStatus::Refused(_)
             | PendingControlStatus::Consumed => return None,
         };
-        let owner_lifetime = item.origin.lifetime_id()?;
+        let owner_lifetime = item.origin.lifetime_id();
         let nonce = Uuid::new_v4();
         item.outstanding_nonce = Some(nonce);
         Some(ContinuationToken {
@@ -336,7 +326,7 @@ impl SuspendedLocalControls {
             .position(|item| item.id == token.item_id)?;
         let item = self.items.get_mut(index)?;
         if item.outstanding_nonce != Some(token.nonce)
-            || item.origin.lifetime_id() != Some(token.owner_lifetime)
+            || item.origin.lifetime_id() != token.owner_lifetime
         {
             return None;
         }

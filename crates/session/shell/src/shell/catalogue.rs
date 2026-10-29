@@ -233,25 +233,6 @@ pub fn resolve_catalogue_bin() -> Option<PathBuf> {
     catalogue_bin_candidates().into_iter().find(|p| p.exists())
 }
 
-/// Install an owned service through the same normal registry verifier used
-/// by app search, without opening a window or changing workspace capabilities.
-/// Call only on a worker after the original host's enrollment approval.
-#[cfg(target_os = "linux")]
-pub(crate) fn install_service_package(package: &str) -> std::io::Result<()> {
-    let bin = resolve_catalogue_bin().ok_or(std::io::ErrorKind::NotFound)?;
-    let mut command = std::process::Command::new(bin);
-    command.args(["install", package]);
-    let output =
-        bounded_command::run_prepared(command, None, INSTALL_OUTPUT_LIMIT, INSTALL_TIMEOUT)
-            .map_err(std::io::Error::other)?;
-    if !output.status.success() {
-        return Err(std::io::ErrorKind::Other.into());
-    }
-    invalidate();
-    launcher::invalidate_app_cache();
-    Ok(())
-}
-
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
 pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {

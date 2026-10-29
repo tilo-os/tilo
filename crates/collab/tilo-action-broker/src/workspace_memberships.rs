@@ -98,6 +98,12 @@ impl CapnpBrokerState {
                         .into(),
                 );
             }
+            WorkspaceMembershipCommand::Settings(_) => {
+                return Err(
+                    "a change to the room's settings is its person's own, made at their device"
+                        .into(),
+                );
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(

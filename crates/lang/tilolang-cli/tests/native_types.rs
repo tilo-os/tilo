@@ -20,7 +20,9 @@ fn block<'a>(text: &'a str, head: &str) -> &'a str {
     let start = text.find(head);
     assert!(start.is_some(), "no `{head}` in:\n{text}");
     let rest = text.get(start.unwrap_or_default()..).unwrap_or_default();
-    let end = rest.find("\n}\n").map_or(rest.len(), |end| end + 2);
+    let end = rest
+        .find("\n}\n")
+        .map_or(rest.len(), |end| end.saturating_add(2));
     rest.get(..end).unwrap_or_default()
 }
 
@@ -94,7 +96,7 @@ fn native_chat_describes_as_tilolang_types() {
 
 #[test]
 fn a_tilolang_package_describes_through_the_same_catalogue() {
-    let todo = repo().join("apps/tl/todo");
+    let todo = repo().join("apps/tl/tasks");
     let text = tilolang_cli::describe::describe(&todo, &[]).expect("todo describes");
     assert!(text.starts_with("app "), "{text}");
     assert!(text.contains("type "), "{text}");

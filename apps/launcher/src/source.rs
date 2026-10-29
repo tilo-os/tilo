@@ -118,6 +118,8 @@ struct Shared {
     answer: Answer,
     generation: u64,
     open: bool,
+    /// The host asked the launcher to open, in this scope.
+    open_request: Option<SearchScope>,
     room: Option<(f64, f64)>,
     wake: Option<ui::WakeHandle>,
 }
@@ -202,6 +204,26 @@ impl Link {
     /// closed by its source since.
     pub fn is_open(&self) -> bool {
         self.shared.borrow().open
+    }
+
+    /// Ask the launcher to open in `scope`, as the host's own shortcut
+    /// does: the launcher opens before it handles anything else, so the
+    /// first key typed after the shortcut is never lost to a closed card.
+    /// Agents and scripts open it through its `open` action instead.
+    pub fn request_open(&self, scope: SearchScope) {
+        let wake = {
+            let mut shared = self.shared.borrow_mut();
+            shared.open_request = Some(scope);
+            shared.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
+    /// The scope the host asked the launcher to open in, once.
+    pub fn take_open_request(&self) -> Option<SearchScope> {
+        self.shared.borrow_mut().open_request.take()
     }
 
     /// Give the launcher's card `width` and let its list grow to

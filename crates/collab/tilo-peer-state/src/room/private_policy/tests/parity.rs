@@ -166,26 +166,6 @@ fn compare(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64
     .map(|value| (value.revision, value.expiries))
     .map_err(Error::legacy);
     assert_eq!(got, expected);
-    let result = native(
-        &LegacyRead(doc),
-        Metadata {
-            room: peer.room(),
-            authority: peer.authority(),
-            certificates: certificates.iter(),
-            revocations: revocations.iter(),
-        },
-        Limits {
-            collections: 4 * 1024 * 1024,
-            json: JsonLimits {
-                allocation_bytes: 128 * 1024,
-                collection_entries: 65536,
-            },
-        },
-    );
-    let got = result
-        .map(|value| (value.revision.clone(), value.expiries))
-        .map_err(Error::legacy);
-    assert_eq!(got, expected);
     expected
 }
 #[test]

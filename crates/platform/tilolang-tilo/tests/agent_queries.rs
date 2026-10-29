@@ -2,10 +2,12 @@
 //! "Errors that teach"): `grep`, `find`, the chaining functions, `read`, `describe` and `print`,
 //! over the app the program runs in and, through another host, over apps it does not hold.
 //!
-//! Two hosts as the door sees them: one runs Todo, where the programs run, the other holds
+//! Two hosts as the door sees them: one runs Tasks, where the programs run, the other holds
 //! Notes, Chat and Board with their scenarios. [`run`] plays the door: what a program asks to
 //! read of the other apps is answered by the other host's `read-for-program`, and the program
 //! runs again with the answers.
+
+use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
@@ -63,9 +65,9 @@ fn agent() -> Caller {
     }
 }
 
-/// The host programs run in: Todo, with a list.
+/// The host programs run in: Tasks, with its list.
 fn worker() -> Replica {
-    let (mut todo, _) = Replica::new("ada", AutoCommit::new(), &[app!("todo"), (JOURNAL, "")]);
+    let (mut todo, _) = Replica::new("ada", AutoCommit::new(), &[app!("tasks"), (JOURNAL, "")]);
     todo.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     todo.host.root_of(TODO).unwrap();
     todo.host.root_of("so.test.journal").unwrap();
@@ -195,7 +197,7 @@ fn grep_reads_several_apps_and_each_match_says_where_it_is() {
 fn grep_knows_block_kinds_groups_times_and_writers() {
     let other = holder();
     let mut todo = worker();
-    let body = r#"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist"#;
+    let body = r"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist";
     let wrote = run(
         &mut todo,
         &other,
@@ -263,11 +265,11 @@ fn a_grep_result_feeds_actions_in_the_same_program() {
     let answer = run(
         &mut todo,
         &other,
-        r"grep(/^Two blockers (.*)/, in: notes).each(m -> todo.add(todo.todos, m.group(1)))",
+        r"grep(/^Two blockers (.*)/, in: notes).each(m -> todo.add(todo.tasks, m.group(1)))",
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 1, "{answer:#}");
-    let titles = printed(&run(&mut todo, &other, "todo.todos.items.map(.title)"));
+    let titles = printed(&run(&mut todo, &other, "todo.tasks.items.map(.title)"));
     assert_eq!(titles, "left. Chen is out on Friday.");
 }
 
@@ -299,7 +301,7 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let taken = printed(&run(
         &mut notes,
         &other,
-        r#"find(Note, pinned: false).take(2).len()"#,
+        r"find(Note, pinned: false).take(2).len()",
     ));
     assert_eq!(taken, "2");
 }
@@ -337,7 +339,7 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
     let first = printed(&run(
         &mut todo,
         &other,
-        r#"read(journal.entries.items.single())"#,
+        r"read(journal.entries.items.single())",
     ));
     let mut lines = first.lines();
     let head = lines.next().unwrap();
@@ -390,45 +392,48 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
         app.contains("action notes.pin(n: Note, pinned: Bool = not n.pinned)"),
         "{app}"
     );
-    let ty = printed(&run(&mut todo, &other, "describe(Todo)"));
-    assert!(ty.contains("type todo.Todo {"), "{ty}");
+    let ty = printed(&run(&mut todo, &other, "describe(Task)"));
+    assert!(ty.contains("type todo.Task {"), "{ty}");
     assert!(ty.contains("    done: Bool\n"), "{ty}");
-    assert!(ty.contains("filters: open, done, due"), "{ty}");
+    assert!(
+        ty.contains("filters: inbox, today, upcoming, done, due, project, priority"),
+        "{ty}"
+    );
     let action = printed(&run(&mut todo, &other, "describe(todo.add)"));
     assert!(action.starts_with("/// "), "its doc first: {action}");
     assert!(
-        action.contains("action todo.add(list: TodoList, title: Text) -> Todo"),
+        action.contains("action todo.add(tasks: Tasks, title: Text) -> Task"),
         "{action}"
     );
-    let field = printed(&run(&mut todo, &other, "describe(Todo.done)"));
-    assert!(field.starts_with("todo.Todo.done: Bool"), "{field}");
-    let root = printed(&run(&mut todo, &other, "describe(todo.todos)"));
-    assert_eq!(root, "root todo.todos: TodoList");
+    let field = printed(&run(&mut todo, &other, "describe(Task.done)"));
+    assert!(field.starts_with("todo.Task.done: Bool"), "{field}");
+    let root = printed(&run(&mut todo, &other, "describe(todo.tasks)"));
+    assert_eq!(root, "root todo.tasks: Tasks");
     let resource = printed(&run(
         &mut todo,
         &other,
-        "let list = todo.todos\ndescribe(list)",
+        "let list = todo.tasks\ndescribe(list)",
     ));
-    assert!(resource.starts_with("@todo.TodoList:"), "{resource}");
-    assert!(resource.contains("  a TodoList\n"), "{resource}");
+    assert!(resource.starts_with("@todo.Tasks:"), "{resource}");
+    assert!(resource.contains("  a Tasks\n"), "{resource}");
 }
 
 #[test]
 fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
     let other = holder();
     let mut todo = worker();
-    run(&mut todo, &other, "todo.add(todo.todos, \"Milk\")");
+    run(&mut todo, &other, "todo.add(todo.tasks, \"Milk\")");
     let asked = printed(&run(
         &mut todo,
         &other,
-        "print(todo.todos.items, fields: [.title, .done])",
+        "print(todo.tasks.items, fields: [.title, .done])",
     ));
-    assert!(asked.starts_with("@todo.Todo:"), "{asked}");
+    assert!(asked.starts_with("@todo.Task:"), "{asked}");
     assert!(
         asked.ends_with("\"Milk\"  title: Milk  done: false"),
         "{asked}"
     );
-    let filters = printed(&run(&mut todo, &other, "todo.todos.items"));
+    let filters = printed(&run(&mut todo, &other, "todo.tasks.items"));
     assert!(filters.contains("done: false"), "{filters}");
 }
 
@@ -436,7 +441,7 @@ fn print_shows_rows_with_the_fields_asked_or_the_types_filters() {
 fn errors_teach_what_is_valid() {
     let other = holder();
     let mut todo = worker();
-    let filter = refused(&run(&mut todo, &other, "find(Todo, completed: true)"));
+    let filter = refused(&run(&mut todo, &other, "find(Task, completed: true)"));
     assert!(
         filter.contains("has no filter `completed`; did you mean `done`?"),
         "{filter}"
@@ -446,7 +451,7 @@ fn errors_teach_what_is_valid() {
         source.contains("`notez` is no app this program may read; did you mean `notes`?"),
         "{source}"
     );
-    let method = refused(&run(&mut todo, &other, "todo.todos.items.cout_by(.done)"));
+    let method = refused(&run(&mut todo, &other, "todo.tasks.items.cout_by(.done)"));
     assert!(method.contains("did you mean `count_by`?"), "{method}");
     let kind = refused(&run(&mut todo, &other, "grep(/x/, not: .quotes)"));
     assert!(kind.contains("did you mean `quote`?"), "{kind}");
@@ -489,7 +494,7 @@ fn a_session_of_the_agents_doc_examples() {
     let mut transcript = String::new();
     for entry in entries {
         let answer = run(&mut todo, &other, entry);
-        transcript.push_str(&format!("tl> {}\n", entry.replace('\n', "\n... ")));
+        let _ = writeln!(transcript, "tl> {}", entry.replace('\n', "\n... "));
         for line in answer["output"].as_array().into_iter().flatten() {
             transcript.push_str(line.as_str().unwrap_or_default());
             transcript.push('\n');
@@ -498,17 +503,20 @@ fn a_session_of_the_agents_doc_examples() {
             Some("done") => {}
             Some("rejected") => {
                 for line in answer["detail"].as_array().into_iter().flatten() {
-                    transcript.push_str(&format!("error: {}\n", line.as_str().unwrap_or_default()));
+                    let _ = writeln!(transcript, "error: {}", line.as_str().unwrap_or_default());
                 }
             }
-            _ => transcript.push_str(&format!(
-                "error: {}\n",
-                answer["detail"].as_str().unwrap_or("the program failed")
-            )),
+            _ => {
+                let _ = writeln!(
+                    transcript,
+                    "error: {}",
+                    answer["detail"].as_str().unwrap_or("the program failed")
+                );
+            }
         }
         let changed = answer["changed"].as_u64().unwrap_or(0);
         if changed > 0 {
-            transcript.push_str(&format!("({changed} changed)\n"));
+            let _ = writeln!(transcript, "({changed} changed)");
         }
     }
     println!("{transcript}");

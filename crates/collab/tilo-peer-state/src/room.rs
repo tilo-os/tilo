@@ -2,7 +2,6 @@
 mod admit;
 mod adopt;
 pub mod base;
-pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
 pub mod membership;
@@ -287,9 +286,9 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
         && settings_of(before) == settings_of(Some(after))
 }
 
-/// The room settings only its governor writes, as stored: the room's name
-/// and its saved grant sets. Whatever a key holds counts, so a value of
-/// another shape than the governor writes is a change too.
+/// The room's settings as stored: its name and its saved grant sets.
+/// Whatever a key holds counts, so a value of another shape than a writer
+/// writes is a change too.
 fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
     use tilo_desktop_model::projection::{ROOM_NAME_KEY, ROOM_PRESETS_KEY};
     let Some(doc) = doc else {

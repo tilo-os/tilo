@@ -106,24 +106,24 @@ fn after<'a>(out: &'a str, entry: &str) -> Vec<&'a str> {
 fn the_repl_queries_changes_in_bulk_with_a_preview_and_undoes_on_a_nested_session() {
     let session = std::env::var("TILOLANG_REPL_SESSION").expect("TILOLANG_REPL_SESSION");
     let script = "\
-todo.todos.items.len()
-for t in [\"Take the bins out\", \"Buy oat milk and eggs\", \"Water the plants\", \"Return the library books\", \"Book a haircut\"] { todo.add(todo.todos, t) }
+todo.tasks.items.len()
+for t in [\"Take the bins out\", \"Buy oat milk and eggs\", \"Water the plants\", \"Return the library books\", \"Book a haircut\"] { todo.add(todo.tasks, t) }
 confirm
-todo.todos.items.len()
-todo.todos.items.filter(t -> not t.done).len()
+todo.tasks.items.len()
+todo.tasks.items.filter(t -> not t.done).len()
 undo
-todo.todos.items.len()
+todo.tasks.items.len()
 history task
 ";
     let output = repl(&["--session", &session], script);
     let out = String::from_utf8_lossy(&output.stdout);
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{out}\n{err}");
-    let before: usize = after(&out, "todo.todos.items.len()")[0]
+    let before: usize = after(&out, "todo.tasks.items.len()")[0]
         .trim()
         .parse()
         .unwrap();
-    let previewed = after(&out, "todo.add(todo.todos, t) }").join("\n");
+    let previewed = after(&out, "todo.add(todo.tasks, t) }").join("\n");
     assert!(previewed.contains("preview: 5 actions"), "{out}");
     assert!(previewed.contains("add ×5"), "{out}");
     let applied = after(&out, "confirm").join("\n");

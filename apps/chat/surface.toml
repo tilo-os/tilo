@@ -111,7 +111,7 @@ id = "name-agent"
 kind = "undoable"
 params = [
   { name = "participant", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -119,7 +119,7 @@ id = "create-category"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -127,7 +127,7 @@ id = "create-channel"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
   { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -139,7 +139,7 @@ field = "moderation"
 kind = "undoable"
 params = [
   { name = "id", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
   { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -196,7 +196,7 @@ field = "moderation"
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -223,7 +223,7 @@ field = "moderation"
 kind = "undoable"
 params = [
   { name = "category", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -241,7 +241,7 @@ kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
   { name = "author", type = "text", required = true, schema = { type = "string" } },
-  { name = "reason", type = "text", required = true, schema = { type = "string" } },
+  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -249,7 +249,7 @@ id = "report-person"
 kind = "undoable"
 params = [
   { name = "person", type = "text", required = true, schema = { type = "string" } },
-  { name = "reason", type = "text", required = true, schema = { type = "string" } },
+  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -763,8 +763,8 @@ incoming_message = true
 kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
-  { name = "author", type = "text", required = true, schema = { type = "string" } },
-  { name = "body", type = "text", required = true, schema = { type = "string" } },
+  { name = "author", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "body", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "ts", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
 
@@ -825,7 +825,7 @@ kind = "undoable"
 params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "reply", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
   { name = "event", required = true, schema = {} },
 ]
 

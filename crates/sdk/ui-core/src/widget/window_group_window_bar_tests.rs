@@ -152,9 +152,6 @@ impl Widget for HeaderedApp {
 }
 
 impl crate::widget::app_widget::AppWidget for HeaderedApp {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Files
     }
@@ -222,9 +219,6 @@ impl Widget for PageApp {
 }
 
 impl crate::widget::app_widget::AppWidget for PageApp {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Terminal
     }

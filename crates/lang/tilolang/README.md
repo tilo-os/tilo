@@ -23,6 +23,43 @@ The ids lock gives every declaration its stable id. The compiler adds new declar
 retires removed ones; commit it with the sources. Rename a declaration with
 `tilolang ids --rename old new`, so it keeps its id and with it the data stored under it.
 
+Rename the app itself by giving it its new id and naming the old one in the header:
+`app so.tilo.lang.tasks "Tasks" (previously: so.tilo.lang.todo)` (several in brackets). The
+records stored under the old id are the app's: they open in it where they are, with the ids they
+have, and its actions change them there; what it creates goes under the new id. The id it had
+before is signed into the app's manifest, and installing it over an app of that id from another
+publisher is refused; from the same publisher it takes that app's place.
+
+A package migrates its own records when its schema changes shape. The field the type no longer
+uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
+it. A `migration action` on the type moves what it held to where the type keeps it now:
+
+```
+type Column {
+    title: Text (title)
+    cards: Collection<Card>
+}
+
+type Board {
+    columns: Collection<Column>
+    cards: Collection<Card> (previously)
+}
+
+/// Puts each card of a board from before into its column, in the order the board showed them.
+migration action place_cards(b: Board) {
+    for card in b.cards {
+        let col = card.column
+        col.cards.move(card, to: col.cards.len())
+    }
+}
+```
+
+The platform runs it once on each resource of its type that holds something in a `(previously)`
+field (a type without one: once on each resource), as an ordinary action of the person whose
+window opened the data: it is in history, undone like any other, and records in the same change
+that it ran. A migration is never offered. It cannot delete anything; moving items between
+collections keeps their ids and history.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -36,14 +73,14 @@ root Counter
 
 default view counter for Counter
 
-action increment(c: Counter) {
+primary action increment(c: Counter) (icon: .plus) {
     c.value += 1
 }
 
 view counter(c: Counter) {
     page {
-        heading("{c.value}")
-        button("+1", on: increment(c), style: .primary) as plus
+        text("{c.value}", role: .numeric)
+        button(increment(c)) as plus
     }
 }
 ```
@@ -218,13 +255,13 @@ view notebook(nb: Notebook) {
     page {
         stack(gap: .section) {
             row(distribute: .between) {
-                heading("Notes")
-                button("New note", on: new_note(nb), style: .primary) as new
+                text("Notes", role: .title)
+                button(new_note(nb)) as new
             }
             button("Sort by title", on: set(order, .title))
             for n in listed(nb, order) {
-                button(n.title, on: open(n), style: .plain)
-                text(n.body, style: .caption, truncate, min: 11rem)
+                button(n.title, on: open(n))
+                text(n.body, role: .caption, truncate, min: 11rem)
             }
         }
     }
@@ -232,12 +269,13 @@ view notebook(nb: Notebook) {
 ```
 
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
-`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`;
-`collapse:` `.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions
-`.top_leading` ... `.bottom_trailing`; `axis:` `.vertical .horizontal`; button `style:`
-`.secondary .primary .destructive .plain`; text `style:` `.body .title .heading .caption .label
-.code`. `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation`
-(`.portrait .landscape .ultrawide`) compare with the same literals.
+`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
+`.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
+... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.body .title .caption
+.numeric`. A button takes its look from its action, `primary action` or `destructive action`, and
+its label and icon from the action too unless it names them (`button(n.title, on: open(n))`).
+`space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
+.landscape .ultrawide`) compare with the same literals.
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each
@@ -319,7 +357,7 @@ apps:
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
 grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
-    .each(t -> todo.add(todo.todos, t.group(1)))
+    .each(t -> todo.add(todo.tasks, t.group(1)))
 find("standup chen")                                   // the palette's words, every app
 find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
 find("groceries").single()                             // one, or an error listing them
@@ -370,6 +408,8 @@ print(xs, fields: [.title, .due])
   it as mia's at that time.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
+- An item block names a template's other slots beside the item's view; they do not see the
+  item: `std.transcript(c, c.messages) { m -> message(m, replying) composer: { ... } }`.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.

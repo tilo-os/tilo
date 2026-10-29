@@ -108,10 +108,18 @@ impl ShellOverlayHost {
             None
         });
 
+        let outputs = self.layer_outputs();
         overlay_part(scene, "shell.shortcut-help", desktop, |scene| {
-            if self.overlay_flags().shortcut_help {
-                self.draw_shortcut_help(scene, transform, text_renderer, theme);
-            }
+            use super::layers::ShellLayer as _;
+            self.layers.shortcut_guide.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
 
@@ -195,6 +203,20 @@ impl ShellOverlayHost {
             );
         }
         let palette_xform = pose.applied_to(transform);
+        // The launcher paints its card, its shadow and its chips itself.
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher
+                .app
+                .draw(scene, palette_xform, text_renderer, theme, presence);
+            if in_flight {
+                scene.pop_layer();
+            }
+            let shadow = ui::widget::floating_surface::card_shadow(theme);
+            let card = palette_rect.inflate(2.0, 2.0);
+            let painted = ui::surface::shadow_bounds(palette_rect, &shadow)
+                .map_or(card, |shadow| shadow.union(card));
+            return Some(vec![palette_xform.transform_rect_bbox(painted)]);
+        }
         // The one floating card's shadow, faded with the card by the layer.
         ui::widget::floating_surface::paint_card_shadow(
             scene,

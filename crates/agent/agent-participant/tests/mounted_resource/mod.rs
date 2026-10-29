@@ -178,7 +178,7 @@ pub async fn run() {
         &mut doc,
         &source_author,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,
@@ -189,7 +189,7 @@ pub async fn run() {
         &mut doc,
         &source_author,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "Lounge".into(),
+            name: "Lounge".parse().unwrap(),
             category: None,
             kind: Some(chat::model::ChannelKind::Voice),
             topic: None,

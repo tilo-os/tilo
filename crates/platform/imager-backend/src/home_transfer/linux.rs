@@ -142,30 +142,8 @@ impl HomeReview {
     pub fn recover(source: &Path, destination: &Path, journal: &Path) -> Result<Self, String> {
         intent::recover(source, destination, journal).map_err(|error| error.to_string())
     }
-    pub fn verify_adoption(
-        &self,
-        witness: &super::promotion::AdoptionWitness,
-    ) -> Result<CopyReport, String> {
-        fidelity::verify_adoption(self, witness).map_err(|error| error.to_string())
-    }
-    pub fn verify_adoption_after_applications(
-        &self,
-        witness: &super::promotion::AdoptionWitness,
-    ) -> Result<CopyReport, String> {
-        fidelity::verify_adoption_applications(self, witness).map_err(|error| error.to_string())
-    }
-    pub fn verify_after_applications(&self) -> Result<CopyReport, String> {
-        fidelity::verify_applications(self).map_err(|error| error.to_string())
-    }
-    pub fn verify_flatpak_installation(&self) -> Result<CopyReport, String> {
-        fidelity::verify_flatpak_installation(self).map_err(|error| error.to_string())
-    }
     pub fn verify_completed_tree(&self) -> Result<CopyReport, String> {
         fidelity::verify_completed_tree(self).map_err(|error| error.to_string())
-    }
-    pub fn retain_review(&self) -> Result<(), String> {
-        self.validate().map_err(|error| error.to_string())?;
-        intent::save(self).map_err(|error| error.to_string())
     }
     pub fn start(&self) -> Result<HomeWorker, String> {
         HomeWorker::start(self.clone(), false)
@@ -197,22 +175,6 @@ impl HomeReview {
             return Err(changed("Reviewed destination parent was replaced"));
         }
         Ok(source)
-    }
-    pub fn recover_adoption(
-        source: &Path,
-        destination: &Path,
-        journal: &Path,
-        witness: &super::promotion::AdoptionWitness,
-        prefix: &Path,
-    ) -> Result<Self, String> {
-        intent::recover_adoption(source, destination, journal, witness, prefix)
-            .map_err(|e| e.to_string())
-    }
-    pub fn verify_flatpak_adoption(
-        &self,
-        witness: &super::promotion::AdoptionWitness,
-    ) -> Result<CopyReport, String> {
-        fidelity::verify_flatpak_adoption(self, witness).map_err(|e| e.to_string())
     }
     pub fn transfer(
         &self,

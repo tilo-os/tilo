@@ -12,7 +12,9 @@
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, ActionCx, Atom, Derived, Effect, Id, Invoke, Refusal, resource};
+use ui::tilo_resource::{
+    self, ActionCx, Atom, Derived, Effect, Id, Invoke, NonBlank, Refusal, resource,
+};
 use ui::widget::Element;
 
 use crate::model::{Snippet, Snippets};
@@ -79,15 +81,11 @@ impl Snippets {
     pub fn rename_folder(
         &mut self,
         #[param("Folder")] folder: String,
-        #[param("New name")] to: String,
+        #[param("New name")] to: NonBlank,
     ) -> Result<(), Refusal> {
-        let to = to.trim();
-        if to.is_empty() {
-            return Err(Refusal::new("a folder needs a name"));
-        }
         self.each_matching(
             |s| s.folder.0 == folder,
-            |s| s.folder = Atom(to.to_owned()),
+            |s| s.folder = Atom(to.to_string()),
             "no such folder",
         )
     }

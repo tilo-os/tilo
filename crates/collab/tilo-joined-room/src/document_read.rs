@@ -1,14 +1,13 @@
 //! Bounded reads of an admitted document in an owner-hosted room.
 //!
-//! The committed view's live [`tilo_peer_state::StatePeer`] is never cloned
-//! or saved for a reader. A new or changed document restores the room's
-//! durable bytes into a [`tilo_peer_state::BoundedStatePeer`] under explicit
-//! limits, rechecks the reader's current membership and document Read
-//! permission there. The plaintext API refuses encrypted documents; history
-//! reads require an opener for already-held channel keys. Both refuse causally
-//! incomplete documents or captures larger than the caller can hold. A reader that already
-//! holds the admitted revision is answered from those heads, without
-//! restoring the room again.
+//! A read is captured from the committed view's live
+//! [`tilo_peer_state::StatePeer`], which is never cloned or saved for a
+//! reader, after rechecking the reader's current membership and document
+//! Read permission. The plaintext API refuses encrypted documents; history
+//! reads require an opener for already-held channel keys. Both refuse
+//! causally incomplete documents or captures larger than the caller can
+//! hold. A reader that already holds the admitted revision is answered from
+//! those heads, without capturing the document again.
 //!
 //! A canonical checkpoint reaches a receiving owner as several signed frames.
 //! Between the frame that moves the room's coverage and the frame carrying the
@@ -21,31 +20,31 @@
 //! own document ([`NativeCommittedView::read_changes`]). That view is what
 //! the room durably committed: its `record.peer` is the view's durable form,
 //! and both are published together. So the changes lead to the revision a
-//! restoring read would hand out. Whatever only a restoring read can decide
+//! whole read would hand out. Whatever only a whole read can decide
 //! (a pending checkpoint; an encrypted, incomplete or absent document; a
 //! base the document does not hold) is left to
 //! [`NativeCommittedView::read_document`].
 use crate::NativeCommittedView;
 use std::time::SystemTime;
-use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
+use tilo_peer_state::PeerDocumentReadError;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
 #[cfg(test)]
 thread_local! {
-    static ROOM_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times a document read restored the room. Tests use this to prove
-/// an unchanged revision does not pay that cost.
+/// How many times a document read captured the document. Tests use this to
+/// prove an unchanged revision does not pay that cost.
 #[cfg(test)]
-pub(crate) fn room_restores() -> usize {
-    ROOM_RESTORES.with(std::cell::Cell::get)
+pub(crate) fn captures() -> usize {
+    CAPTURES.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
-pub(crate) fn reset_room_restores() {
-    ROOM_RESTORES.with(|count| count.set(0));
+pub(crate) fn reset_captures() {
+    CAPTURES.with(|count| count.set(0));
 }
 
 /// A document as the room last admitted it.
@@ -73,7 +72,7 @@ pub enum ChangesRead {
     /// The reader already holds this revision.
     Unchanged([u8; 32]),
     Changes(DocumentChanges),
-    /// Only a restoring [`NativeCommittedView::read_document`] can answer.
+    /// Only a whole [`NativeCommittedView::read_document`] can answer.
     Whole,
 }
 
@@ -110,8 +109,8 @@ fn revision_of_sorted(heads: &[[u8; 32]]) -> [u8; 32] {
 
 impl NativeCommittedView {
     /// Whether a `reader` holding `known` holds the admitted revision of
-    /// `app`'s `record`, answered from the admitted heads without restoring
-    /// the room; `None` when those heads cannot vouch for the record
+    /// `app`'s `record`, answered from the admitted heads without capturing
+    /// the document; `None` when those heads cannot vouch for the record
     /// (encrypted, incomplete or absent), and only [`Self::read_document`]
     /// can say.
     ///
@@ -174,7 +173,7 @@ impl NativeCommittedView {
     ) -> Result<DocumentRead, String> {
         let (app, record) = route;
         // Idle apps re-read the revision they already hold. Answer that from
-        // the admitted heads. Restoring the room is only for a document this
+        // the admitted heads. Capturing the document is only for one this
         // caller does not yet have, or for a route those heads cannot vouch
         // for (encrypted, incomplete, or absent).
         if let Some(known) = known_revision
@@ -191,20 +190,6 @@ impl NativeCommittedView {
             self.peer.check_document_read(reader, app, record, now)?;
             return Ok(DocumentRead::CheckpointPending);
         }
-        let limits = PeerLimits::default();
-        #[cfg(test)]
-        ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
-        let restored = BoundedStatePeer::restore(
-            &self.record.peer,
-            &self.record.room.to_string(),
-            &self.record.governor,
-            std::slice::from_ref(&self.record.device),
-            &tilo_user_identity::RevocationList::new(),
-            now,
-            &limits,
-        )
-        .map_err(|error| error.to_string())?;
-        let read = restored.read();
         let denied = |error| match error {
             PeerDocumentReadError::Denied => "the reader may not read that document".into(),
             PeerDocumentReadError::Missing => {
@@ -212,16 +197,10 @@ impl NativeCommittedView {
             }
             other => other.to_string(),
         };
-        let mut closed = |_: &collab_types::SignedOp| Err("history keys unavailable".into());
-        let open = if let Some(open) = open {
-            open
-        } else {
-            // The original plaintext-only API retains its encrypted refusal.
-            read.document_read(reader, app, record, now)
-                .map_err(denied)?;
-            &mut closed
-        };
-        let document = read
+        #[cfg(test)]
+        CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
+        let document = self
+            .peer
             .capture_document(reader, (app, record), now, maximum, open)
             .map_err(denied)?;
         let revision = document.revision();

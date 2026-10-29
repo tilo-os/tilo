@@ -108,6 +108,12 @@ pub trait Platform {
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. UTC unless the platform knows the person's.
+    fn zone(&self) -> i64 {
+        0
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -239,7 +245,13 @@ pub struct Instance {
     lenses: HashMap<String, Vec<(Principal, bool)>>,
     lenses_changed: bool,
     /// The person and the room's policy the runtime's members were last read from.
-    members_from: Option<(String, tilo_action_policy::RoomPolicy)>,
+    members_from: Option<(
+        String,
+        tilo_action_policy::RoomPolicy,
+        crate::members::People,
+    )>,
+    /// How the policy's people are the runtime's principals, as presence pairs them.
+    people: crate::members::People,
     names_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -258,6 +270,8 @@ pub struct Instance {
     started: bool,
     loading: bool,
     moved: bool,
+    /// Whether the package's migrations ran over the room record since the window opened.
+    migrated: bool,
     /// The later build this instance runs, 0 for the installed one.
     generation: u64,
     follows: bool,
@@ -277,6 +291,7 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
+        let people = crate::members::People::new(&config.me, []);
         Self {
             app: config.app,
             me: config.me,
@@ -297,6 +312,7 @@ impl Instance {
             lenses: HashMap::new(),
             lenses_changed: false,
             members_from: None,
+            people,
             names_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -316,6 +332,7 @@ impl Instance {
             started: false,
             loading: false,
             moved: false,
+            migrated: false,
             generation: 0,
             follows: false,
             taken_build: None,
@@ -544,6 +561,14 @@ impl Instance {
             if synced | host.poll_index() {
                 self.moved = true;
             }
+            // Opened on what an earlier version wrote, the package brings it to where it keeps
+            // it now, once the record is had; what they commit goes as any action does.
+            if doc.is_some() && !self.migrated && self.mode == Mode::Live {
+                self.migrated = true;
+                if host.migrate() > 0 {
+                    self.moved = true;
+                }
+            }
             return Some(host.clone());
         }
         let index_dir = if self.mode == Mode::Live {
@@ -583,6 +608,8 @@ impl Instance {
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
@@ -1711,18 +1738,28 @@ impl Instance {
         let Some(standing) = standing else {
             return false;
         };
-        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
-            *person == standing.person && *policy == standing.policy
-        });
+        let seen = self
+            .members_from
+            .as_ref()
+            .is_some_and(|(person, policy, people)| {
+                *person == standing.person && *policy == standing.policy && *people == self.people
+            });
         if seen {
             return false;
         }
         host.runtime().set_members(
-            crate::members::members_of(&standing, &self.me),
-            Some(crate::members::reads_of(&standing, &self.me, &host)),
+            crate::members::members_of(&standing, &self.people),
+            Some(crate::members::reads_of(&standing, &self.people, &host)),
         );
-        self.members_from = Some((standing.person, standing.policy));
+        self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
+    }
+
+    /// Which person each participant presence reports is a device of, `(participant,
+    /// person)`, where the room's host paired them: the policy's people are the runtime's
+    /// principals by it.
+    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
+        self.people = crate::members::People::new(&self.me, pairs);
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.

@@ -101,6 +101,7 @@
     )
 )]
 
+pub mod action_directory;
 pub mod app_surface;
 pub mod document_routes;
 pub mod history_source;

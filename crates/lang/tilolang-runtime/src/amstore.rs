@@ -857,6 +857,26 @@ impl Store for AmStore {
             .collect())
     }
 
+    /// Only the last `window` changes are read: their notes, newest first.
+    fn recent_authors(
+        &self,
+        at: &ResourceRef,
+        limit: usize,
+        window: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let inner = self.inner.borrow();
+        let am = inner.doc(&at.doc)?;
+        let notes: Vec<ChangeNote> = am
+            .committed_document()
+            .get_changes(&[])
+            .iter()
+            .rev()
+            .take(window)
+            .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
+            .collect();
+        Ok(crate::store::recent_authors_in(notes.iter(), at, limit))
+    }
+
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {
         let mut inner = self.inner.borrow_mut();
         let id = SubId(inner.next_sub);

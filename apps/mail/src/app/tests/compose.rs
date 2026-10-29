@@ -77,7 +77,7 @@ fn compose_send_accepts_recipients_in_any_header_field() {
         // Replace the engine with an in-memory backend: no SMTP or other network IO.
         let (requests, outgoing) = std::sync::mpsc::channel();
         let (_events, incoming) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
+        app.state().engine = Some(EngineHandle {
             tx: requests,
             rx: incoming,
         });
@@ -283,7 +283,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         // and brings it back to the composer.
         let (outgoing_tx, _outgoing_rx) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
+        app.state().engine = Some(EngineHandle {
             tx: outgoing_tx,
             rx: incoming_rx,
         });
@@ -296,6 +296,7 @@ fn composer_opens_privately_seeds_replies_and_saves_drafts_in_place() {
         app.flush_server_outbox();
         app.undo_time_is_up(&mut doc);
         let (&request_id, _) = app
+            .state()
             .pending_send
             .iter()
             .next()

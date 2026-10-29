@@ -389,7 +389,7 @@ pub enum WordProcessorEffect {
     #[effect(edit, participant)]
     CommentSelection {
         #[param("The comment")]
-        text: String,
+        text: tilo_resource::NonBlank,
         #[param(
             "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
             place = "blocks"

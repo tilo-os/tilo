@@ -10,12 +10,23 @@ description = "Portable host-owned messaging account metadata boundary"
 # The person's Tilo messages through the private conversations of their
 # room (`room`), for a host without a native messaging host: a web page.
 room = ["dep:tilo-relay-protocol", "dep:uuid"]
+# Serde forms of the account, enrollment, history and group types, for the
+# messaging service's socket to the apps it serves (tilo-messaging-service).
+wire = ["dep:serde", "zeroize/serde"]
+# The app's connection to the messaging service: its wire and, on Unix,
+# the client over the socket the launcher hands the app.
+service-client = ["wire", "dep:serde_json", "dep:wire-frame", "dep:tokio", "dep:tracing"]
 
 [dependencies]
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
 uuid = { workspace = true, optional = true }
 tilo-contact-directory = { path = "../tilo-contact-directory" }
 zeroize.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+wire-frame = { path = "../../system/wire-frame", optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+tracing = { workspace = true, optional = true }
 accounts = { path = "../../system/accounts", features = ["person"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -90,11 +90,12 @@ its Cap'n Proto RPC, and the catalogue Store browses:
 `libtilo_app_host_engine.so` for Store; Mail's message codecs and SMTP
 client, mail-parser, mail-builder and lettre: `libtilo_mail_engine.so` for
 Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
-`libtilo_archive_engine.so` for Files; the libraries only Settings uses, the model-provider administration
-panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility
-settings, the PC keyboard outlines and the time-zone globe:
-`libtilo_settings_engine.so` for
-Settings). It is
+`libtilo_archive_engine.so` for Files; Settings itself, its library with
+every pane, and the libraries only Settings uses, the settings sections, the
+model-provider administration panel, the NTFS mount protocol, the wallpaper
+catalogue, the accessibility settings, the PC keyboard outlines and the
+time-zone globe: `libtilo_settings_engine.so` for Settings, whose binary is
+one call into it). It is
 signed into the runtime bundle beside `libruntime_dylib.so`, so the runtime's
 id, signature and verity cover it, but only its apps name it `DT_NEEDED`;
 every other app no longer maps or relocates it. Apps share one engine library
@@ -118,12 +119,27 @@ relies on:
   `target/thin-app/runtime-engines`, which packaging signs into the bundle;
 - `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
-  another);
+  another) and its linker, `tools/ci/runtime-dylib-lazy-link.py`, which drops
+  the code nothing exported reaches;
+- rustc exports every item of every crate linked into a Rust dylib. An
+  engine that apps or other engines compile against keeps that list, since
+  they may name any of those items. An engine no workspace crate depends on
+  (Settings', which its app binary calls by an unmangled name, and the
+  ad-block compiler, which the toolkit opens with `dlopen`) exports only its
+  unmangled entry points: `build-thin-apps.sh` finds those engines in the
+  workspace, and the link keeps only the code their entry points reach. Its
+  check binary calls it the same way, through `tilo_<name>_engine_check`;
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
   Contacts, Messages, PDF Viewer, Files, Print Centre, Imager, Browser, Store, Chat and the on-screen keyboard), named in `dist/apps/app-collections.toml`, the
   Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
   links the engine's crates statically, as `tilo-app dev` does;
+- an engine may carry its app's own library (Settings): the engine then
+  depends on the app's package, which cannot depend on the engine in turn, so
+  the binary names the library with `#[link]` and calls one unmangled entry
+  point; `rustc-thin-app-wrapper.sh` gives app binaries Cargo's dylib
+  directory as a native search path, and `build-thin-apps.sh` links the
+  engines before the apps;
 - one app may not load two engine libraries that both carry a crate (rustc
   refuses a crate that shows up twice in a link); an engine whose crates
   overlap another's that its app always loads with it chains on that one
@@ -141,7 +157,10 @@ relies on:
   account custody its sign-in reaches, for one).
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
-beside the runtime's, fails when an app of `apps_without_media` loads one it
+beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
+in the budget, by library name, with the runtime's headroom, rounding and
+raise files: a raise adds `"lib<name>.so" = <bytes>` under
+`[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
 does not use (`[engine_users]` in the budget names the ones those apps use:
 Clocks the time-zone database), renders Typst Editor through its engine, runs
 Music's Spotify engine (`music --probe-spotify-engine`, librespot's code
@@ -150,8 +169,8 @@ from each app that loads them (`canvas --probe-paint-engine`, `music` and
 `tube --probe-youtube-engine`, `mail --probe-accounts-engine`, `calendar` and
 `clocks --probe-timezone-engine`, `contacts`, `mail` and
 `messages --probe-contact-directory-engine`), checking each app loads its
-engine itself. Settings, whose tapp stays as it is, has no probe; the trace of
-its start shows it loads the accounts engine itself.
+engine itself. Settings has no probe: the trace of its start shows it loads
+its engine library, which runs the app and brings the accounts engine.
 
 ### Engines the toolkit opens on first use
 
