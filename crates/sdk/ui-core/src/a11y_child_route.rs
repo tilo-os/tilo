@@ -14,6 +14,9 @@
 //! [`perform`] carries it down, so the widget acts exactly as it does for a
 //! node of its own.
 
+use std::collections::HashMap;
+
+use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
 
 use crate::widget::Widget;
@@ -123,6 +126,49 @@ pub(crate) fn perform(
 pub(crate) fn rect(owner: &dyn Widget, target: &str) -> Option<Rect> {
     let (route, _) = decode(target)?;
     descend_ref(owner, &route).map(Widget::get_rect)
+}
+
+/// How a widget with no layout node of its own is reached: the nearest
+/// laid-out ancestor and the child indices from it.
+pub(crate) type ChildRoute = (TaffyNodeId, Vec<usize>);
+
+/// The route of `w`'s child at `index`, from `w`'s own layout node `own` when
+/// it lays that child out, else extending `w`'s own `route`.
+pub(crate) fn child_route(
+    w: &dyn Widget,
+    own: Option<TaffyNodeId>,
+    route: Option<&ChildRoute>,
+    index: usize,
+) -> Option<ChildRoute> {
+    match (own, route) {
+        (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
+        (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
+        (Some(_), _) | (None, None) => None,
+    }
+}
+
+/// The routes an accessibility walk hands down: each widget's is set by its
+/// parent before the widget is visited.
+#[derive(Default)]
+pub(crate) struct Routes(HashMap<*const (), ChildRoute>);
+
+impl Routes {
+    /// `w`'s own route when it has no layout node (`own`), after routing every
+    /// child from it, hosted ones included, before any child is visited.
+    pub(crate) fn enter(&mut self, w: &dyn Widget, own: Option<TaffyNodeId>) -> Option<ChildRoute> {
+        let route = if own.is_some() {
+            None
+        } else {
+            self.0.remove(&std::ptr::from_ref(w).cast::<()>())
+        };
+        for (index, child) in w.children().into_iter().enumerate() {
+            if let Some(child_route) = child_route(w, own, route.as_ref(), index) {
+                self.0
+                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
+            }
+        }
+        route
+    }
 }
 
 #[cfg(test)]

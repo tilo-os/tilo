@@ -66,8 +66,71 @@ pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
 
-type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
-type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+/// A widget hosted inside its parent's synthetic tree, and the synthetic path
+/// below the child it hangs off ([`Widget::accessibility_child_path`]).
+pub(crate) type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
+/// Hosted widgets by the index of the synthetic child they hang off.
+pub(crate) type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
+
+/// How a widget's children enter the accessibility walk. The one rule both
+/// this tree and the AccessKit bridge export children by.
+pub(crate) struct ExportedChildren<'a> {
+    /// Walked as the widget's own children, in order, with their index.
+    pub direct: Vec<(usize, &'a dyn Widget)>,
+    /// Walked under the synthetic child they hang off.
+    pub hosted: HostedByIndex<'a>,
+    /// Not walked: the widget represents them in its own synthetic tree.
+    pub represented: Vec<&'a dyn Widget>,
+}
+
+pub(crate) fn exported_children(w: &dyn Widget) -> ExportedChildren<'_> {
+    let mut children = ExportedChildren {
+        direct: Vec::new(),
+        hosted: HostedByIndex::new(),
+        represented: Vec::new(),
+    };
+    for (index, child) in w.children().into_iter().enumerate() {
+        if w.accessibility_represents_child(index) {
+            children.represented.push(child);
+        } else if let Some(mut path) = w.accessibility_child_path(index)
+            && !path.is_empty()
+        {
+            let parent_index = path.remove(0);
+            children
+                .hosted
+                .entry(parent_index)
+                .or_default()
+                .push((path, child));
+        } else {
+            children.direct.push((index, child));
+        }
+    }
+    children
+}
+
+/// The widgets hosted in one synthetic child: walked as its own children
+/// when any hangs off it directly, else handed on to its synthetic children.
+pub(crate) enum HostedIn<'a> {
+    Direct(Vec<&'a dyn Widget>),
+    Nested(HostedByIndex<'a>),
+}
+
+pub(crate) fn hosted_in(hosted: Vec<HostedWidget<'_>>) -> HostedIn<'_> {
+    let direct = hosted
+        .iter()
+        .filter(|(path, _)| path.is_empty())
+        .map(|(_, child)| *child)
+        .collect::<Vec<_>>();
+    if !direct.is_empty() {
+        return HostedIn::Direct(direct);
+    }
+    let mut nested = HostedByIndex::new();
+    for (mut path, child) in hosted {
+        let child_index = path.remove(0);
+        nested.entry(child_index).or_default().push((path, child));
+    }
+    HostedIn::Nested(nested)
+}
 /// Ids are paths, as long as the tree is deep, and every node is hashed a few
 /// times a refresh: a fast hash, not a DoS-resistant one, for keys no peer
 /// chooses.
@@ -1143,10 +1206,10 @@ struct Build<'a, const BOUND: bool> {
     /// The route of each retained widget with no layout node of its own,
     /// set by its parent before it is visited: the nearest laid-out widget
     /// and the child indices from it ([`crate::a11y_child_route`]).
-    routes: HashMap<*const (), (TaffyNodeId, Vec<usize>)>,
+    routes: crate::a11y_child_route::Routes,
     /// The route of the widget whose synthetic children are being visited,
     /// when it has no layout node: their targets are reached through it.
-    synthetic_route: Option<(TaffyNodeId, Vec<usize>)>,
+    synthetic_route: Option<crate::a11y_child_route::ChildRoute>,
 }
 
 /// A widget's synthetic child as the widget handed it over: built this
@@ -1275,7 +1338,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             ambiguous_projection: false,
             ptr_to_taffy,
             focused,
-            routes: HashMap::new(),
+            routes: crate::a11y_child_route::Routes::default(),
             synthetic_route: None,
         }
     }
@@ -1309,24 +1372,8 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         };
         let taffy_id = self.ptr_to_taffy.get(w);
         // A retained widget the window's layout gave no node is reached
-        // through the nearest widget that has one; every child is routed
-        // from here before any is visited, hosted ones included.
-        let route = if taffy_id.is_some() {
-            None
-        } else {
-            self.routes.remove(&std::ptr::from_ref(w).cast::<()>())
-        };
-        for (index, child) in w.children().into_iter().enumerate() {
-            let child_route = match (taffy_id, &route) {
-                (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
-                (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
-                (Some(_), _) | (None, None) => None,
-            };
-            if let Some(child_route) = child_route {
-                self.routes
-                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
-            }
-        }
+        // through the nearest widget that has one.
+        let route = self.routes.enter(w, taffy_id);
         let (access, shared) = match w.accessibility_shared() {
             Some(SharedAccessNode { node, children }) => (Some(node), children),
             None => (w.accessibility(), Vec::new()),
@@ -1355,19 +1402,11 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                 }
 
                 let mut children: Vec<SemanticId> = Vec::new();
-                let mut hosted = HostedByIndex::new();
-                for (child_index, child) in w.children().into_iter().enumerate() {
-                    if w.accessibility_represents_child(child_index) {
-                        continue;
-                    }
-                    if let Some(mut path) = w.accessibility_child_path(child_index)
-                        && !path.is_empty()
-                    {
-                        let parent_index = path.remove(0);
-                        hosted.entry(parent_index).or_default().push((path, child));
-                    } else {
-                        self.visit_widget(child, &id, durable_identity, &mut children);
-                    }
+                let ExportedChildren {
+                    direct, mut hosted, ..
+                } = exported_children(w);
+                for (_, child) in direct {
+                    self.visit_widget(child, &id, durable_identity, &mut children);
                 }
                 // Placed where the widget draws them, as the AccessKit
                 // bridge places them, so a point finds a synthetic child.
@@ -1536,33 +1575,26 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         let durable_identity = access.key.is_some() && parent_durable;
         let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();
-        let direct = hosted
-            .iter()
-            .filter(|(path, _)| path.is_empty())
-            .map(|(_, child)| *child)
-            .collect::<Vec<_>>();
-        if direct.is_empty() {
-            let mut nested = HostedByIndex::new();
-            for (mut path, child) in hosted {
-                let child_index = path.remove(0);
-                nested.entry(child_index).or_default().push((path, child));
+        match hosted_in(hosted) {
+            HostedIn::Nested(mut nested) => {
+                for (i, child) in access.children.iter().enumerate() {
+                    let c = self.visit_synthetic(
+                        SyntheticParent {
+                            id: &id,
+                            durable: durable_identity,
+                        },
+                        i,
+                        child,
+                        owner,
+                        nested.remove(&i).unwrap_or_default(),
+                    );
+                    children.push(c);
+                }
             }
-            for (i, child) in access.children.iter().enumerate() {
-                let c = self.visit_synthetic(
-                    SyntheticParent {
-                        id: &id,
-                        durable: durable_identity,
-                    },
-                    i,
-                    child,
-                    owner,
-                    nested.remove(&i).unwrap_or_default(),
-                );
-                children.push(c);
-            }
-        } else {
-            for child in direct {
-                self.visit_widget(child, &id, durable_identity, &mut children);
+            HostedIn::Direct(direct) => {
+                for child in direct {
+                    self.visit_widget(child, &id, durable_identity, &mut children);
+                }
             }
         }
         let node = SemanticNode {
