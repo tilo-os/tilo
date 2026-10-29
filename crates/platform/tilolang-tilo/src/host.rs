@@ -832,7 +832,7 @@ impl Host {
                         .invoke_action(&self.inner.viewer, (migration.id.as_str(), vec![subject]));
                     self.inner.store.set_migrating(None);
                     match outcome {
-                        Ok(InvokeOutcome::Done(_)) => ran += 1,
+                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
                         other => tracing::warn!(
                             app = package.meta.app,
                             migration = migration.name,
