@@ -113,13 +113,6 @@ impl Preset {
         self
     }
 
-    /// The person types or completes the endpoint: a generic entry, one
-    /// whose endpoint names their account, or a server they run.
-    const fn editable(mut self) -> Self {
-        self.endpoint_editable = true;
-        self
-    }
-
     /// The endpoint's placeholder part is the person's `what` to fill in.
     const fn fill_in(mut self, what: &'static str) -> Self {
         self.endpoint_editable = true;
