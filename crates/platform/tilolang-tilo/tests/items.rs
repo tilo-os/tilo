@@ -317,6 +317,53 @@ fn a_card_moved_to_another_column_is_the_same_card_with_its_history() {
     assert_eq!(old, at);
 }
 
+struct Refusing;
+
+impl tilolang_tilo::publish::Planner for Refusing {
+    fn plan(&self, _: &PlanRequest<'_>) -> Result<DynAction, String> {
+        Err("not in this test".into())
+    }
+}
+
+/// A published tree as text: ids and labels, children in order.
+fn shape(resource: &tilo_actions::ResourceSpec) -> String {
+    let children: Vec<String> = resource.children.iter().map(shape).collect();
+    format!(
+        "{}|{}[{}]",
+        resource.id.as_str(),
+        resource.label,
+        children.join(",")
+    )
+}
+
+#[test]
+fn what_is_published_follows_a_card_to_its_new_column() {
+    use std::sync::Arc;
+    use tilolang_tilo::publish::{ActionTypes, Planner, Publications, publish_tree};
+
+    let mut r = room();
+    let (todo, doing) = (r.column("ada", "To do"), r.column("ada", "Doing"));
+    let card = r.card("ada", &todo, "card");
+    r.card("ada", &todo, "other");
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&r.ada.host);
+    published.settle(&r.ada.host, &planner);
+    r.file("ada", &doing, &card);
+    published.settle(&r.ada.host, &planner);
+    let record = r.ada.host.store().record(&r.root).unwrap();
+    let label = r.ada.host.label_of(&r.root);
+    let anew = publish_tree(
+        &ActionTypes::new(&r.meta, &planner),
+        &record,
+        "Board",
+        &r.root,
+        &label,
+    );
+    let kept = shape(&published.trees()[&r.root]);
+    assert_eq!(kept, shape(&anew));
+    assert!(kept.contains(&format!("{}|card", r.at(&card))), "{kept}");
+}
+
 #[test]
 fn a_card_moves_within_its_column_and_into_another_at_a_place() {
     let mut r = room();

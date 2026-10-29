@@ -851,6 +851,11 @@ impl Published<'_> {
                     rework
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
+                    // An item in it may have moved: the one whose text names the record among
+                    // them, or one now before it.
+                    if named_chain.is_some() && rework.relabel != Relabel::Whole {
+                        rework.relabel = Relabel::Whole;
+                    }
                 }
                 // A field of the item's own: its label, read again.
                 Some(_) if key.field != ANY_FIELD => {}
