@@ -940,7 +940,7 @@ From Rust, `Driver::invoke_action` is the same call, and
 the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs
 the whole installer wizard this way against a recording install backend.
 
-The run persists through the app's real store (`ui::persist`), so pointing
+The run persists through the app's real record store, so pointing
 `XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
 restart test.
 
