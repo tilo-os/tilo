@@ -8,12 +8,6 @@ use crate::{
     permissions::PermissionContext,
 };
 
-#[cfg(unix)]
-pub use ::collaboration::private_actions;
-
-#[cfg(unix)]
-pub use ::collaboration::managed_sender;
-
 pub use crate::invocation_scope::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
 };

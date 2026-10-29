@@ -50,7 +50,6 @@ pub struct Captures {
     pub sent_actions: Vec<(String, Vec<u8>)>,
     pub published: Vec<(String, Vec<PublishedAction>)>,
     pub completions: Vec<(u64, String, String)>,
-    pub remarks: Vec<(String, (f32, f32, f32, f32))>,
 }
 
 pub type SharedCaptures = Rc<RefCell<Captures>>;
@@ -386,21 +385,6 @@ impl channel_handle::Server for FakeChannel {
                 .borrow_mut()
                 .completions
                 .push((r.get_id(), code, message));
-            Ok(())
-        })
-    }
-
-    fn compose_remark(
-        self: Rc<Self>,
-        params: channel_handle::ComposeRemarkParams,
-        _results: channel_handle::ComposeRemarkResults,
-    ) -> Promise<(), capnp::Error> {
-        let captures = self.captures.clone();
-        Promise::from_future(async move {
-            let r = params.get()?;
-            let reference = r.get_reference()?.to_str()?.to_owned();
-            let rect = (r.get_x(), r.get_y(), r.get_w(), r.get_h());
-            captures.borrow_mut().remarks.push((reference, rect));
             Ok(())
         })
     }

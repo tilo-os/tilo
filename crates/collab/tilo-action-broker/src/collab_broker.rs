@@ -1055,26 +1055,6 @@ impl BrokerHandle {
             .map(|state| AppActionBroker { state })
     }
 
-    /// Fan a `CollabEvent` to the peers `route` addresses. `except`
-    /// skips one peer id, for the Iroh bridge. No "reach everyone"
-    /// form exists — see [`FanoutState::fanout_to_route`].
-    pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
-        self.fanout
-            .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
-    }
-
-    /// Bind every local app in `room` to one participant's published view,
-    /// or release the binding. This is session-local and never enters the
-    /// peer publisher; each app already receives that participant's normal
-    /// view-presence frames and applies them through `ui::App::follow`.
-    pub fn set_follow_target(&self, room: &str, peer_id: Option<String>) {
-        self.fanout_event(
-            &CollabEvent::FollowChanged { peer_id },
-            None,
-            &CrdtRoute::cluster(room.to_string()),
-        );
-    }
-
     #[must_use]
     pub fn follow_dispatcher(&self) -> SessionFollowDispatcher {
         SessionFollowDispatcher {

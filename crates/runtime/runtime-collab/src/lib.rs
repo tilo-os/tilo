@@ -2479,42 +2479,6 @@ impl ChannelHandle {
         ))
     }
 
-    /// Ask this session to open the "say something about this" surface,
-    /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
-    /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
-    /// coordinates** — the session converts, since only it knows where this
-    /// window sits on a desktop. The panel can't be drawn here: it opens
-    /// beside the app's context menu, and a Wayland client has no way to
-    /// paint outside its own window.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "beside carries on-screen window coordinates, always well within f32's \
-                  range; the wire schema is f32 and only sub-pixel precision is lost"
-    )]
-    pub async fn compose_remark(
-        &self,
-        reference: &str,
-        beside: (f64, f64, f64, f64),
-    ) -> Result<(), NotAvailable> {
-        let mut req = self.inner.compose_remark_request();
-        {
-            let mut b = req.get();
-            b.set_reference(reference);
-            b.set_x(beside.0 as f32);
-            b.set_y(beside.1 as f32);
-            b.set_w(beside.2 as f32);
-            b.set_h(beside.3 as f32);
-        }
-        req.send().promise.await?;
-        Ok(())
-    }
-
     /// Fetch a page of previously-validated signed ops on a specific
     /// artifact. `artifact_id` is the 16-byte little-endian encoding
     /// of the artifact uuid used by `collab-types`.
