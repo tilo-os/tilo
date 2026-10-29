@@ -69,7 +69,6 @@ GROUP_FIELDS = {
            "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"},
            **HEAVY},
     "dist": {"why": "writes under target/ in the source tree"},
-    "vm-acceptance": {"why": "writes under target/ in the source tree", **HEAVY},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser",
                             "prepare": "bash tools/ci/prepare-moq-library.sh"},
     "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
