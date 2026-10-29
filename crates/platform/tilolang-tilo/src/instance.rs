@@ -40,7 +40,6 @@ use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
-use crate::runtime::view::is_virtual;
 use crate::runtime::{
     ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
     Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
@@ -1784,7 +1783,7 @@ fn bound_values(node: &UiNode, view: &ViewInstance, out: &mut Vec<(String, ui::V
         out.push((node.key.clone(), plain(&names).value(&value)));
     }
     for child in &node.children {
-        if !is_virtual(&node.kind) || child.kind == wire::SLOT {
+        if !ui::is_virtual_list(&node.kind) || child.kind == wire::SLOT {
             bound_values(child, view, out);
         }
     }
@@ -1859,7 +1858,7 @@ fn virtual_lists(tree: &UiNode) -> Vec<String> {
 fn virtual_list_paths(tree: &UiNode) -> Vec<(String, Vec<String>)> {
     fn walk(node: &UiNode, path: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
         path.push(node.key.clone());
-        if is_virtual(&node.kind) {
+        if ui::is_virtual_list(&node.kind) {
             out.push((node.key.clone(), path.clone()));
         }
         for child in &node.children {

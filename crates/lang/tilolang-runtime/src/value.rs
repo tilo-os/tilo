@@ -297,6 +297,13 @@ pub enum Value {
     /// holds its place (`open(x)` on `select(x)`), and the host puts the value there when the
     /// event fires (`ViewInstance::fire_with`).
     Event,
+    /// A `window` or `lens` slot an action reference takes as an argument (`send(c, draft)`):
+    /// read when the event fires, so the action gets what the person typed up to the press,
+    /// whatever the view last drew. `scalar` slots hold their value boxed.
+    State {
+        key: crate::view_state::StateKey,
+        scalar: bool,
+    },
 }
 
 impl Value {
@@ -356,6 +363,7 @@ impl Value {
             Self::Rec(_) => "record",
             Self::Error(_) => "error",
             Self::Event => "event value",
+            Self::State { .. } => "view state",
         }
     }
 }
@@ -413,7 +421,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         }
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
-        Value::Node(_) | Value::Rec(_) | Value::Coll(_) | Value::Event => {
+        Value::Node(_) | Value::Rec(_) | Value::Coll(_) | Value::Event | Value::State { .. } => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })
