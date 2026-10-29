@@ -49,3 +49,25 @@ typing a sentence, it becomes an ask to the agent with that context. So "rename"
   No new LLM plumbing.
 - The `tilo` tool and agent programs for what the agent does (agents.md).
 - The UI host for drawing many apps' windows on one surface (ui-host.md, step 3).
+
+## 6. In code
+
+- **The arrangement** is the workspace's (`tilo_desktop_model::arrangement`): its kind (strips or
+  canvas) and each window group's place on the canvas, in whole canvas pixels. Groups stay in their
+  strips; the canvas only adds where they stand. Commands `SetArrangement` and `PlaceGroup`
+  change it. The room's layout record carries the kind on the workspace entry and each place on
+  its group entry, so two people moving different windows both keep their move; the desktop
+  document records it for history and undo. Moving someone else's window on the canvas is a move
+  for the moderation rule, as moving it along a strip is.
+- **Placing** never moves what is there: a new window takes the free space nearest its anchor
+  (`Arrangement::free_place_near`, `free_place_beside`).
+- **Drawing:** `GroupRow` lays its windows out at their places through a camera (pan and zoom);
+  `StripDeck` lays every strip's row over the whole deck while the canvas shows. A client window
+  keeps its canvas size and is drawn scaled when zoomed. Pan and zoom are each person's lens, kept
+  on their device.
+- **Pointing and answers** are the shell's canvas layer (`overlay_host/canvas.rs`). Every ask goes
+  through the existing composer's agent path as a Tasks issue the agent works on, and its page
+  opens as a window at the anchor. `CanvasAnswers` pairs an answer's window with its anchor; an
+  answer that is a view window places itself through the same pairing.
+- Shown with the actions "Show the canvas" and "Show the strips" (`workspace.show-canvas`,
+  `workspace.show-strips`).
