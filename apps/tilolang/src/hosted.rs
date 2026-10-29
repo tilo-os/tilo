@@ -8,7 +8,6 @@
 //! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 
-use std::collections::HashMap;
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -219,14 +218,14 @@ impl HostedWindow {
         received
     }
 
-    fn content(&self) -> &dyn Widget {
+    fn content(&self) -> &(dyn Widget + 'static) {
         match &self.connected {
             Some(connected) => &connected.view,
             None => self.waiting.as_ref(),
         }
     }
 
-    fn content_mut(&mut self) -> &mut dyn Widget {
+    fn content_mut(&mut self) -> &mut (dyn Widget + 'static) {
         match &mut self.connected {
             Some(connected) => &mut connected.view,
             None => self.waiting.as_mut(),
@@ -240,23 +239,23 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
-impl Widget for HostedWindow {
+/// The window stands for what it shows (the UI host's window, or the loading state before it)
+/// in the layout and in every walk of the widgets: it adds no node of its own.
+impl ui::widget::Decorator for HostedWindow {
+    type Inner = dyn Widget;
+
     ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content_mut()
+    }
 
     fn name(&self) -> &'static str {
         "TilolangHostedWindow"
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.content()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.content_mut()]
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -289,28 +288,6 @@ impl Widget for HostedWindow {
         if let Some(connected) = &mut self.connected {
             connected.view.flush();
         }
-    }
-
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        self.content_mut().build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        origin: ui::kurbo::Point,
-    ) {
-        self.content_mut().apply_layout(tree, node, origin);
-    }
-
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        self.content().get_rect()
     }
 
     fn draw(
@@ -351,20 +328,16 @@ impl Widget for HostedWindow {
             .draw(scene, transform, text, theme, presence);
     }
 
-    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
-        self.content().collect_damage(regions);
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_dirty(),
+            Some(connected) => Widget::take_structure_dirty(&mut connected.view),
             None => self.waiting.take_structure_dirty(),
         }
     }
 
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_change(),
+            Some(connected) => Widget::take_structure_change(&mut connected.view),
             None => self.waiting.take_structure_change(),
         }
     }
