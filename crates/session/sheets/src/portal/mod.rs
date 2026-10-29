@@ -411,6 +411,11 @@ impl PortalSeat {
         self.presentation.wake();
     }
 
+    /// Whether `other` is this same seat, lent again.
+    pub fn is(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.dialog, &other.dialog)
+    }
+
     /// What the sheet shows now.
     pub fn dialog(&self) -> Option<Dialog> {
         self.dialog.borrow().clone()
@@ -424,6 +429,11 @@ impl PortalSeat {
     /// What is typed into `field` now; empty when nothing is.
     pub fn text(&self, field: Field) -> zeroize::Zeroizing<String> {
         self.texts.borrow().get(&field).cloned().unwrap_or_default()
+    }
+
+    /// What is typed into `field`, once the sheet has shown it.
+    pub fn typed(&self, field: Field) -> Option<zeroize::Zeroizing<String>> {
+        self.texts.borrow().get(&field).cloned()
     }
 
     /// Put `text` into `field`, as typing does: for a host test, or an
@@ -443,6 +453,24 @@ impl PortalSeat {
             self.wipe_secrets();
         }
         answer
+    }
+
+    /// Hand the shell `answer` as the secret prompt does when the person
+    /// answers it: for a host test, or a prompt of the shell's own.
+    pub fn give_answer(&self, answer: SecretAnswer) {
+        *self.answer.borrow_mut() = Some(answer);
+    }
+
+    /// Put a refused answer's values back into the prompt's fields, for
+    /// the person to complete rather than retype.
+    pub fn give_back(&self, answer: &SecretAnswer) {
+        for (buffer, value) in self.secrets.borrow().iter().zip(&answer.values) {
+            if let Ok(mut held) = buffer.lock() {
+                zeroize::Zeroize::zeroize(&mut *held);
+                held.push_str(value);
+            }
+        }
+        self.presentation.wake();
     }
 
     /// Whether the secret prompt's check row is ticked now, once the

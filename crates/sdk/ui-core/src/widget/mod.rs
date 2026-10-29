@@ -1884,7 +1884,8 @@ pub trait Widget {
     /// traversal. This is deliberately opt-in: ordinary form fields and
     /// controls retain platform-standard Tab/Shift+Tab navigation, while a
     /// code editor or terminal can receive the key for indentation or
-    /// completion.
+    /// completion. A widget around the focus may claim it too: a sheet that
+    /// walks its own controls with Tab.
     fn wants_tab_input(&self) -> bool {
         false
     }

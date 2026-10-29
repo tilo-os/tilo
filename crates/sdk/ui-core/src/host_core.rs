@@ -122,13 +122,22 @@ impl HostTree<'_> {
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
     /// widget may explicitly claim it first (for indentation or completion),
-    /// without broadening that exception to arbitrary widgets or escaping an
-    /// active focus trap.
+    /// and so may a widget around the focus that walks its own controls (a
+    /// modal sheet with its own focus model), without broadening that
+    /// exception to arbitrary widgets or escaping an active focus trap. With
+    /// nothing focused, the root is asked.
     pub(crate) fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
+        let mut node = self.focused.or(self.root_node);
+        while let Some(at) = node {
+            if self
+                .inspect_node(at, |widget| widget.wants_tab_input())
                 .unwrap_or(false)
-        })
+            {
+                return true;
+            }
+            node = self.taffy.parent(at);
+        }
+        false
     }
 
     /// `order` kept inside the keyboard scope: the focused desktop window's

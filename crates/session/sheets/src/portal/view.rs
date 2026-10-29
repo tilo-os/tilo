@@ -375,7 +375,11 @@ fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
         ),
         PromptKind::SimPin { attempts_left } => {
             let mut sim = SecretPrompt::new(SecretKind::SimPin { attempts_left });
-            if let Some(field) = prompt.fields.first() {
+            if let Some(field) = prompt
+                .fields
+                .first()
+                .filter(|field| !field.label.is_empty())
+            {
                 sim = sim.with_label(FieldRole::Pin, field.label.clone());
             }
             sim

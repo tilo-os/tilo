@@ -660,7 +660,11 @@ fn a_prompt_of_several_fields_built_afresh_keeps_each_in_its_buffer() {
     assert_eq!(values, ["ada", "pw"], "the next build starts from them");
     assert_eq!(prompt.error(), Some("Too short"));
     prompt.wipe();
-    assert!(buffers.iter().all(|buffer| buffer.lock().expect("buffer").is_empty()));
+    assert!(
+        buffers
+            .iter()
+            .all(|buffer| buffer.lock().expect("buffer").is_empty())
+    );
 }
 
 #[test]

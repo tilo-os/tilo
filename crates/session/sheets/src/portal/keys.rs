@@ -276,6 +276,11 @@ impl ui::widget::Decorator for Keys {
         self.content.as_mut()
     }
 
+    /// The sheet walks its own controls: Tab is its, not the host's.
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let Some(dialog) = self.dialog() else {
             self.content.handle_event(event, ctx);
