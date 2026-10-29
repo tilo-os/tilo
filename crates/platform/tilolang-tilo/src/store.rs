@@ -995,6 +995,22 @@ impl TiloStore {
         taken
     }
 
+    /// What was committed under a ticket of `first` or later and is still queued, left queued:
+    /// what one invocation would hand over.
+    #[must_use]
+    pub fn committed_from(&self, first: u64) -> Vec<Committed> {
+        self.inner
+            .borrow()
+            .committed
+            .iter()
+            .filter(|entry| entry.ticket >= first)
+            .map(|entry| Committed {
+                ticket: entry.ticket,
+                action: entry.action.clone(),
+            })
+            .collect()
+    }
+
     /// The action committed under `ticket`, while it is queued or handed over.
     #[must_use]
     pub fn committed(&self, ticket: u64) -> Option<DynAction> {
@@ -1063,6 +1079,19 @@ impl TiloStore {
         if inner.trials == 0 {
             // What arrived from elsewhere during the trial (nothing does today: a trial run is
             // one synchronous call) is told now.
+            for summary in std::mem::take(&mut inner.held) {
+                inner.notify(&summary);
+            }
+        }
+    }
+
+    /// Keep what was written since `checkpoint`, as a run that is not a trial keeps it: what it
+    /// changed is told now, as every change is told.
+    pub fn keep(&self, checkpoint: Checkpoint) {
+        drop(checkpoint);
+        let mut inner = self.mutate();
+        inner.trials = inner.trials.saturating_sub(1);
+        if inner.trials == 0 {
             for summary in std::mem::take(&mut inner.held) {
                 inner.notify(&summary);
             }
