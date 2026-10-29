@@ -1556,6 +1556,55 @@ fn compositor_presses_reach_desk_widgets_on_both_displays_in_both_forms() {
     }
 }
 
+/// Press the calendar at `from`, carry it to `target` checking it follows
+/// the hand at every step, hold it still a moment and let it go a pixel
+/// lower.
+fn drag_calendar(desk: &mut Desk, from: Point, target: Point) {
+    let mut state = compositor_state(desk);
+    through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(from.x, from.y),
+    );
+    assert!(!through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::mouse_press()
+    ));
+    for k in 1..=24u32 {
+        let p = from.lerp(target, f64::from(k) / 24.0);
+        through_compositor(
+            desk,
+            &mut state,
+            &ui::synthetic_input::cursor_moved(p.x, p.y),
+        );
+        let drawn = desk
+            .fb
+            .host()
+            .desk_test_rects()
+            .into_iter()
+            .find(|(name, _)| name == "desk.calendar")
+            .expect("drawn")
+            .1;
+        assert!(
+            drawn.center().distance(p) < 1.0,
+            "it follows the hand across the seam at step {k}: {drawn:?} {p:?}"
+        );
+    }
+    // Held still a moment: set down, not thrown.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(target.x, target.y + 1.0),
+    );
+    assert!(!through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::mouse_release()
+    ));
+}
+
 /// Dragged onto the other display, a widget lives there; with that monitor
 /// unplugged it waits on the panel in the same corner, and plugged back in
 /// it goes home to where it was dropped.
@@ -1579,51 +1628,9 @@ fn a_widget_dragged_to_another_display_stays_there_across_unplug_and_replug() {
         "the calendar",
         "the panel, the primary",
     );
-    let mut state = compositor_state(&desk);
     let from = start.glance.center();
-    through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::cursor_moved(from.x, from.y),
-    );
-    assert!(!through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::mouse_press()
-    ));
     let target = Point::new(monitor.x0 + 700.0, monitor.y0 + 500.0);
-    for k in 1..=24u32 {
-        let p = from + (target - from) * (f64::from(k) / 24.0);
-        through_compositor(
-            &mut desk,
-            &mut state,
-            &ui::synthetic_input::cursor_moved(p.x, p.y),
-        );
-        let drawn = desk
-            .fb
-            .host()
-            .desk_test_rects()
-            .into_iter()
-            .find(|(name, _)| name == "desk.calendar")
-            .expect("drawn")
-            .1;
-        assert!(
-            (drawn.center() - p).hypot() < 1.0,
-            "it follows the hand across the seam at step {k}: {drawn:?} {p:?}"
-        );
-    }
-    // Held still a moment: set down, not thrown.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::cursor_moved(target.x, target.y + 1.0),
-    );
-    assert!(!through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::mouse_release()
-    ));
+    drag_calendar(&mut desk, from, target);
     desk.fb.host_mut().force_desk_settled(ui::time::now());
     desk.settle();
     let dropped = desk

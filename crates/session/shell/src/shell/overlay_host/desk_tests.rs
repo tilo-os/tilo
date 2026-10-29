@@ -791,8 +791,7 @@ fn a_card_resizes_continuously_and_keeps_its_width() {
         let mut stages = std::collections::BTreeSet::new();
         // From the narrowest to the widest, a pixel at a time.
         let span = sizing.max - sizing.min;
-        let steps = span.ceil() as u32;
-        for step in 0..=steps {
+        for step in (0_u32..).take_while(|step| f64::from(*step) < span + 1.0) {
             let width = sizing.min + f64::from(step).min(span);
             let p = grip + Vec2::new(toward * (width - slot.open.width()), 0.0);
             host.desk_pointer(p, start + Duration::from_millis(u64::from(step) + 1));

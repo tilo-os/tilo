@@ -1224,8 +1224,8 @@ mod tests {
         assert_eq!(panel_curve(0.0), (0.0, PANEL_RISE_PX, PANEL_START_SCALE));
         assert_eq!(panel_curve(1.0), (1.0, 0.0, 1.0));
         let mut last = panel_curve(0.0);
-        for step in 1..=20 {
-            let now = panel_curve(step as f32 / 20.0);
+        for step in 1..=20_u8 {
+            let now = panel_curve(f32::from(step) / 20.0);
             assert!(now.0 >= last.0 && now.1 <= last.1 && now.2 >= last.2);
             last = now;
         }
