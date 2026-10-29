@@ -315,7 +315,7 @@ impl BlockEditor {
             if matches!(block.kind, BlockKind::CodeBlock { .. }) {
                 continue;
             }
-            let (text, marks) = formatted_spans(&block.line.value());
+            let (text, marks) = formatted_spans(block.line.value());
             show(
                 &mut block.line,
                 &LineState {
