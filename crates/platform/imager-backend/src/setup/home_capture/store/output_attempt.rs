@@ -59,18 +59,15 @@ fn name(operation: &str) -> String {
 }
 fn load(store: &Store) -> io::Result<Option<Attempt>> {
     store.check_original_output_operation(&store.operation)?;
-    let directory = storage(&store.records)?;
-    let mut file =
-        match directory.open_read(OsStr::new(&name(&store.operation)), Privacy::OwnerOnly) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e),
-        };
-    if file.metadata()?.len() > 4096 {
-        return Err(failure("Original output attempt exceeds bounds"));
-    }
-    let mut bytes = Vec::new();
-    file.by_ref().take(4097).read_to_end(&mut bytes)?;
+    let Some(bytes) = crate::record::read_optional(
+        &storage(&store.records)?,
+        &name(&store.operation),
+        4096,
+        || failure("Original output attempt exceeds bounds"),
+    )?
+    else {
+        return Ok(None);
+    };
     let record: Attempt =
         serde_json::from_slice(&bytes).map_err(|_| failure("Original output attempt invalid"))?;
     if !matches!(record.schema, 1 | 2)
@@ -205,19 +202,14 @@ fn save(store: &Store, record: &Attempt, mode: PublishMode) -> io::Result<()> {
     if record.schema == 2 {
         validate_applications_attempt(record)?;
     }
-    let bytes = serde_json::to_vec(record)?;
-    if bytes.len() > 4096 {
-        return Err(failure("Original output attempt exceeds bounds"));
-    }
-    storage(&store.records)?
-        .publish(
-            OsStr::new(&name(&store.operation)),
-            &bytes,
-            mode,
-            Privacy::OwnerOnly,
-        )
-        .map_err(|e| e.into_io_error())?;
-    Ok(())
+    crate::record::publish(
+        &storage(&store.records)?,
+        &name(&store.operation),
+        record,
+        4096,
+        mode,
+        || failure("Original output attempt exceeds bounds"),
+    )
 }
 /// Actual descriptor-relative enumeration, fresh directory cursor; no pathname
 /// or reused read offset. A single non-dot entry makes retry refuse.

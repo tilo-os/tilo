@@ -60,31 +60,16 @@ fn read<T: serde::de::DeserializeOwned>(
     store: &StorageDirectory,
     name: &str,
 ) -> io::Result<Option<T>> {
-    let file = match store.open_read(OsStr::new(name), Privacy::OwnerOnly) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    if !file.metadata()?.is_file() || file.metadata()?.len() > LIMIT {
-        return Err(changed("Application proof exceeds its private bounds"));
-    }
-    let bytes =
-        crate::record::read_bounded(file, LIMIT, || changed("Application proof exceeds bounds"))?;
-    Ok(Some(serde_json::from_slice(&bytes)?))
+    crate::record::read_optional(store, name, LIMIT, || {
+        changed("Application proof exceeds bounds")
+    })?
+    .map(|bytes| serde_json::from_slice(&bytes).map_err(io::Error::from))
+    .transpose()
 }
 fn publish(store: &StorageDirectory, name: &str, value: &impl Serialize) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value)?;
-    if u64::try_from(bytes.len()).map_err(io::Error::other)? > LIMIT {
-        return Err(changed("Application proof exceeds bounds"));
-    }
-    store
-        .publish(
-            OsStr::new(name),
-            &bytes,
-            PublishMode::IfAbsent,
-            Privacy::OwnerOnly,
-        )
-        .map_err(|e| e.into_io_error())
+    crate::record::publish(store, name, value, LIMIT, PublishMode::IfAbsent, || {
+        changed("Application proof exceeds bounds")
+    })
 }
 fn lock(store: &StorageDirectory) -> io::Result<advisory_lock::FileLock> {
     match store.publish(
