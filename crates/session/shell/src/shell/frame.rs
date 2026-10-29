@@ -7337,8 +7337,13 @@ mod tests {
             &root,
             &mut focus,
         ));
-        fb.pump_apps(&mut doc, &root);
-        fb.relayout();
+        // The bar runs the press on its next frames and hands the host what
+        // it asked for, as in the live compositor.
+        for _ in 0..3 {
+            fb.pump_apps(&mut doc, &root);
+            fb.relayout();
+            let _ = fb.paint();
+        }
         assert!(
             fb.host().workspace_menu_labels().is_some(),
             "activating the bar's control by name opens the workspace menu"
