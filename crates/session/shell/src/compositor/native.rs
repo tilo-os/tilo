@@ -3440,7 +3440,7 @@ impl ControlState for FrameBuilderControlState<'_> {
 
     /// What a press is proven against: the overlay host the registry was just
     /// walked from, the identity of the frame on screen, and whether the
-    /// desktop is between two arrangements — opening setup, or switching
+    /// desktop is between two arrangements — switching
     /// workspace, strip or window group — where a rectangle read now is not
     /// the one a caller was shown.
     ///
@@ -3451,7 +3451,10 @@ impl ControlState for FrameBuilderControlState<'_> {
         let drawn = self.fb.drawn_revisions().last().copied();
         let host = self.fb.host();
         let in_transition = drawn.is_none() || host.desktop_is_moving();
-        Some((host, PressFacts::at(drawn, in_transition)))
+        Some((
+            host,
+            PressFacts::at(drawn, in_transition).with_setup_in_front(host.onboarding_is_open()),
+        ))
     }
 
     /// The peers the overlay would paint this frame, read from the same

@@ -649,12 +649,13 @@ impl ShellOverlayHost {
 
     /// Whether the desktop is being rearranged right now: a workspace switch
     /// owes its frame, or the overview's windows or a workspace slide are in
-    /// flight, or setup has the screen instead of the desktop. A pointer
-    /// action read meanwhile names a rectangle the caller was not shown.
+    /// flight. A pointer action read meanwhile names a rectangle the caller
+    /// was not shown. Setup in front of the desktop is a fact of its own
+    /// ([`Self::onboarding_is_open`]): it holds back the desktop's targets,
+    /// not its own.
     pub fn desktop_is_moving(&self) -> bool {
         let now = ui::time::now();
-        self.onboarding_is_open()
-            || self.workspace_switch_owed()
+        self.workspace_switch_owed()
             || self.overview_zoom_moving(now)
             || self.workspace_slide_moving(now)
     }
