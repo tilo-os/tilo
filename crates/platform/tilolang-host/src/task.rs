@@ -153,9 +153,23 @@ impl Task {
         self.watched.as_fd()
     }
 
-    /// Answer what the door sent: run a program and say how it went. `false` once the door
+    /// Answer what the door sent: run each program and say how it went. `false` once the door
     /// closed the task.
+    ///
+    /// Every line already read off the connection is served: a line left in the reader's buffer
+    /// would wake nothing, and wait until the door sent more.
     pub fn serve(&self) -> bool {
+        loop {
+            if !self.serve_one() {
+                return false;
+            }
+            if self.line.reader.borrow().buffer().is_empty() {
+                return true;
+            }
+        }
+    }
+
+    fn serve_one(&self) -> bool {
         let Some(message) = self.line.next() else {
             return false;
         };
