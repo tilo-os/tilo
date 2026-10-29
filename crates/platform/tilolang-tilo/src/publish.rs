@@ -812,6 +812,12 @@ impl Published<'_> {
             .and_then(|top| self.holder(top))
             .map(|(_, field)| field);
         for key in fields {
+            // When a resource was created and last changed (what an action this device committed
+            // stamps on what it touched) is neither a member, a label nor a field of the type:
+            // nothing published reads it.
+            if crate::index::reflect::is_reflected(&key.field) {
+                continue;
+            }
             if key.resource == self.doc {
                 let kind = self.schema.field(&key.field).map(|f| f.kind);
                 if kind == Some(crate::schema::MergeKind::Collection) {
