@@ -418,6 +418,7 @@ members = [
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
     "crates/session/onboarding",
+    "crates/session/onboarding-host",
     "crates/session/output-passes",
     "crates/session/overview",
     "crates/session/polkit-agent",

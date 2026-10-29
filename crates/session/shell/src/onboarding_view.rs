@@ -1540,7 +1540,7 @@ impl OnboardingView {
                 }
             }
         } else {
-            self.error = Some(t("onboarding-nearby-unavailable"));
+            self.error = Some(tilo_onboarding::t("onboarding-nearby-unavailable"));
             self.nearby_failure = None;
         }
         self.invalidation.structure();
@@ -2337,7 +2337,7 @@ impl Widget for OnboardingView {
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
             }
-            self.nearby_status = Some(t("onboarding-nearby-cancelled"));
+            self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-cancelled"));
             self.nearby_code = None;
             self.invalidation.structure();
         }
@@ -2360,7 +2360,7 @@ impl Widget for OnboardingView {
                     .accept_connected_identity(identity)
                     .err()
                     .map(|()| t("onboarding-connect-recovery-message"));
-                self.nearby_status = Some(t("onboarding-nearby-connected"));
+                self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-connected"));
                 self.invalidation.structure();
             }
             Some(crate::onboarding_nearby::NearbyEvent::Failed(failure)) => {
@@ -2790,13 +2790,13 @@ mod tests {
     mod ready_focus;
     #[test]
     fn completed_browser_continuation_skips_future_first_use_and_rejects_tampering() {
-        let (home, directory, declaration) = crate::onboarding_browser::tests::fixture();
+        let (home, directory, declaration) = crate::onboarding_browser::fixtures::fixture();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", home.path());
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let projection = crate::onboarding_browser::tests::certified_projection(
+        let projection = crate::onboarding_browser::fixtures::certified_projection(
             home.path(),
             &directory,
             &declaration,
@@ -2834,7 +2834,7 @@ mod tests {
             !crate::onboarding_prepared::session_pending(&directory),
             "cold reopen must reuse independently verified completion without password"
         );
-        let (_other_home, other_identity, _) = crate::onboarding_browser::tests::fixture();
+        let (_other_home, other_identity, _) = crate::onboarding_browser::fixtures::fixture();
         assert!(
             crate::onboarding_prepared::session_pending(&other_identity),
             "completion belongs to the original canonical person"
@@ -2869,7 +2869,7 @@ mod tests {
     }
     #[test]
     fn authenticated_browser_activation_restores_separate_first_use_semantic_intent() {
-        let (home, directory, declaration) = crate::onboarding_browser::tests::fixture();
+        let (home, directory, declaration) = crate::onboarding_browser::fixtures::fixture();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", home.path());
         let before = std::fs::read(directory.join("primary.json")).unwrap();
@@ -2916,7 +2916,7 @@ mod tests {
     #[test]
     fn authenticated_portable_apps_activation_resumes_actual_first_use_semantic_intent() {
         let (home, directory, declaration) =
-            crate::onboarding_portable_applications::tests::fixture();
+            crate::onboarding_portable_applications::fixtures::fixture();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", home.path());
         let receipt = home
@@ -3168,7 +3168,7 @@ mod tests {
     fn deferred_portable_home_remains_semantically_resumable_without_blocking_first_use() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let (home, directory, declaration) = crate::onboarding_portable_home::tests::fixture();
+        let (home, directory, declaration) = crate::onboarding_portable_home::fixtures::fixture();
         let signer = runtime_identity::load_from_path(directory.join("primary.json")).unwrap();
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.portable_home = Some(
@@ -3213,7 +3213,7 @@ mod tests {
     fn settings_reentry_resumes_attested_deferred_files_for_the_same_identity() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        let (home, directory, declaration) = crate::onboarding_portable_home::tests::fixture();
+        let (home, directory, declaration) = crate::onboarding_portable_home::fixtures::fixture();
         env.set("HOME", home.path());
         let before = std::fs::read(directory.join("primary.json")).unwrap();
         let mut pending = crate::onboarding_portable_home::Pending::open(
@@ -6507,7 +6507,7 @@ mod tests {
         assert_eq!(view.flow.screen(), Screen::Nearby);
         assert_eq!(
             view.error(),
-            Some(t("onboarding-nearby-unavailable").as_str()),
+            Some(tilo_onboarding::t("onboarding-nearby-unavailable").as_str()),
             "choosing nearby is the request to pair"
         );
         let composition = laid_out_themed(&mut view, &theme);

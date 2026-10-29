@@ -314,6 +314,7 @@ tilo-quick-settings = { path = "../quick-settings" }
 # The sheets over the desktop (the power menu), as apps this process mounts.
 tilo-sheets = { path = "../sheets" }
 tilo-onboarding = { path = "../onboarding" }
+tilo-onboarding-host = { path = "../onboarding-host" }
 # The notification banners, an app the shell hosts over the desktop.
 tilo-notification-banners = { path = "../notification-banners" }
 # The workspace overview, an app this process mounts.
@@ -451,6 +452,7 @@ app-fleet = { path = "../../packaging/app-fleet" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # The calibrated test panels the presenter tests render through.

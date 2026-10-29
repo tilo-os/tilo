@@ -185,7 +185,7 @@ impl Onboarding {
     /// import anything, and exists only so a compositor restart after the
     /// identity write can return to backup/tutorial completion rather than
     /// repeating the cryptographic ceremony.
-    pub(crate) fn resume_created(&mut self, minted: MintedIdentity) {
+    pub fn resume_created(&mut self, minted: MintedIdentity) {
         self.acknowledged = false;
         self.minted = Some(minted);
         self.screen = Screen::Done;
@@ -255,14 +255,14 @@ pub enum IdentityProblem {
 impl IdentityProblem {
     /// Environment variable carrying the startup verdict from the process
     /// entry point into the compositor's trusted recovery chrome, beside
-    /// [`crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV`].
+    /// [`crate::identity_provisioning::IDENTITY_RECOVERY_ENV`].
     pub const RECOVERY_ENV: &'static str = "TILO_IDENTITY_RECOVERY_REASON";
 
     /// Classify a failure of the identity chain. Storage and permission
     /// failures are not a problem of the identity and return `None`.
     #[must_use]
     pub fn of(error: &std::io::Error) -> Option<Self> {
-        if crate::shell::identity_provisioning::is_secret_service_unavailable(error) {
+        if crate::identity_provisioning::is_secret_service_unavailable(error) {
             return Some(Self::KeyringUnavailable);
         }
         match error.kind() {
@@ -388,7 +388,7 @@ fn mint_into_with_paths(
 /// so a record this build can't parse is an error, not a fingerprint that
 /// belongs to nothing.
 fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    use crate::shell::identity_provisioning::DiskIdentityStore;
+    use crate::identity_provisioning::DiskIdentityStore;
     use tilo_identity_ceremony::{IdentityFlowError, IdentityStore as _};
 
     let path = runtime_identity::resolve_active_identity(identity_dir)
@@ -426,8 +426,8 @@ fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, Onboardin
 /// ownership, permissions, size, schema, and no-symlink policy as normal
 /// startup; resuming first use must not accept a weaker file merely because
 /// no key operation is needed.
-pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
-    use crate::shell::identity_provisioning::DiskIdentityStore;
+pub fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String> {
+    use crate::identity_provisioning::DiskIdentityStore;
     use tilo_identity_ceremony::IdentityStore as _;
 
     let record = DiskIdentityStore::at(path)
@@ -442,7 +442,7 @@ pub(crate) fn existing_identity_at(path: &Path) -> Result<MintedIdentity, String
 
 /// Resume transport only for the exact durable identity and certified device.
 /// This grants no app access; native owner/session admission remains separate.
-pub(crate) fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
+pub fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
     if existing_identity_at(&minted.path).map_or(true, |current| current != *minted) {
         return false;
     }
@@ -465,8 +465,8 @@ pub(crate) fn canonical_native_identity_ready(minted: &MintedIdentity) -> bool {
 /// public record a device holds after joining from another device, whose root
 /// key stays there. An unreadable record counts as holding one, so the ready
 /// screen keeps recommending a backup when in doubt.
-pub(crate) fn holds_no_identity_secret(path: &Path) -> bool {
-    use crate::shell::identity_provisioning::DiskIdentityStore;
+pub fn holds_no_identity_secret(path: &Path) -> bool {
+    use crate::identity_provisioning::DiskIdentityStore;
     use tilo_identity_ceremony::IdentityStore as _;
 
     DiskIdentityStore::at(path)
@@ -479,7 +479,7 @@ pub(crate) fn holds_no_identity_secret(path: &Path) -> bool {
 }
 
 /// The signed-in person's home directory, when the session names an absolute one.
-pub(crate) fn session_home() -> Option<std::path::PathBuf> {
+pub fn session_home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_absolute())

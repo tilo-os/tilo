@@ -14,12 +14,12 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
-pub(crate) use tilo_handoff::Received;
+pub use tilo_handoff::Received;
 
-pub(crate) const FILE: &str = tilo_handoff::DESCRIPTOR_FILE;
+pub const FILE: &str = tilo_handoff::DESCRIPTOR_FILE;
 
 /// A connected receiver, driven by the first-boot loop without blocking it.
-pub(crate) struct Peer {
+pub struct Peer {
     receiver: tilo_handoff::Receiver,
 }
 
@@ -27,14 +27,14 @@ impl Peer {
     /// Whether a descriptor exists, without connecting to its source. A
     /// malformed or linked object is still pending, so detection cannot erase
     /// a failed preparation.
-    pub(crate) fn pending_at(home: &Path) -> bool {
+    pub fn pending_at(home: &Path) -> bool {
         std::fs::symlink_metadata(home.join(".local/state/tilo").join(FILE)).is_ok()
     }
 
     /// The person the published descriptor names, if a usable descriptor is
     /// present. First boot uses this to distinguish a fresh computer from one
     /// whose active identity belongs to another person before offering a join.
-    pub(crate) fn descriptor_identity_at(home: &Path) -> std::io::Result<Option<[u8; 32]>> {
+    pub fn descriptor_identity_at(home: &Path) -> std::io::Result<Option<[u8; 32]>> {
         Ok(tilo_handoff::read_descriptor(home)?.map(|handoff| handoff.identity_public_key))
     }
 
@@ -42,7 +42,7 @@ impl Peer {
     /// computer path: no person exists yet, the source's root signs this
     /// computer's own new device key after approval, and only then does the
     /// ordinary receiver run. Nothing is written over an existing identity.
-    pub(crate) fn join(
+    pub fn join(
         home: &Path,
         identity_root: &Path,
         identity_dir: &Path,
@@ -85,7 +85,7 @@ impl Peer {
 
     /// Open the handoff described for `home`, if one is present. A malformed,
     /// linked or expired descriptor is an error, never silently ignored.
-    pub(crate) fn open_at(
+    pub fn open_at(
         home: &Path,
         identity_root: &Path,
         identity_dir: &Path,
@@ -118,18 +118,18 @@ impl Peer {
     }
 
     /// The package, once it has arrived and verified.
-    pub(crate) fn poll(&self) -> Option<std::io::Result<Received>> {
+    pub fn poll(&self) -> Option<std::io::Result<Received>> {
         self.receiver.poll()
     }
 
     /// The code both screens show before a person approves this computer on
     /// the preparing computer.
-    pub(crate) fn verification_code(&self) -> Option<String> {
+    pub fn verification_code(&self) -> Option<String> {
         self.receiver.verification_code()
     }
 
     /// The canonical importer verified and adopted this exact package.
-    pub(crate) fn acknowledge(&self, received: &Received) -> std::io::Result<()> {
+    pub fn acknowledge(&self, received: &Received) -> std::io::Result<()> {
         self.receiver.acknowledge(received)
     }
 }

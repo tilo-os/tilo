@@ -15678,6 +15678,7 @@ dependencies = [
  "tilo-notification-banners",
  "tilo-ntfs-mount",
  "tilo-onboarding",
+ "tilo-onboarding-host",
  "tilo-output-passes",
  "tilo-overview",
  "tilo-owner-commit",
@@ -20065,6 +20066,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-onboarding-host"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "browser-continuity",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "launcher",
+ "libc",
+ "postcard",
+ "rand_core 0.10.0",
+ "rcgen",
+ "runtime-identity",
+ "rustix 1.1.4",
+ "rustls",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "sha2 0.11.0",
+ "tempfile",
+ "threshold-identity",
+ "tilo-clock",
+ "tilo-files",
+ "tilo-handoff",
+ "tilo-identity-ceremony",
+ "tilo-identity-host",
+ "tilo-onboarding",
+ "tilo-paths",
+ "tilo-relay-protocol",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tracing",
+ "uuid",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-os-search"
 version = "0.1.0"
 dependencies = [
@@ -21384,6 +21426,7 @@ name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde_json",
  "tempfile",
  "tilo-automerge",

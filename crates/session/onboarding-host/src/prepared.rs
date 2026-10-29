@@ -41,7 +41,7 @@ struct Receipt {
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Imported {
+pub struct Imported {
     pub identity_public_key: [u8; 32],
     pub account_count: usize,
     #[serde(default)]
@@ -65,7 +65,7 @@ pub(crate) struct Imported {
 /// Public selection metadata; credential bytes remain in imported private custody.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ServiceSessions {
+pub struct ServiceSessions {
     pub schema: u32,
     pub sessions: Vec<SelectedSession>,
     pub sealed_bytes: u64,
@@ -73,7 +73,7 @@ pub(crate) struct ServiceSessions {
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SelectedSession {
+pub struct SelectedSession {
     pub id: String,
     pub service: browser_continuity::sessions::Service,
 }
@@ -99,7 +99,7 @@ impl ServiceSessions {
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PortableHome {
+pub struct PortableHome {
     pub schema: u32,
     pub setup_binding: String,
     pub selection: String,
@@ -107,7 +107,7 @@ pub(crate) struct PortableHome {
     pub applications: bool,
 }
 impl PortableHome {
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         self.schema == 1
             && self.selection == "full_home"
             && !self.setup_binding.is_empty()
@@ -120,7 +120,7 @@ impl PortableHome {
 /// Ciphertext is not imported, trusted or activated merely by storing this value.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PortableApplications {
+pub struct PortableApplications {
     pub schema: u32,
     pub operation: String,
     pub purpose: String,
@@ -135,13 +135,13 @@ pub(crate) struct PortableApplications {
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ApplicationLimits {
+pub struct ApplicationLimits {
     pub plaintext_bytes: u64,
     pub entries: usize,
     pub metadata_bytes: usize,
 }
 impl PortableApplications {
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         self.schema == 1
             && self.purpose == "flatpak_applications"
             && uuid::Uuid::parse_str(&self.operation).is_ok()
@@ -163,13 +163,13 @@ impl PortableApplications {
 /// Authenticated, separately selected browser domains; grants no home access.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BrowserDeclaration {
+pub struct BrowserDeclaration {
     pub plan: browser_continuity::Plan,
     pub payload: BrowserPayload,
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct BrowserPayload {
+pub struct BrowserPayload {
     pub schema: u32,
     pub operation: String,
     pub purpose: String,
@@ -183,7 +183,7 @@ pub(crate) struct BrowserPayload {
     pub limits: ApplicationLimits,
 }
 impl BrowserDeclaration {
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         let payload = &self.payload;
         self.plan.encode().is_ok_and(|bytes| {
             !self.plan.profiles.is_empty()
@@ -214,13 +214,13 @@ struct TransportReceipt {
     ciphertext_sha256: String,
 }
 
-pub(crate) struct Pending {
+pub struct Pending {
     home: PathBuf,
     directory: PathBuf,
     pin: File,
     digest: [u8; 32],
 }
-pub(crate) struct Worker {
+pub struct Worker {
     command: bounded_command::AsyncCommand,
     _quarantine: tempfile::TempDir,
     identity_directory: PathBuf,
@@ -308,22 +308,22 @@ fn state_root(home: &Path) -> PathBuf {
     home.join(".local/state/tilo/prepared-setup")
 }
 /// A bad object is pending too: detection cannot erase a failed preparation.
-pub(crate) fn pending_at(home: &Path) -> bool {
+pub fn pending_at(home: &Path) -> bool {
     match std::fs::symlink_metadata(state_root(home)) {
         Ok(_) => true,
         Err(e) => e.kind() != io::ErrorKind::NotFound,
     }
 }
-pub(crate) fn session_pending(identity_dir: &Path) -> bool {
-    let Some(home) = crate::onboarding::session_home() else {
+pub fn session_pending(identity_dir: &Path) -> bool {
+    let Some(home) = crate::identity::session_home() else {
         return false;
     };
     // A same-computer migration publishes its signed first-launch projection
     // beside the ordinary browser-continuity records. Attach it before the
     // prepared-setup check, which this route does not have.
-    crate::onboarding_browser::attach_deferred_continuity();
+    crate::browser::attach_deferred_continuity();
     #[cfg(target_os = "linux")]
-    if crate::onboarding_peer::Peer::pending_at(&home) {
+    if crate::peer::Peer::pending_at(&home) {
         return true;
     }
     if !pending_at(&home) {
@@ -337,14 +337,12 @@ pub(crate) fn session_pending(identity_dir: &Path) -> bool {
             let Some(declaration) = pending.browser(identity_dir)? else {
                 return Ok(false);
             };
-            let browser = crate::onboarding_browser::Pending::open(
+            let browser = crate::browser::Pending::open(
                 home.clone(),
                 identity_dir.to_path_buf(),
                 declaration,
             )?;
-            crate::shell::launcher::set_browser_continuity(
-                browser.verified_projection().map(Path::to_owned),
-            );
+            crate::host::set_browser_continuity(browser.verified_projection().map(Path::to_owned));
             Ok(browser.pending())
         })
         .unwrap_or(true)
@@ -352,7 +350,7 @@ pub(crate) fn session_pending(identity_dir: &Path) -> bool {
 /// Consume the first-boot unseal of a same-computer TPM handoff. The file is
 /// private to this account in tmpfs and is removed whether or not the import
 /// accepts it, so it cannot be replayed after first use.
-pub(crate) fn take_tpm_secret() -> Option<zeroize::Zeroizing<Vec<u8>>> {
+pub fn take_tpm_secret() -> Option<zeroize::Zeroizing<Vec<u8>>> {
     use std::os::unix::fs::MetadataExt;
     let path = PathBuf::from(format!("/run/tilo-prepared-setup/{}.secret", current_uid()));
     let metadata = std::fs::symlink_metadata(&path).ok()?;
@@ -365,7 +363,7 @@ pub(crate) fn take_tpm_secret() -> Option<zeroize::Zeroizing<Vec<u8>>> {
 }
 
 impl Pending {
-    pub(crate) fn open(home: &Path) -> io::Result<Self> {
+    pub fn open(home: &Path) -> io::Result<Self> {
         let home = home.canonicalize()?;
         let mut pin = OpenOptions::new()
             .read(true)
@@ -408,10 +406,10 @@ impl Pending {
             digest,
         })
     }
-    pub(crate) fn digest(&self) -> [u8; 32] {
+    pub fn digest(&self) -> [u8; 32] {
         self.digest
     }
-    pub(crate) fn validate(&self) -> io::Result<()> {
+    pub fn validate(&self) -> io::Result<()> {
         let fresh = Self::open(&self.home)?;
         let a = fresh.pin.metadata()?;
         let b = self.pin.metadata()?;
@@ -421,7 +419,7 @@ impl Pending {
         }
         Ok(())
     }
-    pub(crate) fn completed(&self, identity_dir: &Path) -> io::Result<bool> {
+    pub fn completed(&self, identity_dir: &Path) -> io::Result<bool> {
         let file = match child(&self.pin, RECEIPT, libc::O_RDONLY, 0) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -456,7 +454,7 @@ impl Pending {
         }
         Ok(true)
     }
-    pub(crate) fn prepare_targets(&self, identity_dir: &Path) -> io::Result<()> {
+    pub fn prepare_targets(&self, identity_dir: &Path) -> io::Result<()> {
         self.validate()?;
         if !identity_dir.is_absolute() {
             return Err(refusal());
@@ -495,7 +493,7 @@ impl Pending {
         Ok(())
     }
 
-    pub(crate) fn start(
+    pub fn start(
         &self,
         identity_dir: &Path,
         password: &[u8],
@@ -557,7 +555,7 @@ impl Pending {
             identity_directory: identity_dir.to_owned(),
         })
     }
-    pub(crate) fn portable_home(&self, identity_dir: &Path) -> io::Result<Option<PortableHome>> {
+    pub fn portable_home(&self, identity_dir: &Path) -> io::Result<Option<PortableHome>> {
         if !self.completed(identity_dir)? {
             return Err(refusal());
         }
@@ -578,7 +576,7 @@ impl Pending {
         }
         Ok(receipt.portable_home)
     }
-    pub(crate) fn portable_applications(
+    pub fn portable_applications(
         &self,
         identity_dir: &Path,
     ) -> io::Result<Option<PortableApplications>> {
@@ -602,7 +600,7 @@ impl Pending {
         }
         Ok(receipt.portable_flatpak)
     }
-    pub(crate) fn browser(&self, identity_dir: &Path) -> io::Result<Option<BrowserDeclaration>> {
+    pub fn browser(&self, identity_dir: &Path) -> io::Result<Option<BrowserDeclaration>> {
         if !self.completed(identity_dir)? {
             return Err(refusal());
         }
@@ -621,7 +619,7 @@ impl Pending {
         }
         Ok(receipt.browser)
     }
-    pub(crate) fn acknowledge(
+    pub fn acknowledge(
         &self,
         public_key: [u8; 32],
         portable_home: Option<PortableHome>,
@@ -684,7 +682,7 @@ impl Pending {
     }
 }
 impl Imported {
-    pub(crate) fn admit(bytes: &[u8], identity_directory: &Path) -> io::Result<Self> {
+    pub fn admit(bytes: &[u8], identity_directory: &Path) -> io::Result<Self> {
         let mut imported = Self::decode(bytes)?;
         if let Some(claim) = &imported.current_identity {
             if claim.public_key() != imported.identity_public_key {
@@ -725,7 +723,7 @@ impl Imported {
     }
 }
 impl Worker {
-    pub(crate) fn poll(&mut self) -> Option<io::Result<Imported>> {
+    pub fn poll(&mut self) -> Option<io::Result<Imported>> {
         self.command.try_wait().map(|result| {
             let output = result.map_err(|_| refusal())?;
             if !output.status.success() {
