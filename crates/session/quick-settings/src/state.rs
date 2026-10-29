@@ -140,6 +140,13 @@ pub struct QuickSettingsState {
     /// The Devices section's rows, in order. The overlay host reads the
     /// device fabric for them; the root page lays them out and paints them.
     pub device_rows: Vec<crate::hosted::HostedRow>,
+    /// Which controls the panel shows, in the person's order.
+    pub arrangement: settings_store::hardware::QuickSettingsConfig,
+    /// The notifications kept since they arrived.
+    pub notifications: crate::NotificationsView,
+    /// The person's devices a Bluetooth accessory can move to, read while
+    /// an accessory's page shows; `None` without a device fabric.
+    pub handoff_targets: Option<Vec<crate::HandoffTarget>>,
 }
 
 impl Default for QuickSettingsState {
@@ -185,6 +192,9 @@ impl Default for QuickSettingsState {
             notification_count: 0,
             sound_outputs: Vec::new(),
             device_rows: Vec::new(),
+            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
+            notifications: crate::NotificationsView::default(),
+            handoff_targets: None,
         }
     }
 }
@@ -241,6 +251,9 @@ impl QuickSettingsState {
             notification_count: 0,
             sound_outputs: Vec::new(),
             device_rows: Vec::new(),
+            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
+            notifications: crate::NotificationsView::default(),
+            handoff_targets: None,
         }
     }
 

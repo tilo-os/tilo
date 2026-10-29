@@ -20324,13 +20324,15 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
+ "durable-store",
  "os-actions",
  "parking_lot",
+ "serde",
  "settings-store",
+ "tilo-app",
  "tilo-cpu-raster",
  "tilo-desktop",
  "tilo-power-mgmt",
- "tilo-ui",
  "tilo-vello",
  "tilo-winit",
  "tracing",

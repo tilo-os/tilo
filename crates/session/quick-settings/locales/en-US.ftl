@@ -65,7 +65,7 @@ qs-edit-available-heading = Available
 qs-edit-controls = Edit controls
 qs-edit-done = Done
 qs-edit-done-a11y = Finish editing Quick Settings
-qs-edit-help = Drag or press Ctrl + Up/Down to reorder
+qs-edit-help = Drag to reorder, or use a row’s Move up and Move down
 qs-edit-optional-control-a11y = Adds or removes this control. Control plus Arrow keys reorder it.
 qs-edit-remove-a11y = Remove Quick Settings control
 qs-edit-required-a11y = Required Quick Settings control
@@ -136,3 +136,44 @@ status-wifi = Wi-Fi
 status-wifi-named = Wi-Fi: { $name }
 status-wired = Wired
 status-wired-named = Wired: { $name }
+
+# The panel as an app: its pages, the clipboard's search, the password
+# prompt and arranging the controls.
+qs-back-to-controls = Back to Quick Settings
+qs-back-to-notifications = Back to notifications
+qs-bluetooth-accessory = Bluetooth accessory
+qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
+qs-bluetooth-move = Move { $accessory }
+qs-bluetooth-move-here = Move here after its local pairing is confirmed
+qs-bluetooth-move-note = The other device must already be paired with it
+qs-bluetooth-this-certified = This device
+qs-bluetooth-this-device = This device
+qs-clipboard-no-matches = Nothing matches “{ $query }”
+qs-clipboard-pin = Pin item
+qs-clipboard-remove = Remove clipboard item
+qs-clipboard-search = Search copies
+qs-clipboard-search-count = { $count ->
+        [one] One copy
+       *[other] { $count } copies
+    }
+qs-clipboard-search-matches = { $count ->
+        [one] One copy matches “{ $query }”
+       *[other] { $count } copies match “{ $query }”
+    }
+qs-clipboard-unpin = Unpin item
+qs-devices-fabric-unavailable = Personal device fabric is unavailable
+qs-devices-offline = Offline
+qs-edit-move-down = Move down
+qs-edit-move-up = Move up
+qs-edit-required = Required
+qs-notification-dismiss = Dismiss
+qs-notification-gone = This notification is no longer kept
+qs-notification-hand-to = Hand to { $agent }
+qs-notifications-clear = Clear all
+qs-notifications-dismiss-all = Dismiss all from { $app }
+qs-notifications-empty = No recent notifications
+qs-notifications-undo = Undo
+qs-wifi-password = Password
+qs-wifi-password-cancel = Cancel
+qs-wifi-password-connect = Connect
+qs-wifi-password-for = Enter the network's password to join
