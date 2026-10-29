@@ -35,7 +35,7 @@ usage:
   tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
       tilolang typed against a running session through its agent door: the nested session
       started last by default (SESSION: its --ready file, runtime directory or control socket,
-      where the REPL is admitted and granted the session's tilolang apps), another session's
+      where the REPL is admitted as the person's agent, its answers theirs), another session's
       door, or the person's own session (--real), where the person admits it. Each entry is a
       program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
       what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
