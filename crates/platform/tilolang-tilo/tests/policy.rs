@@ -13,8 +13,8 @@ use crate::fixtures::Replica;
 
 const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/todo/app.ids");
-const LETTERS: &str = include_str!("../../../../apps/tl/letters/app.tl");
-const LETTERS_IDS: &str = include_str!("../../../../apps/tl/letters/app.ids");
+const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
+const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
 const APP: &str = "so.tilo.lang.todo";
 const ROOM: &str = "room";
 
@@ -136,7 +136,7 @@ fn reaching_outside_from_untrusted_or_an_agents_code_asks() {
         Some(standing(Vec::new())),
     );
     let meta = &packages[0].meta;
-    let desk = ada.host.root_of("so.tilo.lang.letters").unwrap();
+    let desk = ada.host.root_of("test.letters").unwrap();
     ada.commit();
     let new_draft = meta.actions.iter().find(|a| a.name == "new_draft").unwrap();
     ada.host

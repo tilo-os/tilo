@@ -110,14 +110,56 @@ pub fn did_you_mean<'a>(
     candidates: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {
     let limit = (name.chars().count() / 3).max(1);
+    let candidates: Vec<&'a str> = candidates.into_iter().filter(|c| *c != name).collect();
     candidates
-        .into_iter()
-        .filter(|c| *c != name)
-        .map(|c| (edit_distance(&name.to_lowercase(), &c.to_lowercase()), c))
+        .iter()
+        .map(|c| (edit_distance(&name.to_lowercase(), &c.to_lowercase()), *c))
         .filter(|(d, _)| *d <= limit)
         .min_by_key(|(d, c)| (*d, *c))
         .map(|(_, c)| c)
+        .or_else(|| {
+            // A word for the same thing, as a first guess often is (`sender` for `from`).
+            let lower = name.to_lowercase();
+            let group = SAME_THING
+                .iter()
+                .find(|group| group.contains(&lower.as_str()))?;
+            candidates
+                .iter()
+                .copied()
+                .find(|c| group.contains(&c.to_lowercase().as_str()))
+        })
 }
+
+/// Words that name the same thing in different apps, which a first guess mixes up: a name
+/// that is none of a type's is suggested as the one of its group the type has.
+const SAME_THING: &[&[&str]] = &[
+    &[
+        "from",
+        "sender",
+        "author",
+        "by",
+        "written_by",
+        "creator",
+        "owner",
+        "who",
+        "assignee",
+    ],
+    &["title", "name", "subject", "label", "heading"],
+    &["body", "text", "content", "notes", "description", "message"],
+    &[
+        "received", "sent", "date", "time", "at", "when", "created", "updated", "changed",
+    ],
+    &["done", "completed", "finished", "checked", "closed"],
+    &["due", "deadline", "due_date"],
+    &["tags", "labels", "categories"],
+    &["to", "recipients", "attendees", "members", "people"],
+    &[
+        "items", "entries", "children", "todos", "cards", "messages", "parts",
+    ],
+    &["unread", "new", "unseen"],
+    &["pinned", "starred", "favorite", "favourite", "flagged"],
+    &["column", "status", "state", "stage", "lane"],
+];
 
 /// `"; did you mean `x`?"` for a mistyped `name`, or nothing when no candidate is close.
 #[must_use]

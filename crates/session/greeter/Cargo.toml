@@ -43,8 +43,6 @@ chrono = { workspace = true, features = ["clock", "std"] }
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
 workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
-# A person's face, as the boot sign-in screen draws it too (`boot_look`).
-tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 # Boot mode: the sign-in screen of the initramfs, a child of tilo-boot-signin
 # on its socket, drawn on KMS by the toolkit's CPU host.
 tilo-boot-signin = { path = "../../system/boot-signin" }

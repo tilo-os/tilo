@@ -267,6 +267,21 @@ impl<'a> Validator<'a> {
                 self.path(path)?;
                 anchor.as_ref().map_or(Ok(()), |anchor| self.key(anchor))
             }
+            Patch::SpliceProp {
+                path, name, insert, ..
+            } => {
+                self.path(path)?;
+                self.key(name)?;
+                if insert.len() > self.limits.rows as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "items of a list value"
+                    )));
+                }
+                insert
+                    .iter()
+                    .try_for_each(|item| self.value(item, path.len().saturating_add(1)))
+            }
         }
     }
 
@@ -388,7 +403,10 @@ impl<'a> Validator<'a> {
 
     fn parts(&self, node: &Node, description: &Description) -> Result<(), Refused> {
         for (name, event) in &node.events {
-            if description.event(name).is_none() && description.binding(name).is_none() {
+            if description.event(name).is_none()
+                && description.binding(name).is_none()
+                && !offers(description, name)
+            {
                 return Err(Refused::invalid("an event its component does not declare")
                     .within(format_args!("event `{name}`")));
             }
@@ -458,6 +476,23 @@ impl<'a> Validator<'a> {
             Value::Principal(who) => {
                 self.key(&who.id)?;
                 self.string(&who.name)
+            }
+            Value::Map(entries) => {
+                if entries.len() > self.limits.rows as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "entries of a map value"
+                    )));
+                }
+                entries.iter().try_for_each(|(key, value)| {
+                    self.value(key, depth.saturating_add(1))?;
+                    self.value(value, depth.saturating_add(1))
+                })
+            }
+            Value::Action(offered) => {
+                self.string(&offered.label)?;
+                self.key(&offered.event)?;
+                offered.icon.as_ref().map_or(Ok(()), |icon| self.key(icon))
             }
             Value::Rich(rich) => {
                 if rich.blocks.len() > self.limits.rows as usize
@@ -586,6 +621,31 @@ impl<'a> Validator<'a> {
     }
 }
 
+/// The event an action offered in the prop `prop` fires: `actions.2` for the third of
+/// `actions`. Its node gives it what the action runs, as it gives its declared events.
+#[must_use]
+pub fn offered_event(prop: &str, index: usize) -> String {
+    format!("{prop}.{index}")
+}
+
+/// Whether `event` is one an action offered in a prop of the component fires
+/// ([`offered_event`]).
+fn offers(description: &Description, event: &str) -> bool {
+    fn holds_actions(ty: &Type) -> bool {
+        match ty {
+            Type::Action => true,
+            Type::Option(inner) | Type::List(inner) | Type::Set(inner) => holds_actions(inner),
+            Type::Map { value, .. } => holds_actions(value),
+            _ => false,
+        }
+    }
+    event
+        .rsplit_once('.')
+        .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(prop, _)| description.prop(prop))
+        .is_some_and(|prop| holds_actions(&prop.ty))
+}
+
 /// Whether `name` is a sizing or placement argument every node takes, with its unit
 /// (`min.rem`).
 fn node_arg(name: &str) -> bool {
@@ -608,14 +668,23 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
-        | (Type::RichText, Value::Rich(_)) => true,
+        | (Type::RichText, Value::Rich(_))
+        | (Type::Action, Value::Action(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
-        (Type::Text, Value::List(_) | Value::Ref(_) | Value::Rich(_)) => false,
+        (
+            Type::Text,
+            Value::List(_) | Value::Ref(_) | Value::Rich(_) | Value::Map(_) | Value::Action(_),
+        ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),
-        (Type::List(inner), Value::List(items)) => items.iter().all(|item| fits(item, inner)),
+        (Type::List(inner) | Type::Set(inner), Value::List(items)) => {
+            items.iter().all(|item| fits(item, inner))
+        }
+        (Type::Map { key, value }, Value::Map(entries)) => {
+            entries.iter().all(|(k, v)| fits(k, key) && fits(v, value))
+        }
         _ => false,
     }
 }

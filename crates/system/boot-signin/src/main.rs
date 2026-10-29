@@ -25,10 +25,10 @@ use std::time::Duration;
 
 use tilo_boot_signin::auth::CliAuth;
 use tilo_boot_signin::flow::{self, Exit};
-use tilo_boot_signin::glyphs::{self, Glyphs};
 use tilo_boot_signin::greeter::{GreeterScreen, Launch};
+use tilo_boot_signin::plymouth::Plymouth;
 use tilo_boot_signin::relay::{Relay, Relayed};
-use tilo_boot_signin::screen::{BootScreen, Plymouth};
+use tilo_boot_signin::screen::ConsoleScreen;
 use tilo_boot_signin::unlock_prompt;
 
 const USAGE: &str = "usage: tilo-boot-signin --device DEV --volume NAME\n       \
@@ -102,16 +102,9 @@ fn main() -> ExitCode {
         volume: volume.clone(),
         runtime: program("TILO_SIGNIN_RUNTIME", "/run/tilo-signin"),
     };
-    // Plymouth draws in the theme's one face; a console draws its own.
-    let glyphs = if plymouth.is_some() {
-        Glyphs::read(&program("TILO_SIGNIN_GLYPHS", glyphs::GLYPHS))
-    } else {
-        Glyphs::any()
-    };
-    let fallback = BootScreen {
+    let fallback = ConsoleScreen {
         ask_password: program("TILO_SIGNIN_ASK_PASSWORD", "systemd-ask-password"),
         plymouth,
-        glyphs,
         volume,
     };
     // The greeter starts while the people are listed, so its first frame
@@ -128,10 +121,11 @@ fn main() -> ExitCode {
     ExitCode::from(exit.code())
 }
 
-/// The greeter on the display, or `fallback` when it cannot start there.
-fn start_greeter(device: &Path, fallback: BootScreen) -> Result<GreeterScreen, BootScreen> {
+/// The greeter on the display, or the console when it cannot start there.
+fn start_greeter(device: &Path, fallback: ConsoleScreen) -> Result<GreeterScreen, ConsoleScreen> {
     let greeter = program("TILO_SIGNIN_GREETER", "/usr/libexec/tilo/tilo-greeter");
     if !greeter.exists() {
+        eprintln!("tilo-boot-signin: no greeter here; asking on the console");
         return Err(fallback);
     }
     let comforts = unlock_prompt::read(&program("TILO_SIGNIN_CRYPTSETUP", "cryptsetup"), device)

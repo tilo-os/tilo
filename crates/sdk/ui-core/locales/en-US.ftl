@@ -1129,6 +1129,8 @@ proposal-reject = Discard
 proposal-decisions = Apply this change, or discard it
 
 ## Completion drawers
+completion-in-conversation = In this conversation
+completion-members = Members
 completion-no-match = No matches for “{ $query }”
 completion-results = { $count ->
     [one] 1 result

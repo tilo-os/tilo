@@ -9,7 +9,7 @@
 use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
-use tilolang_runtime::program::ProgramOutcome;
+use tilolang_runtime::program::{ProgramInputs, ProgramOutcome, ReadRequest};
 use tilolang_runtime::value::{ResourceRef, to_json};
 use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
 
@@ -53,6 +53,26 @@ pub enum HostEffect {
         session: Option<String>,
         #[param("Apply what its preview listed")]
         confirm: Option<bool>,
+        #[param(
+            "The other apps it may read, as a JSON object from the name programs call each to its id"
+        )]
+        apps: Option<String>,
+        #[param(
+            "What those apps answered to what it asked to read, as a JSON array of [request, answer] pairs"
+        )]
+        reads: Option<String>,
+    },
+    /// Read for a program.
+    ///
+    /// Answer what a program running in another app's host asks to read of this app: the
+    /// matches of a grep, what search finds, a resource's text, or a declaration (agents.md,
+    /// "Querying"). It reads only, as the caller.
+    #[effect(kind = "read", returns)]
+    ReadForProgram {
+        #[param(
+            "The request, as JSON: {\"read\": \"grep\" | \"find\" | \"read\" | \"describe\", \"app\": ..., ...}"
+        )]
+        request: String,
     },
     /// Run a flow.
     ///
@@ -229,12 +249,26 @@ impl Host {
                 source,
                 session,
                 confirm,
-            } => Ok(output(self.run_program(
-                agent,
-                session.as_deref().unwrap_or_default(),
-                &source,
-                confirm.unwrap_or(false),
-            ))),
+                apps,
+                reads,
+            } => {
+                let me = caller
+                    .and_then(|caller| caller.on_behalf_of.clone())
+                    .map_or_else(|| self.viewer().clone(), Principal::new);
+                let inputs = self.program_inputs(apps.as_deref(), reads.as_deref(), me)?;
+                Ok(output(self.run_program(
+                    agent,
+                    session.as_deref().unwrap_or_default(),
+                    &source,
+                    confirm.unwrap_or(false),
+                    inputs,
+                )))
+            }
+            HostEffect::ReadForProgram { request } => {
+                let request: ReadRequest = serde_json::from_str(&request)
+                    .map_err(|error| format!("the request is not one a program makes: {error}"))?;
+                self.runtime().answer_read(&request).map(output)
+            }
             HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
             HostEffect::Resolve { target, decision } => {
                 if caller.is_some_and(|caller| caller.agent) {
@@ -266,19 +300,26 @@ impl Host {
     /// handed to the door only when it ended well, and, if it changes many resources or
     /// destroys something, only when `confirm` says the caller saw its preview. Otherwise the
     /// record and the session's `let`s go back to how they were.
-    fn run_program(&self, agent: &Principal, session: &str, source: &str, confirm: bool) -> Json {
+    fn run_program(
+        &self,
+        agent: &Principal,
+        session: &str,
+        source: &str,
+        confirm: bool,
+        inputs: ProgramInputs,
+    ) -> Json {
         let key = format!("{}\u{1f}{session}", agent.0);
         let mut sessions = self.inner.programs.borrow_mut();
         let kept = sessions.entry(key).or_default();
         let saved = kept.clone();
         let checkpoint = self.store().checkpoint();
         let first = self.next_ticket();
-        let reply = kept.run(self.runtime(), agent, source);
+        let reply = kept.run_with(self.runtime(), agent, source, inputs);
         let planned = self.store().committed_from(first);
         let steps = self.planned_steps(&planned);
         let failed = matches!(
             reply.outcome,
-            ProgramOutcome::Rejected(_) | ProgramOutcome::Failed(_)
+            ProgramOutcome::Rejected(_) | ProgramOutcome::Failed(_) | ProgramOutcome::NeedsReads(_)
         );
         let previewed = !confirm && wants_preview(&steps);
         if failed || previewed {
@@ -307,6 +348,16 @@ impl Host {
             .map(|binding| json!({"name": binding.name, "type": binding.ty}))
             .collect();
         let (state, detail) = match reply.outcome {
+            ProgramOutcome::NeedsReads(requests) => {
+                // Nothing ran for good: the caller reads these of the apps that hold them and
+                // sends the program again with the answers.
+                return json!({
+                    "kind": "program",
+                    "state": "reads",
+                    "requests": requests,
+                    "changed": 0,
+                });
+            }
             ProgramOutcome::Done => ("done", Json::Null),
             ProgramOutcome::Rejected(lines) => ("rejected", json!(lines)),
             ProgramOutcome::Suspended(suggestion) => {
@@ -323,6 +374,46 @@ impl Host {
             "detail": detail,
             "lets": lets,
             "changed": changed,
+        })
+    }
+
+    /// What a program is given to read with: the other apps it may read (`apps`, a JSON object
+    /// from name to id), the answers the caller brought (`reads`, a JSON array of `[request,
+    /// answer]`), the apps whose records this host holds, and the person it acts for.
+    fn program_inputs(
+        &self,
+        apps: Option<&str>,
+        reads: Option<&str>,
+        me: Principal,
+    ) -> Result<ProgramInputs, String> {
+        let sources: Vec<(String, String)> = match apps.filter(|a| !a.trim().is_empty()) {
+            Some(apps) => serde_json::from_str::<serde_json::Map<String, Json>>(apps)
+                .map_err(|error| format!("`apps` is not a JSON object of names to ids: {error}"))?
+                .into_iter()
+                .filter_map(|(name, id)| Some((name, id.as_str()?.to_owned())))
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut answers = std::collections::BTreeMap::new();
+        if let Some(reads) = reads.filter(|r| !r.trim().is_empty()) {
+            let pairs: Vec<(ReadRequest, Json)> = serde_json::from_str(reads).map_err(|error| {
+                format!("`reads` is not a JSON array of [request, answer]: {error}")
+            })?;
+            for (request, answer) in pairs {
+                answers.insert(request.key(), answer);
+            }
+        }
+        let mut local: Vec<String> = Vec::new();
+        for (package, _, _) in self.records() {
+            if !local.contains(&package.meta.app) {
+                local.push(package.meta.app.clone());
+            }
+        }
+        Ok(ProgramInputs {
+            sources,
+            local: Some(local),
+            answers,
+            me: Some(me),
         })
     }
 

@@ -17,6 +17,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 /// `tilo-authd`'s socket.
 pub const DEFAULT_SOCKET: &str = "/run/tilo-auth/socket";
@@ -83,6 +84,72 @@ pub fn secret_kind(socket: &Path, user: &str) -> Option<crate::auth::boot::Secre
         return None;
     }
     serde_json::from_value(reply.get("secret")?.clone()).ok()
+}
+
+/// How long a change of secret may take: the daemon seals the new secret
+/// to the TPM and checks that it opens before it answers. It runs off the
+/// UI thread; this only keeps a wedged daemon from holding the form.
+pub const SET_SECRET_BOUND: Duration = Duration::from_secs(60);
+
+/// What `tilo-authd` answered a recovery-proven change of secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetSecret {
+    /// The new secret is set.
+    Done,
+    /// The recovery key is not this person's.
+    Wrong,
+    /// The new secret is too weak to stand alone on a machine without a TPM.
+    WeakSecret,
+    /// Anything else: refused, no daemon, no answer.
+    Failed,
+}
+
+/// Set `user`'s secret to `new`, proven by their recovery key. Blocks for
+/// as long as the daemon takes; call it off the UI thread.
+#[must_use]
+pub fn set_secret_with_recovery(
+    socket: &Path,
+    user: &str,
+    recovery: &str,
+    new: &str,
+    bound: Duration,
+) -> SetSecret {
+    // The request carries both secrets: it is built in one buffer, sized
+    // up front so it does not leave copies behind as it grows, and zeroed
+    // when it is dropped.
+    let worst = |s: &str| s.len().saturating_mul(6);
+    let mut request = Zeroizing::new(Vec::with_capacity(
+        [worst(user), worst(recovery), worst(new)]
+            .into_iter()
+            .fold(64_usize, usize::saturating_add),
+    ));
+    let written = (|| {
+        request.extend_from_slice(b"{\"op\":\"set-secret\",\"user\":");
+        serde_json::to_writer(&mut *request, user)?;
+        request.extend_from_slice(b",\"recovery\":");
+        serde_json::to_writer(&mut *request, recovery)?;
+        request.extend_from_slice(b",\"new\":");
+        serde_json::to_writer(&mut *request, new)?;
+        request.extend_from_slice(b"}\n");
+        Ok::<(), serde_json::Error>(())
+    })();
+    if written.is_err() {
+        return SetSecret::Failed;
+    }
+    let Some(line) = exchange(socket, &request, bound) else {
+        return SetSecret::Failed;
+    };
+    let Ok(reply) = serde_json::from_str::<Value>(line.trim()) else {
+        return SetSecret::Failed;
+    };
+    if reply.get("ok") == Some(&Value::Bool(true)) {
+        return SetSecret::Done;
+    }
+    match reply.get("error").and_then(Value::as_str) {
+        Some("wrong") => SetSecret::Wrong,
+        Some("weak-secret") => SetSecret::WeakSecret,
+        _ => SetSecret::Failed,
+    }
 }
 
 pub(crate) fn exchange(socket: &Path, request: &[u8], bound: Duration) -> Option<String> {
@@ -237,6 +304,48 @@ mod tests {
         }
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(secret_kind(&empty.path().join("socket"), "ada"), None);
+    }
+
+    #[test]
+    fn a_recovery_key_sets_a_new_secret_and_a_refusal_says_why() {
+        let set = |dir: &tempfile::TempDir| {
+            set_secret_with_recovery(
+                &dir.path().join("socket"),
+                "ada",
+                "cbdf-\"ghij",
+                "new secret",
+                Duration::from_secs(2),
+            )
+        };
+        let (dir, served) = daemon(Some("{\"ok\":true}\n"));
+        assert_eq!(set(&dir), SetSecret::Done);
+        let request: Value = serde_json::from_str(&served.join().unwrap()).unwrap();
+        assert_eq!(
+            request,
+            serde_json::json!({"op":"set-secret","user":"ada","recovery":"cbdf-\"ghij","new":"new secret"})
+        );
+        for (reply, outcome) in [
+            ("{\"ok\":false,\"error\":\"wrong\"}\n", SetSecret::Wrong),
+            (
+                "{\"ok\":false,\"error\":\"weak-secret\"}\n",
+                SetSecret::WeakSecret,
+            ),
+            (
+                "{\"ok\":false,\"error\":\"not-permitted\"}\n",
+                SetSecret::Failed,
+            ),
+            (
+                "{\"ok\":false,\"error\":\"unavailable\"}\n",
+                SetSecret::Failed,
+            ),
+            ("not json\n", SetSecret::Failed),
+        ] {
+            let (dir, served) = daemon(Some(reply));
+            assert_eq!(set(&dir), outcome, "{reply}");
+            served.join().unwrap();
+        }
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(set(&empty), SetSecret::Failed);
     }
 
     #[test]

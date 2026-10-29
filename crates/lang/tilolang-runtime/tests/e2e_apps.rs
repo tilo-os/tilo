@@ -65,7 +65,14 @@ mod cases {
             ),
             &[],
         );
-        let letters = build("letters", app_source!("letters"), &[]);
+        let letters = build(
+            "letters",
+            (
+                include_str!("../../tilolang/tests/fixtures/letters/app.tl"),
+                include_str!("../../tilolang/tests/fixtures/letters/app.ids"),
+            ),
+            &[],
+        );
         let counter = build("counter", app_source!("counter"), &[]);
         let channels = build("chat", app_source!("chat"), &[]);
         let today = build("today", app_source!("today"), &[&notes, &todo, &channels]);
@@ -606,7 +613,7 @@ mod cases {
         assert_eq!(text_prop(inv, "state"), "suggested");
         assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
         assert_eq!(text_prop(inv, "action"), "send");
-        assert_eq!(text_prop(inv, "app"), "so.tilo.lang.letters");
+        assert_eq!(text_prop(inv, "app"), "test.letters");
         let run = text_prop(inv, "run");
         assert_eq!(
             title_texts(inv),

@@ -99,12 +99,55 @@ enum Piece {
     Other(String),
 }
 
+/// Whether a `/` after `previous` (the last character that is no space) starts a regular
+/// expression, as the lexer reads it: where a value starts, not after one.
+fn starts_regex(previous: Option<char>) -> bool {
+    previous.is_none_or(|c| "(,:=[{+-*!<>&|;\n".contains(c))
+}
+
+/// The rest of a regular expression whose `/` was just taken: up to its closing `/` on the
+/// line (a `\/` is a slash), with its flags.
+fn regex_rest(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut text = String::new();
+    let mut escaped = false;
+    while let Some(&next) = chars.peek() {
+        if next == '\n' {
+            break;
+        }
+        chars.next();
+        text.push(next);
+        match next {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '/' => {
+                while let Some(flag) = chars.next_if(char::is_ascii_alphabetic) {
+                    text.push(flag);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 /// `source` in pieces, which joined give it back.
 fn pieces(source: &str) -> Vec<Piece> {
     let mut found: Vec<Piece> = Vec::new();
     let mut chars = source.chars().peekable();
     let mut previous: Option<char> = None;
+    let mut significant: Option<char> = None;
     while let Some(character) = chars.next() {
+        if character == '/' && chars.peek() != Some(&'/') && starts_regex(significant) {
+            let text = format!("/{}", regex_rest(&mut chars));
+            previous = text.chars().last();
+            significant = previous;
+            match found.last_mut() {
+                Some(Piece::Other(run)) => run.push_str(&text),
+                _ => found.push(Piece::Other(text)),
+            }
+            continue;
+        }
         if character.is_alphabetic() || character == '_' {
             let mut text = String::from(character);
             while let Some(next) = chars.next_if(|c| c.is_alphanumeric() || *c == '_') {
@@ -113,6 +156,7 @@ fn pieces(source: &str) -> Vec<Piece> {
             let member = matches!(previous, Some('.' | '@' | ':'));
             let literal = previous == Some('@');
             previous = text.chars().last();
+            significant = previous;
             found.push(Piece::Word {
                 text,
                 member,
@@ -135,6 +179,9 @@ fn pieces(source: &str) -> Vec<Piece> {
             }
         }
         previous = text.chars().last();
+        if let Some(last) = text.chars().rev().find(|c| *c != ' ' && *c != '\t') {
+            significant = Some(last);
+        }
         match found.last_mut() {
             Some(Piece::Other(run)) => run.push_str(&text),
             _ => found.push(Piece::Other(text)),
@@ -200,12 +247,23 @@ fn apps_named(source: &str, apps: &[String]) -> Vec<String> {
     named
 }
 
-/// `source` without the text of its strings.
+/// `source` without the text of its strings and regular expressions.
 fn outside_strings(source: &str) -> String {
     let mut out = String::new();
     let mut in_string = false;
     let mut escaped = false;
-    for character in source.chars() {
+    let mut significant: Option<char> = None;
+    let mut chars = source.chars().peekable();
+    while let Some(character) = chars.next() {
+        if !in_string && character == '/' && chars.peek() != Some(&'/') && starts_regex(significant)
+        {
+            let _ = regex_rest(&mut chars);
+            significant = Some('/');
+            continue;
+        }
+        if !in_string && !character.is_whitespace() {
+            significant = Some(character);
+        }
         if in_string {
             match character {
                 _ if escaped => escaped = false,
@@ -298,7 +356,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "history task" => return Ok(Reply::ok(self.history())),
             _ => {}
         }
-        let running = self.tilolang_names().await?;
+        let ids = self.tilolang_ids().await?;
+        let running: Vec<String> = ids.keys().cloned().collect();
         let (source, current) = {
             let programs = self.programs.lock_recover();
             (resolve_refs(program, &programs)?, programs.current.clone())
@@ -306,49 +365,119 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let app = {
             let named = apps_named(&source, &running);
             match named.as_slice() {
-                [] => current.ok_or_else(|| {
-                    format!(
-                        "name the app the program uses (`notes.notes`); this task may use {}",
-                        running.join(", ")
-                    )
-                })?,
+                // A program that names no app reads (`grep`, `find`): it runs where the last
+                // one ran, or in any app, and reads the others through each one's host.
+                [] => current
+                    .filter(|current| running.contains(current))
+                    .or_else(|| running.first().cloned())
+                    .ok_or_else(|| "no app this task may use is running".to_owned())?,
                 [one] => one.clone(),
                 several => {
                     return Err(format!(
-                        "a program runs in one app for now; this one uses {}: send one program per app",
+                        "a program changes one app for now; this one uses {}: send one program per app (it reads the others with grep, find, read and describe)",
                         several.join(" and ")
                     ));
                 }
             }
         };
-        let mut arguments = Map::new();
-        arguments.insert("source".to_owned(), json!(source));
-        arguments.insert(
-            "session".to_owned(),
-            json!(self.agent_run().map(|run| run.id).unwrap_or_default()),
-        );
-        arguments.insert("confirm".to_owned(), json!(args.confirm));
-        let path = format!("{app}/tilolang#run-program");
-        let value = match Box::pin(self.do_one_value(&path, arguments, None, None)).await? {
-            Done::Launched(_) => {
-                return Err(format!(
-                    "{app} was not running; it is open now, send the program again"
-                ));
-            }
-            Done::Invoked { value, .. } => value,
-        };
-        if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-            let failed = outcome(&value);
-            if failed.text.contains("no action run-program") {
-                return Err(format!("{app} runs no tilolang programs"));
-            }
-            return Ok(failed);
+        let mut sources = Map::new();
+        for (name, id) in &ids {
+            sources.insert(name.clone(), json!(id));
         }
-        let answer = value
-            .pointer("/update/output/value")
-            .cloned()
-            .unwrap_or(Value::Null);
-        Ok(self.answered(&app, program, &answer))
+        let sources = Value::Object(sources).to_string();
+        // What the program read of other apps, by request: it runs again with each round's
+        // answers until it needs none it was not given.
+        let mut reads: Vec<(Value, Value)> = Vec::new();
+        loop {
+            let mut arguments = Map::new();
+            arguments.insert("source".to_owned(), json!(source));
+            arguments.insert(
+                "session".to_owned(),
+                json!(self.agent_run().map(|run| run.id).unwrap_or_default()),
+            );
+            arguments.insert("confirm".to_owned(), json!(args.confirm));
+            arguments.insert("apps".to_owned(), json!(sources));
+            arguments.insert(
+                "reads".to_owned(),
+                json!(
+                    Value::Array(
+                        reads
+                            .iter()
+                            .map(|(request, answer)| json!([request, answer]))
+                            .collect()
+                    )
+                    .to_string()
+                ),
+            );
+            let path = format!("{app}/tilolang#run-program");
+            let value = match Box::pin(self.do_one_value(&path, arguments, None, None)).await? {
+                Done::Launched(_) => {
+                    return Err(format!(
+                        "{app} was not running; it is open now, send the program again"
+                    ));
+                }
+                Done::Invoked { value, .. } => value,
+            };
+            if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
+                let failed = outcome(&value);
+                if failed.text.contains("no action run-program") {
+                    return Err(format!("{app} runs no tilolang programs"));
+                }
+                return Ok(failed);
+            }
+            let answer = value
+                .pointer("/update/output/value")
+                .cloned()
+                .unwrap_or(Value::Null);
+            if answer["state"] != "reads" {
+                return Ok(self.answered(&app, program, &answer));
+            }
+            let asked: Vec<Value> = answer["requests"].as_array().cloned().unwrap_or_default();
+            let fresh: Vec<Value> = asked
+                .into_iter()
+                .filter(|request| !reads.iter().any(|(known, _)| known == request))
+                .collect();
+            if fresh.is_empty() {
+                return Err(
+                    "the program asked again for what it was given to read; nothing ran".to_owned(),
+                );
+            }
+            for request in fresh {
+                let answer = self.read_for_program(&ids, &request).await;
+                reads.push((request, answer));
+            }
+        }
+    }
+
+    /// The answer of the app `request` names to what a program asks to read of it, or why
+    /// there is none (`{"unavailable": why}`).
+    async fn read_for_program(&self, ids: &BTreeMap<String, String>, request: &Value) -> Value {
+        let app = request["app"].as_str().unwrap_or_default();
+        let Some(name) = ids
+            .iter()
+            .find(|(_, id)| id.as_str() == app)
+            .map(|(name, _)| name.clone())
+        else {
+            return json!({"unavailable": "this task may not read it"});
+        };
+        let mut arguments = Map::new();
+        arguments.insert("request".to_owned(), json!(request.to_string()));
+        let path = format!("{name}/tilolang#read-for-program");
+        match Box::pin(self.do_one_value(&path, arguments, None, None)).await {
+            Ok(Done::Invoked { value, .. })
+                if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") =>
+            {
+                value
+                    .pointer("/update/output/value")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            }
+            Ok(Done::Invoked { value, .. }) => {
+                json!({"unavailable": outcome(&value).text})
+            }
+            Ok(Done::Launched(_)) => json!({"unavailable": "it was not running; it is open now"}),
+            Err(why) => json!({"unavailable": why}),
+        }
     }
 
     /// The text of a program's answer, its resources named by references.
@@ -437,10 +566,11 @@ fn answer_text(
                 true
             }
             _ => {
-                lines.push(format!(
-                    "error: {}; nothing it did is kept",
-                    answer["detail"].as_str().unwrap_or("the program failed")
-                ));
+                let detail = answer["detail"].as_str().unwrap_or("the program failed");
+                let mut shown = detail.lines().map(|line| shown_line(line, programs));
+                lines.push(format!("error: {}", shown.next().unwrap_or_default()));
+                lines.extend(shown);
+                lines.push("nothing it did is kept".to_owned());
                 true
             }
         };
@@ -479,8 +609,9 @@ fn history_text(programs: &Programs) -> String {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// The running apps the task may run programs in, by the names programs call them.
-    async fn tilolang_names(&self) -> Result<Vec<String>, String> {
+    /// The running apps the task may run programs in, by the names programs call them, each
+    /// with its id.
+    async fn tilolang_ids(&self) -> Result<BTreeMap<String, String>, String> {
         let (_, running) = self.instances().await?;
         let mut ids: Vec<String> = running
             .iter()
@@ -488,7 +619,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .collect();
         ids.sort();
         ids.dedup();
-        Ok(app_names(&ids))
+        Ok(ids
+            .iter()
+            .map(|id| (app_names(std::slice::from_ref(id)).join(""), id.clone()))
+            .collect())
     }
 
     /// The room resource of `app`, whose `undo` takes back this task's steps there.
@@ -589,6 +723,16 @@ mod tests {
             resolve_refs("print(\"n7\", x.n7)", &programs).unwrap(),
             "print(\"n7\", x.n7)"
         );
+    }
+
+    #[test]
+    fn a_regular_expression_holds_no_references_and_no_literal() {
+        let programs = Programs::default();
+        let grep = r"grep(/\bt1\b|x@y/i, in: notes).count_by(.doc)";
+        assert_eq!(resolve_refs(grep, &programs).unwrap(), grep);
+        // After a value, a slash divides; the reference after it is still checked.
+        let divided = resolve_refs("print(10 / t7)", &programs).unwrap_err();
+        assert!(divided.contains("`t7`"), "{divided}");
     }
 
     #[test]

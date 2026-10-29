@@ -627,7 +627,7 @@ mod tests {
         let ahead = access_request(&tmp.path().join("earlier"), &device, channel, 100);
         let fresh = access_request(&tmp.path().join("fresh"), &device, channel, 1);
         assert!(fresh.issued_at < ahead.issued_at);
-        for request in [ahead, fresh.clone()] {
+        for request in [ahead, fresh] {
             participation
                 .request(device.verifying_key().to_bytes(), request, None, &allowed)
                 .unwrap();

@@ -1,25 +1,67 @@
-//! The areas this device downloaded for offline use.
+//! The areas each device downloaded for offline use.
 //!
-//! The tiles of an offline area live in this device's tile cache, so the list
-//! of areas is this device's too: a device-local setting, never part of the
-//! shared map. A collaborator's device has its own cache and its own list, a
-//! deletion here frees tiles here, and nothing an undo restores can name tiles
-//! that are gone.
+//! The tiles of an offline area live in one device's tile cache, so each
+//! device keeps its own list of areas, never part of the shared map: a
+//! record Maps keeps beside the map in the workspace ([`OfflineAreas`]),
+//! each device reading and writing only its own list. Another device has
+//! its own cache and its own list, and a deletion here frees tiles here.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::storage::{Scope, SettingsSchema};
+use ui::prelude::{Model, resource, tilo_resource};
 
 use crate::model::DownloadedRegion;
 
-/// The offline areas downloaded on this device, newest last.
+/// The offline areas one device downloaded, newest last.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OfflineAreas {
+pub struct DeviceAreas {
     #[serde(default)]
-    pub offline_areas: Vec<DownloadedRegion>,
+    pub areas: Vec<DownloadedRegion>,
 }
 
-impl SettingsSchema for OfflineAreas {
-    const SCOPE: Scope = Scope::DeviceLocal;
+tilo_resource::json_model!(DeviceAreas);
+
+/// The offline areas, by the device whose tile cache holds them.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct OfflineAreas {
+    pub devices: BTreeMap<String, DeviceAreas>,
+}
+
+#[resource(kind = "maps.offline-areas", label = "Offline areas")]
+impl OfflineAreas {
+    /// `region` was downloaded on `device`: a download of the same footprint
+    /// refreshes that area instead of listing it twice.
+    #[action(housekeeping)]
+    pub fn record(&mut self, device: String, region: DownloadedRegion) {
+        let kept = self.devices.entry(device).or_default();
+        kept.areas = recorded(&kept.areas, region);
+    }
+
+    /// The area `area` on `device` was deleted with its tiles.
+    #[action(housekeeping)]
+    pub fn forget(&mut self, device: String, area: String) {
+        if let Some(kept) = self.devices.get_mut(&device) {
+            kept.areas.retain(|region| region.id != area);
+        }
+    }
+
+    /// Every offline tile on `device` was deleted, and with them its areas.
+    #[action(housekeeping)]
+    pub fn clear(&mut self, device: String) {
+        self.devices.remove(&device);
+    }
+}
+
+impl OfflineAreas {
+    /// The areas `device` downloaded, newest last.
+    #[must_use]
+    pub fn on(&self, device: &str) -> Vec<DownloadedRegion> {
+        self.devices
+            .get(device)
+            .map(|kept| kept.areas.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// `areas` with `region` recorded: a download of the same footprint (bounds

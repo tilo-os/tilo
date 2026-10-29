@@ -1458,13 +1458,10 @@ impl BridgeState {
                 rpc_kind,
                 rpc_error,
                 rpc_error_truncated,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                "collab: collaboration stopped: {direction}"
             );
         } else {
-            tracing::error!(
-                direction,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-            );
+            tracing::error!(direction, "collab: collaboration stopped: {direction}");
         }
         // A derailed worker has no reader left for the answer: publish it.
         if !first {

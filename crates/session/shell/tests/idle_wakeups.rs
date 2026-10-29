@@ -87,7 +87,6 @@ impl Desktop {
         std::fs::create_dir_all(runtime_dir.join("home")).expect("create the session's home");
         let state_path = runtime_dir.join("state.json");
         shell::shell::persist::save_tree_to(&tree, &state_path).expect("seed the saved session");
-        seed_tab_records(&runtime_dir, &tree);
         // Saving made this tree the state file's writer: it holds the file's
         // `.writer-lock` until it is dropped. The compositor is the only writer
         // of the session it restores, so release it before that starts, or the
@@ -357,31 +356,6 @@ pub(crate) fn notes_desktop() -> shell::shell::state::WorkspaceTree {
     let room = home.room();
     tree.pending_placements.insert(room);
     tree
-}
-
-/// Create the saved tabs' documents before native startup admits only
-/// existing ones, then release them so the compositor can open them.
-fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
-    let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
-    let records = owners
-        .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
-        .expect("open the fixture's Shell record namespace");
-    for tab in tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-    {
-        shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
-            .expect("create the saved tab's document");
-    }
-    records
-        .try_flush()
-        .expect("persist the saved tabs' documents");
-    drop(records);
-    drop(owners);
 }
 
 /// A completed identity ceremony: without one the desktop is in first-run

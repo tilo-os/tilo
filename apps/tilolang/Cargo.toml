@@ -52,6 +52,10 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-sta
 # Waiting on the hosted window's patch connection.
 libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+# The IMAP and SMTP protocol code of native Mail, and the settings' account store, behind the
+# mail origin of packages whose types hold a mail server's resources (`src/mail`).
+mail = { path = "../mail" }
+tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
@@ -63,6 +67,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
+# The test IMAP and SMTP servers the mail origin's tests run against.
+mail = { path = "../mail", features = ["fake-servers"] }
+tokio = { workspace = true, features = ["rt"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

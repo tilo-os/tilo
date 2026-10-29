@@ -135,8 +135,33 @@ pub fn review(request: TransferRequest) -> Result<TransferReview, String> {
     ensure_supported()?;
     #[cfg(target_os = "linux")]
     {
+        use crate::setup::flatpak_transfer::{
+            Installation, NativeRunner, discover, portable::PortableFlatpakSource,
+        };
+        // The selected system apps are sealed from their original deployments
+        // on this computer, exactly as they would travel to another one.
+        let applications = if request.system_refs.is_empty() {
+            None
+        } else {
+            let inventory = discover(&NativeRunner, &request.source_home)?;
+            if request.system_refs.iter().any(|selected| {
+                inventory.refs.iter().any(|item| {
+                    item.installation == Installation::User && item.reference == selected.reference
+                })
+            }) {
+                return Err(
+                    "The user's Flatpak version is already included in the data transfer".into(),
+                );
+            }
+            Some(crate::setup::user_transfer::Applications::Original(
+                PortableFlatpakSource::review(
+                    &NativeRunner,
+                    &request.source_home,
+                    request.system_refs.clone(),
+                )?,
+            ))
+        };
         crate::setup::user_transfer::review(
-            &crate::setup::flatpak_transfer::NativeRunner,
             crate::setup::user_transfer::TransferRequest {
                 source_home: request.source_home,
                 target_home: request.target_home,
@@ -145,6 +170,7 @@ pub fn review(request: TransferRequest) -> Result<TransferReview, String> {
                 copy_flatpak: request.copy_flatpak,
                 system_refs: request.system_refs,
             },
+            applications,
         )
         .map(|inner| TransferReview { inner })
     }

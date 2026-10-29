@@ -181,7 +181,10 @@ pub fn invitation_admits(
     }
     let issuer = hex::encode(grant.issuer.user_public_key);
     let bound = roles::foreign_device_bound();
-    let authority = policy.person_on_device(&issuer, grant.issuer.capabilities.foreign, &bound);
+    // The owner grants itself anything, from any device of theirs, so the
+    // foreign-device bound does not narrow what they invite.
+    let foreign = grant.issuer.capabilities.foreign && !policy.is_owner(&issuer);
+    let authority = policy.person_on_device(&issuer, foreign, &bound);
     policy
         .check_invite(
             &issuer,

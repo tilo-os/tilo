@@ -598,11 +598,6 @@ impl Selection {
         // through its journal only, which `link` settles. The Commit phase
         // syncs this hard-link directory before switching CURRENT.
         tilo_relay_store::durable::link(&self.store.root().join(&meta.source), &path)?;
-        self.store.copy_measured(
-            &self.store.root().join(&meta.source),
-            &path,
-            &mut self.sorter.stats,
-        )?;
         let mut selected = meta.clone();
         selected.source = path
             .strip_prefix(self.store.root())

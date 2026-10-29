@@ -55,6 +55,13 @@ opens through the type's default view (`default view counter for Counter`).
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
+A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
+resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
+`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+signatures against them. The language's tool (`tilolang check`) finds native apps among the
+`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
+invoking native actions come later; for now this is compile-time only.
+
 ## Syntax reference
 
 The full grammar is [grammar.md](grammar.md). In short:
@@ -147,6 +154,15 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
+**Members.** Who is in the workspace is the platform's membership, read and never copied:
+`workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
+those of them the workspace's grants let read `r`. A principal says what it is: `p.name()`,
+`p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
+workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
+that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
+offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
+members in a view of no resource), without the view declaring anything.
+
 **Collections.** An item is its id: a reference to it names its document and id
 (`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
 everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
@@ -234,6 +250,29 @@ state its arguments use when the control fires (`send(c, draft)`, `set(open, not
 `send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
 pressed twice before the view draws again toggles twice.
 
+**Outside origins** (convergence.md, "Origins" and "Outside services"). A type holds the
+resources of an outside service when it names one of the service's kinds:
+
+```
+type Message (origin: imap.message) {
+    subject: Text (title)
+    from: Text
+    unread: Bool
+    mailbox: Text
+    note: Text            // the app's own field: the service never touches it
+}
+```
+
+The system keeps such resources in step with the service (getting, searching, and telling it
+what people changed), with credentials the package never sees. The fields the type declares of
+the kind take the kind's types (E112); the type may add fields of its own. Only the service
+writes the kind's other fields: code writing one is E113, except in a scenario. People change the
+fields the kind marks as theirs (a message's `unread`, `flagged` and `mailbox`): the change
+applies at once and becomes final when the service accepts it. The kinds are in
+`src/origin.rs`: `imap.account`, `imap.mailbox`, `imap.thread`, `imap.message`.
+`outside(capability, payload)` takes one of the platform's capabilities (`post`, `smtp.send`),
+checked by the compiler.
+
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
 Without one, every Bool, enum, Date, Time, number, reference, identifier and Set field is a
@@ -272,6 +311,37 @@ identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold n
 and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
 written as people type it in search, and `filters(T)` gives a type's filters as places and
 chips show them (`host.Filter`).
+
+**Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
+door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
+apps:
+
+```
+grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
+grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
+    .each(t -> todo.add(todo.todos, t.group(1)))
+find("standup chen")                                   // the palette's words, every app
+find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
+find("groceries").single()                             // one, or an error listing them
+read(n3, matching: /lemon/, around: 1)                 // size first, anchors, paged
+describe(notes)   describe(Note)   describe(notes.pin)   describe(Note.title)   describe(n3)
+print(xs, fields: [.title, .due])
+```
+
+- `/.../flags` is a regular expression, a `Text` (`i`, `m`, `s`, `x` written inline). A `/`
+  after a value still divides.
+- `grep` gives `host.Match`es: `.doc` (the resource whose text holds it), `.anchor` (`¶4`,
+  `¶2.1`, or a field's name), `.text`, `.line`, `.groups` and `.group(n)`, `.kind` (`paragraph`,
+  `heading`, `quote`, `list`, `code`, `field`), `.written_by` and `.changed`. It searches the
+  apps `in:` names (all it may read without one) or the resources it names, and says first
+  how many matched in how many resources and what it could not cover. A plain text is read as
+  markdown writes it: `> ` a quote, `# ` a heading, `- ` a list item.
+- `count_by(key)` and `group(key)` give rows with `.key` and `.count` or `.items`, the largest
+  first; `take(n)`, `each(f)` and `single()` chain on any list.
+- `me` is the person the task acts for.
+- An app the program's host does not hold is read through that app's host: its resources are
+  `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
+  type the host holds.
 
 **Native vocabulary.** Some smaller pieces of syntax:
 
@@ -325,6 +395,8 @@ tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: 
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
+                                          (its surface.toml) and a tilolang package alike
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;

@@ -32,6 +32,8 @@ pub struct TypeInfo {
     /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
     /// Code uses it as that container.
     pub holder: bool,
+    /// The kind of an outside service's resource it holds (`crate::origin`).
+    pub origin: Option<String>,
 }
 
 /// The name of the one field of a type that names a container (`type Notes =
@@ -300,6 +302,9 @@ pub struct Env {
     /// The toolkit component each of the module's views makes, by the view's name: a view whose
     /// body is one `ui.X(...)` is an `X` wherever one goes (views are components).
     pub view_makes: HashMap<String, String>,
+    /// The apps a program may read beyond those it holds, each by the name programs call it and
+    /// its id: what `grep(re, in: chat)` and `describe(chat)` name.
+    pub sources: Vec<(String, String)>,
 }
 
 impl Env {
@@ -503,6 +508,7 @@ impl Env {
                 fields,
                 search: t.search.clone(),
                 holder: t.holder,
+                origin: t.origin.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -858,6 +864,7 @@ impl Resolver<'_> {
                 }],
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
+                origin: None,
             });
         }
         let aliases: Vec<(String, TypeExpr)> = self
@@ -898,8 +905,10 @@ impl Resolver<'_> {
                 fields,
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
+                origin: t.origin.as_ref().map(|o| o.name.clone()),
             });
         }
+        self.check_origins(&decls);
         // Every type's fields are known: each one's search reads its own, and the enums.
         for t in decls {
             let Some(at) = self
@@ -917,6 +926,84 @@ impl Resolver<'_> {
                 self.diags,
             );
             self.env.types[at].search = search;
+        }
+    }
+
+    /// Each type with an origin names a kind the platform has, and declares the kind's fields
+    /// it shows with the kind's types (`crate::origin`).
+    fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(origin) = &t.origin else {
+                continue;
+            };
+            let Some(kind) = crate::origin::kind(&origin.name) else {
+                self.err(
+                    "E112",
+                    origin.span,
+                    format!(
+                        "no outside service has the kind `{}`; the kinds are: {}",
+                        origin.name,
+                        crate::origin::kind_names()
+                    ),
+                );
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+                .cloned()
+            else {
+                continue;
+            };
+            for f in &t.fields {
+                let Some(want) = kind.field(&f.name.name) else {
+                    continue;
+                };
+                let Some(have) = info.fields.iter().find(|x| x.name == f.name.name) else {
+                    continue;
+                };
+                if !self.origin_type_fits(&have.ty, want.ty) {
+                    let shown = have.ty.meta_text(&self.env.app);
+                    self.err(
+                        "E112",
+                        f.name.span,
+                        format!(
+                            "`{}` of `{}` is the service's `{}`, a {}; it is declared {shown}",
+                            f.name.name, kind.name, want.name, want.ty
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a declared field type is the origin kind's `want` (`Text`, `Set<Text>`,
+    /// `Collection<mail.thread>`, ...).
+    fn origin_type_fits(&self, have: &Ty, want: &str) -> bool {
+        if let Some(inner) = want
+            .strip_prefix("Collection<")
+            .and_then(|r| r.strip_suffix('>'))
+        {
+            return match have {
+                Ty::Collection(item) => match item.as_ref() {
+                    Ty::Record(key) => self
+                        .env
+                        .type_info(key)
+                        .is_some_and(|t| t.origin.as_deref() == Some(inner)),
+                    _ => false,
+                },
+                _ => false,
+            };
+        }
+        match want {
+            "Text" => *have == Ty::Text,
+            "Bool" => *have == Ty::Bool,
+            "Int" => *have == Ty::Int,
+            "Time" => *have == Ty::Time,
+            "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
+            _ => false,
         }
     }
 
@@ -1359,7 +1446,7 @@ impl Resolver<'_> {
                     _ => Ty::Collection(boxed),
                 };
                 if ty.is_container() && !field_position {
-                    self.err("E023", te.span, format!("`{}` can only be the type of a field; use `List<T>` for values you pass around", name.name));
+                    self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
                 }
                 ty
@@ -1523,7 +1610,9 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    fn params(&mut self, params: &[ast::Param]) -> Vec<ParamInfo> {
+    /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
+    /// is: a view is handed it live (views are components, and these are their props).
+    fn params(&mut self, params: &[ast::Param], view: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
             if out.iter().any(|x| x.name == p.name.name) {
@@ -1534,7 +1623,7 @@ impl Resolver<'_> {
                 );
                 continue;
             }
-            let ty = self.resolve_type(&p.ty, false);
+            let ty = self.resolve_type(&p.ty, view);
             out.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
@@ -1609,7 +1698,7 @@ impl Resolver<'_> {
                 );
             }
             let ast_params = params;
-            let params = self.params(params);
+            let params = self.params(params, kind == CKind::View);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(

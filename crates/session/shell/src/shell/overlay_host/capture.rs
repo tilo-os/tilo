@@ -253,6 +253,10 @@ impl ShellOverlayHost {
         if !self.notification_stack.rect().contains(p) {
             self.release_banner_keyboard();
         }
+        // A press on a window, wherever it lands (an app's own surface
+        // included), puts the canvas's caret away and gives the keyboard
+        // back.
+        self.canvas_press_on_window(p);
         self.with_maximized_group(|group| group.note_maximized_press(p));
         if let Some((display, bar)) = self.top_bar_reveal_geometry() {
             self.top_bar_reveal.on_press(p, display, bar);

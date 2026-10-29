@@ -66,23 +66,9 @@ fn recover_promotion_inner(
     } else {
         namespace::recover_adoption(&request, &witness)?
     };
-    let (remotes, preparation_failures) = if request.copy_flatpak {
-        storage::prepare_remotes(runner, &request)?
-    } else {
-        (Vec::new(), Vec::new())
-    };
     if applications_started {
         applications::validate_recovery(&request)?;
-        if !preparation_failures.is_empty() {
-            return Err("Original signed application repositories are unavailable".into());
-        }
-        let approved = storage::publish_remotes(&request.private_journals, &remotes)?;
-        applications::verify_adopted_output(
-            &request,
-            witness.application_home()?,
-            runner,
-            &approved,
-        )?;
+        applications::verify_adopted_output(&request, witness.application_home()?, runner)?;
     }
     let mut phase = Phase::default();
     for (index, copy) in copies.iter().enumerate() {
@@ -122,8 +108,7 @@ fn recover_promotion_inner(
     let review = TransferReview {
         request,
         copies,
-        remotes,
-        preparation_failures,
+        applications: None,
         recovered: true,
         application_recovery: applications_started,
         verified_applications: applications_started,

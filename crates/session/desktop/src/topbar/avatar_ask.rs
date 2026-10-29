@@ -367,7 +367,6 @@ mod tests {
         Workspace, WorkspaceId,
     };
     use ui::headless::Framed;
-    use ui::record::RecordStore;
 
     struct Unavailable;
     impl TileResolver for Unavailable {
@@ -470,7 +469,6 @@ mod tests {
         let bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
         let surface = DesktopSurface::build(
             &tree,
-            &RecordStore::in_memory(),
             &mut Unavailable,
             SurfaceChrome {
                 topbar: Box::new(bar),

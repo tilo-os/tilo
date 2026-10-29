@@ -254,7 +254,7 @@ mod tests {
     use super::super::{RecordCheckout, RecordKind, RecordOpenError, RecordOwners, RecordStore};
 
     const PACKAGE: &str = "so.tilo.opening-test";
-    const ROOM: &str = "room";
+    const ROOM: &str = "3f2b1c00-0000-4000-8000-0000000000e1";
 
     fn primary() -> RecordCheckout {
         RecordCheckout::package_primary(RecordKind::new("opening.test"))
@@ -263,6 +263,11 @@ mod tests {
     /// The room's own document of a profile at `root`, holding `body` as an earlier session left
     /// it; the store of the room's records over it.
     fn kept(root: &std::path::Path, body: &str) -> RecordStore {
+        kept_document(root, body).0
+    }
+
+    /// [`kept`], with the document as it was kept.
+    fn kept_document(root: &std::path::Path, body: &str) -> (RecordStore, AutoCommit) {
         let store: Rc<dyn DurableStore> = Rc::new(app_state::FsStore::new(root.to_path_buf()));
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "body", body).unwrap();
@@ -271,9 +276,10 @@ mod tests {
         store.flush(None).unwrap();
         assert!(matches!(landing.durability(&*store), Durability::Durable));
         drop(store);
-        RecordOwners::new(root.to_path_buf())
+        let records = RecordOwners::new(root.to_path_buf())
             .open(PACKAGE, ROOM)
-            .unwrap()
+            .unwrap();
+        (records, doc)
     }
 
     fn body(doc: &AutoCommit) -> String {
@@ -321,6 +327,34 @@ mod tests {
         assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
         // Opened, it is not opened off the frame again.
         assert!(!records.begin_opening(&want).unwrap());
+    }
+
+    /// The workspace's join can answer before the window takes the record in: the route's
+    /// committed history takes the record in and lands on it.
+    #[test]
+    fn committed_history_arriving_while_the_record_opens_lands_on_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let (records, kept) = kept_document(temp.path(), "kept");
+        let want = primary();
+        assert!(records.begin_opening(&want).unwrap());
+        let mut committed = kept.with_actor(automerge::ActorId::random());
+        committed.put(ROOT, "from_room", "another device").unwrap();
+        records
+            .merge_remote_document(
+                &want,
+                collab_types::DocumentMutation::Snapshot(committed.save()),
+            )
+            .unwrap();
+        assert!(!records.is_opening(&want.id));
+        let from_room = records
+            .read_checked(&want.id, |doc| {
+                doc.get(ROOT, "from_room")
+                    .unwrap()
+                    .and_then(|(value, _)| value.into_string().ok())
+            })
+            .unwrap();
+        assert_eq!(from_room.as_deref(), Some("another device"));
+        assert_eq!(records.read_checked(&want.id, body).unwrap(), "kept");
     }
 
     #[test]

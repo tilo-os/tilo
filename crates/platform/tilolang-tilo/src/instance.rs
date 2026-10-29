@@ -161,15 +161,6 @@ pub fn queue_commits(
     tickets
 }
 
-/// A sink the instance holds as a trait object, handed to the runtime.
-struct BoxedSink(Box<dyn OutsideSink>);
-
-impl OutsideSink for BoxedSink {
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
-        self.0.deliver(capability, payload)
-    }
-}
-
 /// The names of the room, as the runtime asks for them.
 #[derive(Clone)]
 struct SharedNames(Rc<dyn NameHost>);
@@ -247,6 +238,14 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Principal, bool)>>,
     lenses_changed: bool,
+    /// The person and the room's policy the runtime's members were last read from.
+    members_from: Option<(
+        String,
+        tilo_action_policy::RoomPolicy,
+        crate::members::People,
+    )>,
+    /// How the policy's people are the runtime's principals, as presence pairs them.
+    people: crate::members::People,
     names_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -255,6 +254,8 @@ pub struct Instance {
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
+    /// The outside services the package's types with an origin are kept in step with.
+    origins: crate::origin::Origins,
     pending: Pending,
     /// The person chose Undo on a notice, and the undo is not yet taken.
     undo: bool,
@@ -282,6 +283,7 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
+        let people = crate::members::People::new(&config.me, []);
         Self {
             app: config.app,
             me: config.me,
@@ -301,6 +303,8 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
+            members_from: None,
+            people,
             names_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -313,6 +317,7 @@ impl Instance {
                     .sink
                     .unwrap_or_else(|| Box::new(crate::sink::LogSink::dev())),
             ),
+            origins: Rc::default(),
             pending: Pending::default(),
             undo: false,
             staged: None,
@@ -355,6 +360,51 @@ impl Instance {
     /// Send the outside effects the instance settles to `sink`. Before the host starts.
     pub fn set_sink(&mut self, sink: Box<dyn OutsideSink>) {
         self.sink = Some(sink);
+    }
+
+    /// Keep the package's types with an origin in step with `origin`'s service, and hand it the
+    /// outside effects of its capabilities.
+    pub fn add_origin(&mut self, origin: crate::origin::SharedOrigin) {
+        self.origins.borrow_mut().push(origin);
+    }
+
+    /// Poll each origin: what the services said is written and handed to the door.
+    fn poll_origins(&mut self) -> bool {
+        if self.opening
+            || self.mode != Mode::Live
+            || !self
+                .origins
+                .borrow()
+                .iter()
+                .any(|origin| origin.borrow().due())
+        {
+            return false;
+        }
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let waker = self.platform.waker();
+        let cx = crate::origin::OriginCx {
+            host: &host,
+            app: &self.app,
+            waker: &waker,
+            now: self.platform.now(),
+        };
+        let first = host.next_ticket();
+        let mut wrote = false;
+        let origins: Vec<_> = self.origins.borrow().clone();
+        for origin in &origins {
+            if !origin.borrow().due() {
+                continue;
+            }
+            let polled = origin.borrow_mut().poll(&cx);
+            wrote |= polled.wrote;
+            self.settle_due |= polled.settle;
+        }
+        if wrote {
+            queue_commits(&host, &self.outgoing, first, None);
+        }
+        wrote
     }
 
     /// The package the instance runs.
@@ -544,7 +594,10 @@ impl Instance {
         let platform = Rc::clone(&self.platform);
         host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
-            host.runtime().set_sink(BoxedSink(sink));
+            host.runtime().set_sink(crate::origin::RoutingSink {
+                origins: Rc::clone(&self.origins),
+                rest: sink,
+            });
         }
         self.generation = self.platform.load(&host);
         if self.platform.follows_updates() && self.mode != Mode::Past && !self.follows {
@@ -1627,6 +1680,7 @@ impl Instance {
         let received = self.receive();
         let door = self.take_door_work();
         let opened = self.take_open_requests();
+        let pulled = self.poll_origins();
         let settled = self.settle_outbox();
         let renamed = std::mem::take(&mut self.names_changed);
         if renamed {
@@ -1639,7 +1693,9 @@ impl Instance {
         }
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
-        let changed = received || door || opened || settled || lenses || renamed;
+        let members = self.follow_members();
+        let changed =
+            received || door || opened || pulled || settled || lenses || renamed || members;
         if changed {
             self.poll_views();
         }
@@ -1651,6 +1707,40 @@ impl Instance {
         }
         self.flush();
         changed
+    }
+
+    /// Give the runtime the workspace's members as the room's policy has them now, when it
+    /// changed: who is in it, their roles, and who reads what. Whether it did.
+    fn follow_members(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let standing = self.standing.borrow().as_ref().and_then(|source| source());
+        let Some(standing) = standing else {
+            return false;
+        };
+        let seen = self
+            .members_from
+            .as_ref()
+            .is_some_and(|(person, policy, people)| {
+                *person == standing.person && *policy == standing.policy && *people == self.people
+            });
+        if seen {
+            return false;
+        }
+        host.runtime().set_members(
+            crate::members::members_of(&standing, &self.people),
+            Some(crate::members::reads_of(&standing, &self.people, &host)),
+        );
+        self.members_from = Some((standing.person, standing.policy, self.people.clone()));
+        true
+    }
+
+    /// Which person each participant presence reports is a device of, `(participant,
+    /// person)`, where the room's host paired them: the policy's people are the runtime's
+    /// principals by it.
+    pub fn set_persons(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
+        self.people = crate::members::People::new(&self.me, pairs);
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.

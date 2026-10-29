@@ -867,7 +867,7 @@ impl Core {
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
         let payload = outside_json(&unboxed(self.val_whole(payload_h)?))?;
-        if capability != "post" {
+        if !tilolang::origin::is_capability(&capability) {
             return trap(format!("unknown outside capability `{capability}`"));
         }
         let (txn, action, primary, origin) = {
@@ -948,7 +948,7 @@ impl Core {
         }))
     }
 
-    fn principal_arg(&self, h: i32) -> HResult<Principal> {
+    pub(crate) fn principal_arg(&self, h: i32) -> HResult<Principal> {
         self.with_val(h, |v| match v {
             Value::Principal(p) => Ok(p.clone()),
             other => trap(format!("expected a principal, got {}", other.kind_name())),
