@@ -15363,6 +15363,7 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "tilo-rt",
+ "tilo-settings-records",
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
@@ -21088,6 +21089,18 @@ dependencies = [
  "tilo-pc-keyboard-geometry",
  "tilo-wallpapers",
  "tilo-zone-globe",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-settings-records"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-rt",
+ "tracing",
  "workspace-hack",
 ]
 

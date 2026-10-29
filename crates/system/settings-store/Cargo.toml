@@ -29,13 +29,16 @@ unicode-normalization = "0.1.25"
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Where the documents live: their files, the holder's lock, the follower's
+# watch and the holder's door.
+tilo-settings-records = { version = "0.1.0", path = "../../platform/tilo-settings-records" }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [features]
 # Directory watches: a follower noticing the holder's saves at once, and the
 # identity and dictionary directories.
-watch = ["tilo-files/watch"]
+watch = ["tilo-files/watch", "tilo-settings-records/watch"]
 model = ["dep:tilo-resource"]
 
 [dev-dependencies]
