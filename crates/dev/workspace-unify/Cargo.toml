@@ -1150,6 +1150,7 @@ doc = false
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
+"tilo-desktop-policy" = { path = "../../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../../crates/session/desktop-search", default-features = false, features = [] }
 "tilo-desktop-surface" = { path = "../../../crates/session/desktop-surface", default-features = false, features = [] }
 "tilo-device-admin" = { path = "../../../crates/dev/tilo-device-admin", default-features = false, features = [] }
@@ -3553,6 +3554,7 @@ doc = false
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
+"tilo-desktop-policy" = { path = "../../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../../crates/session/desktop-search", default-features = false, features = [] }
 "tilo-desktop-surface" = { path = "../../../crates/session/desktop-surface", default-features = false, features = [] }
 "tilo-device-admin" = { path = "../../../crates/dev/tilo-device-admin", default-features = false, features = [] }

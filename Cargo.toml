@@ -404,6 +404,7 @@ members = [
     "crates/session/onboarding-walk",
     "crates/session/control-cli",
     "crates/session/desktop-model",
+    "crates/session/desktop-policy",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
     "crates/session/frame-metrics",
