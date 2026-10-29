@@ -100,7 +100,7 @@ impl ShellOverlayHost {
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
-            || (f.projection && ProjectionOverlay::contains(self.overlay_area(), p))
+            || f.projection
             || (self.layers.emoji_picker.is_open()
                 && self.layers.emoji_picker.card_rect().contains(p))
     }

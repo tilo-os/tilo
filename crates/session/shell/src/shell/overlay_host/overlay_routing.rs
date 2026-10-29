@@ -122,8 +122,7 @@ impl ShellOverlayHost {
             return true;
         }
 
-        if self.handle_projection_event(event, ctx) {
-            *ctx.handled = true;
+        if self.route_display_sheet(event, ctx) {
             return true;
         }
 

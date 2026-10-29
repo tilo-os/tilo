@@ -162,7 +162,6 @@ pub use crate::shell::peer_sync_overlay::{
 };
 use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::window_menu::WindowMenuAction;
@@ -255,11 +254,11 @@ mod search_state;
 use palette_search::LaunchpadMark;
 mod directory_sheet_app;
 mod display_confirm_sheet;
+mod display_sheet;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
 mod power_sheet;
-mod projection;
 mod qs_device_input;
 mod qs_device_rows;
 mod qs_input;
@@ -373,7 +372,7 @@ struct OverlayInputs {
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
     room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
-    projection_overlay: Box<ProjectionOverlay>,
+    display_sheet: Box<crate::shell::display_layouts::DisplaySheetModel>,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     history_describer: crate::shell::history_narrative::HistoryDescriber,
@@ -1028,7 +1027,7 @@ pub struct ShellOverlayHost {
     shared_desk: Option<crate::shell::peer_presence::SharedDesk>,
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
-    projection_overlay: Box<ProjectionOverlay>,
+    display_sheet: Box<crate::shell::display_layouts::DisplaySheetModel>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,

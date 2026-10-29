@@ -108,6 +108,7 @@ impl LayerId {
                 | Self::ShortcutHelp
                 | Self::Directory
                 | Self::Overview
+                | Self::DisplayLayouts
         )
     }
 
@@ -628,6 +629,9 @@ pub(crate) struct OverlayStack {
     /// The shortcut guide, an app ([`tilo_sheets::shortcut_guide`]). The
     /// host routes it itself: a chord the guide waits for is the shell's.
     pub(crate) shortcut_guide: SheetHost<tilo_sheets::shortcut_guide::GuideSeat>,
+    /// The Super+P display sheet, an app ([`tilo_sheets::displays`]) the
+    /// host routes itself.
+    pub(crate) display_sheet: SheetHost<tilo_sheets::displays::DisplaysSeat>,
     pub(crate) window_switcher: WindowSwitcher,
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,

@@ -40,53 +40,15 @@ workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem 
 workspace-kept-before-joining = { $name } vor dem Beitritt
 
 # Anzeigeanordnung (Super+P)
-display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint.
-display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
-display-mode-extend = Erweitern
-display-mode-extend-detail = Ein Desktop über alle Bildschirme
-display-mode-mirror = Spiegeln
-display-mode-mirror-detail = Dasselbe Bild auf jedem Bildschirm
-display-mode-builtin-only = Nur dieser Bildschirm
-display-mode-builtin-only-detail = Externe Bildschirme werden ausgeschaltet
-display-mode-external-only = Nur extern
-display-mode-external-only-detail = Der eingebaute Bildschirm wird ausgeschaltet
-display-sheet-one-display = Kein weiterer Bildschirm angeschlossen
-display-sheet-one-display-detail = Schließe einen per Kabel an oder wähle einen drahtlosen Bildschirm.
-display-mode-current = Aktuell
-display-confirm-title = Diese Anzeigeeinstellungen behalten?
 display-confirm-countdown = Wird in { $seconds } s zurückgesetzt
 display-confirm-applying = Wird angewendet …
-display-confirm-keep = Behalten
-display-confirm-revert = Zurücksetzen
-display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
 # Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
 # zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
-display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
-display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
-display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
 display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
-wireless-heading = Drahtlose Bildschirme
-wireless-share-audio = Audio teilen
-wireless-stream = Stream
-wireless-stream-auto = Automatisch
-wireless-stream-fixed = Fest
-wireless-stream-fps = { $fps } fps
-wireless-credential-label = PIN oder Passwort des Empfängers
-wireless-credential-placeholder = PIN oder Empfängerpasswort
-wireless-credential-hint = Leer lassen, außer der Empfänger fragt danach. Eingabe verbindet.
-wireless-scanning = Bildschirme werden gesucht …
-wireless-scanning-detail = Halte den Empfänger wach und im selben Netzwerk.
-wireless-none = Keine Bildschirme gefunden
-wireless-none-detail = Prüfe, ob WLAN an ist und der Bildschirm zum Übertragen bereit ist.
-wireless-search-again = Erneut suchen
-wireless-try-again = Erneut versuchen
-wireless-device-detail = { $protocol }, { $detail }
 wireless-unavailable = Drahtlose Bildschirme sind gerade nicht verfügbar
 wireless-unavailable-detail = Versuche es gleich noch einmal.
 wireless-search-failed = Drahtlose Bildschirme konnten nicht gesucht werden
@@ -97,12 +59,6 @@ wireless-lost = Die Verbindung zum Bildschirm wurde getrennt
 wireless-lost-detail = Verbinde dich erneut, sobald er wieder da ist.
 wireless-stop-failed = Übertragung konnte nicht beendet werden
 wireless-stop-failed-detail = Versuche es erneut.
-wireless-connected = Verbunden
-wireless-connecting = Wird verbunden …
-wireless-connect = Verbinden
-wireless-stop = Beenden
-wireless-wait = Warten
-wireless-protocols = Miracast, Google Cast, AirPlay und FCast
 
 # Bildschirme identifizieren: die Karte auf jedem Bildschirm
 display-identify-builtin = Eingebauter Bildschirm
@@ -2618,7 +2574,6 @@ search-action-tab-drag-cancel-unavailable = Das Tab-Ziehen kann bei gesperrter S
 display-confirm-answer-pending = Die Antwort zur Anzeige wird gespeichert…
 display-confirm-answer-failed = Die Antwort zur Anzeige konnte nicht gespeichert werden: { $reason }
 
-display-sheet-saving-layout = Anordnung wird gespeichert…
 
 session-diagnostics-title = Zeitdiagnose der Sitzung
 session-diagnostics-configure = Zeitdiagnose für folgende App-Starts konfigurieren
@@ -2678,15 +2633,6 @@ setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
 setting-confirm-weaker = Weniger sicher machen
 setting-suspend-plugged-in = Am Netzteil
 setting-suspend-on-battery = Im Akkubetrieb
-display-remote-heading = Deine anderen Bildschirme
-display-remote-title = Bildschirm { $number }: { $name } auf { $device }
-display-remote-row = { $title }, { $status }
-display-remote-row-description = Diesen Bildschirm in dein gemeinsames Display-Layout aufnehmen
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, nicht in der Anordnung
-display-remote-switched-off = Auf dem Gerät ausgeschaltet
-display-remote-in-layout = Im Layout
-display-remote-out-of-layout = Nicht im Layout
 display-remote-unavailable = Dieser gemeinsame Bildschirm ist nicht mehr verfügbar.
 display-remote-permission = Deine Workspace-Rolle erlaubt keine Änderung des gemeinsamen Display-Layouts.
 display-remote-stale = Die Display-Anordnung hat sich geändert. Aktualisiere sie vor der Änderung.

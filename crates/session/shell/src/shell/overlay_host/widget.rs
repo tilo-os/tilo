@@ -113,10 +113,9 @@ impl Widget for ShellOverlayHost {
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
-        // The roster and the display sheet's list glide on after a flick,
-        // repainted as a wheel's scroll is.
-        let glided =
-            self.collaborators_overlay.advance_scroll() | self.projection_overlay.advance_scroll();
+        // The roster glides on after a flick, repainted as a wheel's scroll
+        // is.
+        let glided = self.collaborators_overlay.advance_scroll();
         if glided && let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -199,9 +198,7 @@ impl Widget for ShellOverlayHost {
         self.refresh_qs_hosted_rows();
         let quick_settings_dirty =
             self.apply_quick_settings_readings() | self.pump_quick_settings(doc, path);
-        let projection_open = self.overlay_flags().projection;
-        let display_storage_dirty =
-            self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
+        let display_storage_dirty = self.pump_display_sheet(doc, path);
         steps.mark("settings-readings");
         // Runs first so an invite token / prompt is in chrome before draw.
         let peer_sync_dirty = self.pump_peer_sync();
@@ -611,6 +608,13 @@ impl Widget for ShellOverlayHost {
             self.overview_output_rect(),
             self.rect.origin(),
         );
+        let display_sheet_window = self.layers.display_sheet.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
+            self.rect.origin(),
+        );
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
@@ -715,6 +719,7 @@ impl Widget for ShellOverlayHost {
         children.extend(shortcut_guide_window);
         children.extend(directory_window);
         children.extend(overview_window);
+        children.extend(display_sheet_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -863,6 +868,9 @@ impl Widget for ShellOverlayHost {
             .directory
             .apply_layout(taffy, self.rect.origin());
         self.layers.overview.apply_layout(taffy, self.rect.origin());
+        self.layers
+            .display_sheet
+            .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -935,8 +943,9 @@ impl Widget for ShellOverlayHost {
         self.route_window_event(event, ctx);
         // An event that opened the display sheet (Super+P, its action) has
         // it take what it shows now, before anything reads or draws it.
-        let projection_open = self.overlay_flags().projection;
-        self.projection_overlay.take_open_state(projection_open);
+        if self.overlay_flags().projection != self.layers.display_sheet.requested() {
+            self.follow_display_sheet();
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1105,6 +1114,7 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.shortcut_guide.widget());
         out.extend(self.layers.directory.widget());
         out.extend(self.layers.overview.widget());
+        out.extend(self.layers.display_sheet.widget());
         out
     }
 
@@ -1152,6 +1162,7 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.shortcut_guide.widget_mut());
         out.extend(self.layers.directory.widget_mut());
         out.extend(self.layers.overview.widget_mut());
+        out.extend(self.layers.display_sheet.widget_mut());
         out
     }
 
@@ -1220,8 +1231,12 @@ impl Widget for ShellOverlayHost {
         let ws_swapped = self.resync_workspace_content();
         self.follow_brought_forward();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
-        // The guide comes up on the frame that asks for it.
+        // The guide and the display sheet come up on the frame that asks
+        // for them.
         self.follow_shortcut_guide();
+        if self.overlay_flags().projection != self.layers.display_sheet.requested() {
+            self.follow_display_sheet();
+        }
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
         let palette = std::mem::take(&mut self.palette_layout_dirty)
@@ -1249,6 +1264,7 @@ impl Widget for ShellOverlayHost {
             | self.layers.shortcut_guide.structure_changed()
             | self.layers.directory.structure_changed()
             | self.layers.overview.structure_changed()
+            | self.layers.display_sheet.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.take_topbar_structure_dirty()

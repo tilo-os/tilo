@@ -42,53 +42,15 @@ workspace-join-again-needs-invitation = Ask for a new invitation to join this wo
 workspace-kept-before-joining = { $name } before joining
 
 # Display layout sheet (Super+P)
-display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears.
-display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
-display-mode-extend = Extend
-display-mode-extend-detail = One desktop across every display
-display-mode-mirror = Mirror
-display-mode-mirror-detail = The same picture on every display
-display-mode-builtin-only = Only this screen
-display-mode-builtin-only-detail = External displays turn off
-display-mode-external-only = Only external
-display-mode-external-only-detail = The built-in screen turns off
-display-sheet-one-display = No other display connected
-display-sheet-one-display-detail = Connect one with a cable, or choose a wireless display.
-display-mode-current = Current
-display-confirm-title = Keep these display settings?
 display-confirm-countdown = Reverting in { $seconds } s
 display-confirm-applying = Applying…
-display-confirm-keep = Keep
-display-confirm-revert = Revert
-display-rejected = Couldn't apply this layout: { $reason }
 
 # Keep or revert a risky change a display tool (kanshi, wlr-randr) made:
 # one that could leave a screen blank or turn off the one in use
-display-confirm-tool-title = Keep the display change from { $tool }?
-display-confirm-tool-unknown-title = Keep this display change?
-display-confirm-always = Keep, and don't ask again for { $tool }
-display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
 display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
 display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 # Wireless receivers, the lower section of the same sheet
-wireless-heading = Wireless displays
-wireless-share-audio = Share audio
-wireless-stream = Stream
-wireless-stream-auto = Auto
-wireless-stream-fixed = Fixed
-wireless-stream-fps = { $fps } fps
-wireless-credential-label = Receiver PIN or password
-wireless-credential-placeholder = PIN or receiver password
-wireless-credential-hint = Leave blank unless the receiver asks. Enter connects.
-wireless-scanning = Looking for displays…
-wireless-scanning-detail = Keep the receiver awake and on the same network.
-wireless-none = No displays found
-wireless-none-detail = Check that Wi-Fi is on and the display is ready to cast.
-wireless-search-again = Search again
-wireless-try-again = Try again
-wireless-device-detail = { $protocol }, { $detail }
 wireless-unavailable = Wireless displays aren't available right now
 wireless-unavailable-detail = Try again in a moment.
 wireless-search-failed = Couldn't look for wireless displays
@@ -99,12 +61,6 @@ wireless-lost = The display disconnected
 wireless-lost-detail = Connect again when it's back.
 wireless-stop-failed = Couldn't stop sharing
 wireless-stop-failed-detail = Try again.
-wireless-connected = Connected
-wireless-connecting = Connecting…
-wireless-connect = Connect
-wireless-stop = Stop
-wireless-wait = Wait
-wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
@@ -2634,7 +2590,6 @@ search-action-tab-drag-cancel-unavailable = Tab dragging cannot be cancelled whi
 display-confirm-answer-pending = Saving the display answer…
 display-confirm-answer-failed = Could not save the display answer: { $reason }
 
-display-sheet-saving-layout = Saving display layout…
 
 session-diagnostics-title = Session timing diagnostics
 session-diagnostics-configure = Configure timing for subsequent app launches
@@ -2692,15 +2647,6 @@ setting-get-detail = Read the current value and the values that are allowed
 setting-confirm-weaker = Make it less safe
 setting-suspend-plugged-in = While plugged in
 setting-suspend-on-battery = On battery
-display-remote-heading = Your other screens
-display-remote-title = Display { $number }: { $name } on { $device }
-display-remote-row = { $title }, { $status }
-display-remote-row-description = Include this screen in your shared display layout
-display-remote-offline = Offline
-display-remote-offline-excluded = Offline, not in the layout
-display-remote-switched-off = Switched off on its device
-display-remote-in-layout = In layout
-display-remote-out-of-layout = Not in layout
 display-remote-unavailable = This shared display is no longer available.
 display-remote-permission = Your workspace role does not allow changing the shared display layout.
 display-remote-stale = This display arrangement changed. Refresh before editing.

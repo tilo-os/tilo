@@ -3276,7 +3276,7 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
-    /// The display sheet (`projection_overlay.rs`, Win+P), settled
+    /// The display sheet (`tilo_sheets::displays`, Win+P), settled
     /// past its 220 ms slide-in by stepping the frames a live session would.
     fn scene_projection(&mut self) {
         self.with_chrome(|st| {

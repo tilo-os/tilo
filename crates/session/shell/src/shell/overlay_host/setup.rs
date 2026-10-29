@@ -261,7 +261,7 @@ impl ShellOverlayHost {
                 room_activity: Box::new(
                     crate::shell::room_activity::RoomActivityPane::new_persistent(),
                 ),
-                projection_overlay: Box::default(),
+                display_sheet: Box::default(),
                 portal_dialogs: Box::default(),
                 history_narrator: Some(
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
@@ -336,9 +336,11 @@ impl ShellOverlayHost {
                 portal_dialogs: Box::new(PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
                 )),
-                projection_overlay: Box::new(ProjectionOverlay::from_controller(
-                    crate::shell::projection::ProjectionController::unavailable(),
-                )),
+                display_sheet: Box::new(
+                    crate::shell::display_layouts::DisplaySheetModel::from_controller(
+                        crate::shell::projection::ProjectionController::unavailable(),
+                    ),
+                ),
                 session_action_policy:
                     crate::shell::search::providers::SessionActionPolicy::default(),
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::NoPlayers),
@@ -542,7 +544,7 @@ impl ShellOverlayHost {
             collaborators_appearing: ui::motion::Appearing::closed(),
             collaborators_painted: Scene::new(),
             collaborators_painted_panel: Rect::ZERO,
-            projection_overlay: inputs.projection_overlay,
+            display_sheet: inputs.display_sheet,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             overview_row_drawn: Vec::new(),
@@ -786,15 +788,5 @@ impl ShellOverlayHost {
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    pub fn projection(&self) -> &crate::shell::projection::ProjectionController {
-        self.projection_overlay.controller()
-    }
-
-    /// Whether a receiver session is being established or is live. The
-    /// compositor uses this to turn the frame encoder on only while needed.
-    pub fn projection_capture_requested(&self) -> bool {
-        self.projection_overlay.capture_requested()
     }
 }

@@ -197,8 +197,8 @@ app as a seat (`HostContext::lend`): plain data in (whether the sheet is up,
 what this session offers) and requests out (what the person chose), which the
 shell carries out. A sheet's window is `WindowRole::Sheet`, so it stands on no
 ground of its own and the desktop shows around it. The power menu, the
-question about a tool's display change, the shortcut guide and "Join a
-workspace…" are apps.
+question about a tool's display change, the Super+P display sheet, the
+shortcut guide and "Join a workspace…" are apps.
 
 The workspace overview (Super+Tab) is one too (`crates/session/overview`), with
 one thing a sheet does not need: it pictures other apps' windows, whose

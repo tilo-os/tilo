@@ -38,7 +38,7 @@ impl ShellOverlayHost {
                 display_confirm: layers.display_question.visible()
                     || layers.display_confirm.is_animating(now),
                 follow: self.follow_banner.is_moving(now),
-                projection: self.projection_overlay.needs_animation_frame(now)
+                projection: self.display_sheet_needs_frame(now)
                     || self.display_identify.needs_frame(now),
                 // The top bar was the desktop's own content until it became
                 // an app the shell hosts; its frames still count as such.
@@ -168,7 +168,7 @@ impl ShellOverlayHost {
             // A live projection holds notification banners back so their
             // contents never reach the room.
             chrome.borrow_mut().set_presenting(matches!(
-                self.projection_overlay.controller().status,
+                self.display_sheet.controller().status,
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
         }
@@ -379,8 +379,18 @@ impl ShellOverlayHost {
             },
         );
         self.room_activity.observe_replay_presence(presence);
+        let outputs = self.layer_outputs();
         overlay_part(above_quick_settings, "shell.projection", desktop, |scene| {
-            self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+            use super::layers::ShellLayer as _;
+            self.layers.display_sheet.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
         overlay_part(
@@ -724,8 +734,6 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
-        self.projection_overlay
-            .bind_shared_display_authority(chrome.clone());
         self.chrome = Some(chrome);
         self
     }

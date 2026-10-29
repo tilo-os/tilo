@@ -29,6 +29,7 @@ impl ShellOverlayHost {
                 // own card, as its own child.
                 LayerId::ShortcutHelp
                 | LayerId::Directory
+                | LayerId::DisplayLayouts
                 | LayerId::DisplayConfirmation
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
@@ -123,9 +124,6 @@ impl ShellOverlayHost {
                         super::sheet_accessibility::route_quick_settings(&mut panel);
                         root.children.push(panel);
                     }
-                }
-                LayerId::DisplayLayouts => {
-                    root.children.push(self.projection_overlay.accessibility());
                 }
             }
         }

@@ -1041,6 +1041,10 @@ fn super_chords_open_their_surfaces_once() {
             &key_press(Key::Named(NamedKey::Escape)),
             Modifiers::default()
         ));
+        // The sheet is an app: what Escape asked is carried out on the
+        // frame's update.
+        h.host
+            .update(&automerge::AutoCommit::new(), &automerge::ROOT);
         assert!(!h.chrome.borrow().overlays.projection);
     }
 
