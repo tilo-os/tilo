@@ -83,6 +83,8 @@ pub struct Core {
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
     pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
+    /// The resources of apps this runtime does not hold that programs read, as they print.
+    pub foreign: RefCell<crate::reads::Foreign>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -182,6 +184,7 @@ impl Core {
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
+            foreign: RefCell::new(crate::reads::Foreign::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -322,9 +325,23 @@ impl Core {
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
-            Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
-                self.program_import(imp, a)
-            }
+            Imp::Print
+            | Imp::Find
+            | Imp::ReadText
+            | Imp::OfType
+            | Imp::Keep
+            | Imp::Grep
+            | Imp::Describe
+            | Imp::DescribeRef
+            | Imp::ReadWith
+            | Imp::PrintRows
+            | Imp::CountBy
+            | Imp::GroupBy
+            | Imp::Take
+            | Imp::Single
+            | Imp::Me
+            | Imp::ForeignRef
+            | Imp::MatchGroup => self.program_import(imp, a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

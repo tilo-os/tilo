@@ -1020,6 +1020,11 @@ impl Checker<'_> {
                     | "first"
                     | "last"
                     | "matching"
+                    | "count_by"
+                    | "group"
+                    | "take"
+                    | "each"
+                    | "single"
             )
         {
             let t = self.show(&f.ty);
@@ -1030,10 +1035,38 @@ impl Checker<'_> {
                 Ty::Set(_) => "add, remove, len and the list methods",
                 _ => "put, remove, get (an Option of the value) and keys",
             };
+            let methods = [
+                "insert",
+                "remove",
+                "remove_where",
+                "move",
+                "add",
+                "put",
+                "get",
+                "keys",
+                "len",
+                "is_empty",
+                "map",
+                "filter",
+                "any",
+                "all",
+                "find",
+                "count",
+                "sort_by",
+                "first",
+                "last",
+                "matching",
+                "count_by",
+                "group",
+                "take",
+                "each",
+                "single",
+            ];
+            let hint = crate::diag::suggestion(m, methods);
             self.err(
                 "E027",
                 name.span,
-                format!("`{}` is a {t} field; its methods are: {ops}", f.name),
+                format!("`{}` is a {t} field{hint}; its methods are: {ops}", f.name),
             );
             return Ex::error();
         }
@@ -1323,6 +1356,17 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.sort_by(r, &elem, name, args, span)
             }
+            (
+                Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
+                "count_by" | "group" | "take" | "each" | "single",
+            ) => {
+                let elem = (**t).clone();
+                self.list_chain(r, &elem, name, args, span)
+                    .unwrap_or_else(Ex::error)
+            }
+            (Ty::Record(k), "group") if k.app == crate::host::HOST_APP && k.name == "Match" => {
+                self.match_group(r, args, span)
+            }
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
@@ -1336,15 +1380,19 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, sort_by, count_by, group, take, each, single"
                     }
                     _ => "none",
                 };
+                let words = known.split([',', ' ', '(', ')']).filter(|w| {
+                    !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                });
+                let hint = crate::diag::suggestion(m, words);
                 self.err(
                     "E027",
                     name.span,
                     format!(
-                        "{t} has no method `{m}` taking {} argument(s); its methods: {known}",
+                        "{t} has no method `{m}` taking {} argument(s){hint}; its methods: {known}",
                         args.len()
                     ),
                 );
@@ -1360,7 +1408,7 @@ impl Checker<'_> {
 
     /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a
     /// lambda is only ever a direct argument of these, so there are no closures at run time.
-    fn higher_order(
+    pub(super) fn higher_order(
         &mut self,
         list: Ex,
         elem: &Ty,

@@ -30,11 +30,12 @@ view contact_row(c: Contact) {
 ```
 
 - Props, slots and events are checked against the real widget, with its doc text in errors.
-- Props are the language's values, collections included: `List<T>` and `Set<T>` take a list, a
-  set or a collection of what they hold; `Map<Text, V>` takes a map field read whole
-  (`ui.Reactions(reactions: m.reactions)`); `List<Action>` takes `actions(r)`, each action shown
-  by the component and run by an event of its node (`actions.0`, ...). A long list prop changes
-  on the wire by splices of what changed (`SpliceProp`), never sent whole again.
+- Props are the language's values: `List<T>` and `Set<T>` take a list or a set of what they
+  hold; `Map<Text, V>` takes a map field read whole (`ui.Reactions(reactions: m.reactions)`);
+  `List<Action>` takes `actions(r)`, each action shown by the component and run by an event of
+  its node (`actions.0`, ...). The wire can splice a list prop in place (`SpliceProp`). A
+  collection is not a component's prop yet: it goes to a view's `Collection<T>` parameter, live,
+  until the host follows a collection prop item by item.
 - A new ui-core widget is usable from tilolang as soon as it lands.
 - One generic adapter turns descriptions into widgets and patches. There's no per-widget
   mapping, and Rust apps can use the same descriptions.

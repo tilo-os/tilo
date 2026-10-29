@@ -17,6 +17,7 @@
 //! there are no closures at run time. Every error found is reported, not only the first
 //! ([`crate::diag`]).
 
+mod agentq;
 mod boundary;
 mod call;
 mod component;

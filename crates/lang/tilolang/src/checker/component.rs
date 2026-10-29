@@ -307,14 +307,25 @@ impl Checker<'_> {
                 if v.ty.is_error() {
                     return;
                 }
-                if !fits(ty, &v.ty) {
+                if matches!(v.ty, Ty::Collection(_)) {
+                    // Not copied whole on every change, and not yet followed by the host
+                    // item by item: a view takes it live instead.
+                    let t = self.show(&v.ty);
+                    self.err(
+                        "E020",
+                        value.span,
+                        format!(
+                            "{}'s `{name}` is {}; found {t}, a collection, which a component's prop does not take: hand it to a view's `Collection<T>` parameter, which gets it live, or loop over it in a slot",
+                            shown(d),
+                            ty.show()
+                        ),
+                    );
+                } else if !fits(ty, &v.ty) {
                     mismatch(self, &v.ty);
                 } else if offers_actions(ty) {
                     // Each action is shown by the component and run by an event of its node.
                     self.emit(host(Imp::UiActions, vec![node, Ex::str(name), v]));
                 } else {
-                    // A collection goes as it is, live: the host follows its inserts and
-                    // removals rather than copying it whole.
                     self.arg_prop(node, name, v);
                 }
             }
@@ -830,12 +841,8 @@ fn lang_type(ty: &Type) -> Ty {
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
         (Type::Option(inner), found) => fits(inner, found),
-        // A list or a set takes any of the language's: a list, a set, or a collection, whose
-        // items are its resources.
-        (
-            Type::List(inner) | Type::Set(inner),
-            Ty::List(item) | Ty::Set(item) | Ty::Collection(item),
-        ) => fits(inner, item),
+        // A list or a set takes either of the language's.
+        (Type::List(inner) | Type::Set(inner), Ty::List(item) | Ty::Set(item)) => fits(inner, item),
         // The language's maps are keyed by text.
         (Type::Map { key, value }, Ty::Map(held)) => **key == Type::Text && fits(value, held),
         (Type::Action, Ty::Record(key)) => key.app == crate::host::HOST_APP && key.name == "Action",

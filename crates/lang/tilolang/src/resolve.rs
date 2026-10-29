@@ -300,6 +300,9 @@ pub struct Env {
     /// The toolkit component each of the module's views makes, by the view's name: a view whose
     /// body is one `ui.X(...)` is an `X` wherever one goes (views are components).
     pub view_makes: HashMap<String, String>,
+    /// The apps a program may read beyond those it holds, each by the name programs call it and
+    /// its id: what `grep(re, in: chat)` and `describe(chat)` name.
+    pub sources: Vec<(String, String)>,
 }
 
 impl Env {

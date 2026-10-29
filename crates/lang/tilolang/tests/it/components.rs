@@ -310,10 +310,13 @@ view thread(c: Conversation) {{
 }
 
 #[test]
-fn a_collection_fits_a_list_prop_only_of_what_it_holds() {
+fn a_collection_is_no_component_prop_and_goes_to_a_view_instead() {
     let (code, message) = one_error(&format!(
         "{CHAT}\nview bar(c: Conversation) {{\n    ui.EmojiBar(c.messages)\n}}"
     ));
     assert_eq!(code, "E020");
-    assert!(message.contains("List<Text>"), "{message}");
+    assert!(
+        message.contains("List<Text>") && message.contains("Collection<T>"),
+        "{message}"
+    );
 }
