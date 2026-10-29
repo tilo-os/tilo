@@ -123,6 +123,19 @@ impl HostHistoryLayout {
     }
 }
 
+/// What input to the History chrome runs against: the host's document, its
+/// laid-out tree and the keyboard's place in it.
+pub(crate) struct ChromeInput<'a> {
+    pub(crate) state: &'a mut crate::State,
+    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) taffy: &'a TaffyTree<()>,
+    pub(crate) focused: Option<NodeId>,
+    pub(crate) modifiers: &'a winit::event::Modifiers,
+    /// Physical pixels per logical one.
+    pub(crate) scale: f64,
+}
+
 /// The kind of the open History session's resource.
 pub(crate) const HISTORY_SESSION_KIND: &str = "tilo.host.history.session";
 
@@ -306,12 +319,6 @@ impl StandaloneHistoryHost {
         }
     }
 
-    pub(crate) fn preview_mut(
-        &mut self,
-    ) -> Option<&mut crate::history_mode::canvas::PreviewCanvas> {
-        self.preview_visible.then_some(&mut self.canvas)
-    }
-
     /// A restore the person confirmed against the still-current frontier.
     /// The host applies it to its live state, then reports the outcome.
     pub(crate) fn take_confirmed_restore(&mut self) -> Option<ConfirmedHistoryRestore> {
@@ -489,6 +496,7 @@ impl StandaloneHistoryHost {
         }
         self.search_enabled = true;
     }
+    #[cfg(test)]
     pub(crate) fn search_mut(&mut self) -> Option<&mut Button> {
         self.search.as_mut()
     }
@@ -976,9 +984,6 @@ impl StandaloneHistoryHost {
         Ok(resources)
     }
 
-    pub(crate) fn toolbar_mut(&mut self) -> Option<&mut Button> {
-        self.toolbar.as_mut()
-    }
     pub(crate) fn pane_mut(&mut self) -> Option<&mut StandaloneHistoryPane> {
         self.is_open().then_some(&mut self.pane)
     }
@@ -1188,6 +1193,148 @@ impl StandaloneHistoryHost {
             self.canvas.apply_layout(taffy, preview, content_origin);
         }
         content_origin
+    }
+
+    /// Apply the chrome laid out as `layout` and the app inside it, where the
+    /// chrome leaves it visible; without chrome, the app laid out at
+    /// `app_node` fills `origin`.
+    pub(crate) fn apply_with_app(
+        &mut self,
+        layout: Option<HostHistoryLayout>,
+        taffy: &TaffyTree<()>,
+        app: &mut dyn Widget,
+        app_node: NodeId,
+        origin: Point,
+    ) {
+        let Some(layout) = layout else {
+            app.apply_layout(taffy, app_node, origin);
+            return;
+        };
+        let origin = self.apply_layout(layout, taffy, origin);
+        if layout.app_visible {
+            app.apply_layout(taffy, layout.app, origin);
+        }
+    }
+
+    /// The chrome laid out as `layout`, each beside its node, refreshed for
+    /// semantic traversal ([`Self::presentation_roots`]).
+    pub(crate) fn presentation_roots_in(
+        &mut self,
+        layout: HostHistoryLayout,
+        context: &HistoryReadContext<'_>,
+    ) -> Vec<(&dyn Widget, NodeId)> {
+        self.presentation_roots(context)
+            .unwrap_or_default()
+            .into_iter()
+            .zip(
+                layout
+                    .toolbar
+                    .into_iter()
+                    .chain(layout.search)
+                    .chain(layout.pane)
+                    .chain(layout.preview),
+            )
+            .collect()
+    }
+
+    /// Hand `event` to the chrome laid out as `layout`: a key or text input
+    /// to the focused chrome control, a pointer event to the buttons, then
+    /// the pane, then the preview until one handles it. Pointer input never
+    /// reaches an app the chrome hides. Whether the chrome took the event:
+    /// `false` for keyboard input while focus is outside the chrome.
+    pub(crate) fn route_event(
+        &mut self,
+        layout: HostHistoryLayout,
+        input: ChromeInput<'_>,
+        event: &winit::event::WindowEvent,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        use winit::event::WindowEvent;
+        let ChromeInput {
+            state,
+            bindings,
+            node_map,
+            taffy,
+            focused,
+            modifiers,
+            scale,
+        } = input;
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        ) {
+            let Some(node) = focused.filter(|&node| layout.contains(taffy, node)) else {
+                return false;
+            };
+            // SAFETY: focused chrome is unbound and the host's admitted tree
+            // stays exclusive while this event is forwarded.
+            let _ = unsafe {
+                crate::bound_dispatch::invoke_bound_node(
+                    bindings,
+                    node_map,
+                    node,
+                    &mut state.doc,
+                    &state.root,
+                    |widget, doc, path| {
+                        widget.handle_event(
+                            event,
+                            &mut crate::widget::EventCtx {
+                                scale_factor: scale,
+                                modifiers,
+                                state: crate::widget::Edits::lend(doc),
+                                path,
+                                handled,
+                                focus_target: focus,
+                                node_id: node,
+                                taffy,
+                            },
+                        );
+                    },
+                )
+            };
+            return true;
+        }
+        let pane_open = self.is_open();
+        let toolbar = self.toolbar.as_mut().map(|w| w as &mut dyn Widget);
+        let search = self.search.as_mut().map(|w| w as &mut dyn Widget);
+        let pane = pane_open.then_some(&mut self.pane as &mut dyn Widget);
+        let preview = self
+            .preview_visible
+            .then_some(&mut self.canvas as &mut dyn Widget);
+        let controls = [
+            (toolbar, layout.toolbar),
+            (search, layout.search),
+            (pane, layout.pane),
+            (preview, layout.preview),
+        ];
+        for (index, (control, node)) in controls.into_iter().enumerate() {
+            // The buttons see every pointer event; the rest only one nothing
+            // took yet.
+            if index > 0 && *handled {
+                continue;
+            }
+            let (Some(control), Some(node)) = (control, node) else {
+                continue;
+            };
+            control.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: scale,
+                    modifiers,
+                    state: crate::widget::Edits::lend(&mut state.doc),
+                    path: &state.root,
+                    handled,
+                    focus_target: focus,
+                    node_id: node,
+                    taffy,
+                },
+            );
+        }
+        if !layout.app_visible {
+            *handled = true;
+        }
+        true
     }
 
     pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {

@@ -24,6 +24,7 @@ use tilo_actions::{
 
 use super::App;
 use crate::history_source::{AuthorDirectory, DEFAULT_MAX_ENTRIES, committed_heads};
+use crate::host_core::HostCore as _;
 use crate::i18n::I18nManager;
 use crate::permissions::{ActionKind, PermissionScope, UserId};
 use crate::standalone_history::{

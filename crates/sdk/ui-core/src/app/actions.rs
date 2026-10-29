@@ -4199,6 +4199,29 @@ impl crate::host_core::HostCore for App {
         self.mark_semantic_tree_stale();
     }
 
+    fn history_changed_document(&mut self) {
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
+        match self.persistence.records.as_mut() {
+            Some(set) => set.tick(&mut self.state.doc),
+            None => {
+                if let Some(saver) = self.persistence.autosave.as_mut() {
+                    saver.request(&mut self.state.doc);
+                }
+            }
+        }
+    }
+
+    /// The preview root runs inside this app's wake scope, like its live
+    /// root.
+    fn build_history_preview(
+        &mut self,
+        factory: &crate::standalone_history_host::PreviewRootFactory,
+    ) -> Result<Box<dyn Widget>, String> {
+        let _scope = self.enter_wake_scope();
+        factory()
+    }
+
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }

@@ -246,6 +246,69 @@ pub(crate) trait HostCore {
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>;
 
+    /// A History write changed the document: present and persist it.
+    fn history_changed_document(&mut self);
+
+    /// Build the fresh read-only app root a History preview draws.
+    fn build_history_preview(
+        &mut self,
+        factory: &crate::standalone_history_host::PreviewRootFactory,
+    ) -> Result<Box<dyn Widget>, String> {
+        factory()
+    }
+
+    /// Carry out what History asked of the host since it last looked: write
+    /// a restore the person confirmed, then build the preview a selection
+    /// asked for. Whether a preview was installed.
+    fn settle_history_requests(&mut self) -> bool {
+        let (host, _) = self.document_history_with_tree();
+        if let Some(confirmed) = host.take_confirmed_restore() {
+            let author = self.document().author.clone();
+            let result = self.apply_history_restore(&confirmed, author);
+            self.document_history_with_tree().0.report_restore(&result);
+        }
+        let (host, _) = self.document_history_with_tree();
+        if !host.has_preview_request() {
+            return false;
+        }
+        let root = host.preview_root().and_then(|factory| {
+            self.build_history_preview(&factory)
+                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
+                .ok()
+        });
+        self.with_history(|host, context| host.install_preview(root, context));
+        true
+    }
+
+    /// The one write behind every restore, from the History pane or an
+    /// action: one attributed, undoable change, presented and persisted like
+    /// any other.
+    fn apply_history_restore(
+        &mut self,
+        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
+        author: crate::permissions::UserId,
+    ) -> Result<bool, HistoryError> {
+        let result = crate::standalone_history::apply_restore(
+            self.document().state,
+            confirmed,
+            Some(author),
+        );
+        self.history_written(result)
+    }
+
+    /// Present and persist what a History write changed, and show History
+    /// the document as it now is.
+    fn history_written(
+        &mut self,
+        result: Result<bool, HistoryError>,
+    ) -> Result<bool, HistoryError> {
+        if matches!(result, Ok(true)) {
+            self.history_changed_document();
+        }
+        let _ = self.with_history(StandaloneHistoryHost::refresh);
+        result
+    }
+
     fn with_history<R>(
         &mut self,
         visit: impl FnOnce(&mut StandaloneHistoryHost, &HistoryReadContext<'_>) -> R,

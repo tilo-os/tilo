@@ -9935,6 +9935,10 @@ impl crate::host_core::HostCore for FrameHarness {
         self.invalidate_local();
     }
 
+    fn history_changed_document(&mut self) {
+        self.invalidate_layout_tree();
+    }
+
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root.as_mut()
     }
