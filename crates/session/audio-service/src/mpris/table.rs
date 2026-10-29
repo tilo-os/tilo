@@ -1,27 +1,23 @@
-//! The shell's one model of the session's MPRIS players.
+//! The one model of the session's MPRIS players.
 //!
 //! The observer ([`super::observer`]) turns bus signals into
-//! [`PlayerEvent`]s and applies them here. Every view the shell takes of the
-//! players is a projection of this one table: the now-playing card, the
-//! cross-device handoff reports, the transport keys' target, the players an
-//! unplugged output pauses and the candidates a resume drives. Nothing here
-//! touches a bus, so all of it is exercised without one.
+//! [`PlayerEvent`]s and applies them here. Every view taken of the players
+//! is a projection of this one table: the players the compositor shows and
+//! hands off, the transport keys' target, the players an unplugged output
+//! pauses and the candidates a resume drives. Nothing here touches a bus, so
+//! all of it is exercised without one.
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
-use media::handoff::PlaybackReport;
 use zbus::zvariant::OwnedValue;
 
-use super::{
-    InstalledMediaApp, MAX_NOW_PLAYING_PLAYERS, MPRIS_PREFIX, NowPlayingProperties,
-    PlayerObservation, metadata_i64, metadata_string, now_playing_from_properties,
-    report_from_observation,
-};
+use super::MPRIS_PREFIX;
+use crate::{MAX_PLAYERS, Player, Status};
 
 /// Players beyond this are not tracked: a client claiming thousands of MPRIS
-/// names must not grow the shell, or the calls it makes, without bound.
-pub(super) const MAX_TRACKED_PLAYERS: usize = 64;
+/// names must not grow the helper, or the calls it makes, without bound.
+pub const MAX_TRACKED_PLAYERS: usize = 64;
 
 /// What changed on the bus, as the observer saw it.
 #[derive(Debug)]
@@ -136,9 +132,9 @@ impl PlayerEntry {
         } else {
             base
         };
-        match metadata_i64(&self.metadata(), "mpris:length") {
-            Some(length) if length > 0 => position.min(length),
-            _ => position,
+        match length_us(&self.metadata()) {
+            Some(length) => position.min(length),
+            None => position,
         }
     }
 
@@ -147,6 +143,59 @@ impl PlayerEntry {
     fn rebase(&mut self, now: Instant) {
         self.position_us = self.position_at(now);
         self.observed_at = now;
+    }
+
+    /// The entry as the compositor sees it. `None` for a player with no
+    /// transport state.
+    fn player(&self, bus_name: &str, now: Instant) -> Option<Player> {
+        let status = Status::from_mpris(&self.status()?)?;
+        let metadata = self.metadata();
+        let artist = metadata
+            .get("xesam:artist")
+            .and_then(|value| value.try_clone().ok())
+            .and_then(|value| Vec::<String>::try_from(value).ok())
+            .map(|artists| {
+                artists
+                    .iter()
+                    .filter_map(|artist| clean_text(artist))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .filter(|artists| !artists.is_empty());
+        let track_id = metadata
+            .get("mpris:trackid")
+            .and_then(|value| value.try_clone().ok())
+            .and_then(|value| {
+                let fallback = value.try_clone().ok();
+                zbus::zvariant::OwnedObjectPath::try_from(value)
+                    .map(|path| path.as_str().to_string())
+                    .ok()
+                    .or_else(|| fallback.and_then(|value| String::try_from(value).ok()))
+            })
+            .filter(|track| track != "/org/mpris/MediaPlayer2/TrackList/NoTrack");
+        Some(Player {
+            bus_name: bus_name.to_string(),
+            unique_name: self.unique_name.clone(),
+            pid: self.pid,
+            package_id: self.package_id.clone(),
+            desktop_entry: self.string("DesktopEntry"),
+            identity: self.string("Identity").as_deref().and_then(clean_text),
+            status,
+            title: metadata_string(&metadata, "xesam:title").and_then(|title| clean_text(&title)),
+            artist,
+            url: metadata_string(&metadata, "xesam:url"),
+            art_url: metadata_string(&metadata, "mpris:artUrl")
+                .filter(|url| url.starts_with("file://") && url.len() <= 4096),
+            track_id,
+            length_us: length_us(&metadata),
+            position_us: self.position_at(now),
+            rate: self.rate(),
+            can_play: self.flag("CanPlay"),
+            can_pause: self.flag("CanPause"),
+            can_seek: self.flag("CanSeek"),
+            can_go_next: self.flag("CanGoNext"),
+            can_go_previous: self.flag("CanGoPrevious"),
+        })
     }
 }
 
@@ -274,70 +323,23 @@ impl PlayerTable {
             .filter(move |entry| entry.unique_name == unique_name)
     }
 
-    /// The now-playing card's players, each with the local artwork URL it
-    /// names. Verification is not required: the card only shows and
-    /// controls what is on this machine's own bus.
-    pub(super) fn now_playing(
-        &self,
-    ) -> Vec<(crate::shell::now_playing::PlayerSnapshot, Option<String>)> {
+    /// Every player, its playhead extrapolated to `now`. Verification is
+    /// not required: what is on this machine's own bus is shown and driven
+    /// here; only a handoff needs the verified package.
+    pub(super) fn players(&self, now: Instant) -> Vec<Player> {
         self.players
             .iter()
-            .filter_map(|(bus_name, entry)| {
-                let properties = NowPlayingProperties {
-                    identity: entry.string("Identity"),
-                    status: entry.status()?,
-                    position_us: entry.position_us,
-                    can_play: entry.flag("CanPlay"),
-                    can_pause: entry.flag("CanPause"),
-                    can_seek: entry.flag("CanSeek"),
-                    can_go_next: entry.flag("CanGoNext"),
-                    can_go_previous: entry.flag("CanGoPrevious"),
-                };
-                let (mut player, art) = now_playing_from_properties(
-                    bus_name,
-                    &properties,
-                    &entry.metadata(),
-                    entry.observed_at,
-                )?;
-                // A sandboxed Tilo app's player is named after its package
-                // (`org.mpris.MediaPlayer2.so.tilo.music`).
-                player.app = entry
-                    .package_id
-                    .clone()
-                    .or_else(|| entry.string("DesktopEntry"))
-                    .or_else(|| {
-                        bus_name
-                            .strip_prefix("org.mpris.MediaPlayer2.")
-                            .filter(|rest| rest.contains('.'))
-                            .map(str::to_string)
-                    });
-                Some((player, art))
-            })
-            .take(MAX_NOW_PLAYING_PLAYERS)
+            .filter_map(|(bus_name, entry)| entry.player(bus_name, now))
+            .take(MAX_PLAYERS)
             .collect()
     }
 
-    /// Handoff reports for launcher-verified players only, each playhead
-    /// extrapolated to `now`.
-    pub(super) fn handoff_reports(
-        &self,
-        apps: &[InstalledMediaApp],
-        now: Instant,
-    ) -> Vec<PlaybackReport> {
+    /// The players playing now: what an unplugged private output pauses.
+    pub(super) fn playing(&self) -> Vec<String> {
         self.players
             .iter()
-            .filter_map(|(bus_name, entry)| {
-                let observation = PlayerObservation {
-                    bus_name: bus_name.clone(),
-                    package_id: entry.package_id.clone()?,
-                    identity: entry.string("Identity"),
-                    status: entry.status()?,
-                    metadata: entry.metadata(),
-                    position_us: entry.position_at(now),
-                };
-                report_from_observation(&observation, apps)
-            })
-            .take(media::handoff::MAX_PLAYBACK_REPORTS)
+            .filter(|(_, entry)| entry.is_playing())
+            .map(|(bus_name, _)| bus_name.clone())
             .collect()
     }
 
@@ -367,18 +369,6 @@ impl PlayerTable {
             .collect()
     }
 
-    /// Players whose owner was not yet attributable to a launch when it
-    /// appeared, with the process to try again.
-    pub(super) fn unverified(&self) -> Vec<(String, String, u32)> {
-        self.players
-            .iter()
-            .filter(|(_, entry)| entry.package_id.is_none())
-            .filter_map(|(bus_name, entry)| {
-                Some((bus_name.clone(), entry.unique_name.clone(), entry.pid?))
-            })
-            .collect()
-    }
-
     /// Record a late verification, unless the name changed owner since.
     pub(super) fn verify(&mut self, bus_name: &str, unique_name: &str, package_id: String) -> bool {
         match self.players.get_mut(bus_name) {
@@ -391,10 +381,39 @@ impl PlayerTable {
     }
 }
 
+fn clean_text(value: &str) -> Option<String> {
+    let value = value.trim().to_string();
+    (!value.is_empty() && !value.chars().any(char::is_control)).then_some(value)
+}
+
+pub(super) fn metadata_string(metadata: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| String::try_from(value).ok())
+}
+
+/// `mpris:length`, signed as the spec says or unsigned as some players send
+/// it; `None` unless positive.
+fn length_us(metadata: &HashMap<String, OwnedValue>) -> Option<i64> {
+    let value = metadata.get("mpris:length")?;
+    value
+        .try_clone()
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
+        .or_else(|| {
+            value
+                .try_clone()
+                .ok()
+                .and_then(|value| u64::try_from(value).ok())
+                .and_then(|value| i64::try_from(value).ok())
+        })
+        .filter(|length| *length > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::now_playing::PlaybackStatus;
     use zbus::zvariant::Value;
 
     const PLAYER: &str = "org.mpris.MediaPlayer2.browser";
@@ -445,16 +464,8 @@ mod tests {
         }
     }
 
-    fn browser() -> InstalledMediaApp {
-        InstalledMediaApp {
-            package_id: "so.tilo.browser".into(),
-            uri_schemes: vec!["http".into(), "https".into()],
-            extensions: vec!["mp4".into()],
-        }
-    }
-
     #[test]
-    fn appear_change_vanish_updates_both_projections() {
+    fn appear_change_vanish_updates_the_players() {
         let now = Instant::now();
         let mut table = PlayerTable::default();
         let applied = table.apply(
@@ -463,14 +474,17 @@ mod tests {
         );
         assert!(applied.changed);
 
-        let players = table.now_playing();
+        let players = table.players(now);
         assert_eq!(players.len(), 1);
-        assert_eq!(players[0].0.bus_name, PLAYER);
-        assert_eq!(players[0].0.status, PlaybackStatus::Playing);
-        let reports = table.handoff_reports(&[browser()], now);
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].session.playing);
-        assert_eq!(reports[0].session.position_ms, 4_000);
+        assert_eq!(players[0].bus_name, PLAYER);
+        assert_eq!(players[0].unique_name, OWNER);
+        assert_eq!(players[0].status, Status::Playing);
+        assert_eq!(players[0].position_us, 4_000_000);
+        assert_eq!(
+            players[0].url.as_deref(),
+            Some("https://media.example/film.mp4")
+        );
+        assert_eq!(table.playing(), [PLAYER]);
 
         let applied = table.apply(
             changed(OWNER, "PlaybackStatus", value("Paused".to_string())),
@@ -484,8 +498,8 @@ mod tests {
             },
             "a status change is applied and asks for one fresh playhead"
         );
-        assert_eq!(table.now_playing()[0].0.status, PlaybackStatus::Paused);
-        assert!(!table.handoff_reports(&[browser()], now)[0].session.playing);
+        assert_eq!(table.players(now)[0].status, Status::Paused);
+        assert!(table.playing().is_empty());
 
         let elsewhere = table.apply(
             changed(":1.99", "PlaybackStatus", value("Playing".to_string())),
@@ -495,7 +509,7 @@ mod tests {
             !elsewhere.changed,
             "a connection may only change its own players"
         );
-        assert_eq!(table.now_playing()[0].0.status, PlaybackStatus::Paused);
+        assert_eq!(table.players(now)[0].status, Status::Paused);
 
         assert!(
             table
@@ -507,24 +521,19 @@ mod tests {
                 )
                 .changed
         );
-        assert!(table.now_playing().is_empty());
-        assert!(table.handoff_reports(&[browser()], now).is_empty());
+        assert!(table.players(now).is_empty());
     }
 
     #[test]
     fn position_extrapolates_and_seeked_resets() {
         let start = Instant::now();
         let mut table = PlayerTable::default();
-        table.apply(
-            appeared(PLAYER, OWNER, Some("so.tilo.browser"), "Playing"),
-            start,
-        );
+        table.apply(appeared(PLAYER, OWNER, None, "Playing"), start);
         let later = start + Duration::from_secs(2);
+        let at = |table: &PlayerTable, when| table.players(when)[0].position_us;
         assert_eq!(
-            table.handoff_reports(&[browser()], later)[0]
-                .session
-                .position_ms,
-            6_000,
+            at(&table, later),
+            6_000_000,
             "a playing track advances between signals"
         );
 
@@ -535,19 +544,14 @@ mod tests {
             },
             later,
         );
-        let snapshot = &table.now_playing()[0].0;
-        assert_eq!(snapshot.position_at(later), 1_000_000);
-        assert_eq!(
-            snapshot.position_at(later + Duration::from_secs(1)),
-            2_000_000
-        );
+        assert_eq!(at(&table, later), 1_000_000);
+        assert_eq!(at(&table, later + Duration::from_secs(1)), 2_000_000);
 
         table.apply(changed(OWNER, "Rate", value(2.0_f64)), later);
+        assert!((table.players(later)[0].rate - 2.0).abs() < f64::EPSILON);
         assert_eq!(
-            table.handoff_reports(&[browser()], later + Duration::from_secs(1))[0]
-                .session
-                .position_ms,
-            3_000,
+            at(&table, later + Duration::from_secs(1)),
+            3_000_000,
             "the playhead advances at the signalled rate"
         );
 
@@ -556,39 +560,31 @@ mod tests {
             later + Duration::from_secs(1),
         );
         assert_eq!(
-            table.handoff_reports(&[browser()], later + Duration::from_secs(60))[0]
-                .session
-                .position_ms,
-            3_000,
+            at(&table, later + Duration::from_secs(60)),
+            3_000_000,
             "pausing freezes the playhead where it was"
         );
-        assert_eq!(
-            table.handoff_reports(&[browser()], later + Duration::from_secs(60))[0]
-                .session
-                .duration_ms,
-            Some(9_000)
-        );
+        assert_eq!(table.players(later)[0].length_us, Some(9_000_000));
     }
 
     #[test]
-    fn unverified_player_never_yields_handoff_report() {
+    fn players_are_verified_once_per_owner() {
         let now = Instant::now();
         let mut table = PlayerTable::default();
         table.apply(appeared(PLAYER, OWNER, None, "Playing"), now);
-        assert!(table.handoff_reports(&[browser()], now).is_empty());
-        assert_eq!(table.now_playing().len(), 1);
+        assert_eq!(table.players(now)[0].package_id, None);
+        assert_eq!(table.players(now)[0].pid, Some(4242));
         assert!(table.players_of("so.tilo.browser").is_empty());
-        assert_eq!(
-            table.unverified(),
-            [(PLAYER.to_string(), OWNER.to_string(), 4242)]
-        );
 
         assert!(
             !table.verify(PLAYER, ":1.7", "so.tilo.browser".into()),
             "a verification for an earlier owner is discarded"
         );
         assert!(table.verify(PLAYER, OWNER, "so.tilo.browser".into()));
-        assert_eq!(table.handoff_reports(&[browser()], now).len(), 1);
+        assert_eq!(
+            table.players(now)[0].package_id.as_deref(),
+            Some("so.tilo.browser")
+        );
         assert_eq!(
             table.players_of("so.tilo.browser"),
             [(
@@ -598,10 +594,93 @@ mod tests {
         );
 
         table.apply(appeared(PLAYER, ":1.43", None, "Playing"), now);
-        assert!(
-            table.handoff_reports(&[browser()], now).is_empty(),
+        assert_eq!(
+            table.players(now)[0].package_id,
+            None,
             "a new owner of the same name is verified afresh"
         );
+    }
+
+    #[test]
+    fn players_read_metadata_and_only_local_artwork() {
+        let now = Instant::now();
+        let mut table = PlayerTable::default();
+        let track = zbus::zvariant::ObjectPath::try_from("/org/tilo/track/7").unwrap();
+        table.apply(
+            PlayerEvent::Appeared {
+                bus_name: "org.mpris.MediaPlayer2.music".into(),
+                unique_name: ":1.1".into(),
+                pid: None,
+                package_id: None,
+                properties: HashMap::from([
+                    ("Identity".to_string(), value(" Music ".to_string())),
+                    ("PlaybackStatus".to_string(), value("Playing".to_string())),
+                    ("CanSeek".to_string(), value(true)),
+                    ("CanGoPrevious".to_string(), value(true)),
+                    (
+                        "Metadata".to_string(),
+                        value(HashMap::from([
+                            ("xesam:title".to_string(), value("Song".to_string())),
+                            (
+                                "xesam:artist".to_string(),
+                                value(vec!["One".to_string(), "Two".to_string()]),
+                            ),
+                            ("mpris:length".to_string(), value(180_000_000_u64)),
+                            ("mpris:trackid".to_string(), value(track)),
+                            (
+                                "mpris:artUrl".to_string(),
+                                value("file:///home/me/Music/cover%20art.png".to_string()),
+                            ),
+                        ])),
+                    ),
+                ]),
+            },
+            now,
+        );
+        table.apply(
+            PlayerEvent::Appeared {
+                bus_name: "org.mpris.MediaPlayer2.web".into(),
+                unique_name: ":1.2".into(),
+                pid: None,
+                package_id: None,
+                properties: HashMap::from([
+                    ("PlaybackStatus".to_string(), value("Paused".to_string())),
+                    (
+                        "Metadata".to_string(),
+                        value(HashMap::from([(
+                            "mpris:artUrl".to_string(),
+                            value("https://tracker.example/cover.jpg".to_string()),
+                        )])),
+                    ),
+                ]),
+            },
+            now,
+        );
+        table.apply(
+            appeared("org.mpris.MediaPlayer2.odd", ":1.3", None, "Buffering"),
+            now,
+        );
+        let players = table.players(now);
+        assert_eq!(
+            players.len(),
+            2,
+            "a player with no transport state is left out"
+        );
+        let music = &players[0];
+        assert_eq!(music.identity.as_deref(), Some("Music"));
+        assert_eq!(music.title.as_deref(), Some("Song"));
+        assert_eq!(music.artist.as_deref(), Some("One, Two"));
+        assert_eq!(music.length_us, Some(180_000_000));
+        assert_eq!(music.track_id.as_deref(), Some("/org/tilo/track/7"));
+        assert!(music.can_seek && music.can_go_previous && !music.can_go_next);
+        assert_eq!(
+            music.art_url.as_deref(),
+            Some("file:///home/me/Music/cover%20art.png")
+        );
+        let web = &players[1];
+        assert_eq!(web.art_url, None, "remote artwork is never fetched");
+        assert_eq!(web.identity, None);
+        assert_eq!(web.length_us, None);
     }
 
     #[test]
@@ -702,7 +781,7 @@ mod tests {
             );
         }
         assert_eq!(table.len(), MAX_TRACKED_PLAYERS);
-        assert_eq!(table.now_playing().len(), MAX_NOW_PLAYING_PLAYERS);
+        assert_eq!(table.players(now).len(), MAX_PLAYERS);
         assert!(table.admits(&format!("{MPRIS_PREFIX}p000")));
         assert!(!table.admits(&format!("{MPRIS_PREFIX}late")));
     }
