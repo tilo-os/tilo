@@ -1434,28 +1434,6 @@ impl Device {
         net.govern(&target, action, arguments)
     }
 
-    /// Give `grants` in `room` at this device's own host, as the room's
-    /// owner: written by the host into its copy of the room.
-    pub(crate) fn grant_at_host(
-        &self,
-        room: RoomId,
-        grants: Vec<tilo_action_policy::Grant>,
-    ) -> Result<(), String> {
-        let net = self.net();
-        let host = net.local_host()?;
-        let owner = self.cert();
-        let request_id = *uuid::Uuid::new_v4().as_bytes();
-        let mut request = [0; 32];
-        request[..16].copy_from_slice(&request_id);
-        net.wait_on(async move {
-            host.rooms()
-                .put_room_grants(&room.to_string(), &owner, request, grants)
-                .await
-                .map(drop)
-                .map_err(|error| error.to_string())
-        })?
-    }
-
     /// Change `person`'s role in `room` from the workspace's people
     /// settings: written by this device into its replica of the room.
     pub(crate) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
