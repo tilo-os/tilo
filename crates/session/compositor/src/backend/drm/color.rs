@@ -6,8 +6,11 @@
 //! lookup table sampled from the qcms transform sRGB to the panel) and, for
 //! HDR, encodes it as a PQ BT.2020 signal with SDR white at the person's
 //! chosen brightness. HDR also tells the display: the connector's
-//! `HDR_OUTPUT_METADATA`, `Colorspace` and `max bpc`. Outputs without either
-//! keep the plain path, planes and direct scanout included.
+//! `HDR_OUTPUT_METADATA`, `Colorspace` and `max bpc`, and the output's
+//! swapchain moves to 10 bits a channel where the GPU draws into such a
+//! buffer and the primary plane shows it ([`depth_formats`]), so the PQ
+//! signal does not band. Outputs without either keep the plain path, planes
+//! and direct scanout included.
 
 use std::path::{Path, PathBuf};
 
@@ -135,6 +138,39 @@ pub(crate) fn colorspace_values<'a>(
 /// already runs deeper.
 pub(crate) fn hdr_max_bpc(current: u64, range_max: u64) -> Option<u64> {
     (range_max >= 10).then(|| current.max(10).min(range_max))
+}
+
+/// The 8-bit formats an output's swapchain uses, best first.
+pub(crate) const SDR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
+
+/// The 10-bit formats an HDR output's swapchain may use, best first: opaque
+/// ones (the commonest on primary planes) before those with alpha.
+pub(crate) const HDR_FORMATS: [Fourcc; 4] = [
+    Fourcc::Xrgb2101010,
+    Fourcc::Xbgr2101010,
+    Fourcc::Argb2101010,
+    Fourcc::Abgr2101010,
+];
+
+/// The swapchain formats to try, best first, for an output whose swapchain
+/// is in `current` and that does (`hdr`) or does not signal HDR; empty when
+/// `current` already fits. `renderable` says whether the GPU draws into a
+/// format. Whether the primary plane shows it is found by trying; when no
+/// 10-bit format works the swapchain stays at 8 bits.
+pub(crate) fn depth_formats(
+    hdr: bool,
+    current: Fourcc,
+    renderable: impl Fn(Fourcc) -> bool,
+) -> Vec<Fourcc> {
+    let wanted: &[Fourcc] = if hdr { &HDR_FORMATS } else { &SDR_FORMATS };
+    if wanted.contains(&current) {
+        return Vec::new();
+    }
+    wanted
+        .iter()
+        .copied()
+        .filter(|&format| renderable(format))
+        .collect()
 }
 
 /// The final pass's fragment shader, in smithay's texture-shader form.
@@ -570,6 +606,32 @@ mod tests {
             50_000,
             "saturates at 1.0"
         );
+    }
+
+    #[test]
+    fn hdr_moves_the_swapchain_to_ten_bits_and_back() {
+        let all = |_| true;
+        assert_eq!(
+            depth_formats(true, Fourcc::Argb8888, all),
+            HDR_FORMATS,
+            "opaque 10-bit formats first"
+        );
+        assert_eq!(
+            depth_formats(true, Fourcc::Argb8888, |format| format
+                == Fourcc::Abgr2101010
+                || format == Fourcc::Argb8888),
+            [Fourcc::Abgr2101010],
+            "only formats the GPU draws into"
+        );
+        assert!(
+            depth_formats(true, Fourcc::Argb8888, |format| !HDR_FORMATS
+                .contains(&format))
+            .is_empty(),
+            "no 10-bit format to draw into: stays at 8 bits"
+        );
+        assert!(depth_formats(true, Fourcc::Xbgr2101010, all).is_empty());
+        assert_eq!(depth_formats(false, Fourcc::Xrgb2101010, all), SDR_FORMATS);
+        assert!(depth_formats(false, Fourcc::Xrgb8888, all).is_empty());
     }
 
     #[test]
