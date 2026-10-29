@@ -1137,21 +1137,21 @@ fn typing(held: usize, field: &str, typed: &str) -> Typed {
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
-    // A note's body is read by no label: typing it publishes nothing, with one note or with
-    // two hundred, rather than the whole notebook's surface on every frame.
+    // A new note's title is empty, so its body's first text is its label until it has a
+    // title: each key of the body publishes that label alone, with one note or with two
+    // hundred, never the whole notebook's surface.
     for held in [1, 200] {
         let body = typing(held, "Write something", "draft");
         assert_eq!(
             (body.built, body.relabeled),
-            (0, 0),
+            (0, 5),
             "typing a body published the surface (whole, labels) with {held} notes"
         );
     }
     // A note's title is its label: each key publishes that label alone, the same work with one
-    // note as with two hundred, and never the whole surface. Typed at the start of the title
-    // the note was made with.
+    // note as with two hundred, and never the whole surface.
     for held in [1, 200] {
-        let title = typing(held, "Title", "abc");
+        let title = typing(held, "Untitled", "abc");
         assert_eq!(
             title.built, 0,
             "typing a title built the whole surface with {held} notes"
@@ -1162,16 +1162,16 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             title.relabeled
         );
         assert!(
-            title.labels.iter().any(|label| label == "abcUntitled"),
+            title.labels.iter().any(|label| label == "abc"),
             "the instance names the note by its new title with {held} notes: {:?}",
             title.labels
         );
         assert!(
-            title.broker.iter().any(|label| label == "abcUntitled"),
+            title.broker.iter().any(|label| label == "abc"),
             "the broker's copy names the note by its new title with {held} notes"
         );
         assert!(
-            title.found.iter().any(|label| label == "abcUntitled"),
+            title.found.iter().any(|label| label == "abc"),
             "the instance's directory finds the note by its new title with {held} notes: {:?}",
             title.found
         );
@@ -1179,7 +1179,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             !title
                 .broker
                 .iter()
-                .any(|label| label == "aUntitled" || label == "abUntitled"),
+                .any(|label| label == "a" || label == "ab"),
             "the broker's copy still names the note by an earlier title with {held} notes"
         );
     }
@@ -1223,7 +1223,7 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
         .detail_target
         .clone()
         .expect("the first note is open");
-    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Title")
+    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Untitled")
         .expect("the note has its title field")
         .key
         .clone();
@@ -1247,12 +1247,12 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     assert_ne!(first, second, "the press opened the second note");
     assert_eq!(
         title_of(&host, &first),
-        "Plan Untitled",
+        "Plan ",
         "the typing landed in the note it was typed into"
     );
     assert_eq!(
         title_of(&host, &second),
-        "Untitled",
+        "",
         "and none of it in the note shown when it arrived"
     );
 }
