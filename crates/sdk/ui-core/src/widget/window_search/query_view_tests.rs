@@ -170,3 +170,33 @@ fn the_bars_field_counts_a_query_view_as_it_counts_a_narrowed_list() {
         "the bar reads a view's count as it reads a list's"
     );
 }
+
+/// A view that answers the search only while it offers a query (a page among
+/// pages a list narrows to) is passed over otherwise, and hears the search
+/// open and close as such.
+#[test]
+fn a_view_answers_only_while_it_offers_a_query() {
+    let offered = Rc::new(std::cell::Cell::new(false));
+    let told = Told::default();
+    let (typed, opened, closed) = (Rc::clone(&told), Rc::clone(&told), Rc::clone(&told));
+    let on = Rc::clone(&offered);
+    let mut root = QueryView::new(Column::new().into_widget(), move |text| {
+        typed.borrow_mut().push(text.to_owned());
+    })
+    .offered_while(move || on.get())
+    .on_open(move || opened.borrow_mut().push("opened".to_owned()))
+    .on_close(move || closed.borrow_mut().push("closed".to_owned()));
+    assert_eq!(
+        InPlace::of(&mut root),
+        InPlace::Nothing,
+        "a view offering no query leaves the search to the rest of the window"
+    );
+    offered.set(true);
+    assert_eq!(InPlace::of(&mut root), InPlace::Query);
+
+    let mut driver = SearchDriver::default();
+    driver.open(InPlace::Query);
+    driver.drive(&mut root, "ada", FindOptions::default(), None, false);
+    driver.drive(&mut root, "ada", FindOptions::default(), None, true);
+    assert_eq!(*told.borrow(), ["opened", "ada", "closed"]);
+}

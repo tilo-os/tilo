@@ -45,6 +45,12 @@ pub struct QueryView {
     view: Element,
     kept: Option<FilterCount>,
     answer: Box<dyn FnMut(&str)>,
+    /// Whether the view answers the search now ([`Self::offered_while`]).
+    offered: Option<Box<dyn Fn() -> bool>>,
+    /// What the view does as the search opens ([`Self::on_open`]).
+    opened: Option<Box<dyn FnMut()>>,
+    /// What the view does as the search closes ([`Self::on_close`]).
+    closed: Option<Box<dyn FnMut()>>,
 }
 
 impl QueryView {
@@ -55,7 +61,41 @@ impl QueryView {
             view,
             kept: None,
             answer: Box::new(answer),
+            offered: None,
+            opened: None,
+            closed: None,
         }
+    }
+
+    /// The view answers the search only while `offered` says so (a page
+    /// that lists the answer to a query, among pages a list narrows to):
+    /// otherwise the search acts on what else the window offers.
+    #[must_use]
+    pub fn offered_while(mut self, offered: impl Fn() -> bool + 'static) -> Self {
+        self.offered = Some(Box::new(offered));
+        self
+    }
+
+    /// Run `opened` as the search opens on the view, before anything is
+    /// typed (the view notes what it answers for, or warms its sources).
+    #[must_use]
+    pub fn on_open(mut self, opened: impl FnMut() + 'static) -> Self {
+        self.opened = Some(Box::new(opened));
+        self
+    }
+
+    /// Run `closed` as the search closes, in place of telling the view the
+    /// query is empty: the view goes back to what it showed before it
+    /// opened.
+    #[must_use]
+    pub fn on_close(mut self, closed: impl FnMut() + 'static) -> Self {
+        self.closed = Some(Box::new(closed));
+        self
+    }
+
+    /// Whether the view answers the search now.
+    fn offers(&self) -> bool {
+        self.offered.as_ref().is_none_or(|offered| offered())
     }
 
     /// The view kept `kept` of what it holds.
@@ -67,14 +107,23 @@ impl QueryView {
 }
 
 impl Queryable for QueryView {
+    fn query_opened(&mut self) {
+        if let Some(opened) = self.opened.as_mut() {
+            opened();
+        }
+    }
+
     fn set_query_text(&mut self, text: &str) {
         (self.answer)(text);
     }
 
     /// The view goes back to what it showed before the search opened, which
-    /// is what it shows with nothing typed.
+    /// is what it shows with nothing typed unless it says otherwise.
     fn query_closed(&mut self) {
-        (self.answer)("");
+        match self.closed.as_mut() {
+            Some(closed) => closed(),
+            None => (self.answer)(""),
+        }
     }
 
     fn query_count(&self) -> Option<FilterCount> {
@@ -96,7 +145,7 @@ impl concrete::Decorator for QueryView {
     }
 
     fn provide<'a>(&'a self, request: &mut Request<'a, '_>) {
-        if request.wants::<dyn Queryable>() {
+        if request.wants::<dyn Queryable>() && self.offers() {
             request.provide::<dyn Queryable>(self);
             return;
         }
@@ -104,7 +153,7 @@ impl concrete::Decorator for QueryView {
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut RequestMut<'a, '_>) {
-        if request.wants::<dyn Queryable>() {
+        if request.wants::<dyn Queryable>() && self.offers() {
             request.provide::<dyn Queryable>(self);
             return;
         }

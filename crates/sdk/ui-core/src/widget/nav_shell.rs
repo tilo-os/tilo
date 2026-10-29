@@ -1745,6 +1745,9 @@ pub struct NavShell {
     can_back: Option<Rc<std::cell::Cell<bool>>>,
     /// The slot a host is changing through [`crate::component::Described::slot_views`].
     slot_edit: Option<component::SlotEdit>,
+    /// The window's search narrows the sidebar's list wherever it stands
+    /// ([`Self::search_sidebar`]).
+    sidebar_search: bool,
 }
 
 impl Default for NavShell {
@@ -1845,6 +1848,7 @@ impl NavShell {
             retired_status_actions: Vec::new(),
             can_back: None,
             slot_edit: None,
+            sidebar_search: false,
         }
     }
 
@@ -2027,6 +2031,17 @@ impl NavShell {
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// The window's search narrows the sidebar's list
+    /// ([`crate::widget::Filterable`]) wherever it stands: also while a
+    /// narrow window shows the content screen, whose content may then show
+    /// what the list's filter finds. Without it the search reaches the list
+    /// only while it is on screen.
+    #[must_use]
+    pub fn search_sidebar(mut self) -> Self {
+        self.sidebar_search = true;
         self
     }
 
@@ -4003,6 +4018,11 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if self.sidebar_search
+            && request.wants::<dyn crate::widget::Filterable>()
+            && let Some(sidebar) = &self.sidebar
+        {
+            sidebar.provide(request);
         } else {
             self.content.provide(request);
         }
@@ -4017,6 +4037,11 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if self.sidebar_search
+            && request.wants::<dyn crate::widget::Filterable>()
+            && let Some(sidebar) = &mut self.sidebar
+        {
+            sidebar.provide_mut(request);
         } else {
             self.content.provide_mut(request);
         }

@@ -179,6 +179,41 @@ fn a_bound_selection_flows_both_ways() {
 }
 
 #[test]
+fn a_bound_filter_flows_both_ways() {
+    let sections = || {
+        vec![
+            NavSection::new(
+                "places",
+                "Places",
+                vec![
+                    NavItem::new("users", "users"),
+                    NavItem::new("orders", "orders"),
+                ],
+            )
+            .filterable(),
+        ]
+    };
+    let state = crate::LocalState::new("user".to_owned());
+    let mut h = harness(NavList::new(sections()).bind_filter(&state), Theme::dark());
+    assert_eq!(h.root::<NavList>().visible_item_ids(), ["users"]);
+    state.set("ord".to_owned());
+    h.relayout_at((280, 360)).expect("layout");
+    assert_eq!(
+        h.root::<NavList>().visible_item_ids(),
+        ["orders"],
+        "the list narrows to what the state holds"
+    );
+    Filterable::set_filter(&mut *h.root_mut::<NavList>(), "");
+    assert_eq!(
+        state.with(Clone::clone),
+        "",
+        "the window's search is written back"
+    );
+    h.relayout_at((280, 360)).expect("layout");
+    assert_eq!(h.root::<NavList>().visible_item_ids(), ["users", "orders"]);
+}
+
+#[test]
 fn a_followed_list_shows_the_state_it_follows() {
     let state = std::rc::Rc::new(Cell2::new((mailboxes(), Some("sent".to_owned()))));
     let source = std::rc::Rc::clone(&state);

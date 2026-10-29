@@ -78,6 +78,9 @@ pub struct Container {
     /// even when there was room. The weight is the container's share of
     /// that width against its growing siblings; zero does not grow.
     flex_grow: f32,
+    /// The name and semantic key assistive technology knows the container
+    /// by ([`Container::landmark`]).
+    landmark: Option<(String, String)>,
 }
 
 impl Default for Container {
@@ -114,7 +117,18 @@ impl Container {
             activation: crate::widget::activation::Activation::default(),
             bleed: (0.0, 0.0),
             flex_grow: 0.0,
+            landmark: None,
         }
+    }
+
+    /// Name the container for assistive technology: a group called `name`
+    /// under the stable `semantic_key`, which keeps its identity however
+    /// the content under it is built again (an app's surface around a shell
+    /// whose columns rebuild).
+    #[must_use]
+    pub fn landmark(mut self, name: impl Into<String>, semantic_key: impl Into<String>) -> Self {
+        self.landmark = Some((name.into(), semantic_key.into()));
+        self
     }
 
     /// Confine host keyboard traversal to this visible overlay subtree.
@@ -657,15 +671,22 @@ impl Widget for Container {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        self.activation.is_bound().then(|| {
+        if !self.activation.is_bound() {
+            return self.landmark.as_ref().map(|(name, key)| {
+                AccessNode::new(Role::Group)
+                    .with_name(name.clone())
+                    .with_semantic_key(key.clone())
+            });
+        }
+        Some(
             AccessNode::new(Role::Button)
                 .with_semantic_key(self.activation.id())
                 .with_state(
                     AccessState::new()
                         .focusable(true)
                         .focused(self.activation.state.focused),
-                )
-        })
+                ),
+        )
     }
 
     /// So an outer container's event-routing short-circuit honours an
@@ -800,6 +821,21 @@ mod tests {
         c.apply_layout(&taffy, node, Point::ZERO);
         let r = c.get_rect();
         (c, r)
+    }
+
+    /// A landmark is a named group that keeps its key whatever it holds; a
+    /// plain container says nothing of itself.
+    #[test]
+    fn a_landmark_names_its_group_for_assistive_technology() {
+        assert!(Container::new().accessibility().is_none());
+        let node = Container::new()
+            .landmark("Settings", "settings.app")
+            .with_child(Box::new(Container::new()))
+            .accessibility()
+            .expect("a landmark is in the tree");
+        assert_eq!(node.role, crate::a11y::Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Settings"));
+        assert_eq!(node.semantic_key.as_deref(), Some("settings.app"));
     }
 
     #[test]

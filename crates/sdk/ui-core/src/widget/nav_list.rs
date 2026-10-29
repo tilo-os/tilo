@@ -1120,6 +1120,8 @@ pub struct NavList {
     sections: Vec<NavSection>,
     /// The filter the window's field applies to filterable sections.
     filter: String,
+    /// The state the filter is kept in ([`Self::bind_filter`]).
+    filter_binding: Option<LocalBinding<String>>,
     /// What was open before a filter opened every match, restored when the
     /// filter clears.
     unfiltered_open: Option<Vec<NodeId>>,
@@ -1250,6 +1252,7 @@ impl NavList {
             keys,
             sections,
             filter: String::new(),
+            filter_binding: None,
             unfiltered_open: None,
             source: None,
             headings: false,
@@ -1390,6 +1393,18 @@ impl NavList {
         let (value, binding) = LocalBinding::new(state);
         self.set_selected(value.as_deref());
         self.shared.borrow_mut().binding = Some(binding);
+        self
+    }
+
+    /// Keep the filter in `state`: the list narrows to what the state holds,
+    /// and a filter given to the list (the window's search, through its
+    /// [`Filterable`]) is written back, so a view reads what the person
+    /// searches for from its own state.
+    #[must_use]
+    pub fn bind_filter(mut self, state: &LocalState<String>) -> Self {
+        let (value, binding) = LocalBinding::new(state);
+        self.set_filter(&value);
+        self.filter_binding = Some(binding);
         self
     }
 
@@ -1839,6 +1854,9 @@ impl NavList {
         if !filtering && let Some(open) = self.unfiltered_open.take() {
             self.tree.restore_expanded(open);
         }
+        if let Some(binding) = self.filter_binding.as_mut() {
+            binding.publish(&self.filter);
+        }
     }
 
     /// The filter the list is narrowed to.
@@ -2217,6 +2235,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             .and_then(LocalBinding::poll);
         if let Some(next) = next {
             self.set_selected(next.as_deref());
+        }
+        if let Some(filter) = self.filter_binding.as_mut().and_then(LocalBinding::poll) {
+            self.set_filter(&filter);
         }
         self.pull();
         self.take_asks();
