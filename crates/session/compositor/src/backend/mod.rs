@@ -13,6 +13,8 @@ pub mod nested;
 use crate::output::{OutputChange, OutputConfig};
 use crate::state::State;
 
+pub use drm::input_config::InputConfig;
+pub use drm::tablet::TabletConfig;
 pub use drm::{DisplayConfig, DrmBackend};
 pub use headless::HeadlessBackend;
 pub use nested::{NestedBackend, NestedConfig};
@@ -34,6 +36,11 @@ pub trait Backend {
     fn closed(&self) -> bool {
         false
     }
+
+    /// Apply the person's input preferences to the backend's devices.
+    /// Backends whose input comes already shaped (a host window, a test)
+    /// ignore them.
+    fn set_input_config(&mut self, _state: &mut State, _config: InputConfig) {}
 
     /// Add an output the backend simulates. Backends with real outputs find
     /// them themselves and refuse.

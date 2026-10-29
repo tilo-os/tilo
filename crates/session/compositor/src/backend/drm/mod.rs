@@ -8,8 +8,12 @@
 //! libinput's events become [`InputEvent`]s. Decisions that need no hardware
 //! live in [`devices`] and [`seat_diag`], where they are tested.
 
+pub mod access_keys;
 pub mod devices;
+pub mod input_config;
+mod libinput;
 pub mod seat_diag;
+pub mod tablet;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -43,12 +47,11 @@ use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{DeviceFd, Point, Transform};
 
 use super::{Backend, BackendError, failed, refuse_disabling};
-use crate::input::InputEvent;
-use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::output::{
     ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval,
 };
 use crate::present::{Presentation, Shown};
+use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, RequestedMode, select_mode};
@@ -112,6 +115,7 @@ struct Inner {
 /// session, udev, libinput and the GPU in the compositor's loop.
 pub struct DrmBackend {
     inner: Rc<RefCell<Inner>>,
+    input: Rc<RefCell<libinput::Input>>,
 }
 
 impl DrmBackend {
@@ -152,13 +156,19 @@ impl DrmBackend {
         inner.borrow_mut().gpu = Some(gpu);
         scan_connectors(&inner, state);
 
-        let input = LibinputInputBackend::new(libinput);
+        let input = Rc::new(RefCell::new(libinput::Input::new(
+            input_config::InputConfig::default(),
+        )));
+        let devices = Rc::clone(&input);
+        let input_handle = handle.clone();
         handle
-            .insert_source(input, |event, (), data| {
-                if let Some(event) = InputEvent::from_device(event, pointer_extent(&data.state)) {
-                    data.state.handle_input(event);
-                }
-            })
+            .insert_source(
+                LibinputInputBackend::new(libinput),
+                move |event, (), data| {
+                    let extent = pointer_extent(&data.state);
+                    libinput::dispatch(&devices, &input_handle, event, &mut data.state, extent);
+                },
+            )
             .map_err(|error| failed("libinput source", error.error))?;
 
         let session_inner = Rc::clone(&inner);
@@ -203,7 +213,7 @@ impl DrmBackend {
             })
             .map_err(|error| failed("udev source", error.error))?;
 
-        Ok(Self { inner })
+        Ok(Self { inner, input })
     }
 }
 
@@ -265,6 +275,10 @@ impl Backend for DrmBackend {
             lit.next_frame = Instant::now();
         }
         Ok(())
+    }
+
+    fn set_input_config(&mut self, state: &mut State, config: input_config::InputConfig) {
+        self.input.borrow_mut().set_config(config, state);
     }
 
     fn next_deadline(&self) -> Option<Instant> {

@@ -96,7 +96,7 @@ pub struct State {
     /// Toplevels a client created that have not shown a buffer yet.
     unmapped: Vec<Window>,
     pub(crate) popups: PopupManager,
-    policy: Box<dyn WindowPolicy>,
+    pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
@@ -108,6 +108,8 @@ pub struct State {
     pub(crate) xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// The X11 window manager, once Xwayland is ready.
     pub(crate) xwm: Option<smithay::xwayland::X11Wm>,
+    pub(crate) touch: crate::touch::Touches,
+    pub(crate) tablets: crate::tablet::Tablets,
 }
 
 impl State {
@@ -125,6 +127,7 @@ impl State {
             tracing::warn!(?error, "keyboard: default keymap did not compile");
         }
         seat.add_pointer();
+        seat.add_touch();
         Self {
             display: display.clone(),
             started: Instant::now(),
@@ -151,6 +154,8 @@ impl State {
                 display,
             ),
             xwm: None,
+            touch: crate::touch::Touches::default(),
+            tablets: crate::tablet::Tablets::default(),
         }
     }
 
@@ -160,7 +165,7 @@ impl State {
         self.started.elapsed()
     }
 
-    fn now_ms(&self) -> u32 {
+    pub(crate) fn now_ms(&self) -> u32 {
         // Wayland timestamps are milliseconds that wrap.
         u32::try_from(self.now().as_millis() & u128::from(u32::MAX)).unwrap_or_default()
     }
@@ -207,7 +212,7 @@ impl State {
 
     /// The window under a logical point, with its surface and that surface's
     /// origin in the logical layout.
-    fn surface_under(
+    pub(crate) fn surface_under(
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(Window, WlSurface, Point<f64, Logical>)> {
@@ -218,7 +223,7 @@ impl State {
         Some((window.clone(), surface, (origin + offset).to_f64()))
     }
 
-    fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
+    pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         // The last host draws on top, so it is asked first.
         self.hosts
             .iter()
@@ -243,26 +248,7 @@ impl State {
             InputEvent::PointerAxis {
                 horizontal,
                 vertical,
-            } => {
-                if let PointerTarget::Host(index) = self.pointer_target {
-                    if let Some(host) = self.hosts.get_mut(index) {
-                        host.pointer_axis(horizontal, vertical);
-                    }
-                    return;
-                }
-                let Some(pointer) = self.seat.get_pointer() else {
-                    return;
-                };
-                let mut frame = AxisFrame::new(time);
-                if horizontal != 0.0 {
-                    frame = frame.value(Axis::Horizontal, horizontal);
-                }
-                if vertical != 0.0 {
-                    frame = frame.value(Axis::Vertical, vertical);
-                }
-                pointer.axis(self, frame);
-                pointer.frame(self);
-            }
+            } => self.pointer_axis(horizontal, vertical, time),
             InputEvent::Key { keycode, pressed } => {
                 let Some(keyboard) = self.seat.get_keyboard() else {
                     return;
@@ -318,10 +304,43 @@ impl State {
                     host.key(&key);
                 }
             }
+            InputEvent::TouchDown { slot, x, y } => {
+                self.touch_down(slot, Point::from((x, y)), serial, time);
+            }
+            InputEvent::TouchMotion { slot, x, y } => {
+                self.touch_motion(slot, Point::from((x, y)), time);
+            }
+            InputEvent::TouchUp { slot } => self.touch_up(slot, serial, time),
+            InputEvent::TouchFrame => self.touch_frame(),
+            InputEvent::TouchCancel => self.touch_cancel(),
+            InputEvent::Tablet(event) => self.tablet_input(&event, serial, time),
+            InputEvent::Gesture(gesture) => self.gesture(gesture, serial, time),
+            InputEvent::Switch { switch, on } => self.policy.switch(switch, on),
         }
     }
 
-    fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
+    fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
+        if let PointerTarget::Host(index) = self.pointer_target {
+            if let Some(host) = self.hosts.get_mut(index) {
+                host.pointer_axis(horizontal, vertical);
+            }
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let mut frame = AxisFrame::new(time);
+        if horizontal != 0.0 {
+            frame = frame.value(Axis::Horizontal, horizontal);
+        }
+        if vertical != 0.0 {
+            frame = frame.value(Axis::Vertical, vertical);
+        }
+        pointer.axis(self, frame);
+        pointer.frame(self);
+    }
+
+    pub(crate) fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
         self.pointer = self.clamp_to_outputs(to);
         let location = self.pointer;
         let target = if self.locked() {
@@ -365,21 +384,15 @@ impl State {
         pointer.frame(self);
     }
 
-    fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+    pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(button, pressed);
             }
             return;
         }
-        if pressed
-            && !self.locked()
-            && let Some((window, _, _)) = self.surface_under(self.pointer)
-        {
-            let info = describe(&window);
-            if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
-                self.focus_window(&window, serial);
-            }
+        if pressed {
+            self.focus_on_press(self.pointer, serial);
         }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -401,7 +414,7 @@ impl State {
         pointer.frame(self);
     }
 
-    fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+    pub(crate) fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
         let geometries = self.output_geometries();
         if geometries
             .iter()
@@ -527,6 +540,22 @@ impl State {
 
 /// A toplevel's identity, unique for the compositor's life.
 struct WindowId(u64);
+
+impl State {
+    /// Focus the window under `point` if the policy focuses on click, as a
+    /// pointer press or a touch there does.
+    pub(crate) fn focus_on_press(&mut self, point: Point<f64, Logical>, serial: Serial) {
+        if self.locked() {
+            return;
+        }
+        if let Some((window, _, _)) = self.surface_under(point) {
+            let info = describe(&window);
+            if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
+                self.focus_window(&window, serial);
+            }
+        }
+    }
+}
 
 static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 

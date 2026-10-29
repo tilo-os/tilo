@@ -22,14 +22,14 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, Compositor, HostKey, HostLayer, InputEvent, OutputConfig, StackPolicy,
-    SurfaceHost, WindowInfo, WindowPolicy,
+    Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPhase, WindowInfo, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
     wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_registry,
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::ext::session_lock::v1::client::{
@@ -60,6 +60,9 @@ struct Seen {
     seat: Option<WlSeat>,
     pointer: Option<WlPointer>,
     keyboard: Option<WlKeyboard>,
+    touch: Option<WlTouch>,
+    /// Touch events as `down id x y`, `motion id x y`, `up id`, `frame`.
+    touches: Vec<String>,
     configured: bool,
     pointer_inside: bool,
     buttons: Vec<(u32, bool)>,
@@ -724,6 +727,212 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     assert_eq!(log.borrow().left, 1);
 }
 
+#[test]
+fn touches_reach_the_window_under_them_and_hosted_surfaces_as_presses() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(Square::new(
+        (10, 10, 40, 40),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    )));
+    // Centred: the window spans (220, 190) to (420, 290).
+    let mut client = mapped_client(&mut compositor, "touched", (200, 100), [255, 0, 0, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.touch.is_some()
+    });
+
+    for event in [
+        InputEvent::TouchDown {
+            slot: 0,
+            x: 300.0,
+            y: 240.0,
+        },
+        InputEvent::TouchFrame,
+        // Dragged off the window, the finger stays the window's.
+        InputEvent::TouchMotion {
+            slot: 0,
+            x: 500.0,
+            y: 240.0,
+        },
+        InputEvent::TouchFrame,
+        InputEvent::TouchUp { slot: 0 },
+        InputEvent::TouchFrame,
+    ] {
+        compositor.input(event).unwrap();
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.touches.len() >= 6
+    });
+    assert_eq!(
+        client.seen.touches,
+        [
+            "down 0 80 50",
+            "frame",
+            "motion 0 280 50",
+            "frame",
+            "up 0",
+            "frame"
+        ]
+    );
+    assert!(client.seen.keyboard_focused, "a touch focuses like a click");
+
+    compositor
+        .input(InputEvent::TouchDown {
+            slot: 1,
+            x: 20.0,
+            y: 20.0,
+        })
+        .unwrap();
+    compositor
+        .input(InputEvent::TouchMotion {
+            slot: 1,
+            x: 25.0,
+            y: 20.0,
+        })
+        .unwrap();
+    compositor.input(InputEvent::TouchUp { slot: 1 }).unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    assert_eq!(log.borrow().motions, [(20.0, 20.0), (25.0, 20.0)]);
+    assert_eq!(log.borrow().buttons, [(BTN_LEFT, true), (BTN_LEFT, false)]);
+    assert_eq!(log.borrow().left, 1);
+    assert_eq!(client.seen.touches.len(), 6, "the window saw none of it");
+}
+
+/// Floating windows; takes touchpad gestures when `claims`, and records
+/// what reached it.
+struct Desktop {
+    claims: bool,
+    gestures: Rc<RefCell<Vec<GestureEvent>>>,
+    switches: Rc<RefCell<Vec<(Switch, bool)>>>,
+}
+
+impl WindowPolicy for Desktop {
+    fn initial_size(
+        &mut self,
+        window: &WindowInfo,
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        StackPolicy.initial_size(window, outputs)
+    }
+
+    fn place(
+        &mut self,
+        window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        StackPolicy.place(window, size, outputs)
+    }
+
+    fn gesture(&mut self, gesture: &GestureEvent) -> bool {
+        self.gestures.borrow_mut().push(*gesture);
+        self.claims
+    }
+
+    fn switch(&mut self, switch: Switch, on: bool) {
+        self.switches.borrow_mut().push((switch, on));
+    }
+}
+
+#[test]
+fn gestures_of_three_fingers_are_offered_to_the_desktop() {
+    let swipe = |fingers| {
+        [
+            GestureEvent::SwipeBegin { fingers },
+            GestureEvent::SwipeUpdate { dx: 0.0, dy: -40.0 },
+            GestureEvent::SwipeEnd { cancelled: false },
+        ]
+    };
+    for claims in [true, false] {
+        let gestures = Rc::new(RefCell::new(Vec::new()));
+        let switches = Rc::new(RefCell::new(Vec::new()));
+        let mut compositor = headless(Box::new(Desktop {
+            claims,
+            gestures: Rc::clone(&gestures),
+            switches: Rc::clone(&switches),
+        }));
+        for event in swipe(2).into_iter().chain(swipe(3)) {
+            compositor.input(InputEvent::Gesture(event)).unwrap();
+        }
+        let expected: Vec<GestureEvent> = if claims {
+            swipe(3).to_vec()
+        } else {
+            // Asked at the begin; declined, the rest goes to clients.
+            vec![GestureEvent::SwipeBegin { fingers: 3 }]
+        };
+        assert_eq!(
+            *gestures.borrow(),
+            expected,
+            "two fingers stay the client's"
+        );
+
+        compositor
+            .input(InputEvent::Switch {
+                switch: Switch::Lid,
+                on: true,
+            })
+            .unwrap();
+        assert_eq!(*switches.borrow(), [(Switch::Lid, true)]);
+    }
+}
+
+#[test]
+fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
+    use smithay::backend::input::{TabletToolCapabilities, TabletToolDescriptor, TabletToolType};
+    use smithay::wayland::tablet_manager::TabletDescriptor;
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "drawn-on", (200, 100), [255, 0, 0, 255]);
+    let pen = |phase| {
+        InputEvent::Tablet(TabletEvent {
+            tablet: TabletDescriptor {
+                name: "Pen tablet".into(),
+                usb_id: Some((0x056a, 0x0374)),
+                syspath: None,
+            },
+            tool: TabletToolDescriptor {
+                tool_type: TabletToolType::Pen,
+                hardware_serial: 7,
+                hardware_id_wacom: 0x802,
+                capabilities: TabletToolCapabilities::PRESSURE,
+            },
+            phase,
+            x: 300.0,
+            y: 240.0,
+            pressure: 0.5,
+            distance: 0.0,
+            tilt: (0.0, 0.0),
+            rotation: 0.0,
+            slider: 0.0,
+            wheel: (0.0, 0),
+            as_pointer: false,
+            tip_button: Some(BTN_LEFT),
+        })
+    };
+    for phase in [
+        TabletPhase::ProximityIn,
+        TabletPhase::TipDown,
+        TabletPhase::TipUp,
+        TabletPhase::Button {
+            button: 0x14b,
+            pressed: true,
+        },
+        TabletPhase::ProximityOut,
+    ] {
+        compositor.input(pen(phase)).unwrap();
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.buttons.len() >= 3
+    });
+    assert!(client.seen.pointer_inside);
+    assert_eq!(
+        client.seen.buttons,
+        [(BTN_LEFT, true), (BTN_LEFT, false), (0x111, true)],
+        "the tip is the primary button, the lower barrel button the secondary"
+    );
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -806,6 +1015,9 @@ impl Dispatch<WlSeat, ()> for Seen {
             if capabilities.contains(wl_seat::Capability::Keyboard) && seen.keyboard.is_none() {
                 seen.keyboard = Some(seat.get_keyboard(qh, ()));
             }
+            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
+                seen.touch = Some(seat.get_touch(qh, ()));
+            }
         }
     }
 }
@@ -828,6 +1040,30 @@ impl Dispatch<WlPointer, ()> for Seen {
                     state == WEnum::Value(wl_pointer::ButtonState::Pressed),
                 ));
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlTouch, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlTouch,
+        event: wl_touch::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_touch::Event::Down { id, x, y, .. } => {
+                seen.touches.push(format!("down {id} {x} {y}"));
+            }
+            wl_touch::Event::Motion { id, x, y, .. } => {
+                seen.touches.push(format!("motion {id} {x} {y}"));
+            }
+            wl_touch::Event::Up { id, .. } => seen.touches.push(format!("up {id}")),
+            wl_touch::Event::Frame => seen.touches.push("frame".into()),
+            wl_touch::Event::Cancel => seen.touches.push("cancel".into()),
             _ => {}
         }
     }

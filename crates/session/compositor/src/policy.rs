@@ -8,6 +8,8 @@
 
 use smithay::utils::{Logical, Point, Rectangle};
 
+use crate::input::{GestureEvent, Switch};
+
 /// What a policy learns about a window.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowInfo {
@@ -69,6 +71,20 @@ pub trait WindowPolicy {
     fn focus_on_click(&mut self, _window: &WindowInfo) -> bool {
         true
     }
+
+    /// A touchpad gesture of three or more fingers, which belongs to the
+    /// desktop (workspaces, strips, the overview; [`crate::gestures`] turns
+    /// the stream into those actions). Asked at the gesture's begin: return
+    /// whether the desktop takes it. A taken gesture's updates and end come
+    /// here too, their answer ignored; one not taken goes to the client
+    /// under the pointer, as gestures of one or two fingers always do.
+    fn gesture(&mut self, _gesture: &GestureEvent) -> bool {
+        false
+    }
+
+    /// A switch changed state: the lid closed or opened, a convertible
+    /// folded into or out of tablet shape.
+    fn switch(&mut self, _switch: Switch, _on: bool) {}
 }
 
 /// Floating windows centred on the first output, each focused as it maps

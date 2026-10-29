@@ -269,7 +269,20 @@ smithay::delegate_cursor_shape!(State);
 smithay::delegate_relative_pointer!(State);
 smithay::delegate_pointer_constraints!(State);
 smithay::delegate_pointer_gestures!(State);
-smithay::delegate_tablet_manager!(State);
+// The tablet manager's requests go through `crate::tablet`, which notes
+// the clients that take tablets; everything else is smithay's.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::ZwpTabletManagerV2: ()
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_seat_v2::ZwpTabletSeatV2: smithay::wayland::tablet_manager::TabletSeatUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_tool_v2::ZwpTabletToolV2: smithay::wayland::tablet_manager::TabletToolUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_v2::ZwpTabletV2: smithay::wayland::tablet_manager::TabletUserData
+] => TabletManagerState);
 smithay::delegate_idle_inhibit!(State);
 smithay::delegate_keyboard_shortcuts_inhibit!(State);
 smithay::delegate_content_type!(State);
