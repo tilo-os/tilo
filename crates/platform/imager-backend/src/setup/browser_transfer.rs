@@ -17,50 +17,24 @@ const MAX_ARCHIVE_BYTES: u64 = MAX_BYTES + 1024 * 1024;
 const MAX_ENTRIES: usize = 128;
 const MAX_METADATA: usize = 1024 * 1024;
 
+/// A sealed browser unit: the authenticated plan's profiles, within fixed bounds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Expectation {
-    pub schema: u32,
-    pub operation: String,
-    pub purpose: Purpose,
-    pub filename: String,
-    pub setup_binding: String,
-    pub sealed_bytes: u64,
-    pub plaintext_bytes: u64,
-    pub entries: usize,
-    pub ciphertext_sha256: [u8; 32],
+pub struct Browser {
     pub plan_sha256: [u8; 32],
-    pub limits: Limits,
 }
-impl Expectation {
-    /// # Errors
-    /// Refuses malformed declarations or payloads beyond the fixed browser bounds.
-    pub fn validate(&self) -> io::Result<()> {
-        if self.schema != 1
-            || !crate::is_operation_id(&self.operation)
-            || self.purpose != Purpose::BrowserProfiles
-            || self.filename != format!("browser-{}.sealed", self.operation)
-            || self.setup_binding.is_empty()
-            || self.setup_binding.len() > 256
-            || self.setup_binding.chars().any(char::is_control)
-            || self.sealed_bytes == 0
-            || self.plaintext_bytes == 0
-            || self.plaintext_bytes > self.limits.plaintext_bytes
-            || self.limits.plaintext_bytes > MAX_ARCHIVE_BYTES
-            || self.entries == 0
-            || self.entries > self.limits.entries
-            || self.limits.entries > MAX_ENTRIES
-            || self.limits.metadata_bytes == 0
-            || self.limits.metadata_bytes > MAX_METADATA
-            || self
-                .limits
-                .sealed_bound()
-                .is_none_or(|bound| self.sealed_bytes > bound)
-        {
-            return Err(changed("Invalid browser transfer expectation"));
-        }
-        Ok(())
+impl super::portable_transfer::UnitKind for Browser {
+    const PURPOSE: Purpose = Purpose::BrowserProfiles;
+    const PREFIX: &'static str = "browser";
+    const INVALID: &'static str = "Invalid browser transfer expectation";
+    fn within_bounds(expectation: &Expectation) -> bool {
+        expectation.limits.plaintext_bytes <= MAX_ARCHIVE_BYTES
+            && expectation.limits.entries <= MAX_ENTRIES
+            && expectation.limits.metadata_bytes <= MAX_METADATA
     }
+}
+pub type Expectation = super::portable_transfer::Expectation<Browser>;
+impl Expectation {
     /// # Errors
     /// Refuses a different setup, identity, selection or authenticated plan digest.
     pub fn validate_plan(&self, plan: &Plan) -> io::Result<()> {
@@ -68,7 +42,7 @@ impl Expectation {
         let bytes = plan.encode().map_err(io::Error::other)?;
         if plan.profiles.is_empty()
             || plan.setup_binding != self.setup_binding
-            || digest(&bytes) != self.plan_sha256
+            || digest(&bytes) != self.kind.plan_sha256
         {
             return Err(changed(
                 "Browser transfer differs from its authenticated plan",
@@ -143,17 +117,17 @@ pub fn export(
             cancel,
         )?;
         let expectation = Expectation {
-            schema: 1,
             operation: request.operation.into(),
-            purpose: info.purpose,
             filename: format!("browser-{}.sealed", request.operation),
             setup_binding: plan.setup_binding.clone(),
             sealed_bytes: info.sealed_bytes,
             plaintext_bytes: info.plaintext_bytes,
             entries: info.entries,
             ciphertext_sha256: imported.ciphertext_digest(),
-            plan_sha256: digest(&plan_bytes),
             limits,
+            kind: crate::setup::browser_transfer::Browser {
+                plan_sha256: digest(&plan_bytes),
+            },
         };
         expectation.validate_plan(plan)?;
         for (source, _) in selected.profiles() {

@@ -221,18 +221,18 @@ impl Fixture {
         .unwrap()
         .ciphertext_digest();
         let expected = Expectation {
-            schema: 1,
-            consumer_protocol: manifest.schema,
             operation: operation.clone(),
-            purpose: Purpose::FlatpakApplications,
             filename: package.file_name().unwrap().to_str().unwrap().into(),
             setup_binding: "prepared-binding".into(),
             sealed_bytes: info.sealed_bytes,
             plaintext_bytes: info.plaintext_bytes,
             entries: info.entries,
             ciphertext_sha256: digest,
-            manifest_sha256: Sha256::digest(&manifest_bytes).into(),
             limits,
+            kind: imager_backend::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: manifest.schema,
+                manifest_sha256: Sha256::digest(&manifest_bytes).into(),
+            },
         };
         let receipt = delivered.join("expectation.json");
         file(&receipt, &serde_json::to_vec(&expected).unwrap());

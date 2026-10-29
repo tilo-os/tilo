@@ -1619,7 +1619,7 @@ pub fn lookup_committed_original_applications_selection(
 #[cfg(test)]
 mod pair_bounds_tests {
     use super::*;
-    use crate::setup::portable_transfer::{Limits, Purpose};
+    use crate::setup::portable_transfer::Limits;
     #[test]
     fn original_output_pair_refuses_receipt_collision_foreign_binding_and_aggregate_shortfall() {
         let operation = uuid::Uuid::new_v4().to_string();
@@ -1630,31 +1630,29 @@ mod pair_bounds_tests {
             metadata_bytes: 1024,
         };
         let home = crate::setup::portable_home_media::Expectation {
-            schema: 1,
             operation: operation.clone(),
-            purpose: Purpose::Home,
             filename: format!("home-{operation}.sealed"),
             setup_binding: "paired-fixture".into(),
             sealed_bytes: 32,
             plaintext_bytes: 8,
             entries: 1,
-            runtime_sockets: 0,
             ciphertext_sha256: [1; 32],
             limits,
+            kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
         };
         let mut applications = crate::setup::flatpak_transfer::portable::Expectation {
-            schema: 1,
-            consumer_protocol: 1,
             operation: applications_operation.clone(),
-            purpose: Purpose::FlatpakApplications,
             filename: format!("applications-{applications_operation}.sealed"),
             setup_binding: "paired-fixture".into(),
             sealed_bytes: 48,
             plaintext_bytes: 8,
             entries: 1,
             ciphertext_sha256: [2; 32],
-            manifest_sha256: [3; 32],
             limits,
+            kind: crate::setup::flatpak_transfer::portable::Applications {
+                consumer_protocol: 1,
+                manifest_sha256: [3; 32],
+            },
         };
         OriginalOutputExpectations {
             home: &home,

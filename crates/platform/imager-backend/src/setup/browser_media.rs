@@ -67,7 +67,7 @@ impl MediaGrant {
         archive.verify_held_ciphertext(cancel)?;
         if archive.ciphertext_digest() != expected.ciphertext_sha256
             || archive.info().sealed_bytes != expected.sealed_bytes
-            || archive.info().purpose != expected.purpose
+            || archive.info().purpose != expected.purpose()
             || archive.info().setup_binding.as_deref() != Some(expected.setup_binding.as_str())
             || archive.info().plaintext_bytes != expected.plaintext_bytes
             || archive.info().entries != expected.entries

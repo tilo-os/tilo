@@ -494,17 +494,15 @@ fn authenticate_completed_declaration_emits_exact_application_binding_without_im
         metadata_bytes: 1024,
     };
     let home = crate::setup::portable_home_media::Expectation {
-        schema: 1,
         operation: uuid::Uuid::new_v4().to_string(),
-        purpose: Purpose::Home,
         filename: String::new(),
         setup_binding: manifest.setup_binding.clone(),
         sealed_bytes: 500,
         plaintext_bytes: 256,
         entries: 2,
-        runtime_sockets: 0,
         ciphertext_sha256: [7; 32],
         limits,
+        kind: crate::setup::portable_home_media::Home { runtime_sockets: 0 },
     };
     let home = crate::setup::portable_home_media::Expectation {
         filename: format!("home-{}.sealed", home.operation),
@@ -512,18 +510,18 @@ fn authenticate_completed_declaration_emits_exact_application_binding_without_im
     };
     let operation = uuid::Uuid::new_v4().to_string();
     let apps = crate::setup::flatpak_transfer::portable::Expectation {
-        schema: 1,
-        consumer_protocol: 1,
         filename: format!("applications-{operation}.sealed"),
         operation,
-        purpose: Purpose::FlatpakApplications,
         setup_binding: manifest.setup_binding.clone(),
         sealed_bytes: 600,
         plaintext_bytes: 300,
         entries: 3,
         ciphertext_sha256: [8; 32],
-        manifest_sha256: [9; 32],
         limits,
+        kind: crate::setup::flatpak_transfer::portable::Applications {
+            consumer_protocol: 1,
+            manifest_sha256: [9; 32],
+        },
     };
     manifest.portable_home = Some(crate::setup::prepared_setup::PortableHomePlan {
         schema: 1,

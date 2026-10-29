@@ -236,7 +236,7 @@ fn run_with_admission(
     if setup.manifest().portable_flatpak.as_ref() != Some(&expected) {
         return Err(failure());
     }
-    if expected.consumer_protocol == 2 {
+    if expected.kind.consumer_protocol == 2 {
         admission()?;
     }
     let mut home_review = verify_home(&setup, &home, &password, &cancel)?;
