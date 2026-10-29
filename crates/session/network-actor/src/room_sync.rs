@@ -18,6 +18,10 @@ use tilo_lock::MutexRecover as _;
 use ui::room_sync::RoomSyncState;
 
 static ROOMS: LazyLock<Mutex<HashMap<u64, RoomSyncState>>> = LazyLock::new(Mutex::default);
+/// This device's writes to each room that are not yet synced, by topic.
+static UNSYNCED: LazyLock<Mutex<HashMap<u64, u32>>> = LazyLock::new(Mutex::default);
+/// The rooms whose writes this device cannot keep on disk now, by topic.
+static CANNOT_KEEP: LazyLock<Mutex<std::collections::HashSet<u64>>> = LazyLock::new(Mutex::default);
 /// Since when each room has waited for its first sync, for the log line
 /// that says how long it took.
 static WAITING_SINCE: LazyLock<Mutex<HashMap<u64, std::time::Instant>>> =
@@ -83,10 +87,53 @@ pub fn other_version(ws: u64, theirs: u32) {
     drop(rooms);
 }
 
+/// This device holds `count` writes to the room on topic `ws` that are not
+/// yet synced: no host of the room carries them now, or the host did not
+/// keep them. Whether that changed what the room's apps are told.
+pub(crate) fn unsynced(ws: u64, count: usize) -> bool {
+    let count = u32::try_from(count).unwrap_or(u32::MAX);
+    let mut unsynced = UNSYNCED.lock_recover();
+    let before = if count == 0 {
+        unsynced.remove(&ws)
+    } else {
+        unsynced.insert(ws, count)
+    };
+    drop(unsynced);
+    before.unwrap_or(0) != count
+}
+
+/// This device cannot keep its writes to the room on topic `ws` on disk now
+/// (`true`; its disk is full, say), or can again: until it can, they are
+/// held in memory and the room's apps say it cannot sync. Whether that
+/// changed what they are told.
+pub(crate) fn cannot_keep(ws: u64, cannot: bool) -> bool {
+    let mut rooms = CANNOT_KEEP.lock_recover();
+    let changed = if cannot {
+        rooms.insert(ws)
+    } else {
+        rooms.remove(&ws)
+    };
+    drop(rooms);
+    changed
+}
+
+/// Whether this device cannot keep its writes to the room on topic `ws` on
+/// disk now.
+pub fn cannot_keep_writes(ws: u64) -> bool {
+    CANNOT_KEEP.lock_recover().contains(&ws)
+}
+
 /// The room on topic `ws` is no longer held: forget it.
 pub fn forget(ws: u64) {
     ROOMS.lock_recover().remove(&ws);
+    UNSYNCED.lock_recover().remove(&ws);
     WAITING_SINCE.lock_recover().remove(&ws);
+}
+
+/// How many of this device's writes to the room on topic `ws` are not yet
+/// synced.
+pub fn unsynced_writes(ws: u64) -> u32 {
+    UNSYNCED.lock_recover().get(&ws).copied().unwrap_or(0)
 }
 
 /// Where the room on topic `ws` stands; `None` for one with no host.
@@ -107,6 +154,8 @@ pub fn told(ws: u64, name: &str, writable: Option<bool>) -> Option<ui::room_sync
         state,
         workspace: name.to_owned(),
         writable,
+        unsynced_writes: unsynced_writes(ws),
+        cannot_keep_writes: cannot_keep_writes(ws),
     })
 }
 
@@ -153,7 +202,22 @@ mod tests {
                 state: RoomSyncState::Synced,
                 workspace: "Lounge".into(),
                 writable: Some(false),
+                unsynced_writes: 0,
+                cannot_keep_writes: false,
             })
+        );
+        // Writes held for the room's hosts are not yet synced, and say so
+        // until a host keeps them.
+        assert!(unsynced(WS, 2));
+        assert!(!unsynced(WS, 2), "said once");
+        assert_eq!(
+            told(WS, "Lounge", None).map(|told| (told.state, told.unsynced_writes)),
+            Some((RoomSyncState::Synced, 2))
+        );
+        assert!(unsynced(WS, 0));
+        assert_eq!(
+            told(WS, "Lounge", None).map(|told| told.unsynced_writes),
+            Some(0)
         );
         // Dialling again later, or a host gone to another version, does not
         // take back what the room holds.

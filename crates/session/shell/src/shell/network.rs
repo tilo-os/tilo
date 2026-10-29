@@ -2159,6 +2159,7 @@ impl ShellNetwork {
             Some(tilo_network_actor::Hosting {
                 host: local_host.clone(),
                 protocols: host_protocols,
+                held_writes: state_dir.join("held-sealed-writes"),
             }),
         );
         let lan_discovery = host_identity

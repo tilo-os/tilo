@@ -2240,6 +2240,7 @@ impl ShellDriver {
             "window-share-menu" => self.scene_window_share_menu(),
             "window-shared" => self.scene_window_shared(),
             "window-shared-app" => self.scene_window_shared_app(),
+            "window-held-write" => self.scene_window_held_write(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
