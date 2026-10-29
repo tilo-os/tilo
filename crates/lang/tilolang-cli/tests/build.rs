@@ -52,7 +52,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     );
     for used in [
         "so.tilo.lang.notes",
-        "so.tilo.lang.todo",
+        "so.tilo.lang.tasks",
         "so.tilo.lang.chat",
     ] {
         assert!(ids.contains(&used), "{used} is an app of its own: {ids:?}");

@@ -10,7 +10,7 @@ use crate::fixtures::Replica;
 
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.todo";
+const APP: &str = "so.tilo.lang.tasks";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
