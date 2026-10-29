@@ -70,10 +70,37 @@ pub(crate) fn hidden(widget: &dyn Widget) -> bool {
     );
     hidden
 }
+/// Which widget registered each layout node (`build_layout`'s node map).
+type NodeOwners = std::collections::HashMap<NodeId, *mut dyn Widget>;
+
+/// Each child of `widget` with the layout node it lays out as. A widget
+/// that lays out as its only child, handing that child's node up as its own
+/// (the node is registered to the child, not to it), has no node of its
+/// own: the child is met under the same node, and the walk stays aligned
+/// with the layout below it.
+fn laid_out_children<'w>(
+    node_id: NodeId,
+    widget: &'w dyn Widget,
+    taffy: &TaffyTree<()>,
+    owners: &NodeOwners,
+) -> Vec<(&'w dyn Widget, NodeId)> {
+    let children = widget.children();
+    if let [child] = children.as_slice()
+        && owners.get(&node_id).is_some_and(|&owner| {
+            !std::ptr::addr_eq(owner.cast_const(), std::ptr::from_ref(widget))
+        })
+    {
+        return vec![(*child, node_id)];
+    }
+    let child_nodes = taffy.children(node_id).unwrap_or_default();
+    children.into_iter().zip(child_nodes).collect()
+}
+
 fn collect_focusable(
     node_id: NodeId,
     widget: &dyn Widget,
     taffy: &TaffyTree<()>,
+    owners: &NodeOwners,
     order: &mut Vec<NodeId>,
 ) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
@@ -82,11 +109,8 @@ fn collect_focusable(
     if widget.is_focusable() && widget.is_enabled() {
         order.push(node_id);
     }
-    let children = widget.children();
-    if let Ok(child_nodes) = taffy.children(node_id) {
-        for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-            collect_focusable(child_node, *child_widget, taffy, order);
-        }
+    for (child_widget, child_node) in laid_out_children(node_id, widget, taffy, owners) {
+        collect_focusable(child_node, child_widget, taffy, owners, order);
     }
 }
 // The deepest trapping widget wins (a modal opened from within one).
@@ -94,23 +118,20 @@ fn find_trap_focusables(
     node_id: NodeId,
     widget: &dyn Widget,
     taffy: &TaffyTree<()>,
+    owners: &NodeOwners,
 ) -> Option<Vec<NodeId>> {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return None;
     };
-    let children = widget.children();
-    let child_nodes = taffy.children(node_id).ok();
     // Recurse first so a nested trap takes precedence.
-    if let Some(child_nodes) = &child_nodes {
-        for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-            if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
-                return Some(inner);
-            }
+    for (child_widget, child_node) in laid_out_children(node_id, widget, taffy, owners) {
+        if let Some(inner) = find_trap_focusables(child_node, child_widget, taffy, owners) {
+            return Some(inner);
         }
     }
     if widget.traps_focus() {
         let mut order = Vec::new();
-        collect_focusable(node_id, widget, taffy, &mut order);
+        collect_focusable(node_id, widget, taffy, owners, &mut order);
         return Some(order);
     }
     None
@@ -135,12 +156,13 @@ pub(crate) fn order(
     root: NodeId,
     widget: &dyn Widget,
     taffy: &TaffyTree<()>,
+    owners: &NodeOwners,
 ) -> (Vec<NodeId>, bool) {
-    if let Some(order) = find_trap_focusables(root, widget, taffy) {
+    if let Some(order) = find_trap_focusables(root, widget, taffy, owners) {
         return (order, true);
     }
     let mut order = vec![];
-    collect_focusable(root, widget, taffy, &mut order);
+    collect_focusable(root, widget, taffy, owners, &mut order);
     (order, false)
 }
 

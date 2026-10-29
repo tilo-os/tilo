@@ -440,7 +440,7 @@ pub fn paint_history_control(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let name = crate::i18n::I18nManager::lookup_plain("standalone-history-title");
+    let name = crate::i18n::I18nManager::lookup_plain("history-mode-title");
     let face = crate::widget::ButtonFace::icon_only(rect, crate::icons::Icon::History, &name)
         .toggled(control.is_open())
         .hovered(hovered);

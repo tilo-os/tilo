@@ -2592,24 +2592,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codebase-qualification"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "collab-types",
- "fs-protocol",
- "iroh-blobs",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-fs",
- "tokio",
- "workspace-hack",
-]
-
-[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7663,6 +7645,7 @@ dependencies = [
  "tilo-rollback",
  "tilo-seal",
  "tilo-secrets",
+ "tilo-settings-records",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",
@@ -9605,6 +9588,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "markup5ever_rcdom",
+ "pdf-viewer",
  "pim-lines",
  "rcgen",
  "runtime-dylib",
@@ -13635,22 +13619,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "registry-review"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ed25519-dalek 3.0.0",
- "hex",
- "registry-server",
- "registry-types",
- "tempfile",
- "tilo-app",
- "tilo-app-package",
- "tilo-clock",
- "workspace-hack",
-]
-
-[[package]]
 name = "registry-server"
 version = "0.1.0"
 dependencies = [
@@ -15348,6 +15316,7 @@ name = "settings-sections"
 version = "0.1.0"
 dependencies = [
  "agent-provider-config",
+ "chrono",
  "desktop-policy",
  "serde",
  "serde_json",
@@ -15719,8 +15688,11 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-notification-banners",
  "tilo-ntfs-mount",
+ "tilo-onboarding",
  "tilo-output-passes",
+ "tilo-overview",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",
@@ -15748,6 +15720,7 @@ dependencies = [
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-ui",
@@ -17551,6 +17524,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-content",
@@ -18599,6 +18573,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-files",
  "tilo-seat-peer",
  "tilo-test-env",
  "tokio",
@@ -18710,6 +18685,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -19411,6 +19387,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "web-time",
  "workspace-hack",
 ]
 
@@ -19845,7 +19822,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "iroh",
- "iroh-gossip",
  "neighbour-wire",
  "postcard",
  "runtime-collab",
@@ -19921,6 +19897,18 @@ dependencies = [
  "workspace-hack",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-notification-banners"
+version = "0.1.0"
+dependencies = [
+ "durable-store",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -20047,6 +20035,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-onboarding"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-os-search"
 version = "0.1.0"
 dependencies = [
@@ -20085,6 +20082,18 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-overview"
+version = "0.1.0"
+dependencies = [
+ "tilo-action-policy",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-desktop-model",
+ "tilo-sheets",
  "workspace-hack",
 ]
 
@@ -20366,12 +20375,8 @@ dependencies = [
  "serde",
  "settings-store",
  "tilo-app",
- "tilo-cpu-raster",
- "tilo-desktop",
  "tilo-media",
  "tilo-power-mgmt",
- "tilo-vello",
- "tilo-winit",
  "tracing",
  "workspace-hack",
 ]
@@ -20961,6 +20966,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-resource",
+ "tilo-room-host",
  "tilo-rt",
  "tilo-secrets",
  "tilo-test-env",
@@ -21181,6 +21187,7 @@ dependencies = [
  "tempfile",
  "tilo-files",
  "tilo-lock",
+ "tilo-paths",
  "tilo-rt",
  "tracing",
  "workspace-hack",
@@ -21373,6 +21380,19 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "runtime-dylib",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-topbar"
+version = "0.1.0"
+dependencies = [
+ "durable-store",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-desktop-model",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -26441,7 +26461,6 @@ dependencies = [
  "cms",
  "cobs",
  "code-editor",
- "codebase-qualification",
  "codespan-reporting",
  "codex",
  "collab-fixtures",
@@ -27192,7 +27211,6 @@ dependencies = [
  "regex-lite",
  "regex-syntax",
  "registry-client",
- "registry-review",
  "registry-server",
  "registry-types",
  "reis",
@@ -27567,6 +27585,7 @@ dependencies = [
  "tilo-network-actor",
  "tilo-network-secret-agent",
  "tilo-nm",
+ "tilo-notification-banners",
  "tilo-notify",
  "tilo-ntfs-helper",
  "tilo-ntfs-mount",
@@ -27576,6 +27595,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-os-search",
  "tilo-output-passes",
+ "tilo-overview",
  "tilo-owner-commit",
  "tilo-page-raster",
  "tilo-paint-stream",
@@ -27632,6 +27652,7 @@ dependencies = [
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-typst-fonts",

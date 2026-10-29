@@ -339,6 +339,8 @@ pub struct MailApp {
     /// Retained projection of the canonical CRDT draft; preserves its metadata
     /// when the Drafts-folder row reopens and reuses that row across frames.
     projected_draft: RefCell<Option<(MessageId, Draft)>>,
+    /// The drafts of their own shown in Drafts, by id.
+    projected_drafts: RefCell<HashSet<MessageId>>,
     /// The row menu, and the message it acts on while open.
     menu: ContextMenu,
     menu_target: Option<MenuTarget>,
@@ -784,6 +786,7 @@ impl MailApp {
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             projected_draft: RefCell::new(None),
+            projected_drafts: RefCell::new(HashSet::new()),
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
@@ -1899,8 +1902,15 @@ impl MailApp {
         doc: &mut ui::widget::Edits<'_>,
         [to, cc, bcc, subject]: [String; 4],
     ) {
-        let kept = read_mail(doc.doc()).unwrap_or_default().draft;
-        let draft = Mail::paths().draft;
+        let editing = self.compose.draft_id().map(str::to_owned);
+        let Some(kept) = read_mail(doc.doc())
+            .unwrap_or_default()
+            .draft_at(editing.as_deref())
+            .cloned()
+        else {
+            return;
+        };
+        let draft = crate::resource::draft_paths(editing.as_deref());
         let st = self.shared.borrow();
         if kept.to != to {
             st.submit(doc, draft.to.set(to));
@@ -1927,9 +1937,11 @@ impl MailApp {
 
     /// Throw the message away: the draft and its row in Drafts go.
     fn discard_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        self.shared
-            .borrow()
-            .submit(doc, Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}));
+        let draft = self.compose.draft_id().map(str::to_owned);
+        self.shared.borrow().submit(
+            doc,
+            Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft { draft }),
+        );
         if let Some(draft) = self.editing_draft.take() {
             self.shared.borrow_mut().mailbox.purge(draft);
         }
@@ -1996,6 +2008,20 @@ impl MailApp {
 
     /// Reopen a Drafts-folder message in the composer for further editing.
     fn open_draft(&mut self, id: MessageId) {
+        let named = id.to_string();
+        let own = self.live.as_ref().and_then(|live| {
+            live.get()
+                .drafts
+                .get(&ui::tilo_resource::Id::from_raw(named.as_str()))
+                .map(crate::resource::DraftState::draft)
+        });
+        if let Some(draft) = own {
+            self.editing_draft = None;
+            self.compose.open_draft(Some(&named), &draft);
+            self.close_menu();
+            self.dirty = true;
+            return;
+        }
         let draft = self
             .projected_draft
             .borrow()
@@ -2166,6 +2192,7 @@ impl MailApp {
                     account: acct.email,
                     message: DraftData::from_draft(&draft),
                     in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+                    draft: self.compose.draft_id().map(str::to_owned),
                 }),
             );
         }
@@ -2239,6 +2266,17 @@ impl MailApp {
 
     fn save_compose_draft(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = self.compose.to_draft(doc);
+        if let Some(id) = self.compose.draft_id().map(str::to_owned) {
+            // A draft of its own shows as itself in Drafts already.
+            self.shared
+                .borrow_mut()
+                .save_draft_as(doc, Some(&id), &draft);
+            self.shared.borrow_mut().status = Some("Saved to Drafts".into());
+            self.compose.close();
+            self.store_preferences_if_changed();
+            self.dirty = true;
+            return;
+        }
         // Persist the draft as an action (survives a crash / syncs to peers /
         // one undo boundary) …
         self.shared.borrow_mut().save_draft(doc, &draft);
@@ -2263,6 +2301,34 @@ impl MailApp {
         draft: &Draft,
         edited: Option<MessageId>,
     ) -> MessageId {
+        let shown_as = read_mail(doc.doc())
+            .and_then(|mail| mail.draft.shown_as)
+            .and_then(|id| id.parse::<MessageId>().ok());
+        let id = edited
+            .or(shown_as)
+            .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
+            .unwrap_or_else(uuid::Uuid::new_v4);
+        if shown_as != Some(id) {
+            self.shared.borrow().submit(
+                doc,
+                Mail::SHOW_DRAFT.with(mailbox::ShowDraft {
+                    message: id.to_string(),
+                    draft: None,
+                }),
+            );
+        }
+        let msg = self.draft_shown(id, draft);
+        {
+            let mut st = self.shared.borrow_mut();
+            st.mailbox.insert(msg);
+            st.register_message_target(doc, &id.to_string());
+        }
+        *self.projected_draft.borrow_mut() = Some((id, draft.clone()));
+        id
+    }
+
+    /// `draft` as the Drafts message `id` that shows it.
+    fn draft_shown(&self, id: MessageId, draft: &Draft) -> Message {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
@@ -2285,22 +2351,7 @@ impl MailApp {
             );
             (from, st.now_min)
         };
-        let shown_as = read_mail(doc.doc())
-            .and_then(|mail| mail.draft.shown_as)
-            .and_then(|id| id.parse::<MessageId>().ok());
-        let id = edited
-            .or(shown_as)
-            .or_else(|| self.projected_draft.borrow().as_ref().map(|(id, _)| *id))
-            .unwrap_or_else(uuid::Uuid::new_v4);
-        if shown_as != Some(id) {
-            self.shared.borrow().submit(
-                doc,
-                Mail::SHOW_DRAFT.with(mailbox::ShowDraft {
-                    message: id.to_string(),
-                }),
-            );
-        }
-        let msg = Message {
+        Message {
             id,
             rfc_message_id: None,
             in_reply_to: None,
@@ -2322,14 +2373,45 @@ impl MailApp {
             labels: Vec::new(),
             account: String::new(),
             server: None,
-        };
-        {
-            let mut st = self.shared.borrow_mut();
-            st.mailbox.insert(msg);
-            st.register_message_target(doc, &id.to_string());
         }
-        *self.projected_draft.borrow_mut() = Some((id, draft.clone()));
-        id
+    }
+
+    /// Show every draft of its own as the Drafts message with its id, and
+    /// drop the ones that left the drafts. Only what differs is changed.
+    fn project_drafts(&self, mail: &Mail) {
+        let mut projected = self.projected_drafts.borrow_mut();
+        let mut kept = HashSet::new();
+        for (id, draft) in mail.drafts.iter() {
+            let Ok(message_id) = id.as_str().parse::<MessageId>() else {
+                continue;
+            };
+            kept.insert(message_id);
+            let mut shown = self.draft_shown(message_id, &draft.draft());
+            let mut st = self.shared.borrow_mut();
+            if let Some(present) = st.mailbox.get(message_id) {
+                shown.timestamp_min = present.timestamp_min;
+                if *present == shown {
+                    continue;
+                }
+            }
+            st.mailbox.insert(shown);
+            st.dirty = true;
+        }
+        for gone in projected.difference(&kept) {
+            self.shared.borrow_mut().mailbox.purge(*gone);
+        }
+        *projected = kept;
+        // A draft's copy on its server, fetched with Drafts, is the draft
+        // itself: it shows once, as the draft.
+        for copy in mail.draft_copy_ids() {
+            if let Ok(copy) = copy.parse::<MessageId>() {
+                let mut st = self.shared.borrow_mut();
+                if st.mailbox.get(copy).is_some() {
+                    st.mailbox.purge(copy);
+                    st.dirty = true;
+                }
+            }
+        }
     }
 
     /// Whether the app is at first run (no account configured and no mail
@@ -2947,6 +3029,13 @@ impl MailApp {
                 ServerUpdate::Flags { .. } => EngineRequest::store_flag(account, message),
                 ServerUpdate::Move { to, .. } => EngineRequest::move_message(account, message, *to),
                 ServerUpdate::Remove { .. } => EngineRequest::purge(account, message),
+                ServerUpdate::SaveDraft { .. } => {
+                    let Some(draft) = update.saved_draft() else {
+                        done(Err("not a draft to keep".into()));
+                        continue;
+                    };
+                    EngineRequest::save_draft(account, Box::new(draft))
+                }
             };
             let posted = self.state().post_engine(request);
             match posted {
@@ -3405,6 +3494,7 @@ impl MailApp {
         } else if let Some((id, _)) = self.projected_draft.borrow_mut().take() {
             self.shared.borrow_mut().mailbox.purge(id);
         }
+        self.project_drafts(&mail);
     }
 }
 
@@ -3567,11 +3657,17 @@ fn open_link(url: &str) {
     }
 }
 
-fn message_read(message: &Message) -> serde_json::Value {
+pub(crate) fn message_read(message: &Message) -> serde_json::Value {
     // Written as a recipient field takes it, so an agent replying with
     // what it read reaches the same people.
     let person = crate::model::Addr::rfc5322;
     serde_json::json!({
+        "id": message.id.to_string(),
+        "item": format!("mail.message:{}", message.id),
+        "label": crate::actions::message_label_of(message),
+        "date": mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60)).to_rfc3339(),
+        "folder": message.folder.as_key(),
+        "account": message.account,
         "from": person(&message.from),
         "to": message.to.iter().map(person).collect::<Vec<_>>(),
         "cc": message.cc.iter().map(person).collect::<Vec<_>>(),
@@ -3579,10 +3675,13 @@ fn message_read(message: &Message) -> serde_json::Value {
         "sent_minutes_since_epoch": message.timestamp_min,
         "text": message.body,
         "links": crate::html_mail::message_links(message),
-        "attachments": message.attachments.iter().map(|attachment| serde_json::json!({
+        "attachments": message.shown_attachments().map(|(index, attachment)| serde_json::json!({
+            "item": format!("mail.attachment:{}:{index}", message.id),
+            "index": index,
             "name": attachment.filename,
             "type": attachment.mime,
             "size": attachment.size,
+            "downloaded": attachment.is_downloadable(),
         })).collect::<Vec<_>>(),
     })
 }
@@ -4702,25 +4801,13 @@ impl ui::widget::controls::ActionControls for MailApp {
 enum Reveal {
     Message(MessageId),
     Draft,
+    DraftId(String),
+    Attachment(MessageId, usize),
     Invitation(Draft),
     Contact(Draft),
 }
 
 impl Mailroom {
-    /// What the loaded message `message` says.
-    fn read_message(&self, message: &str) -> Result<serde_json::Value, String> {
-        let id = message
-            .parse::<MessageId>()
-            .map_err(|_| "invalid message id")?;
-        self.shared
-            .borrow()
-            .mailbox
-            .messages
-            .get(&id)
-            .map(message_read)
-            .ok_or_else(|| "message is no longer loaded".into())
-    }
-
     /// Start `effect`, invoked as `invocation`. Showing something answers at
     /// once; a refresh answers once the server replied, through
     /// [`Self::take_effect_result`]. Saving an attachment is the view's,
@@ -4806,9 +4893,6 @@ impl Mailroom {
                 self.shared.borrow_mut().status = Some("Preview".into());
                 Ok(done)
             }
-            MailEffect::ReadMessage { message } => self
-                .read_message(&message)
-                .map(ui::framework::Effected::value),
             MailEffect::Reply { message } => {
                 self.compose_from(&message, Intent::Reply).map(|()| done)
             }
@@ -4822,8 +4906,12 @@ impl Mailroom {
                 self.attachment_to_save(&message, index)?;
                 Err("saving an attachment asks the host where to put it".into())
             }
-            MailEffect::SearchMessages { .. } | MailEffect::ExportContent { .. } => {
-                Err("held mail is answered from the mailbox".into())
+            MailEffect::SearchMessages { .. }
+            | MailEffect::ExportContent { .. }
+            | MailEffect::ReadMessage { .. }
+            | MailEffect::DraftReply { .. }
+            | MailEffect::Content { .. } => {
+                Err("messages are answered from what this device keeps and the mailbox".into())
             }
             effect @ (MailEffect::LoadRemoteContent { .. }
             | MailEffect::AlwaysLoadRemoteContent { .. }
@@ -4922,6 +5010,14 @@ impl Mailroom {
                 self.reveals.push(Reveal::Message(id));
             }
             MailTarget::Draft => self.reveals.push(Reveal::Draft),
+            MailTarget::DraftId(id) => self.reveals.push(Reveal::DraftId(id)),
+            MailTarget::Attachment { message, index } => {
+                let id = message
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                self.attachment_to_save(&message, index)?;
+                self.reveals.push(Reveal::Attachment(id, index));
+            }
         }
         self.dirty = true;
         Ok(())
@@ -5181,6 +5277,18 @@ impl MailApp {
                     self.compose.open_with_draft(&draft);
                     self.editing_draft = None;
                 }
+                Reveal::DraftId(id) => {
+                    let mail = read_mail(doc.doc()).unwrap_or_default();
+                    if let Some(draft) = mail.draft_at(Some(&id)) {
+                        let named = crate::resource::draft_named(&id);
+                        let named = (!crate::resource::is_composer_draft(named)).then_some(named);
+                        self.compose.open_draft(named, &draft.draft());
+                        self.editing_draft = None;
+                    } else {
+                        self.shared.borrow_mut().status = Some("That draft is gone".into());
+                    }
+                }
+                Reveal::Attachment(message, index) => self.open_attachment(message, index),
                 Reveal::Contact(draft) => {
                     self.shared.borrow_mut().save_draft(doc, &draft);
                     self.compose.open_with_draft(&draft);

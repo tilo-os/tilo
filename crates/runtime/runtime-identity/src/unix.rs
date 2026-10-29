@@ -204,7 +204,7 @@ fn ensure_private_dir(dir: &std::path::Path) -> io::Result<()> {
                 "identity root is not owned by the current user",
             ));
         }
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        tilo_files::native::private::restrict_directory(dir)?;
     }
     Ok(())
 }

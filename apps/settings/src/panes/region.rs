@@ -7,19 +7,24 @@
 //! °C/°F + km/h vs mph toggle. Editing here is the single source of truth
 //! those apps follow.
 //!
-//! Each control is a `Dropdown` bound to its field of the section, mapping the
-//! shown label to the stored value; the pane shows what the section holds,
-//! whoever changed it.
+//! The page is view code over the section ([`view`]): each control is a
+//! `Dropdown` bound to its field, mapping the shown label to the stored
+//! value, and the page shows what the section holds, whoever changed it.
 
-use ui::widget::{AppModel, ModelPath, Widget};
+use std::rc::Rc;
+
+use provider_settings_ui::bound::SettingRows as _;
+use ui::framework::{Actions, ViewCx};
+use ui::widget::Element;
 
 use crate::effects::effect;
-use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
 use crate::prefs::AppearancePrefs;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 
 pub mod language;
-use crate::widgets::{Item, note, rows, section};
+use provider_settings_ui::widgets::{Item, SettingsSection, note, page_of, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
 
@@ -56,258 +61,206 @@ fn weekday_label(day: FirstDayOfWeek) -> String {
     })
 }
 
-pub struct RegionPane {
-    cx: PaneCx,
-    locale: Followed<Locale>,
-    /// The interface language is the appearance section's.
-    appearance: Followed<AppearancePrefs>,
-    /// The languages offered and the install under way, when the window
-    /// holds them.
-    languages: Option<Languages>,
-    composed: ui::widget::Composed,
+/// The Region & formats page as view code over the person's locale and the
+/// language their appearance section names, with the languages `app`
+/// knows of: the formats bound to their fields, the preview following them,
+/// the language chosen through [`language::LanguageEffect`] (its pack may
+/// need installing first).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    // Ask the repositories what they offer as the page opens.
+    if let Some(area) = language::area(app) {
+        area.read();
+    }
+    let actions = cx.actions();
+    let languages = Rc::clone(app);
+    let appearance = cx.settings::<AppearancePrefs>();
+    let language = cx.record(&appearance, move |cx| {
+        let chosen = cx.value(|prefs: &AppearancePrefs| prefs.language.clone());
+        let (actions, languages) = (actions.clone(), Rc::clone(&languages));
+        cx.switch(&chosen, move |cx, chosen| {
+            let (actions, languages, chosen) =
+                (actions.clone(), Rc::clone(&languages), chosen.clone());
+            let shown = language::area(&languages).map(|area| area.shown.clone());
+            match shown {
+                Some(shown) => cx.switch(&shown, move |cx, _| {
+                    language_card(cx, &actions, chosen.as_deref(), language::area(&languages))
+                        .into_element()
+                }),
+                None => language_card(cx, &actions, chosen.as_deref(), None).into_element(),
+            }
+        })
+    })?;
+    let locale = cx.settings::<Locale>();
+    let formats = cx.record(&locale, |cx| {
+        cx.switch(&cx.value(|locale: &Locale| *locale), |cx, locale| {
+            page_of(vec![
+                formats_card(cx).into_element(),
+                preview_card(*locale).into_element(),
+            ])
+        })
+    })?;
+    let explainer = section(
+        &t("settings-region-shared-card"),
+        rows(vec![note(&t("settings-region-shared-body"))]),
+    );
+    Some(page_of(vec![language, formats, explainer.into_element()]))
 }
 
-/// What the pane shows of [`language::LanguageArea`].
-struct Languages {
-    offered: crate::device_read::Reading<language::Offered>,
-    offered_seen: u64,
-    installing: ui::LocalState<Option<String>>,
-    failed: ui::LocalState<Option<String>>,
-    /// The revisions of `installing` and `failed` the page shows.
-    install_seen: (u64, u64),
+/// The Language card: the language `chosen`, among the installed ones and
+/// those `languages` offers, and an install under way or the reason one
+/// stopped.
+fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::Model>(
+    cx: &ViewCx<R>,
+    actions: &Actions<Settings>,
+    chosen: Option<&str>,
+    languages: Option<&language::LanguageArea>,
+) -> SettingsSection {
+    let offered = languages
+        .and_then(|languages| languages.offered.get())
+        .unwrap_or_default();
+    let names: Vec<String> = std::iter::once(language::name(None))
+        .chain(
+            language::choices(&offered)
+                .iter()
+                .map(|choice| language::name(Some(choice))),
+        )
+        .collect();
+    let current = ui::LocalState::new(language::name(chosen));
+    let mut items = vec![
+        cx.setting(t("settings-region-language"))
+            .id("region.language")
+            .choice_effect(
+                names,
+                &current,
+                actions,
+                effect(language::LanguageEffect::CHOOSE_LANGUAGE),
+            ),
+    ];
+    if let Some(languages) = languages {
+        if let Some(installing) = languages.installing.with(Clone::clone) {
+            items.push(note(&crate::i18n::t_args(
+                "settings-region-language-installing",
+                &[("language", language::name(Some(&installing)).into())],
+            )));
+        } else if let Some(failed) = languages.failed.with(Clone::clone) {
+            items.push(provider_settings_ui::widgets::error_row(
+                &t("settings-region-language"),
+                &crate::i18n::t_args(
+                    "settings-region-language-failed",
+                    &[("error", failed.into())],
+                ),
+            ));
+        }
+    }
+    items.push(note(&t("settings-region-language-body")));
+    section(&t("settings-region-language-card"), rows(items))
 }
 
-impl RegionPane {
-    /// The pane over `cx`'s locale, and the languages `languages` knows of.
-    pub fn new(cx: PaneCx, languages: Option<&language::LanguageArea>) -> Self {
-        let languages = languages.map(|area| {
-            // Ask the repositories what they offer as the page opens.
-            area.read();
-            Languages {
-                offered: area.offered.clone(),
-                offered_seen: area.offered.revision(),
-                installing: area.installing.clone(),
-                failed: area.failed.clone(),
-                install_seen: (area.installing.revision(), area.failed.revision()),
-            }
-        });
-        Self {
-            locale: cx.follow::<Locale>(),
-            appearance: cx.follow::<AppearancePrefs>(),
-            languages,
-            cx,
-            composed: ui::widget::Composed::default(),
-        }
-    }
+/// The formats, each bound to its field of the locale.
+fn formats_card(cx: &ViewCx<Locale>) -> SettingsSection {
+    section(
+        &t("settings-region-formats-card"),
+        rows(vec![
+            currency(cx),
+            date_format(cx),
+            time_format(cx),
+            measurement(cx),
+            number_style(cx),
+            first_day(cx),
+        ]),
+    )
+}
 
-    /// The Language card: the language chosen, among the installed ones and
-    /// those offered, and an install under way or the reason one stopped.
-    fn language_card(&self) -> crate::widgets::SettingsSection {
-        let chosen = self.appearance.get().language.clone();
-        let offered = self
-            .languages
-            .as_ref()
-            .and_then(|languages| languages.offered.get())
-            .unwrap_or_default();
-        let names: Vec<String> = std::iter::once(language::name(None))
-            .chain(
-                language::choices(&offered)
-                    .iter()
-                    .map(|choice| language::name(Some(choice))),
-            )
-            .collect();
-        let current = ui::LocalState::new(language::name(chosen.as_deref()));
-        let mut items = vec![
-            self.cx
-                .row(t("settings-region-language"))
-                .id("region.language")
-                .choice_effect(
-                    names,
-                    &current,
-                    effect(language::LanguageEffect::CHOOSE_LANGUAGE),
-                ),
-        ];
-        if let Some(languages) = &self.languages {
-            if let Some(installing) = languages.installing.with(Clone::clone) {
-                items.push(note(&crate::i18n::t_args(
-                    "settings-region-language-installing",
-                    &[("language", language::name(Some(&installing)).into())],
-                )));
-            } else if let Some(failed) = languages.failed.with(Clone::clone) {
-                items.push(crate::widgets::error_row(
-                    &t("settings-region-language"),
-                    &crate::i18n::t_args(
-                        "settings-region-language-failed",
-                        &[("error", failed.into())],
-                    ),
-                ));
-            }
-        }
-        items.push(note(&t("settings-region-language-body")));
-        section(&t("settings-region-language-card"), rows(items))
-    }
-
-    pub fn locale(&self) -> Locale {
-        *self.locale.get()
-    }
-
-    fn build_composition(&self) -> Box<dyn Widget> {
-        let loc = *self.locale.get();
-        let language = self.language_card();
-        let formats = section(
-            &t("settings-region-formats-card"),
-            rows(vec![
-                currency(&self.cx, &self.locale),
-                date_format(&self.cx, &self.locale),
-                time_format(&self.cx, &self.locale),
-                measurement(&self.cx, &self.locale),
-                number_style(&self.cx, &self.locale),
-                first_day(&self.cx, &self.locale),
-            ]),
-        );
-
-        let amount = loc.number_style.amount(loc.currency.symbol());
-        let temp = t(match loc.measurement {
-            Measurement::Metric => "settings-region-preview-c",
-            Measurement::Imperial => "settings-region-preview-f",
-        });
-        let week_starts = weekday_label(loc.first_day_of_week);
-        let preview = section(
-            &t("settings-region-preview-card"),
-            rows(vec![
-                preview_line(&t("settings-region-preview-amount"), &amount),
-                preview_line(
-                    &t("settings-region-preview-date"),
-                    &loc.date_format.example(),
-                ),
-                preview_line(
-                    &t("settings-region-preview-time"),
-                    &loc.time_format.example(),
-                ),
-                preview_line(&t("settings-region-preview-temp"), &temp),
-                preview_line(&t("settings-region-preview-week"), &week_starts),
-            ]),
-        );
-
-        let explainer = section(
-            &t("settings-region-shared-card"),
-            rows(vec![note(&t("settings-region-shared-body"))]),
-        );
-
-        crate::widgets::page(vec![language, formats, preview, explainer])
-    }
+/// What `loc` makes of an amount, a date, a time, a temperature and the
+/// week.
+fn preview_card(loc: Locale) -> SettingsSection {
+    let amount = loc.number_style.amount(loc.currency.symbol());
+    let temp = t(match loc.measurement {
+        Measurement::Metric => "settings-region-preview-c",
+        Measurement::Imperial => "settings-region-preview-f",
+    });
+    let week_starts = weekday_label(loc.first_day_of_week);
+    section(
+        &t("settings-region-preview-card"),
+        rows(vec![
+            preview_line(&t("settings-region-preview-amount"), &amount),
+            preview_line(
+                &t("settings-region-preview-date"),
+                &loc.date_format.example(),
+            ),
+            preview_line(
+                &t("settings-region-preview-time"),
+                &loc.time_format.example(),
+            ),
+            preview_line(&t("settings-region-preview-temp"), &temp),
+            preview_line(&t("settings-region-preview-week"), &week_starts),
+        ]),
+    )
 }
 
 /// Currencies by their ISO code, the stored form.
-pub(crate) fn currency(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-currency"))
+pub(crate) fn currency(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-currency"))
         .id("region.currency")
-        .of(locale, Locale::paths().currency)
-        .menu(Currency::ALL.iter().copied(), |currency: &Currency| {
-            currency.code().to_owned()
-        })
-}
-
-pub(crate) fn date_format(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-date-format"))
-        .id("region.date")
-        .of(locale, Locale::paths().date_format)
-        .menu(DateStyle::ALL.iter().copied(), |style: &DateStyle| {
-            date_label(*style)
-        })
-}
-
-pub(crate) fn time_format(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-time-format"))
-        .id("region.time")
-        .of(locale, Locale::paths().time_format)
-        .menu(TimeStyle::ALL.iter().copied(), |style: &TimeStyle| {
-            time_label(*style)
-        })
-}
-
-pub(crate) fn measurement(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-measurement"))
-        .id("region.measurement")
-        .of(locale, Locale::paths().measurement)
-        .menu(Measurement::ALL.iter().copied(), |measure: &Measurement| {
-            measure_label(*measure)
-        })
-}
-
-pub(crate) fn number_style(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-number-format"))
-        .id("region.number_style")
-        .of(locale, Locale::paths().number_style)
-        .menu(NumberStyle::ALL, |style: &NumberStyle| {
-            style.label().to_owned()
-        })
-}
-
-pub(crate) fn first_day(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
-    cx.row(t("settings-region-first-day"))
-        .id("region.first_day")
-        .of(locale, Locale::paths().first_day_of_week)
         .menu(
+            Locale::paths().currency,
+            Currency::ALL.iter().copied(),
+            |currency: &Currency| currency.code().to_owned(),
+        )
+}
+
+pub(crate) fn date_format(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-date-format"))
+        .id("region.date")
+        .menu(
+            Locale::paths().date_format,
+            DateStyle::ALL.iter().copied(),
+            |style: &DateStyle| date_label(*style),
+        )
+}
+
+pub(crate) fn time_format(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-time-format"))
+        .id("region.time")
+        .menu(
+            Locale::paths().time_format,
+            TimeStyle::ALL.iter().copied(),
+            |style: &TimeStyle| time_label(*style),
+        )
+}
+
+pub(crate) fn measurement(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-measurement"))
+        .id("region.measurement")
+        .menu(
+            Locale::paths().measurement,
+            Measurement::ALL.iter().copied(),
+            |measure: &Measurement| measure_label(*measure),
+        )
+}
+
+pub(crate) fn number_style(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-number-format"))
+        .id("region.number_style")
+        .menu(
+            Locale::paths().number_style,
+            NumberStyle::ALL,
+            |style: &NumberStyle| style.label().to_owned(),
+        )
+}
+
+pub(crate) fn first_day(cx: &ViewCx<Locale>) -> Item {
+    cx.setting(t("settings-region-first-day"))
+        .id("region.first_day")
+        .menu(
+            Locale::paths().first_day_of_week,
             FirstDayOfWeek::ALL.iter().copied(),
             |day: &FirstDayOfWeek| weekday_label(*day),
         )
 }
 
-impl Languages {
-    /// The revisions of what the languages show now.
-    fn revisions(&self) -> (u64, (u64, u64)) {
-        (
-            self.offered.revision(),
-            (self.installing.revision(), self.failed.revision()),
-        )
-    }
-
-    fn moved(&self) -> bool {
-        self.revisions() != (self.offered_seen, self.install_seen)
-    }
-}
-
-impl Widget for RegionPane {
-    /// What `sync` takes up from outside the document: a format or the
-    /// language stored (a change this pane made lands once the settings
-    /// write is stored), what the repositories offer, an install starting
-    /// or stopping. A frame that reports none of them does not sync.
-    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
-        let own = self.locale.moved()
-            || self.appearance.moved()
-            || self.languages.as_ref().is_some_and(Languages::moved);
-        let mut children = false;
-        for child in self.children_mut() {
-            children |= child.update(state, root);
-        }
-        own || children
-    }
-
-    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // What the repositories offer landed, or an install started or
-        // stopped.
-        let languages_moved = self.languages.as_mut().is_some_and(|languages| {
-            let moved = languages.moved();
-            (languages.offered_seen, languages.install_seen) = languages.revisions();
-            moved
-        });
-        if self.locale.refresh() | self.appearance.refresh() | languages_moved {
-            // The preview card follows the values.
-            self.composed.invalidate();
-        }
-        self.composed.sync(state, root);
-    }
-
-    crate::panes::composed_pane!();
-
-    fn name(&self) -> &'static str {
-        "RegionPane"
-    }
-}
-
 fn preview_line(label: &str, value: &str) -> Item {
-    crate::widgets::value_row(label, value)
+    provider_settings_ui::widgets::value_row(label, value)
 }
 
 #[cfg(test)]
@@ -323,7 +276,7 @@ mod tests {
     fn region_effects_write_the_locale() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let locale_field = |app: &mut TestApp<SettingsShell>, field: &str, value: &str| {
-            crate::host::testing::edit_field(app, "settings.locale", field, value)
+            crate::testing::edit_field(app, "settings.locale", field, value)
         };
         locale_field(&mut app, "currency", "JPY").unwrap();
         locale_field(&mut app, "date_format", "EU").unwrap();
@@ -352,26 +305,19 @@ mod tests {
     /// language as the choice.
     #[test]
     fn the_language_is_chosen_among_the_installed_ones() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let pane = RegionPane::new(cx, None);
-        let language = AppearancePrefs::paths().language;
-        let label = |language: &Option<String>| {
-            language.as_deref().map_or_else(
-                || t("settings-region-language-device"),
-                ui::i18n::language_name,
-            )
-        };
-        assert_eq!(
-            pane.appearance.shown(&language, label).get(),
-            t("settings-region-language-device")
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
+        app.settle();
+        assert!(
+            app.harness()
+                .a11y_node_named(&t("settings-region-language-device"))
+                .is_some(),
+            "unset, the device's language is shown as the choice"
         );
         assert!(crate::i18n::languages().contains(&"en-US"));
         assert!(crate::i18n::languages().contains(&"de-DE"));
 
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
-        crate::host::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE")
-            .unwrap();
+        crate::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE").unwrap();
         let settings = app.settings::<AppearancePrefs>();
         assert_eq!(settings.get().language.as_deref(), Some("de-DE"));
         assert_eq!(
@@ -409,55 +355,46 @@ mod tests {
     /// explicit choices among the rest.
     #[test]
     fn the_date_format_and_clock_default_to_following_the_language() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let pane = RegionPane::new(cx, None);
-        assert_eq!(pane.locale().date_format, DateStyle::Language);
-        let paths = Locale::paths();
-        assert_eq!(
-            pane.locale
-                .shown(&paths.date_format, |style| date_label(*style))
-                .get(),
-            date_label(DateStyle::Language),
-            "the default is shown as following the language"
-        );
+        assert_eq!(Locale::default().date_format, DateStyle::Language);
         assert_eq!(DateStyle::ALL[0], DateStyle::Language);
-        assert_eq!(pane.locale().time_format, TimeStyle::Language);
-        assert_eq!(
-            pane.locale
-                .shown(&paths.time_format, |style| time_label(*style))
-                .get(),
-            time_label(TimeStyle::Language)
-        );
+        assert_eq!(Locale::default().time_format, TimeStyle::Language);
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
+        app.settle();
+        for shown in [
+            date_label(DateStyle::Language),
+            time_label(TimeStyle::Language),
+        ] {
+            assert!(
+                app.harness().a11y_node_named(&shown).is_some(),
+                "the default is shown as following the language: {shown}"
+            );
+        }
         assert_eq!(TimeStyle::ALL[0], TimeStyle::Language);
     }
 
-    /// The pane shows the stored locale and follows a change made elsewhere.
+    /// The page shows the stored locale and follows a change made
+    /// elsewhere.
     #[test]
-    fn the_pane_follows_the_locale() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        cx.settings::<Locale>()
+    fn the_page_follows_the_locale() {
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        app.settings::<Locale>()
             .set(&Locale {
                 currency: Currency::EUR,
                 ..Locale::default()
             })
             .unwrap();
-        let mut pane = RegionPane::new(cx.clone(), None);
-        let paths = Locale::paths();
-        let currency = pane
-            .locale
-            .shown(&paths.currency, |currency| currency.code().to_owned());
-        assert_eq!(currency.get(), "EUR");
-        let measurement = pane
-            .locale
-            .shown(&paths.measurement, |measure| measure_label(*measure));
-        cx.settings::<Locale>()
+        crate::effects::show_pane(&mut app, crate::categories::Category::RegionFormats);
+        app.settle();
+        assert!(app.harness().a11y_node_named("EUR").is_some());
+        app.settings::<Locale>()
             .update(|locale| locale.measurement = Measurement::Imperial)
             .unwrap();
-        let doc = ui::automerge::AutoCommit::new();
-        pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.locale().measurement, Measurement::Imperial);
-        assert_eq!(measurement.get(), measure_label(Measurement::Imperial));
+        app.settle();
+        assert!(
+            app.harness()
+                .a11y_node_named(&measure_label(Measurement::Imperial))
+                .is_some()
+        );
     }
 }

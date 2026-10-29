@@ -3,8 +3,8 @@
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use web_time::SystemTime;
 
 const MAX_COMMANDS: usize = 4096;
 
@@ -58,6 +58,9 @@ impl NativeWorkspaceOwner {
                     | Command::Revoke { .. }
                     | Command::AddAgent { .. }
                     | Command::RemoveAgent { .. }
+                    | Command::GrantAppAuthorship { .. }
+                    | Command::Share { .. }
+                    | Command::Unshare { .. }
             )
         {
             return Err("only the room's governor commits this change".into());

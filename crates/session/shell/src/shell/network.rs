@@ -103,9 +103,10 @@ pub(crate) use session_host::Placement;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
+mod room_shares;
+mod room_signer;
 #[cfg(test)]
 mod same_person_room_tests;
-mod shortcut_saves;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;
@@ -368,13 +369,12 @@ pub struct PeerDeparture {
     pub observed_at: SystemTime,
 }
 
-/// Process-local proof that one certified same-person endpoint completed an
-/// `IdentityHello` on its current actor membership. It is deliberately not
-/// serializable; wire payloads can name devices but cannot mint route
-/// authority.
+/// Process-local proof that one endpoint proved a certificate of one of
+/// this device's roots on its current session with this device
+/// ([`NetEvent::Sibling`]). It is deliberately not serializable; wire
+/// payloads can name devices but cannot mint route authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AuthenticatedPersonalRoute {
-    workspace_topic: u64,
     endpoint_id: iroh::EndpointId,
     membership_epoch: tilo_network_actor::MembershipEpoch,
     user_public_key: [u8; 32],
@@ -386,6 +386,11 @@ impl AuthenticatedPersonalRoute {
         &self.device
     }
 
+    /// Where the route is kept: by the root it proved and its endpoint.
+    fn key(&self) -> ([u8; 32], iroh::EndpointId) {
+        (self.user_public_key, self.endpoint_id)
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(device: tilo_network_actor::fabric::DeviceId) -> Self {
         Self::for_test_epoch(device, 1)
@@ -394,7 +399,6 @@ impl AuthenticatedPersonalRoute {
     #[cfg(test)]
     pub(crate) fn for_test_epoch(device: tilo_network_actor::fabric::DeviceId, epoch: u64) -> Self {
         Self {
-            workspace_topic: 1,
             endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
             membership_epoch: tilo_network_actor::MembershipEpoch::for_test(epoch),
             user_public_key: [0xE8; 32],
@@ -496,29 +500,12 @@ fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
         .collect()
 }
 
-/// Stable private shard shared only by certified devices rooted in the same
-/// person identity. The full root key is also carried in and authenticated on
-/// every message; this 64-bit value is routing, never authority.
+/// The topic only a person's hosts carry, on which they keep the records of
+/// the person's own room for the person's devices that are away. The full
+/// root key is also carried in and authenticated on every message; this
+/// 64-bit value is routing, never authority.
 pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
     tilo_relay_protocol::personal_continuity_workspace_id(user_public_key)
-}
-
-/// Topics a machine dials on startup and on home-peer refresh.
-///
-/// Local rooms are included, and so is the person topic, so a device with no
-/// rooms yet still reaches the peers enrolled for that identity.
-fn relay_topics_for_home_peers(
-    rooms: impl IntoIterator<Item = RoomId>,
-    user: Option<[u8; 32]>,
-) -> std::collections::BTreeSet<u64> {
-    let mut topics = rooms
-        .into_iter()
-        .map(room_topic_id)
-        .collect::<std::collections::BTreeSet<_>>();
-    if let Some(user) = user {
-        topics.insert(personal_continuity_topic_id(&user));
-    }
-    topics
 }
 
 /// Default on-disk path of the machine's device key, from which the
@@ -757,7 +744,6 @@ fn read_home_peer_registry() -> Result<Vec<tilo_relay_protocol::HomePeerRegistra
 
 fn registered_home_peer_addrs(
     local_user: Option<[u8; 32]>,
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
 ) -> Result<Vec<RegisteredHomePeer>, String> {
     let Some(local_user) = local_user else {
         return Ok(Vec::new());
@@ -765,26 +751,21 @@ fn registered_home_peer_addrs(
     Ok(home_peers_from_registrations(
         read_home_peer_registry()?,
         local_user,
-        relay_workspace_ids,
     ))
 }
 
-/// The dialable home peers among `registrations`: those of `local_user` that
-/// serve one of `relay_workspace_ids`.
+/// The dialable home peers among `registrations`: those of `local_user`.
+/// A home peer the person paired serves the person, whichever of their
+/// workspaces it holds yet.
 fn home_peers_from_registrations(
     registrations: Vec<tilo_relay_protocol::HomePeerRegistration>,
     local_user: [u8; 32],
-    relay_workspace_ids: &std::collections::BTreeSet<u64>,
 ) -> Vec<RegisteredHomePeer> {
     let mut addrs = Vec::new();
     for registration in registrations {
         if registration.label.is_empty()
             || registration.label.len() > MAX_HOME_PEER_LABEL_BYTES
             || registration.relay_workspace_ids.len() > MAX_HOME_PEER_WORKSPACES
-            || !registration
-                .relay_workspace_ids
-                .iter()
-                .any(|workspace| relay_workspace_ids.contains(workspace))
         {
             continue;
         }
@@ -1225,9 +1206,6 @@ pub struct ShellNetwork {
     joined_topics: Mutex<std::collections::HashSet<u64>>,
     /// The room rosters last told to the actor ([`Self::send_room_rosters`]).
     room_rosters_sent: Mutex<room_rosters::Sent>,
-    /// This device's own room host, governing the rooms placed on it
-    /// ([`governance_requests::LocalGovernor`]).
-    local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
     /// Where the outbox stood when the drain last found nothing more to
     /// ask, or found the hosts of what is left out of reach
     /// ([`Self::send_outbox_off_loop`]): looked at again only once it moved
@@ -1349,10 +1327,10 @@ pub struct ShellNetwork {
     device_fabric_path: Option<PathBuf>,
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
     personal_fabric_actions: Mutex<VecDeque<ReceivedPersonalFabricAction>>,
-    /// Exact current same-person routes admitted by a certificate-bearing
-    /// `IdentityHello`. Membership edges alone never populate this map.
+    /// Exact current same-person routes, by root and endpoint, admitted by
+    /// the certificates a device proved on its session with this one.
     authenticated_personal_routes:
-        Mutex<std::collections::HashMap<(u64, iroh::EndpointId), AuthenticatedPersonalRoute>>,
+        Mutex<std::collections::HashMap<([u8; 32], iroh::EndpointId), AuthenticatedPersonalRoute>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
     /// Verified transport-device chains received on workspace topics.
@@ -1953,9 +1931,7 @@ impl ShellNetwork {
                 )
             });
 
-        let relay_workspace_ids = relay_topics_for_home_peers(tree.read().rooms(), local_person);
-        let home_peers =
-            registered_home_peer_addrs(local_person, &relay_workspace_ids).unwrap_or_default();
+        let home_peers = registered_home_peer_addrs(local_person).unwrap_or_default();
         let home_peer_ids = home_peers
             .iter()
             .map(|host| host.addr.id)
@@ -2013,6 +1989,11 @@ impl ShellNetwork {
                 }
             }
         });
+        // The person's devices are heard from the start: a session with
+        // one may come up before any workspace is joined.
+        let _ = cmd_tx.try_send(NetCmd::WatchSiblings {
+            on_event: event_tx.clone(),
+        });
 
         let pending_invitations_path = pending_invites_path(state_dir);
         let device_fabric_path = device_fabric_path(state_dir);
@@ -2052,7 +2033,6 @@ impl ShellNetwork {
             event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             room_rosters_sent: Mutex::default(),
-            local_governor: std::sync::OnceLock::new(),
             outbox_waiting: Mutex::default(),
             outbox_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
@@ -2485,9 +2465,6 @@ impl ShellNetwork {
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
-        if let Some(user_public_key) = msg.personal_lane() {
-            return Some(personal_continuity_topic_id(user_public_key));
-        }
         let room = match msg {
             NeighbourMsg::IdentityAnnouncement { room, .. }
             | NeighbourMsg::IdentityAnnouncementV2 { room, .. }
@@ -2520,13 +2497,13 @@ impl ShellNetwork {
             return true;
         }
         let on_event = self.event_tx.clone();
-        // The person's own topic also travels directly between their
-        // devices; a room's travels over its host sessions alone.
+        // A person room's topic is carried by the person's hosts alone; a
+        // room's travels over its host sessions.
         let command = if self
-            .local_person
-            .is_some_and(|user| ws == personal_continuity_topic_id(&user))
+            .person_roots()
+            .any(|user| ws == personal_continuity_topic_id(&user))
         {
-            NetCmd::JoinPersonalTopic { ws, on_event }
+            NetCmd::JoinHostedTopic { ws, on_event }
         } else {
             NetCmd::JoinWorkspace { ws, on_event }
         };
@@ -2557,15 +2534,7 @@ impl ShellNetwork {
         {
             return false;
         }
-        self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws,
-                    msg,
-                })
-                .is_ok()
+        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2587,7 +2556,6 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -2658,7 +2626,7 @@ impl ShellNetwork {
         transport_peer: Option<iroh::EndpointId>,
         message: NeighbourMsg,
     ) {
-        // Never reflect a host's own gossip echo into a decoder or seat.
+        // Never reflect a host's own echo into a decoder or seat.
         if Self::claimed_publisher(&message) == Some(self.local_peer_hash) {
             return;
         }
@@ -2695,15 +2663,6 @@ impl ShellNetwork {
             transport_peer,
             message,
         });
-    }
-
-    fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
-        let ws = self.topic_for_message(&msg);
-        self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::PublishCheckpoint { ws, msg })
-                .is_ok()
     }
 
     /// Shared handle to the inbound-presence buffer. The shell's
@@ -2792,7 +2751,7 @@ impl ShellNetwork {
     }
 
     /// Queue a received presence move; public so tests can inject one
-    /// without going through gossip.
+    /// without going through the network.
     pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         // A session does not paint its own cursor from the network: the
         // pointer it would draw is the one already under the user's hand.
@@ -3029,8 +2988,8 @@ impl ShellNetwork {
     }
 
     /// Send a person-room document to each of this person's other devices on
-    /// its authenticated personal route, and nowhere else: no room topic, no
-    /// workspace host, no collaborator.
+    /// its authenticated personal route, and to the person's hosts, which
+    /// keep it for the devices that are away: no room topic, no collaborator.
     fn publish_person_document(
         &self,
         app_id: String,
@@ -3039,15 +2998,15 @@ impl ShellNetwork {
         envelope: collab_types::SignedOp,
     ) {
         // The room's own root: the device's, or one of its workspace
-        // identities', each with its own continuity topic and devices.
+        // identities', each with its own hosted topic and devices.
         let Some(user_public_key) = self.person_root_of(cluster_id) else {
             return;
         };
         let record_id = self.register_local_record(&app_id, cluster_id, record_id);
         let ws = personal_continuity_topic_id(&user_public_key);
         // The person's always-on hosts keep it for their devices that are
-        // away: on the continuity topic, whose only member on a host is the
-        // person, and to host sessions only, never to gossip neighbours.
+        // away: on the hosted topic, whose only member on a host is the
+        // person, and to host sessions only.
         let _ = self.cmd_tx.try_send(NetCmd::PublishToHosts {
             ws,
             msg: NeighbourMsg::AppDocument {
@@ -3076,13 +3035,8 @@ impl ShellNetwork {
         if !self.personal_fabric_allowed() {
             return;
         }
-        let targets = self.personal_route_targets(ws, &user_public_key);
-        if targets.is_empty() || !self.join_topic(ws) {
-            return;
-        }
-        for target in targets {
+        for target in self.personal_route_targets(&user_public_key) {
             let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
-                ws,
                 user_public_key,
                 target,
                 payload: payload.clone(),
@@ -3090,26 +3044,23 @@ impl ShellNetwork {
         }
     }
 
-    /// The person's other devices with an authenticated route on their
-    /// continuity topic `ws`.
-    fn personal_route_targets(&self, ws: u64, user_public_key: &[u8; 32]) -> Vec<iroh::EndpointId> {
+    /// The devices with an authenticated route for root `user_public_key`.
+    fn personal_route_targets(&self, user_public_key: &[u8; 32]) -> Vec<iroh::EndpointId> {
         self.authenticated_personal_routes
             .lock()
             .map(|routes| {
                 routes
                     .values()
-                    .filter(|route| {
-                        route.workspace_topic == ws && route.user_public_key == *user_public_key
-                    })
+                    .filter(|route| route.user_public_key == *user_public_key)
                     .map(|route| route.endpoint_id)
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// A person-room document an always-on host kept on the person's
-    /// continuity topic, written by `author`: taken in only when that topic is
-    /// this person's and the author is a device their root certified.
+    /// A person-room document an always-on host kept on the person's hosted
+    /// topic, written by `author`: taken in only when that topic is this
+    /// person's and the author is a device their root certified.
     fn dispatch_hosted_person_document(
         &self,
         ws: u64,
@@ -3132,7 +3083,7 @@ impl ShellNetwork {
         if ws != personal_continuity_topic_id(&user) {
             tracing::warn!(
                 ws,
-                "person room document outside the continuity topic; dropping"
+                "person room document outside the person's hosted topic; dropping"
             );
             return;
         }
@@ -3708,7 +3659,7 @@ impl ShellNetwork {
     /// would otherwise miss the room's history.
     pub fn request_room_replay(&self, cluster_id: &str) {
         // The person's own room is kept by their always-on hosts on the
-        // continuity topic.
+        // person's hosted topic.
         if let Some(user) = self.person_root_of(cluster_id) {
             let _ = self.cmd_tx.try_send(NetCmd::Replay {
                 ws: personal_continuity_topic_id(&user),
@@ -4178,15 +4129,7 @@ impl ShellNetwork {
             requester: self.local_peer_id_hash(),
         };
         let ws = room_topic_id(room);
-        let _ = self.join_topic(ws)
-            && self
-                .cmd_tx
-                .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
-                    ws,
-                    msg,
-                })
-                .is_ok();
+        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -4209,7 +4152,6 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
-                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -4326,9 +4268,9 @@ impl ShellNetwork {
         });
     }
 
-    /// Attach an always-on home or hosted workspace server. The actor keeps
-    /// its direct Iroh gossip path and additionally uses the authenticated
-    /// host session for offline store-and-forward.
+    /// Attach an always-on home or hosted workspace server: its
+    /// authenticated session keeps the person's topics for their devices
+    /// that are away.
     pub fn connect_host(&self, addr: iroh::EndpointAddr) -> bool {
         if let Ok(mut hosts) = self.host_addrs.lock()
             && !hosts.iter().any(|known| known.id == addr.id)
@@ -4357,15 +4299,12 @@ impl ShellNetwork {
         // or without a relay. A missing or malformed relay registry must not
         // skip them.
         changed |= self.dial_direct_peers();
-        let mut relay_workspace_ids = relay_topics_for_home_peers(self.tree.read().rooms(), None);
-        if let Some(user) = self.local_person {
-            relay_workspace_ids.insert(personal_continuity_topic_id(&user));
-        }
         let desired = match self.local_person {
             None => Ok(Vec::new()),
-            Some(user) => inputs.registrations.clone().map(|registrations| {
-                home_peers_from_registrations(registrations, user, &relay_workspace_ids)
-            }),
+            Some(user) => inputs
+                .registrations
+                .clone()
+                .map(|registrations| home_peers_from_registrations(registrations, user)),
         };
         let Ok(desired) = desired else {
             // Preserve existing routes for availability, but fail closed for
@@ -5030,9 +4969,6 @@ impl ShellNetwork {
             .into_iter()
             .map(|peer| peer.id)
             .collect();
-        let persons = self
-            .peer_identities
-            .authenticated_persons(tilo_clock::unix_now_ns());
         let current: std::collections::BTreeMap<_, _> = self
             .authenticated_personal_routes
             .lock()
@@ -5041,9 +4977,7 @@ impl ShellNetwork {
                     .values()
                     .filter(|route| {
                         enrolled.contains(&route.endpoint_id)
-                            && persons
-                                .get(&crate::shell::state::PeerOrigin::peer(&route.endpoint_id))
-                                .is_some_and(|root| Some(root) == self.local_person.as_ref())
+                            && Some(route.user_public_key) == self.local_person
                     })
                     .map(|route| (route.device.clone(), route.clone()))
                     .collect()
@@ -5220,13 +5154,8 @@ impl ShellNetwork {
         {
             return Err("nearby spool object is unsafe".into());
         }
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if !self.join_topic(ws) {
-            return Err("personal fabric transport is unavailable".into());
-        }
         self.cmd_tx
             .try_send(NetCmd::PublishNearbyTransfer {
-                ws,
                 user_public_key,
                 target: transport_target,
                 transfer,
@@ -5318,14 +5247,9 @@ impl ShellNetwork {
             .validate_at(&envelope.source, target, envelope.issued_unix_ms)
             .map_err(|error| error.to_string())?;
         let bytes = postcard::to_allocvec(&envelope).map_err(|error| error.to_string())?;
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if !self.join_topic(ws) {
-            return Err("personal fabric transport is unavailable".into());
-        }
         Ok((
             request_id,
             NetCmd::PublishPersonalFabricTarget {
-                ws,
                 user_public_key,
                 target: transport_target,
                 payload: PersonalFabricPayload::Action(bytes),
@@ -5346,7 +5270,7 @@ impl ShellNetwork {
             .authenticated_personal_routes
             .lock()
             .map_err(|_| "personal route authority is unavailable".to_string())?;
-        if routes.get(&(route.workspace_topic, route.endpoint_id)) != Some(route) {
+        if routes.get(&route.key()) != Some(route) {
             return Err("personal route is no longer current".into());
         }
         let sent = self.send_personal_fabric_action(&route.device, action);
@@ -5393,9 +5317,7 @@ impl ShellNetwork {
     pub(crate) fn personal_route_is_current(&self, route: &AuthenticatedPersonalRoute) -> bool {
         self.authenticated_personal_routes
             .lock()
-            .is_ok_and(|routes| {
-                routes.get(&(route.workspace_topic, route.endpoint_id)) == Some(route)
-            })
+            .is_ok_and(|routes| routes.get(&route.key()) == Some(route))
     }
 
     pub(crate) fn with_current_personal_route<T>(
@@ -5404,19 +5326,17 @@ impl ShellNetwork {
         operation: impl FnOnce() -> T,
     ) -> Option<T> {
         let routes = self.authenticated_personal_routes.lock().ok()?;
-        (routes.get(&(route.workspace_topic, route.endpoint_id)) == Some(route)).then(operation)
+        (routes.get(&route.key()) == Some(route)).then(operation)
     }
 
     #[cfg(test)]
     pub(crate) fn install_personal_route_for_test(
         &self,
-        workspace_topic: u64,
         endpoint_id: iroh::EndpointId,
         membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
     ) -> AuthenticatedPersonalRoute {
         let route = AuthenticatedPersonalRoute {
-            workspace_topic,
             endpoint_id,
             membership_epoch,
             user_public_key,
@@ -5426,7 +5346,7 @@ impl ShellNetwork {
         self.authenticated_personal_routes
             .lock()
             .expect("test personal routes")
-            .insert((workspace_topic, endpoint_id), route.clone());
+            .insert(route.key(), route.clone());
         route
     }
 
@@ -6014,21 +5934,16 @@ impl ShellNetwork {
         let Some(user_public_key) = self.local_person else {
             return;
         };
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if self.join_topic(ws) {
-            let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabric {
-                ws,
-                user_public_key,
-                payload,
-            });
-        }
+        let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabric {
+            user_public_key,
+            payload,
+        });
     }
 
-    /// Whether this device talks to the person's other devices on their
-    /// continuity topic: once it knows one, enrolled or kept since in the
-    /// person's fleet, even with the continuity switch off, since knowing
-    /// it is itself the grant. Knowing none, there is no one to tell, and
-    /// the topic is not kept up for nobody.
+    /// Whether this device sends the person's other devices its fabric: once
+    /// it knows one, enrolled or kept since in the person's fleet, even with
+    /// the continuity switch off, since knowing it is itself the grant.
+    /// Knowing none, there is no one to tell.
     fn personal_fabric_allowed(&self) -> bool {
         !self
             .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
@@ -6070,7 +5985,7 @@ impl ShellNetwork {
     }
 
     /// Send this device's whole workspace list, signed with its device key,
-    /// on the person's own topic.
+    /// to each of the person's devices whose session with this one is up.
     fn publish_personal_workspaces(&self) {
         let (Some(workspaces), Some(user), Some(identity)) = (
             self.personal_workspaces.as_ref(),
@@ -6087,27 +6002,23 @@ impl ShellNetwork {
         if let Ok(mut last) = self.last_personal_workspaces_snapshot.lock() {
             *last = Some(std::time::Instant::now());
         }
-        let _ = self.publish_shell_checkpoint(NeighbourMsg::PersonalWorkspaces {
-            user_public_key: user,
-            update: Box::new(update),
+        let _ = self.cmd_tx.try_send(NetCmd::PublishToSiblings {
+            msg: NeighbourMsg::PersonalWorkspaces {
+                user_public_key: user,
+                update: Box::new(update),
+            },
         });
     }
 
-    /// Merge another of this person's devices' workspace list and join the
-    /// workspaces it brings. Returns `true` for every workspace-list message,
-    /// merged or refused, so none falls through to room authorization.
-    fn dispatch_personal_workspaces(
-        &self,
-        ws: u64,
-        origin: &crate::shell::state::PeerOrigin,
-        msg: &NeighbourMsg,
-    ) -> bool {
+    /// Merge the workspace list another of this person's devices sent on its
+    /// session with this one, and join the workspaces it brings.
+    fn dispatch_personal_workspaces(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
         let NeighbourMsg::PersonalWorkspaces {
             user_public_key,
             update,
         } = msg
         else {
-            return false;
+            return;
         };
         let (Some(local_user), Some(workspaces), Some(here)) = (
             self.local_person,
@@ -6116,21 +6027,20 @@ impl ShellNetwork {
                 .as_ref()
                 .map(|identity| identity.device_cert.device_public_key),
         ) else {
-            return true;
+            return;
         };
-        if ws != personal_continuity_topic_id(user_public_key)
-            || user_public_key != &local_user
+        let origin = &crate::shell::state::PeerOrigin::peer(&peer);
+        if user_public_key != &local_user
             || self
-                .peer_identities
-                .get(origin)
-                .is_none_or(|peer| !peer.is_same_user(&local_user))
+                .authenticated_personal_routes
+                .lock()
+                .is_ok_and(|routes| !routes.contains_key(&(local_user, peer)))
         {
             tracing::warn!(peer = %origin, "dropping a workspace list from a different identity");
-            return true;
+            return;
         }
-        // The author may differ from the transport peer when a host replays a
-        // device's retained list; it must still be a certified device of this
-        // person that this device has authenticated.
+        // The author must be a certified device of this person that this
+        // device has authenticated.
         let now = now_unix_nanos();
         let Some(author) = self
             .peer_identities
@@ -6139,27 +6049,27 @@ impl ShellNetwork {
             .find(|cert| cert.device_public_key == update.author_device_public_key)
         else {
             tracing::debug!(peer = %origin, "workspace list from a device not yet authenticated");
-            return true;
+            return;
         };
         if self.peer_identities.is_revoked(
             &local_user,
             &author.device_public_key,
             update.authored_at_ns,
         ) {
-            return true;
+            return;
         }
         let held = self.held_personal_rooms();
         let (adoption, answer) = {
             let mut tree = self.tree.write();
             let Ok(mut workspaces) = workspaces.lock() else {
-                return true;
+                return;
             };
             // What changed here since the last agreement goes into the
             // directory first, so the merge sees both sides.
             let local = workspaces.publish_local(&tree, &held);
             if let Err(error) = workspaces.merge(update, &author, now) {
                 tracing::warn!(%error, peer = %origin, "refusing a workspace list");
-                return true;
+                return;
             }
             let adoption = workspaces.adopt_into(&mut tree, &here);
             refresh_device_choices(&mut tree, &workspaces);
@@ -6175,7 +6085,6 @@ impl ShellNetwork {
         if answer {
             self.publish_personal_workspaces();
         }
-        true
     }
 
     /// Called from every frame tick, which runs far more often than a room
@@ -6400,8 +6309,8 @@ impl ShellNetwork {
                 self.on_demand_hosts_changed(ws);
                 self.record_content_sources_changed();
                 self.room_relay_ready();
-                // A configured host's session of the person's own topic is
-                // up: the rooms it holds for them are entered now.
+                // A host's session of the person's own hosted topic is up:
+                // the rooms it holds for them are entered now.
                 if self
                     .local_person
                     .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
@@ -6409,24 +6318,21 @@ impl ShellNetwork {
                     self.enter_configured_host_rooms_off_loop(Some(peer));
                 }
             }
-            NetEvent::PeerJoined { ws, peer, .. } => {
-                self.note_peer_joined();
-                if let Ok(mut connected) = self.dialed_direct_peers.lock() {
-                    connected.insert(peer);
-                }
-                if let Ok(mut live) = self.live_room_peers.lock() {
-                    live.insert((ws, peer));
-                }
-                self.record_content_sources_changed();
-                self.publish_sync_requests();
-                if self
-                    .local_person
-                    .is_some_and(|user| ws == personal_continuity_topic_id(&user))
-                {
-                    self.publish_device_fabric_request();
-                    self.publish_personal_workspaces();
-                }
-            }
+            NetEvent::Sibling {
+                peer,
+                membership_epoch,
+                certs,
+                revocations,
+            } => self.sibling(peer, membership_epoch, &certs, &revocations),
+            NetEvent::SiblingLeft {
+                peer,
+                membership_epoch,
+            } => self.sibling_left(peer, membership_epoch),
+            NetEvent::SiblingMsg {
+                peer,
+                membership_epoch,
+                msg,
+            } => self.dispatch_sibling_msg(peer, membership_epoch, &msg),
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
             NetEvent::PeerLeft {
@@ -6458,36 +6364,8 @@ impl ShellNetwork {
                     peer,
                 });
                 self.record_peer_departure(ws, peer, cause, membership_epoch);
-                if let Some(epoch) = membership_epoch
-                    && let Ok(mut routes) = self.authenticated_personal_routes.lock()
-                    && routes
-                        .get(&(ws, peer))
-                        .is_some_and(|route| route.membership_epoch == epoch)
-                    && let Some(route) = routes.remove(&(ws, peer))
-                    && !routes.values().any(|other| other.device == route.device)
-                {
-                    drop(routes);
-                    self.device_departed(&route.device);
-                }
                 self.record_content_sources_changed();
-                let has_live_route =
-                    self.authenticated_personal_routes
-                        .lock()
-                        .is_ok_and(|routes| routes.values().any(|route| route.endpoint_id == peer))
-                        || self.workspace_control_direct.lock().is_ok_and(|direct| {
-                            direct.iter().any(|(_, endpoint)| endpoint == &peer)
-                        });
-                if !has_live_route {
-                    let handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
-                    // Adverts are not restated on a timer, so they do not
-                    // go stale by themselves: a departure forgets them.
-                    tilo_network_actor::media_caps::forget(handle);
-                    self.peer_identities
-                        .remove(&crate::shell::state::PeerOrigin::peer(&peer));
-                    {
-                        self.tree.write().retire_session(handle);
-                    }
-                }
+                self.forget_unrouted_peer(peer);
             }
             NetEvent::Msg {
                 ws,
@@ -6512,13 +6390,12 @@ impl ShellNetwork {
                 }
             }
             NetEvent::PersonalFabric {
-                ws,
                 peer,
                 membership_epoch,
                 user_public_key,
                 payload,
             } => {
-                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload);
+                self.dispatch_personal_fabric(peer, membership_epoch, user_public_key, payload);
             }
             NetEvent::NearbyTransferProgress {
                 target,
@@ -6549,29 +6426,208 @@ impl ShellNetwork {
         let _ = self.cmd_tx.try_send(NetCmd::AnnounceIdentity { ws });
     }
 
+    /// One of the person's devices proved `certs` on its session with this
+    /// one (membership `epoch`), each of a root this device acts for: its
+    /// identity is the one of this device's own person, else the first; a
+    /// route stands for each of those roots this device has a person room
+    /// of. A renewed hello on the same session replaces what the last one
+    /// proved.
+    fn sibling(
+        &self,
+        peer: iroh::EndpointId,
+        epoch: tilo_network_actor::MembershipEpoch,
+        certs: &[tilo_user_identity::DeviceCert],
+        revocations: &[tilo_user_identity::RevocationEntry],
+    ) {
+        let Some(cert) = certs
+            .iter()
+            .find(|cert| Some(cert.user_public_key) == self.local_person)
+            .or_else(|| certs.first())
+        else {
+            return;
+        };
+        let renewed = self
+            .authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| {
+                routes
+                    .values()
+                    .any(|route| route.endpoint_id == peer && route.membership_epoch == epoch)
+            });
+        if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
+            routes.retain(|_, route| route.endpoint_id != peer);
+        }
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let own: Vec<_> = revocations
+            .iter()
+            .filter(|entry| entry.user_public_key == cert.user_public_key)
+            .cloned()
+            .collect();
+        self.accept_identity_hello(DEFAULT_WS_TOPIC, &origin, &peer, cert, &own);
+        let Some(identity) = self.peer_identities.get(&origin) else {
+            return;
+        };
+        let Ok(device) =
+            tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
+        else {
+            return;
+        };
+        let roots: Vec<[u8; 32]> = certs
+            .iter()
+            .map(|cert| cert.user_public_key)
+            .filter(|root| self.person_roots().any(|mine| mine == *root))
+            .collect();
+        if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
+            for root in &roots {
+                let route = AuthenticatedPersonalRoute {
+                    endpoint_id: peer,
+                    membership_epoch: epoch,
+                    user_public_key: *root,
+                    device: device.clone(),
+                };
+                routes.insert(route.key(), route);
+            }
+        }
+        if let Ok(mut wanted) = self.person_snapshots_wanted.lock() {
+            wanted.extend(roots.iter().copied());
+        }
+        self.record_content_sources_changed();
+        self.drain_wake.poke();
+        if renewed {
+            return;
+        }
+        self.note_peer_joined();
+        if let Ok(mut connected) = self.dialed_direct_peers.lock() {
+            connected.insert(peer);
+        }
+        if self.local_person.is_some_and(|user| roots.contains(&user)) {
+            self.publish_device_fabric_request();
+            self.publish_personal_workspaces();
+            // The workspaces the device hosts for the person are joined
+            // from it, as from any host of theirs.
+            self.enter_configured_host_rooms_off_loop(Some(peer));
+        }
+    }
+
+    /// The session of membership `epoch` with one of the person's devices
+    /// ended: the routes it stood for go.
+    fn sibling_left(&self, peer: iroh::EndpointId, epoch: tilo_network_actor::MembershipEpoch) {
+        let departed: Vec<_> = {
+            let Ok(mut routes) = self.authenticated_personal_routes.lock() else {
+                return;
+            };
+            let ended: Vec<_> = routes
+                .iter()
+                .filter(|(_, route)| route.endpoint_id == peer && route.membership_epoch == epoch)
+                .map(|(key, _)| *key)
+                .collect();
+            let removed: Vec<_> = ended.iter().filter_map(|key| routes.remove(key)).collect();
+            removed
+                .into_iter()
+                .map(|route| route.device)
+                .filter(|device| !routes.values().any(|other| &other.device == device))
+                .collect()
+        };
+        for device in departed {
+            self.device_departed(&device);
+        }
+        if let Ok(mut connected) = self.dialed_direct_peers.lock() {
+            connected.remove(&peer);
+        }
+        self.record_peer_departure(
+            DEFAULT_WS_TOPIC,
+            peer,
+            PeerDepartureCause::HostSessionClosed,
+            Some(epoch),
+        );
+        self.record_content_sources_changed();
+        self.forget_unrouted_peer(peer);
+    }
+
+    /// Forget what `peer` said of itself (its identity, its codecs, its
+    /// session) once no route to it is left.
+    fn forget_unrouted_peer(&self, peer: iroh::EndpointId) {
+        let has_live_route = self
+            .authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| routes.values().any(|route| route.endpoint_id == peer))
+            || self
+                .workspace_control_direct
+                .lock()
+                .is_ok_and(|direct| direct.iter().any(|(_, endpoint)| endpoint == &peer));
+        if has_live_route {
+            return;
+        }
+        let handle = tilo_network_actor::behaviour::peer_liveness_handle(&peer);
+        // Adverts are not restated on a timer, so they do not go stale by
+        // themselves: a departure forgets them.
+        tilo_network_actor::media_caps::forget(handle);
+        self.peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&peer));
+        self.tree.write().retire_session(handle);
+    }
+
+    /// What one of the person's devices sent on its session of membership
+    /// `epoch` with this one: its codecs, or the person's workspace list.
+    fn dispatch_sibling_msg(
+        &self,
+        peer: iroh::EndpointId,
+        epoch: tilo_network_actor::MembershipEpoch,
+        msg: &NeighbourMsg,
+    ) {
+        if !self
+            .authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| {
+                routes
+                    .values()
+                    .any(|route| route.endpoint_id == peer && route.membership_epoch == epoch)
+            })
+        {
+            tracing::debug!(%peer, kind = msg.kind(), "dropping what an ended session brought");
+            return;
+        }
+        match msg {
+            // A codec advert describes the sender's own device, bound to its
+            // session: two devices of one person that share no room still
+            // learn what the other can decode.
+            NeighbourMsg::MediaCapabilities {
+                peer: advertiser,
+                hardware_decode,
+                software_decode,
+                hardware_encode,
+                software_encode,
+            } if *advertiser == tilo_network_actor::behaviour::peer_liveness_handle(&peer) => {
+                tilo_network_actor::media_caps::record(
+                    *advertiser,
+                    hardware_decode,
+                    software_decode,
+                    hardware_encode,
+                    software_encode,
+                );
+            }
+            NeighbourMsg::PersonalWorkspaces { .. } => {
+                self.dispatch_personal_workspaces(peer, msg);
+            }
+            _ => {
+                tracing::warn!(%peer, kind = msg.kind(), "dropping what a device's session does not carry");
+            }
+        }
+    }
+
     fn dispatch_personal_fabric(
         &self,
-        ws: u64,
         peer: iroh::EndpointId,
         membership_epoch: tilo_network_actor::MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
-        let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        let Some(identity) = self.peer_identities.get(&origin) else {
-            tracing::warn!(peer = %peer, "dropping unauthenticated personal fabric frame");
-            self.ask_identity(ws);
-            return;
-        };
         // The device's own root carries the whole fabric; a workspace
         // identity's root carries only its person room's records.
         let own_root = self.local_person == Some(user_public_key)
             || (matches!(payload, PersonalFabricPayload::Document { .. })
                 && self.workspace_person_roots.contains(&user_public_key));
-        if !own_root
-            || ws != personal_continuity_topic_id(&user_public_key)
-            || !identity.is_same_user(&user_public_key)
-        {
+        if !own_root {
             tracing::warn!(peer = %peer, "dropping cross-identity personal fabric frame");
             return;
         }
@@ -6579,15 +6635,18 @@ impl ShellNetwork {
             .authenticated_personal_routes
             .lock()
             .ok()
-            .and_then(|routes| routes.get(&(ws, peer)).cloned());
-        let Some(route) = route.filter(|route| {
-            route.membership_epoch == membership_epoch
-                && route.user_public_key == user_public_key
-                && route.endpoint_id == peer
-                && route.device.as_str() == hex::encode(identity.device_pubkey)
-        }) else {
+            .and_then(|routes| routes.get(&(user_public_key, peer)).cloned());
+        let Some(route) = route.filter(|route| route.membership_epoch == membership_epoch) else {
             tracing::warn!(peer = %peer, "dropping personal fabric frame without current authenticated route");
-            self.ask_identity(ws);
+            return;
+        };
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let Some(identity) = self
+            .peer_identities
+            .get(&origin)
+            .filter(|identity| identity.is_same_user(&user_public_key))
+        else {
+            tracing::warn!(peer = %peer, "dropping cross-identity personal fabric frame");
             return;
         };
         match payload {
@@ -6637,7 +6696,7 @@ impl ShellNetwork {
             payload @ (PersonalFabricPayload::RecordContentWant { .. }
             | PersonalFabricPayload::RecordContentPiece { .. }
             | PersonalFabricPayload::RecordContentLacks { .. }) => {
-                self.dispatch_person_content(ws, peer, payload);
+                self.dispatch_person_content(peer, payload);
             }
         }
     }
@@ -6793,7 +6852,7 @@ impl ShellNetwork {
         });
     }
 
-    /// Route one gossip [`NeighbourMsg`] that arrived on topic `ws`
+    /// Route one [`NeighbourMsg`] that arrived on topic `ws`
     /// from `peer` to its per-variant handler, then flush anything the
     /// replica queued in response. Split out of [`Self::tick`] via
     /// [`Self::dispatch_net_event`].
@@ -6817,7 +6876,7 @@ impl ShellNetwork {
         }
         // A record of the person's own room arrives from another of their
         // devices over the personal fabric, or kept by their always-on host
-        // on their continuity topic; never as room traffic.
+        // on their hosted topic; never as room traffic.
         if let NeighbourMsg::AppDocument { cluster_id, .. } = &msg
             && self.is_local_person_room(cluster_id)
         {
@@ -6856,12 +6915,6 @@ impl ShellNetwork {
             revocations,
         } = &msg
         {
-            // A new hello is a full replacement attempt for this exact route.
-            // Purge first so a wrong-user/revoked replacement can never leave
-            // the old same-user authority alive.
-            if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
-                routes.remove(&(ws, peer));
-            }
             // A device at another peer protocol version is admitted to
             // nothing; the one behind updates (docs/architecture/compatibility.md).
             if *protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
@@ -6884,33 +6937,6 @@ impl ShellNetwork {
                     workspace_topic: ws,
                     peer,
                 });
-            }
-            if let (Some(epoch), Some(user), Some(identity)) = (
-                membership_epoch,
-                self.person_roots()
-                    .find(|root| ws == personal_continuity_topic_id(root)),
-                self.peer_identities.get(&origin),
-            ) && identity.is_same_user(&user)
-                && let Ok(device) =
-                    tilo_network_actor::fabric::DeviceId::new(hex::encode(identity.device_pubkey))
-                && let Ok(mut routes) = self.authenticated_personal_routes.lock()
-            {
-                routes.insert(
-                    (ws, peer),
-                    AuthenticatedPersonalRoute {
-                        workspace_topic: ws,
-                        endpoint_id: peer,
-                        membership_epoch: epoch,
-                        user_public_key: user,
-                        device,
-                    },
-                );
-                drop(routes);
-                if let Ok(mut wanted) = self.person_snapshots_wanted.lock() {
-                    wanted.insert(user);
-                }
-                self.record_content_sources_changed();
-                self.drain_wake.poke();
             }
             return;
         }
@@ -6976,29 +7002,14 @@ impl ShellNetwork {
             );
             return;
         }
-        // Codec adverts ride the heartbeat on every joined topic, including
-        // the default topic and the person's own lane. They describe the
-        // sender's own device, already bound to its transport above, not a
-        // room, so no room authority applies. Two devices of one person
-        // that share no room still learn what the other can decode.
-        if let NeighbourMsg::MediaCapabilities {
-            peer: advertiser,
-            hardware_decode,
-            software_decode,
-            hardware_encode,
-            software_encode,
-        } = &msg
-        {
-            tilo_network_actor::media_caps::record(
-                *advertiser,
-                hardware_decode,
-                software_decode,
-                hardware_encode,
-                software_encode,
-            );
-            return;
-        }
-        if self.dispatch_personal_workspaces(ws, &origin, &msg) {
+        // Codec adverts and the person's workspace list travel on the
+        // sessions between the person's own devices alone
+        // ([`Self::dispatch_sibling_msg`]), never on a topic.
+        if matches!(
+            msg,
+            NeighbourMsg::MediaCapabilities { .. } | NeighbourMsg::PersonalWorkspaces { .. }
+        ) {
+            tracing::debug!(%peer, ws, kind = msg.kind(), "dropping what only a device of the person sends");
             return;
         }
         if self.require_peer_identity
@@ -7208,8 +7219,7 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::PersonalWorkspaces { .. }
-            | NeighbourMsg::RoomArchive { .. } => None,
+            | NeighbourMsg::PersonalWorkspaces { .. } => None,
         }
     }
 
@@ -7444,8 +7454,8 @@ pub(crate) fn host_identity_for_key(
                     .and_then(|store| store.load(identity_id))
                     .is_ok_and(|fleet| fleet.is_revoked(&cert.device_public_key))
             {
-                // The identity's continuity topic, where its other devices
-                // meet this one for its person room, presents the same cert.
+                // The identity's hosted topic, where its hosts keep its
+                // person room for its devices, presents the same cert.
                 let continuity = personal_continuity_topic_id(&cert.user_public_key);
                 workspace_device_certs.insert(continuity, cert.clone());
                 workspace_device_certs.insert(room_topic_id(room_id), cert);
@@ -7546,7 +7556,6 @@ pub(crate) fn shell_network_for_test(
         event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
         room_rosters_sent: Mutex::default(),
-        local_governor: std::sync::OnceLock::new(),
         outbox_waiting: Mutex::default(),
         outbox_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
@@ -7937,38 +7946,36 @@ mod tests {
     }
 
     #[test]
-    fn a_codec_advert_outside_a_room_is_recorded() {
+    fn a_codec_advert_from_a_device_of_the_person_is_recorded() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0x45; 32]);
         let user = root.verifying_key().to_bytes();
         let (net, mut commands) = personal_continuity_network_for_test(user);
         let device = iroh::SecretKey::from_bytes(&[0x23; 32]);
         authenticated_personal_peer(&net, &root, &device);
         while commands.try_recv().is_ok() {}
+        let advert = |peer| NeighbourMsg::MediaCapabilities {
+            peer,
+            hardware_decode: vec!["h264".into()],
+            software_decode: Vec::new(),
+            hardware_encode: Vec::new(),
+            software_encode: Vec::new(),
+        };
         let advertiser = tilo_network_actor::behaviour::peer_liveness_handle(&device.public());
-        for ws in [DEFAULT_WS_TOPIC, personal_continuity_topic_id(&user)] {
-            net.dispatch_neighbour_msg(
-                ws,
-                device.public(),
-                None,
-                false,
-                NeighbourMsg::MediaCapabilities {
-                    peer: advertiser,
-                    hardware_decode: vec!["h264".into()],
-                    software_decode: Vec::new(),
-                    hardware_encode: Vec::new(),
-                    software_encode: Vec::new(),
-                },
-            );
-        }
+        net.dispatch_sibling_msg(
+            device.public(),
+            tilo_network_actor::MembershipEpoch::for_test(1),
+            &advert(advertiser),
+        );
         assert!(
             tilo_network_actor::media_caps::capabilities(advertiser)
                 .hardware_decode
                 .iter()
                 .any(|codec| codec.wire_label() == "h264"),
-            "a codec advert from an authenticated device is recorded without a shared room"
+            "a codec advert from a device of the person is recorded without a shared room"
         );
         assert!(commands.try_recv().is_err());
 
+        // On a topic, or for an ended session, it is not.
         let stranger = iroh::SecretKey::from_bytes(&[0x24; 32]);
         let unproven = tilo_network_actor::behaviour::peer_liveness_handle(&stranger.public());
         net.dispatch_neighbour_msg(
@@ -7976,13 +7983,12 @@ mod tests {
             stranger.public(),
             None,
             false,
-            NeighbourMsg::MediaCapabilities {
-                peer: unproven,
-                hardware_decode: vec!["h264".into()],
-                software_decode: Vec::new(),
-                hardware_encode: Vec::new(),
-                software_encode: Vec::new(),
-            },
+            advert(unproven),
+        );
+        net.dispatch_sibling_msg(
+            stranger.public(),
+            tilo_network_actor::MembershipEpoch::for_test(1),
+            &advert(unproven),
         );
         assert!(
             tilo_network_actor::media_caps::capabilities(unproven)
@@ -8578,7 +8584,6 @@ mod tests {
         crate::shell::durable_writer::global().flush();
         crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 peer_device.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -8710,13 +8715,7 @@ mod tests {
         let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
         net.require_peer_identity = true;
         let topic = room_topic_id(enrolled);
-        authenticated_personal_peer_on_topic(
-            &net,
-            &root,
-            &device,
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            topic,
-        );
+        identified_peer_on_topic(&net, &root, &device, topic);
         let frame = tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::Invoke(
                 tilo_actions::remote::InvokeRequest {
@@ -8800,9 +8799,8 @@ mod tests {
             let tree_b = tree_for();
             let (mut net_b, mut commands_b) = shell_network_for_test(tree_b.clone(), 0xB);
             net_b.require_peer_identity = true;
-            let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
-            authenticated_personal_peer_on_topic(&net_b, &root_a, &device_a, epoch, topic);
-            authenticated_personal_peer_on_topic(&net_a, &root_b, &device_b, epoch, topic);
+            identified_peer_on_topic(&net_b, &root_a, &device_a, topic);
+            identified_peer_on_topic(&net_a, &root_b, &device_b, topic);
 
             let broker = crate::shell::broker_services::test_broker_with_membership(tree_b);
             broker.replace_published_surfaces_for_test(vec![PublishedSurface {
@@ -8966,7 +8964,7 @@ mod tests {
             );
             assert_eq!(net.held_remote_actions.lock().expect("held").len(), 2);
 
-            authenticated_personal_peer_on_topic(&net, &root_a, &device_a, epoch, topic);
+            identified_peer_on_topic(&net, &root_a, &device_a, topic);
             assert_eq!(
                 net.inbound_remote_actions.lock().expect("queue").len(),
                 1,
@@ -8975,7 +8973,7 @@ mod tests {
 
             // A certified device that is not a member of the room is still
             // refused by room authority after its hello.
-            authenticated_personal_peer_on_topic(&net, &stranger_root, &stranger, epoch, topic);
+            identified_peer_on_topic(&net, &stranger_root, &stranger, topic);
             assert_eq!(net.inbound_remote_actions.lock().expect("queue").len(), 1);
             assert!(net.held_remote_actions.lock().expect("held").is_empty());
 
@@ -8989,7 +8987,7 @@ mod tests {
             net.dispatch_net_event(NetEvent::PeerLeft {
                 ws: topic,
                 peer: iroh::SecretKey::from_bytes(&[0xE2; 32]).public(),
-                cause: PeerDepartureCause::LivenessTimedOut,
+                cause: PeerDepartureCause::HostSessionClosed,
                 membership_epoch: Some(epoch),
             });
             assert!(
@@ -9306,26 +9304,24 @@ mod tests {
             )
             .expect("the stranger signs its list")
         };
-        let topic = personal_continuity_topic_id(&person.user());
+        let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
         let offer = || {
-            board.net().dispatch_neighbour_msg(
-                topic,
+            board.net().dispatch_sibling_msg(
                 stranger_device.public(),
-                None,
-                false,
-                NeighbourMsg::PersonalWorkspaces {
+                epoch,
+                &NeighbourMsg::PersonalWorkspaces {
                     user_public_key: person.user(),
                     update: Box::new(update.clone()),
                 },
             );
         };
         offer();
-        authenticated_personal_peer_on_topic(
+        authenticated_peer_with(
             board.net(),
             &stranger_root,
             &stranger_device,
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            topic,
+            epoch,
+            DeviceCapabilities::primary(),
         );
         offer();
         board.frame();
@@ -9384,16 +9380,16 @@ mod tests {
         device: &iroh::SecretKey,
         membership_epoch: tilo_network_actor::MembershipEpoch,
     ) {
-        authenticated_personal_peer_on_topic(
+        authenticated_peer_with(
             net,
             root,
             device,
             membership_epoch,
-            personal_continuity_topic_id(&root.verifying_key().to_bytes()),
+            tilo_user_identity::DeviceCapabilities::member(),
         );
     }
 
-    /// `device` of `root`'s person proves, on the person's continuity topic,
+    /// `device` of `root`'s person proves, on its session with this device,
     /// a certificate for the workspaces assigned to it: a route of the person
     /// that is not one of their own devices, which never enrols it.
     pub(super) fn authenticated_workspace_peer(
@@ -9411,36 +9407,16 @@ mod tests {
             root,
             device,
             tilo_network_actor::MembershipEpoch::for_test(1),
-            personal_continuity_topic_id(&root.verifying_key().to_bytes()),
             capabilities,
         );
     }
 
-    fn authenticated_personal_peer_on_topic(
-        net: &ShellNetwork,
+    /// `device`'s certificate from `root`, with `capabilities`.
+    fn signed_device_cert(
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        membership_epoch: tilo_network_actor::MembershipEpoch,
-        topic: u64,
-    ) {
-        authenticated_peer_with(
-            net,
-            root,
-            device,
-            membership_epoch,
-            topic,
-            tilo_user_identity::DeviceCapabilities::member(),
-        );
-    }
-
-    fn authenticated_peer_with(
-        net: &ShellNetwork,
-        root: &ed25519_dalek::SigningKey,
-        device: &iroh::SecretKey,
-        membership_epoch: tilo_network_actor::MembershipEpoch,
-        topic: u64,
         capabilities: tilo_user_identity::DeviceCapabilities,
-    ) {
+    ) -> tilo_user_identity::DeviceCert {
         use tilo_user_identity::{DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
@@ -9453,10 +9429,26 @@ mod tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, root).expect("valid personal device certificate");
+        cert
+    }
+
+    /// `device` of `root` says who it is on `topic`, as a host hands on its
+    /// identity hello: that names it, and admits it to nothing more.
+    fn identified_peer_on_topic(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+        topic: u64,
+    ) {
+        let cert = signed_device_cert(
+            root,
+            device,
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
         net.dispatch_neighbour_msg(
             topic,
             device.public(),
-            Some(membership_epoch),
+            None,
             false,
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
@@ -9464,6 +9456,19 @@ mod tests {
                 revocations: Vec::new(),
             },
         );
+    }
+
+    /// `device` of `root` proves its certificate on its session with this
+    /// device, of membership `membership_epoch` ([`NetEvent::Sibling`]).
+    fn authenticated_peer_with(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+        membership_epoch: tilo_network_actor::MembershipEpoch,
+        capabilities: tilo_user_identity::DeviceCapabilities,
+    ) {
+        let cert = signed_device_cert(root, device, capabilities);
+        net.sibling(device.public(), membership_epoch, &[cert], &[]);
     }
 
     #[test]
@@ -9553,7 +9558,7 @@ mod tests {
                 label: "Home relay".into(),
                 user_public_key: hex::encode(user_public_key),
                 device_cert: None,
-                relay_workspace_ids: vec![personal_continuity_topic_id(&user_public_key)],
+                relay_workspace_ids: Vec::new(),
                 environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             std::fs::write(
@@ -9974,11 +9979,9 @@ mod tests {
         assert!(net.take_personal_fabric_actions().is_empty());
         authenticated_personal_peer(&net, &root, &peer);
         assert!(net.person_display_devices(&local)[0].online);
-        net.dispatch_net_event(NetEvent::PeerLeft {
-            ws: personal_continuity_topic_id(&user),
+        net.dispatch_net_event(NetEvent::SiblingLeft {
             peer: peer.public(),
-            cause: PeerDepartureCause::GossipNeighborDown,
-            membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
+            membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
         });
         assert!(!net.person_display_devices(&local)[0].online);
         assert!(
@@ -10018,29 +10021,21 @@ mod tests {
             stamp: snapshot.display.as_ref().unwrap().stamp.clone(),
             outputs: vec![observation.clone()],
         };
-        let topic = personal_continuity_topic_id(&user);
         net.continuity_policy_override =
             Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF);
-        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload.clone());
+        net.dispatch_personal_fabric(peer.public(), epoch, user, payload.clone());
         assert!(net.device_fabric().display_outputs(&owner).is_none());
         net.continuity_policy_override = allowed;
         net.dispatch_personal_fabric(
-            topic,
             peer.public(),
             tilo_network_actor::MembershipEpoch::for_test(2),
             user,
             payload.clone(),
         );
         assert!(net.device_fabric().display_outputs(&owner).is_none());
-        net.dispatch_personal_fabric(
-            topic.wrapping_add(1),
-            peer.public(),
-            epoch,
-            user,
-            payload.clone(),
-        );
+        net.dispatch_personal_fabric(peer.public(), epoch, [0xE3; 32], payload.clone());
         assert!(net.device_fabric().display_outputs(&owner).is_none());
-        net.dispatch_personal_fabric(topic, peer.public(), epoch, user, payload);
+        net.dispatch_personal_fabric(peer.public(), epoch, user, payload);
         assert_eq!(
             net.device_fabric().display_outputs(&owner),
             Some([observation.clone()].as_slice())
@@ -10055,7 +10050,6 @@ mod tests {
         net.peer_identities
             .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
         net.dispatch_personal_fabric(
-            topic,
             peer.public(),
             epoch,
             user,
@@ -10103,7 +10097,6 @@ mod tests {
             let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
             incoming.upsert(snapshot).unwrap();
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 peer_device.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -10115,7 +10108,6 @@ mod tests {
             let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
             incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 peer_device.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -10196,7 +10188,6 @@ mod tests {
             let payload = PersonalFabricPayload::Action(postcard::to_allocvec(&envelope).unwrap());
             for _ in 0..2 {
                 net.dispatch_personal_fabric(
-                    personal_continuity_topic_id(&user),
                     peer_device.public(),
                     tilo_network_actor::MembershipEpoch::for_test(1),
                     user,
@@ -10216,7 +10207,6 @@ mod tests {
             misaddressed.target =
                 tilo_network_actor::fabric::DeviceId::new("another-device").unwrap();
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 peer_device.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -10248,7 +10238,6 @@ mod tests {
             );
             envelope.issued_unix_ms = unix_now_ms();
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 peer.public(),
                 old_epoch,
                 user,
@@ -10265,29 +10254,21 @@ mod tests {
             let current = net.current_personal_route(&source).unwrap();
             assert_eq!(current.membership_epoch, new_epoch);
 
-            net.dispatch_net_event(NetEvent::PeerLeft {
-                ws: personal_continuity_topic_id(&user),
+            net.dispatch_net_event(NetEvent::SiblingLeft {
                 peer: peer.public(),
-                cause: PeerDepartureCause::GossipNeighborDown,
-                membership_epoch: Some(old_epoch),
+                membership_epoch: old_epoch,
             });
             assert_eq!(net.current_personal_route(&source), Some(current));
         }
 
-        fn personal_route_requires_exact_direct_same_user_identity_hello() {
+        fn personal_route_requires_a_certificate_of_the_same_person() {
             let local_root = ed25519_dalek::SigningKey::from_bytes(&[0xD6; 32]);
             let other_root = ed25519_dalek::SigningKey::from_bytes(&[0xD7; 32]);
             let local_user = local_root.verifying_key().to_bytes();
             let peer = iroh::SecretKey::generate();
             let (net, _commands) = personal_continuity_network_for_test(local_user);
             let epoch = tilo_network_actor::MembershipEpoch::for_test(51);
-            authenticated_personal_peer_on_topic(
-                &net,
-                &other_root,
-                &peer,
-                epoch,
-                personal_continuity_topic_id(&local_user),
-            );
+            authenticated_personal_peer_at(&net, &other_root, &peer, epoch);
             let peer_device =
                 tilo_network_actor::fabric::DeviceId::new(hex::encode(peer.public().as_bytes()))
                     .unwrap();
@@ -10297,13 +10278,7 @@ mod tests {
 
             authenticated_personal_peer_at(&net, &local_root, &peer, epoch);
             assert!(net.current_personal_route(&peer_device).is_some());
-            authenticated_personal_peer_on_topic(
-                &net,
-                &other_root,
-                &peer,
-                epoch,
-                personal_continuity_topic_id(&local_user),
-            );
+            authenticated_personal_peer_at(&net, &other_root, &peer, epoch);
             assert!(
                 net.current_personal_route(&peer_device).is_none(),
                 "a rejected replacement hello must purge the prior route"
@@ -10312,11 +10287,9 @@ mod tests {
                 .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
             authenticated_personal_peer_at(&net, &local_root, &peer, epoch);
             let admitted = net.current_personal_route(&peer_device).unwrap();
-            net.dispatch_net_event(NetEvent::PeerLeft {
-                ws: personal_continuity_topic_id(&local_user).wrapping_add(1),
+            net.dispatch_net_event(NetEvent::SiblingLeft {
                 peer: peer.public(),
-                cause: PeerDepartureCause::GossipNeighborDown,
-                membership_epoch: Some(epoch),
+                membership_epoch: tilo_network_actor::MembershipEpoch::for_test(50),
             });
             assert_eq!(net.current_personal_route(&peer_device), Some(admitted));
 
@@ -10352,7 +10325,7 @@ mod tests {
         personal_fabric_action_is_exact_target_and_ephemeral();
         personal_fabric_action_replay_and_misaddress_are_rejected();
         personal_route_reconnect_rejects_queued_old_epoch_and_stale_departure();
-        personal_route_requires_exact_direct_same_user_identity_hello();
+        personal_route_requires_a_certificate_of_the_same_person();
     }
 
     #[test]
@@ -10762,7 +10735,7 @@ mod tests {
             ));
         }
 
-        fn legacy_inbox_drops_local_gossip_echo() {
+        fn legacy_inbox_drops_local_echo() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _commands) = shell_network_for_test(tree, 99);
             net.queue_legacy_message(
@@ -10788,7 +10761,7 @@ mod tests {
                     .try_send(NetEvent::PeerLeft {
                         ws: DEFAULT_WS_TOPIC,
                         peer,
-                        cause: PeerDepartureCause::LivenessTimedOut,
+                        cause: PeerDepartureCause::HostSessionClosed,
                         membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(
                             u64::try_from(generation + 1).expect("small test generation"),
                         )),
@@ -10828,7 +10801,7 @@ mod tests {
         }
 
         legacy_inbox_keeps_every_frame_and_control_in_order();
-        legacy_inbox_drops_local_gossip_echo();
+        legacy_inbox_drops_local_echo();
         tick_bounds_actor_event_work_per_frame();
         tick_with_no_events_is_noop();
     }
@@ -10974,7 +10947,7 @@ mod tests {
             assert!(key_path.exists(), "keypair file must exist after spawn");
         }
 
-        fn home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms() {
+        fn home_peer_registry_survives_restart_and_admits_only_the_persons_peers() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x11; 32];
@@ -11014,22 +10987,24 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let rooms = std::collections::BTreeSet::from([42]);
-            let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
-            let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+            let first_boot = registered_home_peer_addrs(Some(own_user)).unwrap();
+            let restarted = registered_home_peer_addrs(Some(own_user)).unwrap();
             assert_eq!(first_boot, restarted, "registry is durable across restart");
-            assert_eq!(first_boot.len(), 1);
-            assert_eq!(first_boot[0].addr.id, service);
+            // Both of the person's peers, whatever workspaces each holds;
+            // never another identity's.
+            let mut ids: Vec<_> = first_boot.iter().map(|peer| peer.addr.id).collect();
+            ids.sort();
+            let mut expected = vec![service, other_service];
+            expected.sort();
+            assert_eq!(ids, expected);
         }
 
-        fn cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms() {
+        fn cold_boot_dials_a_home_peer_that_holds_no_workspace_yet() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
             let own_user = [0x11; 32];
-            let topic = personal_continuity_topic_id(&own_user);
             let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
             let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
-            let other_service = iroh::SecretKey::from_bytes(&[0x44; 32]).public();
             std::fs::write(
                 &registry,
                 serde_json::to_vec(&serde_json::json!([
@@ -11039,15 +11014,7 @@ mod tests {
                         "relay_service_node_id": hex::encode(service.as_bytes()),
                         "label": "Home server",
                         "user_public_key": hex::encode(own_user),
-                        "relay_workspace_ids": [topic],
-                    },
-                    {
-                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                        "device_node_id": hex::encode(device.as_bytes()),
-                        "relay_service_node_id": hex::encode(other_service.as_bytes()),
-                        "label": "Unrelated room",
-                        "user_public_key": hex::encode(own_user),
-                        "relay_workspace_ids": [77],
+                        "relay_workspace_ids": [],
                     },
                 ]))
                 .expect("registry"),
@@ -11055,8 +11022,7 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let rooms = relay_topics_for_home_peers(std::iter::empty(), Some(own_user));
-            let peers = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+            let peers = registered_home_peer_addrs(Some(own_user)).unwrap();
             assert_eq!(peers.len(), 1);
             assert_eq!(peers[0].addr.id, service);
             assert_eq!(peers[0].expectation.user_public_key, own_user);
@@ -11102,9 +11068,7 @@ mod tests {
             .expect("write registry");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_HOME_PEERS_PATH", &registry);
-            let hosts =
-                registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
-                    .expect("registry parses");
+            let hosts = registered_home_peer_addrs(Some(own_user)).expect("registry parses");
             assert!(hosts.iter().any(|host| host.addr == hint));
             assert!(
                 hosts
@@ -11177,8 +11141,8 @@ mod tests {
         }
 
         shell_network_spawns_with_default_keypair();
-        home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms();
-        cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms();
+        home_peer_registry_survives_restart_and_admits_only_the_persons_peers();
+        cold_boot_dials_a_home_peer_that_holds_no_workspace_yet();
         home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id();
         home_peer_registry_defaults_to_the_active_identity_root();
         live_registry_refresh_connects_a_newly_approved_home_peer();
@@ -11227,7 +11191,7 @@ mod tests {
                 .try_send(NetEvent::PeerLeft {
                     ws: room_topic_id(room),
                     peer,
-                    cause: PeerDepartureCause::LivenessTimedOut,
+                    cause: PeerDepartureCause::HostSessionClosed,
                     membership_epoch: None,
                 })
                 .expect("queue peer departure");
@@ -11244,7 +11208,7 @@ mod tests {
                 tilo_network_actor::behaviour::peer_liveness_handle(&peer)
             );
             assert_eq!(departure.route, CrdtRoute::cluster(room.to_string()));
-            assert_eq!(departure.cause, PeerDepartureCause::LivenessTimedOut);
+            assert_eq!(departure.cause, PeerDepartureCause::HostSessionClosed);
             assert_eq!(departure.user_public_key, Some(cert.user_public_key));
             assert_eq!(departure.participant_name.as_deref(), Some("Vera"));
             assert!(departure.observed_at <= SystemTime::now());
@@ -11338,15 +11302,15 @@ mod tests {
     }
 
     /// `commands` hand one person-room document of `cluster` to the
-    /// person's always-on hosts, on their continuity topic, and gossip it
-    /// nowhere.
+    /// person's always-on hosts, on their continuity topic, and nowhere
+    /// else.
     fn assert_kept_for_the_persons_hosts(commands: &[NetCmd], user: &[u8; 32], cluster: &str) {
         assert!(
             commands.iter().all(|command| !matches!(
                 command,
                 NetCmd::Publish { .. } | NetCmd::NativePublish { .. } | NetCmd::Replay { .. }
             )),
-            "a person-room document is never gossiped and never reaches a room topic"
+            "a person-room document never reaches a room topic"
         );
         let hosted: Vec<_> = commands
             .iter()
@@ -11390,12 +11354,11 @@ mod tests {
             .into_iter()
             .filter_map(|command| match command {
                 NetCmd::PublishPersonalFabricTarget {
-                    ws,
+                    user_public_key,
                     target,
                     payload,
-                    ..
                 } => {
-                    assert_eq!(ws, personal_continuity_topic_id(&user));
+                    assert_eq!(user_public_key, user);
                     assert_eq!(target, phone.public(), "only the person's own device");
                     Some(payload)
                 }
@@ -11415,7 +11378,6 @@ mod tests {
         receiver.register_local_record("so.tilo.tube", &cluster, record);
         let deliver = |from: &iroh::SecretKey, payload: PersonalFabricPayload| {
             receiver.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 from.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -11539,12 +11501,11 @@ mod tests {
             crate::shell::state::rehomed(&tree.desktop.workspaces[index], person_room);
         let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
         net.local_person = Some(user);
-        authenticated_personal_peer_on_topic(
+        authenticated_personal_peer_at(
             &net,
             &collaborator_root,
             &collaborator,
             tilo_network_actor::MembershipEpoch::for_test(1),
-            personal_continuity_topic_id(&user),
         );
         while sent.try_recv().is_ok() {}
 
@@ -11581,7 +11542,6 @@ mod tests {
 
         let deliver = |from: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
             net.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 from.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -11636,20 +11596,8 @@ mod tests {
         assert_eq!(net.take_person_snapshot_request(), None);
 
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[0xEE; 32]);
-        authenticated_personal_peer_on_topic(
-            &net,
-            &stranger,
-            &iroh::SecretKey::from_bytes(&[0xEF; 32]),
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            personal_continuity_topic_id(&user),
-        );
-        authenticated_personal_peer_on_topic(
-            &net,
-            &root,
-            &phone,
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            room_topic_id(RoomId::new()),
-        );
+        authenticated_personal_peer(&net, &stranger, &iroh::SecretKey::from_bytes(&[0xEF; 32]));
+        identified_peer_on_topic(&net, &root, &phone, room_topic_id(RoomId::new()));
         assert_eq!(
             net.take_person_snapshot_request(),
             None,
@@ -11694,20 +11642,8 @@ mod tests {
 
         // The host replays the laptop's write; the laptop itself is offline,
         // known to the phone only by the certificate the host replayed.
-        authenticated_personal_peer_on_topic(
-            &phone,
-            &root,
-            &laptop,
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            continuity,
-        );
-        authenticated_personal_peer_on_topic(
-            &phone,
-            &stranger_root,
-            &stranger,
-            tilo_network_actor::MembershipEpoch::for_test(1),
-            continuity,
-        );
+        identified_peer_on_topic(&phone, &root, &laptop, continuity);
+        identified_peer_on_topic(&phone, &stranger_root, &stranger, continuity);
         let kept = |author: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
             let msg = NeighbourMsg::AppDocument {
                 peer: 7,
@@ -11820,7 +11756,6 @@ mod tests {
         authenticated_personal_peer(&receiver, &root, &laptop);
         for payload in frames {
             receiver.dispatch_personal_fabric(
-                personal_continuity_topic_id(&user),
                 laptop.public(),
                 tilo_network_actor::MembershipEpoch::for_test(1),
                 user,
@@ -11836,9 +11771,8 @@ mod tests {
 
     /// One device acting for two people — its own root and a workspace
     /// identity's — keeps each one's person record between that person's
-    /// devices only: published to that root's other device on that root's
-    /// continuity topic, and taken in only from a device of the root whose
-    /// room it is.
+    /// devices only: published to that root's other device alone, and taken
+    /// in only from a device of the root whose room it is.
     #[test]
     fn each_identity_a_device_acts_for_keeps_its_person_records_to_itself() {
         let ada_root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
@@ -11861,12 +11795,13 @@ mod tests {
             std::iter::from_fn(|| sent.try_recv().ok())
                 .filter_map(|command| match command {
                     NetCmd::PublishPersonalFabricTarget {
-                        ws,
                         user_public_key,
                         target,
                         ..
-                    } => Some((ws, user_public_key, target)),
-                    NetCmd::Publish { .. } => panic!("a person record is never gossiped"),
+                    } => Some((user_public_key, target)),
+                    NetCmd::Publish { .. } => {
+                        panic!("a person record is never published to a room")
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -11881,7 +11816,7 @@ mod tests {
             );
             assert_eq!(
                 fabric_targets(&mut sent),
-                [(personal_continuity_topic_id(&root), root, other_device)],
+                [(root, other_device)],
                 "each person's record goes to that person's other device alone"
             );
         }
@@ -11902,14 +11837,12 @@ mod tests {
             envelope: Box::new(person_document(user, "history", &work_laptop_signing)),
         };
         net.dispatch_personal_fabric(
-            personal_continuity_topic_id(&work),
             work_laptop.public(),
             tilo_network_actor::MembershipEpoch::for_test(1),
             work,
             from_laptop(&own_person_room, &ada),
         );
         net.dispatch_personal_fabric(
-            personal_continuity_topic_id(&ada),
             work_laptop.public(),
             tilo_network_actor::MembershipEpoch::for_test(1),
             ada,
@@ -11920,7 +11853,6 @@ mod tests {
             "the workspace identity's device writes nothing into the device's own person room"
         );
         net.dispatch_personal_fabric(
-            personal_continuity_topic_id(&work),
             work_laptop.public(),
             tilo_network_actor::MembershipEpoch::for_test(1),
             work,
@@ -12155,7 +12087,7 @@ mod tests {
     )]
     fn app_records_reach_only_their_room_without_leaking_paths() {
         /// The SDK guide promises a path-bearing record id never leaves the
-        /// device. Check the exact bytes the actor would put on gossip and the
+        /// device. Check the exact bytes the actor would put on a session and the
         /// host link, for a file record and a record derived from one.
         fn file_backed_records_never_put_a_path_on_the_wire() {
             // A workspace room's records travel as the native owner's
@@ -12365,7 +12297,7 @@ mod tests {
         }
 
         fn a_session_does_not_take_its_own_presence_off_the_network() {
-            // Gossip hands a session its own frames back; painting them
+            // A host hands a session its own frames back; painting them
             // would draw a second cursor chasing the user's own hand.
             let tree = WorkspaceTree::bootstrap_default().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
@@ -12413,7 +12345,7 @@ mod tests {
         fn publish_document_emits_a_publish_command() {
             // An app's document in its workspace's room is the native
             // owner's to publish: the network asks for its publication on
-            // the room's topic and never puts the app's envelope on gossip.
+            // the room's topic and never puts the app's envelope on the wire.
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let room = tree
                 .read()

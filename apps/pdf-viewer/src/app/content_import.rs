@@ -50,7 +50,7 @@ impl PdfApp {
         &self,
         address: &str,
         name: Option<&str>,
-        cx: &EffectCx<PdfMarkup, Self>,
+        cx: &EffectCx<PdfMarkup>,
     ) -> Result<serde_json::Value, String> {
         let hash = content_hash(address)?;
         let held = cx.live().get().pinned_source();

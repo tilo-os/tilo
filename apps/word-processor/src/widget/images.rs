@@ -8,10 +8,10 @@ use tilo_doc::snapshot::{AttrVal, BlockView};
 use ui::portal;
 use ui::widget::toast::ToastKind;
 
-use super::WordProcessorWidget;
+use super::Editor;
 use super::input::is_dnd_spool_path;
 
-impl WordProcessorWidget {
+impl Editor {
     /// Fetch the bytes of every image the document references that is not fetched yet from the
     /// content store.
     /// Content that is not here stays absent, which is what draws a placeholder.
@@ -188,7 +188,7 @@ impl WordProcessorWidget {
     }
 }
 
-impl WordProcessorWidget {
+impl Editor {
     /// The caret block's id when it is an `image` block (an image is "selected"),
     /// read from the cached block set so it works mid-`draw` without the doc.
     /// Drives the panel image inspector + on-page selection handles.

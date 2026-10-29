@@ -161,6 +161,8 @@ pub struct SourceInventory {
     original_custody: Vec<Arc<original_custody::OriginalCustody>>,
     /// Nested, root-relative subtrees the person excluded from this review.
     exclusions: Vec<PathBuf>,
+    /// Root-relative files the running setup keeps in this Home for itself.
+    running: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -237,6 +239,7 @@ impl SourceInventory {
             #[cfg(target_os = "linux")]
             original_custody: Vec::new(),
             exclusions: Vec::new(),
+            running: Vec::new(),
         };
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
@@ -259,6 +262,7 @@ impl SourceInventory {
             #[cfg(target_os = "linux")]
             original_custody: Vec::new(),
             exclusions: Vec::new(),
+            running: Vec::new(),
         };
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
@@ -269,6 +273,7 @@ impl SourceInventory {
     #[cfg(target_os = "linux")]
     pub fn capture_portable_home(root: &Arc<PinnedDirectory>, home: &Path) -> io::Result<Self> {
         let mut inventory = Self::capture_home_policy(root, InstallerCustody::review(home)?)?;
+        inventory.running = running_setup_files(home);
         inventory.walk(root, Path::new(""), 0)?;
         Ok(inventory)
     }
@@ -286,6 +291,7 @@ impl SourceInventory {
             scratch.validate_excluded_source(root, &admitted.pin)?;
         }
         let mut inventory = Self::capture_home_policy(root, custody)?;
+        inventory.running = running_setup_files(home);
         inventory.facts = storage::Storage::with_scratch(scratch);
         inventory.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         inventory.facts.finish(cancel)?;
@@ -310,6 +316,7 @@ impl SourceInventory {
             custody,
             original_custody: Vec::new(),
             exclusions: Vec::new(),
+            running: Vec::new(),
         })
     }
     pub fn excluded(&self, path: &Path) -> io::Result<bool> {
@@ -317,6 +324,7 @@ impl SourceInventory {
             .exclusions
             .iter()
             .any(|excluded| path.starts_with(excluded))
+            || self.running.iter().any(|running| running == path)
         {
             return Ok(true);
         }
@@ -336,6 +344,14 @@ impl SourceInventory {
         Ok(false)
     }
     pub fn mutable_directory(&self, path: &Path) -> bool {
+        // The running setup's own files come and go while it reviews.
+        if self
+            .running
+            .iter()
+            .any(|running| running != path && running.starts_with(path))
+        {
+            return true;
+        }
         #[cfg(target_os = "linux")]
         if let Some(custody) = &self.custody {
             return custody.mutable_ancestors
@@ -356,6 +372,7 @@ impl SourceInventory {
         let custody = std::iter::empty::<&Path>();
         custody
             .chain(self.exclusions.iter().map(PathBuf::as_path))
+            .chain(self.running.iter().map(PathBuf::as_path))
             .collect()
     }
 
@@ -601,6 +618,7 @@ impl SourceInventory {
             #[cfg(target_os = "linux")]
             original_custody: self.original_custody.clone(),
             exclusions: self.exclusions.clone(),
+            running: self.running.clone(),
         };
         current.walk_with_cancel(root, Path::new(""), 0, cancel)?;
         current.facts.finish(cancel)?;
@@ -752,6 +770,99 @@ struct InstallerCustody {
     stable: (u64, u32, u32, u32),
 }
 #[cfg(target_os = "linux")]
+/// Files the running setup keeps in `home` for itself, relative to it: the
+/// lock and door of the settings profile it holds. They are where the
+/// settings records put them, never data of the Home.
+#[cfg(target_os = "linux")]
+fn running_setup_files(home: &Path) -> Vec<PathBuf> {
+    let Some(root) = tilo_settings_records::profile_root() else {
+        return Vec::new();
+    };
+    let records = tilo_settings_records::Records::of(&root);
+    let directory =
+        std::fs::canonicalize(records.dir()).unwrap_or_else(|_| records.dir().to_path_buf());
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    records
+        .runtime_files()
+        .iter()
+        .filter_map(|file| {
+            directory
+                .join(file.file_name()?)
+                .strip_prefix(&home)
+                .ok()
+                .map(Path::to_path_buf)
+        })
+        .collect()
+}
+
+/// The settings lock the running setup keeps in `home`, relative to it.
+#[cfg(target_os = "linux")]
+fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
+    running_setup_files(home).into_iter().find(|file| {
+        file.file_name() == Some(std::ffi::OsStr::new(tilo_settings_records::LOCK_FILE))
+    })
+}
+
+/// Whether `relative` can name a settings profile's lock below a Home: a
+/// bounded path of plain names ending where the settings records keep it.
+#[cfg(target_os = "linux")]
+fn settings_lock_shape(relative: &Path) -> bool {
+    !relative.as_os_str().is_empty()
+        && relative.as_os_str().len() <= 4096
+        && relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        && relative.ends_with(
+            Path::new(tilo_settings_records::RECORDS_DIR).join(tilo_settings_records::LOCK_FILE),
+        )
+}
+
+/// Inode, mode, owner and group of the regular file at `relative` below
+/// `root`, reached one no-follow edge at a time. `None` where nothing, or
+/// anything but a plain file, is there.
+#[cfg(target_os = "linux")]
+fn held_file(
+    root: &Arc<PinnedDirectory>,
+    relative: &Path,
+) -> io::Result<Option<(u64, u32, u32, u32)>> {
+    use cap_fs_ext::MetadataExt;
+    let found = |parent: &Arc<PinnedDirectory>, name: &std::ffi::OsStr| match metadata_nofollow(
+        &parent.file,
+        Path::new(name),
+    ) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    };
+    let mut parts: Vec<_> = relative.components().collect();
+    let Some(last) = parts.pop() else {
+        return Ok(None);
+    };
+    let mut pin = root.clone();
+    for part in parts {
+        let Some(metadata) = found(&pin, part.as_os_str())? else {
+            return Ok(None);
+        };
+        if !metadata.is_dir() || metadata.is_symlink() {
+            return Ok(None);
+        }
+        pin = pin.open_child(part.as_os_str(), &metadata)?;
+    }
+    let Some(metadata) = found(&pin, last.as_os_str())? else {
+        return Ok(None);
+    };
+    if !metadata.is_file() || metadata.is_symlink() {
+        return Ok(None);
+    }
+    pin.validate()?;
+    Ok(Some((
+        metadata.ino(),
+        cap_primitives::fs::MetadataExt::mode(&metadata),
+        cap_primitives::fs::MetadataExt::uid(&metadata),
+        cap_primitives::fs::MetadataExt::gid(&metadata),
+    )))
+}
+
 impl InstallerCustody {
     fn review(home: &Path) -> io::Result<Option<Arc<Self>>> {
         use cap_fs_ext::MetadataExt;

@@ -4,7 +4,7 @@
 //! is not admitted this way.
 
 use super::tests::personal_continuity_network_for_test;
-use super::{NeighbourMsg, ShellNetwork, personal_continuity_topic_id, personal_device_peers};
+use super::{ShellNetwork, personal_device_peers};
 use crate::device_fleet::DeviceFleetStore;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{
@@ -42,25 +42,19 @@ fn revocation(root: &SigningKey, device: &iroh::SecretKey) -> RevocationEntry {
     entry
 }
 
-/// `device` says hello on the person's continuity topic, presenting `cert`
+/// `device` says hello on its session with this device, presenting `cert`
 /// and carrying `revocations`.
 fn hello(
     net: &ShellNetwork,
-    person: &[u8; 32],
     device: &iroh::SecretKey,
     cert: DeviceCert,
     revocations: Vec<RevocationEntry>,
 ) {
-    net.dispatch_neighbour_msg(
-        personal_continuity_topic_id(person),
+    net.sibling(
         device.public(),
-        Some(tilo_network_actor::MembershipEpoch::for_test(1)),
-        false,
-        NeighbourMsg::IdentityHello {
-            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-            cert: Box::new(cert),
-            revocations,
-        },
+        tilo_network_actor::MembershipEpoch::for_test(1),
+        &[cert],
+        &revocations,
     );
 }
 
@@ -113,7 +107,6 @@ fn a_device_enrolled_elsewhere_is_trusted_dialed_and_kept_once_it_proves_its_cer
 
     hello(
         &net,
-        &person,
         &newer,
         cert(&root, &newer, DeviceCapabilities::member()),
         Vec::new(),
@@ -140,7 +133,6 @@ fn another_persons_device_and_the_persons_hosts_are_not_admitted_by_a_certificat
     let stranger = iroh::SecretKey::from_bytes(&[0x62; 32]);
     hello(
         &net,
-        &person,
         &stranger,
         cert(&stranger_root, &stranger, DeviceCapabilities::primary()),
         Vec::new(),
@@ -149,7 +141,6 @@ fn another_persons_device_and_the_persons_hosts_are_not_admitted_by_a_certificat
     let host = iroh::SecretKey::from_bytes(&[0x53; 32]);
     hello(
         &net,
-        &person,
         &host,
         cert(&root, &host, DeviceCapabilities::host()),
         Vec::new(),
@@ -177,7 +168,6 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
     .unwrap();
     hello(
         &net,
-        &person,
         &lost,
         cert(&root, &lost, DeviceCapabilities::member()),
         Vec::new(),
@@ -187,7 +177,6 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
     // Another device of the person brings the root's revocation of it.
     hello(
         &net,
-        &person,
         &other,
         cert(&root, &other, DeviceCapabilities::member()),
         vec![revocation(&root, &lost)],
@@ -201,7 +190,6 @@ fn a_revocation_from_the_root_wins_over_a_kept_device_now_and_after_a_restart() 
     // The revoked device proving its certificate again does not bring it back.
     hello(
         &net,
-        &person,
         &lost,
         cert(&root, &lost, DeviceCapabilities::member()),
         Vec::new(),

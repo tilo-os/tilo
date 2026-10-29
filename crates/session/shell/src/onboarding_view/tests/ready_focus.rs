@@ -1,4 +1,5 @@
 use super::*;
+use ui::widget::Scrollable;
 
 /// Every keyboard stop of `widget`'s subtree, in the order Tab visits
 /// them, each with what a screen reader says for it.
@@ -42,8 +43,9 @@ fn the_ready_screen_keyboard_stops_are_named() {
     let theme = Theme::dark();
     lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
 
+    // The shell's one stop is the setup app; Tab then walks the app's own.
     let mut stops = Vec::new();
-    keyboard_stops(&view, &mut stops);
+    keyboard_stops(ceremony(&mut view), &mut stops);
     assert!(
         stops
             .iter()

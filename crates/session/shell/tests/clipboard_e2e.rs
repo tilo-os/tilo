@@ -1762,215 +1762,208 @@ fn clipboard_mirror_never_requests_gtk_save_targets_as_payload() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
-    // Phase `clipboard_crosses_from_one_client_to_another`.
-    {
-        let compositor = Compositor::start();
-        let payload = "cross-process clipboard payload — ünïcödé ✂";
+fn clipboard_crosses_from_one_client_to_another() {
+    let compositor = Compositor::start();
+    let payload = "cross-process clipboard payload — ünïcödé ✂";
 
-        let mut source = TestClient::new(compositor.connect(), "org.tilo.test.source");
-        source.assert_is_tilo_compositor();
-        assert!(
-            source.has_global("wl_data_device_manager"),
-            "the compositor must advertise wl_data_device_manager; globals: {:?}",
-            source.global_names()
-        );
-        source.map_window(&compositor);
-        source.set_clipboard(payload);
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.source");
+    source.assert_is_tilo_compositor();
+    assert!(
+        source.has_global("wl_data_device_manager"),
+        "the compositor must advertise wl_data_device_manager; globals: {:?}",
+        source.global_names()
+    );
+    source.map_window(&compositor);
+    source.set_clipboard(payload);
 
-        // Mapping the second window moves focus, which is what makes the compositor
-        // offer it the selection — the real sequence a user performs.
-        let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.sink");
-        sink.assert_is_tilo_compositor();
-        sink.map_window(&compositor);
+    // Mapping the second window moves focus, which is what makes the compositor
+    // offer it the selection — the real sequence a user performs.
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.sink");
+    sink.assert_is_tilo_compositor();
+    sink.map_window(&compositor);
 
-        let received = sink.read_clipboard(Some(&mut source));
-        assert_eq!(
-            received, payload,
-            "the second client did not receive what the first copied"
-        );
-        assert!(
-            source.state.send_requests.iter().any(|m| m == TEXT_MIME),
-            "the source client was never asked for its data, so the bytes came \
-             from somewhere other than the selection: {:?}",
-            source.state.send_requests
-        );
-    }
+    let received = sink.read_clipboard(Some(&mut source));
+    assert_eq!(
+        received, payload,
+        "the second client did not receive what the first copied"
+    );
+    assert!(
+        source.state.send_requests.iter().any(|m| m == TEXT_MIME),
+        "the source client was never asked for its data, so the bytes came \
+         from somewhere other than the selection: {:?}",
+        source.state.send_requests
+    );
+}
 
-    // Phase `clipboard_crosses_from_in_process_chrome_to_a_client`.
-    // Copy in the compositor's own chrome, paste in a sandboxed app. Chrome,
-    // terminal and file-explorer are linked into the binary, not Wayland
-    // clients, so this goes chrome -> `ui::clipboard` -> the compositor's
-    // mirror -> a compositor-owned selection -> the focused client.
-    {
-        let compositor = Compositor::start();
-        let payload = "copied inside the compositor process";
+// Copy in the compositor's own chrome, paste in a sandboxed app. Chrome,
+// terminal and file-explorer are linked into the binary, not Wayland
+// clients, so this goes chrome -> `ui::clipboard` -> the compositor's
+// mirror -> a compositor-owned selection -> the focused client.
+#[test]
+fn clipboard_crosses_from_in_process_chrome_to_a_client() {
+    let compositor = Compositor::start();
+    let payload = "copied inside the compositor process";
 
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-sink");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-sink");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
 
-        compositor.chrome_copy(payload, false);
+    compositor.chrome_copy(payload, false);
 
-        let received = client.read_clipboard(None);
-        assert_eq!(
-            received, payload,
-            "a client did not receive what in-process chrome copied"
-        );
-    }
+    let received = client.read_clipboard(None);
+    assert_eq!(
+        received, payload,
+        "a client did not receive what in-process chrome copied"
+    );
+}
 
-    // Phase `clipboard_crosses_from_a_client_to_in_process_chrome`.
-    // Copy in a sandboxed app, paste in the compositor's own chrome — proves
-    // the synchronous paste mirror fills from the live protocol, not just
-    // from chrome's own writes.
-    {
-        let compositor = Compositor::start();
-        let payload = "copied inside a sandboxed client";
+// Copy in a sandboxed app, paste in the compositor's own chrome — proves
+// the synchronous paste mirror fills from the live protocol, not just
+// from chrome's own writes.
+#[test]
+fn clipboard_crosses_from_a_client_to_in_process_chrome() {
+    let compositor = Compositor::start();
+    let payload = "copied inside a sandboxed client";
 
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-source");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        client.set_clipboard(payload);
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-source");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.set_clipboard(payload);
 
-        // The compositor asks the client for the bytes asynchronously, so the
-        // client has to keep being dispatched while the mirror fills.
-        let started = Instant::now();
-        let mut seen = None;
-        while started.elapsed() < deadline() {
-            seen = compositor.chrome_paste(false);
-            if seen.as_deref() == Some(payload) {
-                break;
-            }
-            dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
+    // The compositor asks the client for the bytes asynchronously, so the
+    // client has to keep being dispatched while the mirror fills.
+    let started = Instant::now();
+    let mut seen = None;
+    while started.elapsed() < deadline() {
+        seen = compositor.chrome_paste(false);
+        if seen.as_deref() == Some(payload) {
+            break;
         }
-        assert_eq!(
-            seen.as_deref(),
-            Some(payload),
-            "in-process chrome never saw the client's clipboard"
-        );
-        assert!(
-            client.state.send_requests.iter().any(|m| m == TEXT_MIME),
-            "the compositor never asked the client for its data: {:?}",
-            client.state.send_requests
-        );
+        dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
     }
+    assert_eq!(
+        seen.as_deref(),
+        Some(payload),
+        "in-process chrome never saw the client's clipboard"
+    );
+    assert!(
+        client.state.send_requests.iter().any(|m| m == TEXT_MIME),
+        "the compositor never asked the client for its data: {:?}",
+        client.state.send_requests
+    );
+}
 
-    // Phase `image_clipboard_from_in_process_chrome_replaces_the_earlier_copy`.
-    // A screenshot reaches the clipboard through this copy. It is a new copy:
-    // the text copied before it is no longer offered, or every app that
-    // prefers text would paste that text instead of the screenshot. The copy
-    // is the compositor's, so it still pastes in an app started afterwards.
-    {
-        let compositor = Compositor::start();
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.image-sink");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        compositor.chrome_copy("text copied before the screenshot", false);
-        compositor.chrome_copy_image();
-        // The text copy's own selection may arrive first; the image copy
-        // replaces it.
-        client.wait_until(
-            |s| {
-                s.clipboard_offer_mimes
-                    .iter()
-                    .any(|mime| mime == "image/png")
-            },
-            "the image copy's selection never arrived",
-        );
-        assert_eq!(
-            client.state.clipboard_offer_mimes,
-            vec!["image/png".to_string()],
-            "the image copy offers the image and nothing that was copied before"
-        );
-        let png = client.read_clipboard_bytes("image/png", None);
-        let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
-        assert_eq!((decoded.width, decoded.height), (2, 1));
-        assert_eq!(
-            decoded.rgba,
-            [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
-        );
-        drop(client);
+// A screenshot reaches the clipboard through this copy. It is a new copy:
+// the text copied before it is no longer offered, or every app that
+// prefers text would paste that text instead of the screenshot. The copy
+// is the compositor's, so it still pastes in an app started afterwards.
+#[test]
+fn image_clipboard_from_in_process_chrome_replaces_the_earlier_copy() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.image-sink");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    compositor.chrome_copy("text copied before the screenshot", false);
+    compositor.chrome_copy_image();
+    // The text copy's own selection may arrive first; the image copy
+    // replaces it.
+    client.wait_until(
+        |s| {
+            s.clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == "image/png")
+        },
+        "the image copy's selection never arrived",
+    );
+    assert_eq!(
+        client.state.clipboard_offer_mimes,
+        vec!["image/png".to_string()],
+        "the image copy offers the image and nothing that was copied before"
+    );
+    let png = client.read_clipboard_bytes("image/png", None);
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
+    assert_eq!(
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+    drop(client);
 
-        let mut later = TestClient::new(compositor.connect(), "org.tilo.test.image-later");
-        later.map_window(&compositor);
-        later.wait_until(
-            |s| {
-                s.clipboard_offer_mimes
-                    .iter()
-                    .any(|mime| mime == "image/png")
-            },
-            "an app started after the copy was never offered the image",
-        );
-        assert_eq!(
-            later.state.clipboard_offer_mimes,
-            vec!["image/png".to_string()],
-            "an app started later is offered the image alone"
-        );
-        let png = later.read_clipboard_bytes("image/png", None);
-        let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
-        assert_eq!((decoded.width, decoded.height), (2, 1));
-    }
+    let mut later = TestClient::new(compositor.connect(), "org.tilo.test.image-later");
+    later.map_window(&compositor);
+    later.wait_until(
+        |s| {
+            s.clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == "image/png")
+        },
+        "an app started after the copy was never offered the image",
+    );
+    assert_eq!(
+        later.state.clipboard_offer_mimes,
+        vec!["image/png".to_string()],
+        "an app started later is offered the image alone"
+    );
+    let png = later.read_clipboard_bytes("image/png", None);
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
+}
 
-    // Phase `app_wayland_clipboard_publishes_a_png_that_replaces_its_earlier_text`.
-    // An app's image copy (Photos, the PDF viewer) replaces what it copied
-    // before, as the shell's does: no app pastes the older text instead.
-    {
-        let compositor = Compositor::start();
-        let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
-        app.assert_is_tilo_compositor();
-        let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
-        // Seat callbacks bind the publication worker's keyboard and device.
-        // Fence those real bindings before mapping acquires focus and copy.
-        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
-        app.map_window(&compositor);
+// An app's image copy (Photos, the PDF viewer) replaces what it copied
+// before, as the shell's does: no app pastes the older text instead.
+#[test]
+fn app_wayland_clipboard_publishes_a_png_that_replaces_its_earlier_text() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    // Seat callbacks bind the publication worker's keyboard and device.
+    // Fence those real bindings before mapping acquires focus and copy.
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    app.map_window(&compositor);
 
-        // This is the app-side backend, not HostClipboard: its publication worker
-        // owns a second wl_data_device on the app connection and must observe the
-        // focused seat before accepting the queued copy.
-        // A copy returns at once; its outcome settles once the compositor
-        // has confirmed the selection.
-        assert!(clipboard.copy(CopyContent::Text("app caption")).wait());
-        assert!(
-            clipboard
-                .copy(CopyContent::Image {
-                    width: 2,
-                    height: 1,
-                    rgba: &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40],
-                })
-                .wait()
-        );
-        // Publication is queued to the app clipboard worker. Keep its seat
-        // focused until the actual protocol selection advertises the image;
-        // opening the sink first can revoke its copy serial before publication.
-        app.wait_until(
-            |s| {
-                s.clipboard_offer_mimes
-                    .iter()
-                    .any(|mime| mime == "image/png")
-            },
-            "the app clipboard worker never published its PNG selection",
-        );
+    // This is the app-side backend, not HostClipboard: its publication worker
+    // owns a second wl_data_device on the app connection and must observe the
+    // focused seat before accepting the queued copy.
+    // A copy returns at once; its outcome settles once the compositor
+    // has confirmed the selection.
+    assert!(clipboard.copy(CopyContent::Text("app caption")).wait());
+    assert!(
+        clipboard
+            .copy(CopyContent::Image {
+                width: 2,
+                height: 1,
+                rgba: &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40],
+            })
+            .wait()
+    );
+    // Publication is queued to the app clipboard worker. Keep its seat
+    // focused until the actual protocol selection advertises the image;
+    // opening the sink first can revoke its copy serial before publication.
+    app.wait_until(
+        |s| {
+            s.clipboard_offer_mimes
+                .iter()
+                .any(|mime| mime == "image/png")
+        },
+        "the app clipboard worker never published its PNG selection",
+    );
 
-        let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
-        sink.assert_is_tilo_compositor();
-        sink.map_window(&compositor);
-        let png = sink.read_clipboard_bytes("image/png", None);
-        let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
-        assert_eq!((decoded.width, decoded.height), (2, 1));
-        assert_eq!(
-            decoded.rgba,
-            [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
-        );
-        assert_eq!(
-            sink.state.clipboard_offer_mimes,
-            vec!["image/png".to_string()],
-            "the image copy replaced the app's earlier text"
-        );
-    }
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
+    sink.assert_is_tilo_compositor();
+    sink.map_window(&compositor);
+    let png = sink.read_clipboard_bytes("image/png", None);
+    let decoded = ui::png::decode_rgba8(&png).expect("complete PNG");
+    assert_eq!((decoded.width, decoded.height), (2, 1));
+    assert_eq!(
+        decoded.rgba,
+        [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+    assert_eq!(
+        sink.state.clipboard_offer_mimes,
+        vec!["image/png".to_string()],
+        "the image copy replaced the app's earlier text"
+    );
 }
 
 /// A secret an app copies (a password, a one-time code) pastes into any other
@@ -4433,159 +4426,152 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
     );
 }
 
+// This is a client-to-compositor exercise, not a unit test of
+// `KeyboardSettings`: Tilo must serialize the selected German keymap
+// onto the Wayland seat and forward complete press/release/modifier streams
+// to a focused foreign client. Electron and Xwayland both consume this same
+// seat contract.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn real_clients_get_immediate_focus_and_the_full_keyboard_contract() {
-    // Phase `keyboard_focus_does_not_wait_for_mismatched_frame_presentation`.
-    // This is a client-to-compositor exercise, not a unit test of
-    // `KeyboardSettings`: Tilo must serialize the selected German keymap
-    // onto the Wayland seat and forward complete press/release/modifier streams
-    // to a focused foreign client. Electron and Xwayland both consume this same
-    // seat contract.
-    {
-        let compositor = Compositor::start();
-        let app_id = "org.tilo.test.focus-before-resize";
-        let mut client = TestClient::new(compositor.connect(), app_id);
-        client.assert_is_tilo_compositor();
+fn keyboard_focus_does_not_wait_for_mismatched_frame_presentation() {
+    let compositor = Compositor::start();
+    let app_id = "org.tilo.test.focus-before-resize";
+    let mut client = TestClient::new(compositor.connect(), app_id);
+    client.assert_is_tilo_compositor();
 
-        // `map_window` attaches its deliberate 320x240 first frame and only
-        // returns once it has received wl_keyboard.enter. The tab is much larger,
-        // so visual presentation remains behind the anti-spoof resize gate; input
-        // must not wait for that gate's ten-second backstop.
-        client.map_window(&compositor);
+    // `map_window` attaches its deliberate 320x240 first frame and only
+    // returns once it has received wl_keyboard.enter. The tab is much larger,
+    // so visual presentation remains behind the anti-spoof resize gate; input
+    // must not wait for that gate's ten-second backstop.
+    client.map_window(&compositor);
 
-        let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
-        let frame = frames
-            .get("foreign_frames")
-            .and_then(|payload| payload.get("frames"))
-            .and_then(serde_json::Value::as_array)
-            .and_then(|frames| {
-                frames.iter().find(|frame| {
-                    frame.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id)
-                })
+    let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
+    let frame = frames
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|frames| {
+            frames.iter().find(|frame| {
+                frame.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id)
             })
-            .unwrap_or_else(|| {
-                panic!(
-                    "mapped focused client was absent from foreign frame state: {frames:?}\\ncompositor log:\\n{}",
-                    compositor.recent_log()
-                )
-            });
-        assert_eq!(
-            frame.get("buffer").and_then(|buffer| buffer.get("w")),
-            Some(&serde_json::json!(320))
-        );
-        assert_eq!(
-            frame.get("buffer").and_then(|buffer| buffer.get("h")),
-            Some(&serde_json::json!(240))
-        );
-        assert_eq!(
-            frame.get("presented").and_then(serde_json::Value::as_bool),
-            Some(false),
-            "the test must retain the visual resize gate while proving focus arrived first; frame: {frame:?}"
-        );
-    }
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "mapped focused client was absent from foreign frame state: {frames:?}\\ncompositor log:\\n{}",
+                compositor.recent_log()
+            )
+        });
+    assert_eq!(
+        frame.get("buffer").and_then(|buffer| buffer.get("w")),
+        Some(&serde_json::json!(320))
+    );
+    assert_eq!(
+        frame.get("buffer").and_then(|buffer| buffer.get("h")),
+        Some(&serde_json::json!(240))
+    );
+    assert_eq!(
+        frame.get("presented").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "the test must retain the visual resize gate while proving focus arrived first; frame: {frame:?}"
+    );
+}
 
-    // Phase `real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract`.
-    {
-        let compositor = Compositor::start_with_input_settings(&serde_json::json!({
-            "keyboard_layout": "de:nodeadkeys",
-            "key_repeat": 0.5,
-        }));
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.de-keyboard");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        client.wait_until(
-            |s| s.keyboard_keymap.is_some() && s.keyboard_repeat_info.is_some(),
-            "focused foreign client never received the keymap and repeat contract",
-        );
+#[test]
+fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract() {
+    let compositor = Compositor::start_with_input_settings(&serde_json::json!({
+        "keyboard_layout": "de:nodeadkeys",
+        "key_repeat": 0.5,
+    }));
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.de-keyboard");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |s| s.keyboard_keymap.is_some() && s.keyboard_repeat_info.is_some(),
+        "focused foreign client never received the keymap and repeat contract",
+    );
 
-        let keymap = client
-            .state
-            .keyboard_keymap
-            .clone()
-            .expect("wait above established a keymap");
-        assert_de_nodeadkeys_keymap(&keymap);
-        let (rate, delay) = client
-            .state
-            .keyboard_repeat_info
-            .expect("wait above established repeat info");
+    let keymap = client
+        .state
+        .keyboard_keymap
+        .clone()
+        .expect("wait above established a keymap");
+    assert_de_nodeadkeys_keymap(&keymap);
+    let (rate, delay) = client
+        .state
+        .keyboard_repeat_info
+        .expect("wait above established repeat info");
+    assert!(
+        (10..=50).contains(&rate) && (200..=600).contains(&delay),
+        "repeat information must be usable by GTK/Qt/Electron clients, got rate={rate} delay={delay}"
+    );
+
+    client.clear_keyboard_trace();
+    // Physical positions: code 21 is the US-Y / German-Z position; code 12
+    // becomes `?` under Shift in de(nodeadkeys); code 43 becomes apostrophe.
+    // Holding modifiers as separate transitions proves the protocol does not
+    // collapse Shift into a synthetic text event (which breaks selection in
+    // Electron and all standard toolkits).
+    for (key, down) in [
+        ("Shift", true),
+        ("y", true),
+        ("y", false),
+        ("-", true),
+        ("-", false),
+        ("\\", true),
+        ("\\", false),
+        ("Shift", false),
+        ("Control", true),
+        ("ArrowLeft", true),
+        ("ArrowLeft", false),
+        ("Control", false),
+        // A held editing key has one press and one release. The client owns
+        // repeated delivery according to `repeat_info`; Tilo must never leave
+        // the key logically down or manufacture a second press on release.
+        ("Backspace", true),
+        ("Backspace", false),
+    ] {
+        let operation = if down { "key_down" } else { "key_up" };
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
         assert!(
-            (10..=50).contains(&rate) && (200..=600).contains(&delay),
-            "repeat information must be usable by GTK/Qt/Electron clients, got rate={rate} delay={delay}"
-        );
-
-        client.clear_keyboard_trace();
-        // Physical positions: code 21 is the US-Y / German-Z position; code 12
-        // becomes `?` under Shift in de(nodeadkeys); code 43 becomes apostrophe.
-        // Holding modifiers as separate transitions proves the protocol does not
-        // collapse Shift into a synthetic text event (which breaks selection in
-        // Electron and all standard toolkits).
-        for (key, down) in [
-            ("Shift", true),
-            ("y", true),
-            ("y", false),
-            ("-", true),
-            ("-", false),
-            ("\\", true),
-            ("\\", false),
-            ("Shift", false),
-            ("Control", true),
-            ("ArrowLeft", true),
-            ("ArrowLeft", false),
-            ("Control", false),
-            // A held editing key has one press and one release. The client owns
-            // repeated delivery according to `repeat_info`; Tilo must never leave
-            // the key logically down or manufacture a second press on release.
-            ("Backspace", true),
-            ("Backspace", false),
-        ] {
-            let operation = if down { "key_down" } else { "key_up" };
-            let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
-            assert!(
-                response.get("ok").is_some(),
-                "test control refused {operation} {key}: {response:?}"
-            );
-        }
-        client.wait_for_keyboard_events(14);
-        let trace = client.state.keyboard_events.clone();
-        assert_eq!(
-            trace,
-            vec![
-                (42, true),
-                (21, true),
-                (21, false),
-                (12, true),
-                (12, false),
-                (43, true),
-                (43, false),
-                (42, false),
-                (29, true),
-                (105, true),
-                (105, false),
-                (29, false),
-                (14, true),
-                (14, false),
-            ],
-            "the foreign client must receive every physical transition exactly once"
-        );
-        let symbols = translated_keysyms(&keymap, &trace);
-        assert_eq!(
-            symbols,
-            vec![
-                keysyms::KEY_Shift_L,
-                keysyms::KEY_Z,
-                keysyms::KEY_question,
-                keysyms::KEY_apostrophe,
-                keysyms::KEY_Control_L,
-                keysyms::KEY_Left,
-                keysyms::KEY_BackSpace,
-            ],
-            "the delivered keymap must make German punctuation, uppercase text and Ctrl+Arrow available to a real client"
+            response.get("ok").is_some(),
+            "test control refused {operation} {key}: {response:?}"
         );
     }
+    client.wait_for_keyboard_events(14);
+    let trace = client.state.keyboard_events.clone();
+    assert_eq!(
+        trace,
+        vec![
+            (42, true),
+            (21, true),
+            (21, false),
+            (12, true),
+            (12, false),
+            (43, true),
+            (43, false),
+            (42, false),
+            (29, true),
+            (105, true),
+            (105, false),
+            (29, false),
+            (14, true),
+            (14, false),
+        ],
+        "the foreign client must receive every physical transition exactly once"
+    );
+    let symbols = translated_keysyms(&keymap, &trace);
+    assert_eq!(
+        symbols,
+        vec![
+            keysyms::KEY_Shift_L,
+            keysyms::KEY_Z,
+            keysyms::KEY_question,
+            keysyms::KEY_apostrophe,
+            keysyms::KEY_Control_L,
+            keysyms::KEY_Left,
+            keysyms::KEY_BackSpace,
+        ],
+        "the delivered keymap must make German punctuation, uppercase text and Ctrl+Arrow available to a real client"
+    );
 }
 
 /// Waits until `state_dump` reports the chrome overlay `name` open.
@@ -4605,160 +4591,153 @@ fn wait_for_overlay(compositor: &Compositor, name: &str, failure: &str) {
     }
 }
 
+// Print Screen is compositor-owned, including its release. This drives the
+// developer socket through the input ledger rather than only asking the
+// overlay host to open Capture Studio: a client must lose focus while capture
+// is active, never see a stray Print release, and regain a clean keyboard
+// stream after Capture Studio closes.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn compositor_modes_take_and_return_client_input_cleanly() {
-    // Phase `print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus`.
-    // Print Screen is compositor-owned, including its release. This drives the
-    // developer socket through the input ledger rather than only asking the
-    // overlay host to open Capture Studio: a client must lose focus while capture
-    // is active, never see a stray Print release, and regain a clean keyboard
-    // stream after Capture Studio closes.
-    {
-        let compositor = Compositor::start();
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.print-screen");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        client.clear_keyboard_trace();
+fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.print-screen");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
 
-        for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
-            let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
-            assert!(
-                response.get("ok").is_some(),
-                "test control refused {operation} for Print Screen: {response:?}"
-            );
-        }
-        client.wait_until(
-            |state| !state.keyboard_focused,
-            "Capture Studio did not take keyboard focus from the mapped client",
-        );
-        client.roundtrip();
-        assert!(
-            client.state.keyboard_events.is_empty(),
-            "the focused client received a Print Screen edge despite capture owning the shortcut: {:?}",
-            client.state.keyboard_events
-        );
-
-        // A second Print while capture is active is consumed, rather than opening
-        // a second capture surface or leaking into the now-unfocused client.
-        for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
-            let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
-            assert!(
-                response.get("ok").is_some(),
-                "test control refused the second {operation}: {response:?}"
-            );
-        }
-        client.roundtrip();
-        assert!(
-            !client.state.keyboard_focused && client.state.keyboard_events.is_empty(),
-            "the second Print must leave the existing capture focus and client ledger untouched"
-        );
-
-        let response = compositor.control(&serde_json::json!({ "op": "key", "key": "Escape" }));
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
         assert!(
             response.get("ok").is_some(),
-            "test control refused Escape to close Capture Studio: {response:?}"
-        );
-        client.wait_until(
-            |state| state.keyboard_focused,
-            "the exact prior client did not regain keyboard focus after Capture Studio closed",
-        );
-        client.clear_keyboard_trace();
-        for (operation, key) in [("key_down", "Tab"), ("key_up", "Tab")] {
-            let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
-            assert!(
-                response.get("ok").is_some(),
-                "test control refused {operation} for post-capture Tab: {response:?}"
-            );
-        }
-        client.wait_for_keyboard_events(2);
-        assert_eq!(
-            client.state.keyboard_events,
-            vec![(15, true), (15, false)],
-            "the first post-capture key must have one matched press/release and no delayed Print release"
+            "test control refused {operation} for Print Screen: {response:?}"
         );
     }
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "Capture Studio did not take keyboard focus from the mapped client",
+    );
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "the focused client received a Print Screen edge despite capture owning the shortcut: {:?}",
+        client.state.keyboard_events
+    );
 
-    // Phase `power_menu_lock_enters_tilo_session_and_cuts_off_client_input`.
-    // Lock from the visible power menu must enter Tilo's own session lifecycle,
-    // rather than merely asking the surrounding login manager to lock.  Drive
-    // the production shortcut and menu keyboard path, then prove both the
-    // compositor state and a real Wayland client's focus/input boundary.
-    {
-        let compositor = Compositor::start();
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.power-menu-lock");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        client.clear_keyboard_trace();
-
-        // Open Quick Settings through its configured default (Super+Q), then
-        // Reverse-Tab from no hidden selection to the final root action, Power,
-        // and open it. This remains stable as high-frequency controls are added
-        // before the utility row;
-        // the next Enter activates the default Lock row in the modal.
-        // Each overlay opens on a later compositor turn than the key that asks
-        // for it, so wait for it before sending the keys meant for it: sent
-        // early, they reach whatever had focus before.
-        compositor.modifiers(false, false, false, true);
-        compositor.key("q");
-        compositor.modifiers(false, false, false, false);
-        wait_for_overlay(
-            &compositor,
-            "quick_settings",
-            "Super+Q did not open Quick Settings",
-        );
-        client.wait_until(
-            |state| !state.keyboard_focused,
-            "Quick Settings left the real Wayland client focused",
-        );
-        compositor.modifiers(false, true, false, false);
-        compositor.key("Tab");
-        compositor.modifiers(false, false, false, false);
-        compositor.key("Enter");
-        wait_for_overlay(
-            &compositor,
-            "power_menu",
-            "Enter on Power did not open the power menu",
-        );
-        compositor.key("Enter");
-
-        let started = Instant::now();
-        loop {
-            let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
-            if state
-                .get("state")
-                .and_then(|state| state.get("chrome"))
-                .and_then(|chrome| chrome.get("session_locked"))
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
-                break;
-            }
-            assert!(
-                started.elapsed() < deadline(),
-                "power-menu Lock did not enter the Tilo locked state. {}",
-                compositor.debug_state()
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
-        client.wait_until(
-            |state| !state.keyboard_focused,
-            "power-menu Lock left the real Wayland client focused",
-        );
-        // A post-lock key is routed only to the lock controller.  No menu or
-        // shortcut input from the whole sequence may leak to the hidden client.
-        compositor.key("x");
-        client.roundtrip();
+    // A second Print while capture is active is consumed, rather than opening
+    // a second capture surface or leaking into the now-unfocused client.
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
         assert!(
-            client.state.keyboard_events.is_empty(),
-            "power-menu Lock leaked input to the hidden client: {:?}",
-            client.state.keyboard_events
+            response.get("ok").is_some(),
+            "test control refused the second {operation}: {response:?}"
         );
     }
+    client.roundtrip();
+    assert!(
+        !client.state.keyboard_focused && client.state.keyboard_events.is_empty(),
+        "the second Print must leave the existing capture focus and client ledger untouched"
+    );
+
+    let response = compositor.control(&serde_json::json!({ "op": "key", "key": "Escape" }));
+    assert!(
+        response.get("ok").is_some(),
+        "test control refused Escape to close Capture Studio: {response:?}"
+    );
+    client.wait_until(
+        |state| state.keyboard_focused,
+        "the exact prior client did not regain keyboard focus after Capture Studio closed",
+    );
+    client.clear_keyboard_trace();
+    for (operation, key) in [("key_down", "Tab"), ("key_up", "Tab")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for post-capture Tab: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(2);
+    assert_eq!(
+        client.state.keyboard_events,
+        vec![(15, true), (15, false)],
+        "the first post-capture key must have one matched press/release and no delayed Print release"
+    );
+}
+
+// Lock from the visible power menu must enter Tilo's own session lifecycle,
+// rather than merely asking the surrounding login manager to lock.  Drive
+// the production shortcut and menu keyboard path, then prove both the
+// compositor state and a real Wayland client's focus/input boundary.
+#[test]
+fn power_menu_lock_enters_tilo_session_and_cuts_off_client_input() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.power-menu-lock");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
+
+    // Open Quick Settings through its configured default (Super+Q), then
+    // Reverse-Tab from no hidden selection to the final root action, Power,
+    // and open it. This remains stable as high-frequency controls are added
+    // before the utility row;
+    // the next Enter activates the default Lock row in the modal.
+    // Each overlay opens on a later compositor turn than the key that asks
+    // for it, so wait for it before sending the keys meant for it: sent
+    // early, they reach whatever had focus before.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("q");
+    compositor.modifiers(false, false, false, false);
+    wait_for_overlay(
+        &compositor,
+        "quick_settings",
+        "Super+Q did not open Quick Settings",
+    );
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "Quick Settings left the real Wayland client focused",
+    );
+    compositor.modifiers(false, true, false, false);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
+    compositor.key("Enter");
+    wait_for_overlay(
+        &compositor,
+        "power_menu",
+        "Enter on Power did not open the power menu",
+    );
+    compositor.key("Enter");
+
+    let started = Instant::now();
+    loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        if state
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("session_locked"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < deadline(),
+            "power-menu Lock did not enter the Tilo locked state. {}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "power-menu Lock left the real Wayland client focused",
+    );
+    // A post-lock key is routed only to the lock controller.  No menu or
+    // shortcut input from the whole sequence may leak to the hidden client.
+    compositor.key("x");
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "power-menu Lock leaked input to the hidden client: {:?}",
+        client.state.keyboard_events
+    );
 }
 
 /// The desktop's core lifecycle must be true at the protocol boundary, not
@@ -5005,201 +4984,195 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
     );
 }
 
+// A real toolkit must find every global it treats as mandatory — GTK
+// refuses the display outright (stopping every GTK program) if
+// `wl_data_device_manager` is missing. Tilo's own toolkit never asks for
+// it, so this asserts the full set a foreign toolkit needs.
 #[test]
-fn toolkit_globals_are_advertised_and_privileged_protocols_stay_socket_only() {
-    // Phase `compositor_advertises_the_globals_a_toolkit_requires`.
-    // A real toolkit must find every global it treats as mandatory — GTK
-    // refuses the display outright (stopping every GTK program) if
-    // `wl_data_device_manager` is missing. Tilo's own toolkit never asks for
-    // it, so this asserts the full set a foreign toolkit needs.
-    {
-        let compositor = Compositor::start();
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.toolkit");
-        client.assert_is_tilo_compositor();
+fn compositor_advertises_the_globals_a_toolkit_requires() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.toolkit");
+    client.assert_is_tilo_compositor();
 
-        // A registry that came back empty would satisfy any "is X absent" check,
-        // so establish first that we actually read one.
+    // A registry that came back empty would satisfy any "is X absent" check,
+    // so establish first that we actually read one.
+    assert!(
+        client.global_names().len() > 5,
+        "the registry looks empty ({:?}) — this test would pass vacuously",
+        client.global_names(),
+    );
+
+    for required in [
+        "wl_compositor",
+        "wl_shm",
+        "wl_seat",
+        "wl_data_device_manager",
+        "xdg_wm_base",
+    ] {
         assert!(
-            client.global_names().len() > 5,
-            "the registry looks empty ({:?}) — this test would pass vacuously",
+            client.has_global(required),
+            "{required} is not advertised. A toolkit that treats it as mandatory \
+             refuses the display and the application never opens a window. \
+             Globals seen: {:?}",
             client.global_names(),
-        );
-
-        for required in [
-            "wl_compositor",
-            "wl_shm",
-            "wl_seat",
-            "wl_data_device_manager",
-            "xdg_wm_base",
-        ] {
-            assert!(
-                client.has_global(required),
-                "{required} is not advertised. A toolkit that treats it as mandatory \
-                 refuses the display and the application never opens a window. \
-                 Globals seen: {:?}",
-                client.global_names(),
-            );
-        }
-    }
-
-    // Phase `data_control_is_privileged_socket_only`.
-    // `wlr-data-control` is the clipboard-manager protocol: binding it reads
-    // every selection on the seat, no focus or user interaction required.
-    // Must be invisible on the public (sandbox-bind-mounted) socket and
-    // present on the privileged one — asserted in both directions, since only
-    // checking absence would also pass if the global never existed.
-    {
-        let compositor = Compositor::start();
-
-        let mut sandboxed = TestClient::new(compositor.connect(), "org.tilo.test.sandboxed");
-        sandboxed.assert_is_tilo_compositor();
-        for manager in [
-            "zwlr_data_control_manager_v1",
-            "ext_data_control_manager_v1",
-        ] {
-            assert!(
-                !sandboxed.has_global(manager),
-                "{manager} is visible to a client on the public socket, which is the \
-                 socket every sandboxed app gets. Any app could then read every \
-                 password, TOTP code and recovery phrase the user copies. Globals \
-                 seen: {:?}",
-                sandboxed.global_names(),
-            );
-        }
-        // The ordinary, focus-gated selection protocols must still be there, or
-        // the assertion above would be satisfied by a compositor with no clipboard
-        // at all.
-        assert!(sandboxed.has_global("wl_data_device_manager"));
-        assert!(sandboxed.has_global("zwp_primary_selection_device_manager_v1"));
-
-        let mut privileged = TestClient::new(
-            compositor.connect_privileged(),
-            "org.tilo.test.clipboard-manager",
-        );
-        privileged.assert_is_tilo_compositor();
-        for manager in [
-            "zwlr_data_control_manager_v1",
-            "ext_data_control_manager_v1",
-        ] {
-            assert!(
-                privileged.has_global(manager),
-                "{manager} is missing on the privileged socket, so no clipboard \
-                 manager can ever run. Globals seen: {:?}",
-                privileged.global_names(),
-            );
-        }
-    }
-
-    // Phase `session_lock_is_privileged_socket_only`.
-    // Session-lock is an authentication boundary, just like clipboard-manager
-    // access: ordinary applications must not be able to acquire a compositor
-    // lock and later release it without passing Tilo authentication.
-    {
-        let compositor = Compositor::start();
-
-        let mut public = TestClient::new(compositor.connect(), "org.tilo.test.untrusted-locker");
-        public.assert_is_tilo_compositor();
-        assert!(
-            !public.has_global("ext_session_lock_manager_v1"),
-            "session-lock is visible on the public socket; any app could acquire and release the desktop lock. Globals: {:?}",
-            public.global_names(),
-        );
-
-        let mut trusted = TestClient::new(
-            compositor.connect_privileged(),
-            "org.tilo.test.session-locker",
-        );
-        trusted.assert_is_tilo_compositor();
-        assert!(
-            trusted.has_global("ext_session_lock_manager_v1"),
-            "session-lock is missing from the privileged session socket. Globals: {:?}",
-            trusted.global_names(),
         );
     }
 }
 
+// `wlr-data-control` is the clipboard-manager protocol: binding it reads
+// every selection on the seat, no focus or user interaction required.
+// Must be invisible on the public (sandbox-bind-mounted) socket and
+// present on the privileged one — asserted in both directions, since only
+// checking absence would also pass if the global never existed.
 #[test]
-fn primary_selection_crosses_every_boundary_without_aliasing_the_clipboard() {
-    // Phase `primary_selection_crosses_between_processes_and_does_not_alias_the_clipboard`.
-    // Middle-click paste: the primary selection is a separate buffer from the
-    // clipboard, and both must survive the trip between processes.
-    {
-        let compositor = Compositor::start();
-        let clipboard_payload = "this went on the clipboard";
-        let primary_payload = "this was drag-selected";
+fn data_control_is_privileged_socket_only() {
+    let compositor = Compositor::start();
 
-        let mut source = TestClient::new(compositor.connect(), "org.tilo.test.primary-source");
-        source.assert_is_tilo_compositor();
+    let mut sandboxed = TestClient::new(compositor.connect(), "org.tilo.test.sandboxed");
+    sandboxed.assert_is_tilo_compositor();
+    for manager in [
+        "zwlr_data_control_manager_v1",
+        "ext_data_control_manager_v1",
+    ] {
         assert!(
-            source.has_global("zwp_primary_selection_device_manager_v1"),
-            "the compositor must advertise the primary-selection manager; globals: {:?}",
-            source.global_names()
-        );
-        source.map_window(&compositor);
-        source.set_clipboard(clipboard_payload);
-        source.set_primary(primary_payload);
-
-        let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.primary-sink");
-        sink.assert_is_tilo_compositor();
-        sink.map_window(&compositor);
-
-        let got_primary = sink.read_primary(Some(&mut source));
-        assert_eq!(
-            got_primary, primary_payload,
-            "middle-click paste did not receive the drag-selected text"
-        );
-
-        let got_clipboard = sink.read_clipboard(Some(&mut source));
-        assert_eq!(
-            got_clipboard, clipboard_payload,
-            "the clipboard was overwritten by the primary selection"
+            !sandboxed.has_global(manager),
+            "{manager} is visible to a client on the public socket, which is the \
+             socket every sandboxed app gets. Any app could then read every \
+             password, TOTP code and recovery phrase the user copies. Globals \
+             seen: {:?}",
+            sandboxed.global_names(),
         );
     }
+    // The ordinary, focus-gated selection protocols must still be there, or
+    // the assertion above would be satisfied by a compositor with no clipboard
+    // at all.
+    assert!(sandboxed.has_global("wl_data_device_manager"));
+    assert!(sandboxed.has_global("zwp_primary_selection_device_manager_v1"));
 
-    // Phase `primary_selection_crosses_from_a_client_to_in_process_chrome`.
-    // The primary selection also has to reach in-process chrome, since the
-    // terminal that consumes it on middle-click runs inside the compositor.
-    {
-        let compositor = Compositor::start();
-        let payload = "primary selection from a client";
+    let mut privileged = TestClient::new(
+        compositor.connect_privileged(),
+        "org.tilo.test.clipboard-manager",
+    );
+    privileged.assert_is_tilo_compositor();
+    for manager in [
+        "zwlr_data_control_manager_v1",
+        "ext_data_control_manager_v1",
+    ] {
+        assert!(
+            privileged.has_global(manager),
+            "{manager} is missing on the privileged socket, so no clipboard \
+             manager can ever run. Globals seen: {:?}",
+            privileged.global_names(),
+        );
+    }
+}
 
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-chrome");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
-        client.set_primary(payload);
+// Session-lock is an authentication boundary, just like clipboard-manager
+// access: ordinary applications must not be able to acquire a compositor
+// lock and later release it without passing Tilo authentication.
+#[test]
+fn session_lock_is_privileged_socket_only() {
+    let compositor = Compositor::start();
 
-        let started = Instant::now();
-        let mut seen = None;
-        while started.elapsed() < deadline() {
-            seen = compositor.chrome_paste(true);
-            if seen.as_deref() == Some(payload) {
-                break;
-            }
-            dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
+    let mut public = TestClient::new(compositor.connect(), "org.tilo.test.untrusted-locker");
+    public.assert_is_tilo_compositor();
+    assert!(
+        !public.has_global("ext_session_lock_manager_v1"),
+        "session-lock is visible on the public socket; any app could acquire and release the desktop lock. Globals: {:?}",
+        public.global_names(),
+    );
+
+    let mut trusted = TestClient::new(
+        compositor.connect_privileged(),
+        "org.tilo.test.session-locker",
+    );
+    trusted.assert_is_tilo_compositor();
+    assert!(
+        trusted.has_global("ext_session_lock_manager_v1"),
+        "session-lock is missing from the privileged session socket. Globals: {:?}",
+        trusted.global_names(),
+    );
+}
+
+// Middle-click paste: the primary selection is a separate buffer from the
+// clipboard, and both must survive the trip between processes.
+#[test]
+fn primary_selection_crosses_between_processes_and_does_not_alias_the_clipboard() {
+    let compositor = Compositor::start();
+    let clipboard_payload = "this went on the clipboard";
+    let primary_payload = "this was drag-selected";
+
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.primary-source");
+    source.assert_is_tilo_compositor();
+    assert!(
+        source.has_global("zwp_primary_selection_device_manager_v1"),
+        "the compositor must advertise the primary-selection manager; globals: {:?}",
+        source.global_names()
+    );
+    source.map_window(&compositor);
+    source.set_clipboard(clipboard_payload);
+    source.set_primary(primary_payload);
+
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.primary-sink");
+    sink.assert_is_tilo_compositor();
+    sink.map_window(&compositor);
+
+    let got_primary = sink.read_primary(Some(&mut source));
+    assert_eq!(
+        got_primary, primary_payload,
+        "middle-click paste did not receive the drag-selected text"
+    );
+
+    let got_clipboard = sink.read_clipboard(Some(&mut source));
+    assert_eq!(
+        got_clipboard, clipboard_payload,
+        "the clipboard was overwritten by the primary selection"
+    );
+}
+
+// The primary selection also has to reach in-process chrome, since the
+// terminal that consumes it on middle-click runs inside the compositor.
+#[test]
+fn primary_selection_crosses_from_a_client_to_in_process_chrome() {
+    let compositor = Compositor::start();
+    let payload = "primary selection from a client";
+
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-chrome");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.set_primary(payload);
+
+    let started = Instant::now();
+    let mut seen = None;
+    while started.elapsed() < deadline() {
+        seen = compositor.chrome_paste(true);
+        if seen.as_deref() == Some(payload) {
+            break;
         }
-        assert_eq!(
-            seen.as_deref(),
-            Some(payload),
-            "in-process chrome never saw the client's primary selection"
-        );
+        dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
     }
+    assert_eq!(
+        seen.as_deref(),
+        Some(payload),
+        "in-process chrome never saw the client's primary selection"
+    );
+}
 
-    // Phase `primary_selection_crosses_from_in_process_chrome_to_a_client`.
-    // In-process chrome's primary selection must reach clients too, and must not
-    // disturb the clipboard.
-    {
-        let compositor = Compositor::start();
+// In-process chrome's primary selection must reach clients too, and must not
+// disturb the clipboard.
+#[test]
+fn primary_selection_crosses_from_in_process_chrome_to_a_client() {
+    let compositor = Compositor::start();
 
-        let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-out");
-        client.assert_is_tilo_compositor();
-        client.map_window(&compositor);
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-out");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
 
-        compositor.chrome_copy("chrome clipboard", false);
-        compositor.chrome_copy("chrome primary", true);
+    compositor.chrome_copy("chrome clipboard", false);
+    compositor.chrome_copy("chrome primary", true);
 
-        assert_eq!(client.read_primary(None), "chrome primary");
-        assert_eq!(client.read_clipboard(None), "chrome clipboard");
-    }
+    assert_eq!(client.read_primary(None), "chrome primary");
+    assert_eq!(client.read_clipboard(None), "chrome clipboard");
 }
 
 /// Drag text from one client onto the outer edge of another tiled window.

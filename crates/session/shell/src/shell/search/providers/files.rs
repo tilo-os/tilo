@@ -2596,44 +2596,41 @@ mod tests {
 
     #[test]
     fn recency_breaks_name_ties_from_the_index_but_never_outvotes_the_name() {
-        {
-            let fresh = aged_score_of("report", "~/a/report.md", Some(0)).unwrap();
-            let stale = aged_score_of("report", "~/b/report.md", Some(900)).unwrap();
-            assert!(
-                fresh > stale,
-                "the file touched today ({fresh}) must outrank the one from three \
-                 years ago ({stale})"
-            );
-        }
+        let fresh = aged_score_of("report", "~/a/report.md", Some(0)).unwrap();
+        let stale = aged_score_of("report", "~/b/report.md", Some(900)).unwrap();
+        assert!(
+            fresh > stale,
+            "the file touched today ({fresh}) must outrank the one from three \
+             years ago ({stale})"
+        );
+    }
 
-        // Phase `recency_cannot_outvote_what_the_name_says`.
-        // A freshly unpacked archive cannot displace an exact old match.
-        {
-            let old_exact = aged_score_of("notes", "~/a/notes.md", Some(900)).unwrap();
-            let new_weak =
-                aged_score_of("notes", "~/b/my-meeting-notes-and-agenda-draft.md", Some(0))
-                    .unwrap();
-            assert!(
-                old_exact > new_weak,
-                "a three-year-old notes.md ({old_exact}) must still beat a \
-                 freshly-touched my-meeting-notes-and-agenda-draft.md ({new_weak})"
-            );
-        }
+    // A freshly unpacked archive cannot displace an exact old match.
+    #[test]
+    fn recency_cannot_outvote_what_the_name_says() {
+        let old_exact = aged_score_of("notes", "~/a/notes.md", Some(900)).unwrap();
+        let new_weak =
+            aged_score_of("notes", "~/b/my-meeting-notes-and-agenda-draft.md", Some(0)).unwrap();
+        assert!(
+            old_exact > new_weak,
+            "a three-year-old notes.md ({old_exact}) must still beat a \
+             freshly-touched my-meeting-notes-and-agenda-draft.md ({new_weak})"
+        );
+    }
 
-        // Phase `the_recency_band_comes_from_the_index_not_the_disk`.
-        // Proven by scoring a path that does not exist on disk.
-        {
-            let ghost = "~/definitely/not/on/this/disk/report.md";
-            assert!(!Path::new("/home/tester/definitely").exists());
-            let fresh = aged_score_of("report", ghost, Some(0)).unwrap();
-            let none = score_of("report", ghost).unwrap();
-            assert_eq!(
-                fresh - none,
-                RECENCY_MAX,
-                "a today mtime carried in the index must contribute the full \
-                 recency band"
-            );
-        }
+    // Proven by scoring a path that does not exist on disk.
+    #[test]
+    fn the_recency_band_comes_from_the_index_not_the_disk() {
+        let ghost = "~/definitely/not/on/this/disk/report.md";
+        assert!(!Path::new("/home/tester/definitely").exists());
+        let fresh = aged_score_of("report", ghost, Some(0)).unwrap();
+        let none = score_of("report", ghost).unwrap();
+        assert_eq!(
+            fresh - none,
+            RECENCY_MAX,
+            "a today mtime carried in the index must contribute the full \
+             recency band"
+        );
     }
 
     #[test]

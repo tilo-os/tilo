@@ -180,6 +180,7 @@ fn person_bridge_never_acknowledges_failed_private_persistence() {
         )
         .unwrap();
     let path = directory.path().join("state.json");
+    crate::shell::persist::wait_for_saves();
     let before = std::fs::read(&path).unwrap();
     let command = serde_json::to_vec(&serde_json::json!({"operation":"send","public_key":peer,
         "text":"This failed private write must not be acknowledged", "invocation":uuid::Uuid::new_v4()})).unwrap();

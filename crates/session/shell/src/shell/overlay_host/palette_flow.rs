@@ -677,7 +677,7 @@ mod icon_tests {
         assert_eq!(action_icon("appearance.theme.dark"), Some(Icon::Moon));
         assert_eq!(action_icon("appearance.other"), Some(Icon::Palette));
         assert_eq!(action_icon("tab.next"), Some(Icon::AppWindow));
-        assert_eq!(action_icon("quick-settings.wifi.toggle"), Some(Icon::Wifi));
+        assert_eq!(action_icon("quick-settings.network"), Some(Icon::Wifi));
         assert_eq!(
             action_icon("tabular.thing"),
             None,

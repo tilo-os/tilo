@@ -21,7 +21,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-relay-client = { path = "../tilo-relay-client" }
+tilo-relay-client = { path = "../tilo-relay-client", default-features = false }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true

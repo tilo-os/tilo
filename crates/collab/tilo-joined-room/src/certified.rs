@@ -1,16 +1,16 @@
 //! Closed evidence from canonical, identity-pinned native enrollment.
 use crate::{PendingEnrollmentId, RoomId};
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{
     DeliveryOriginLocatorV1, IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES,
     TRANSPORT_DELIVERY_ORIGIN_V1, WorkspaceHostMode,
 };
 use tilo_peer_state::join::{
-    self, JoinBootstrap, JoinCompleteRequest, JoinTransportRequest,
-    TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint, VerifiedJoin,
+    self, JoinBootstrap, JoinTransportRequest, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
+    TransportHint, VerifiedJoin,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
+use web_time::SystemTime;
 
 const MAX_INTENT_BYTES: usize = MAX_WORKSPACE_JOIN_REQUEST_BYTES + 8192;
 #[derive(Clone, Serialize, Deserialize)]
@@ -164,6 +164,7 @@ impl VerifiedNativeEnrollmentIntent {
             delivery_locator,
         })
     }
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the exchange hands over the proof inputs it produced; none outlive the intent"
@@ -176,7 +177,7 @@ impl VerifiedNativeEnrollmentIntent {
     /// verify for it.
     pub(crate) fn from_proof(
         join: VerifiedJoin,
-        complete: JoinCompleteRequest,
+        complete: join::JoinCompleteRequest,
         local_device: DeviceCert,
         hint: TransportHint,
         prepared_at: SystemTime,
@@ -299,6 +300,7 @@ impl VerifiedNativeEnrollment {
     pub fn pending_id(&self) -> &PendingEnrollmentId {
         &self.pending_id
     }
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "a pending id's `digest` is the intent's proof digest"
@@ -336,23 +338,16 @@ impl VerifiedNativeEnrollment {
         {
             return Err("native Complete omitted exact enrolled certificates".into());
         }
-        let now = SystemTime::now();
-        let mut revocations = RevocationList::new();
-        for entry in &bootstrap.revocations {
-            revocations
-                .insert(entry.clone())
-                .map_err(|e| e.to_string())?;
-        }
         // Actual StatePeer validation checks certificate/revocation and authority input.
         // A alone admits the signed governance and publishes the durable peer.
         // The roster is the room's admitted evidence: a guest whose
         // certificate expired since is still in it.
-        tilo_peer_state::StatePeer::joined(
+        tilo_peer_state::StatePeer::from_join(
             &bootstrap.room,
             bootstrap.authority.clone(),
             bootstrap.certified_roster.clone(),
-            revocations,
-            now,
+            &bootstrap.revocations,
+            SystemTime::now(),
         )?;
         Ok(Self {
             intent,

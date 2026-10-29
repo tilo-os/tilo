@@ -376,7 +376,7 @@ impl PeerSync {
             .ok_or_else(|| io::Error::other("the hosting bound is past what this clock holds"))?;
         // The rooms this device hosted before are served again first: a
         // session reopening its workspace finds it held already.
-        self.network.open_hosted_rooms();
+        self.network.open_local_host();
         loop {
             // A turn places what waits to be placed and installs what
             // enrolled, as the desktop's frame does.

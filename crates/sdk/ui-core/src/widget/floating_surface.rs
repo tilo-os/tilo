@@ -679,6 +679,52 @@ impl DetachedContent {
         Self { taffy, node }
     }
 
+    /// Lay `content` out `width` wide, as a column stretches a child across
+    /// its width, at the height it takes there: under a node of that width
+    /// in a tree of its own. Its node is `content`'s, placed at that node's
+    /// top left.
+    pub(crate) fn lay_out_across(
+        content: &mut dyn crate::widget::Widget,
+        theme: &Theme,
+        width: f64,
+        text_renderer: &mut crate::text_render::TextRenderer,
+    ) -> Self {
+        use crate::widget::TaffyTreeExt as _;
+        let width = crate::num::f32_of_f64(width.max(0.0));
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = content.build_layout(&mut taffy, theme, &mut nodes);
+        let across = taffy.parent_node(
+            taffy::Style {
+                flex_direction: taffy::FlexDirection::Column,
+                size: taffy::Size {
+                    width: taffy::Dimension::length(width),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Default::default()
+            },
+            &[node],
+        );
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: `nodes` describes the tree just built from `content`, which
+        // the caller holds exclusively for the whole call; no pointer escapes.
+        let _ = unsafe {
+            bindings.rebuild(content, &taffy, node, &nodes);
+            crate::widget::compute_widget_layout(
+                &mut taffy,
+                across,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &nodes,
+                &bindings,
+                text_renderer,
+            )
+        };
+        Self { taffy, node }
+    }
+
     /// Hand `event` to a floating Panel's `content`, in the host's tree at
     /// `hosted` or else in `detached`'s own tree. Reports whether the content
     /// handled it, while leaving `ctx.handled` set if it already was.

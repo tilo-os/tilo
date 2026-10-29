@@ -55,10 +55,10 @@ mod collab_policy_state;
 mod color_management_protocol;
 #[path = "color_management_surface_override.rs"]
 mod color_management_surface_override;
+#[path = "command_line_usage.rs"]
+mod command_line_usage;
 #[path = "compositor_test.rs"]
 mod compositor_test;
-#[path = "continuity_suggestion_flow.rs"]
-mod continuity_suggestion_flow;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
 #[path = "cpu_raster_parity.rs"]
@@ -129,6 +129,8 @@ mod hdr_output_pipeline;
 mod hdr_tonemap_shader;
 #[path = "headless_examples_smoke.rs"]
 mod headless_examples_smoke;
+#[path = "hosted_surface_targets.rs"]
+mod hosted_surface_targets;
 #[path = "identity_startup.rs"]
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]

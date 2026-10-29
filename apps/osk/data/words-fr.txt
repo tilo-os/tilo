@@ -2,11 +2,13 @@ de	9680
 la	9430
 le	9350
 et	9310
+l'	9260
 à	9260
 les	9250
 est	9200
 en	9170
 des	9150
+d'	9140
 un	9110
 que	9070
 a	9000
@@ -18,18 +20,22 @@ pour	8980
 dans	8910
 je	8890
 qui	8890
+c'	8870
 au	8780
 ce	8780
 sur	8770
-qu	8760
+qu'	8760
 par	8720
 on	8710
 ne	8690
 plus	8680
+j'	8656
 avec	8650
+n'	8650
 mais	8620
 se	8560
 vous	8560
+s'	8530
 ça	8530
 tu	8500
 elle	8490
@@ -53,6 +59,8 @@ aux	8320
 même	8320
 me	8310
 ont	8280
+t'	8280
+m'	8271
 était	8230
 été	8220
 mon	8210
@@ -147,6 +155,7 @@ cas	7700
 chose	7700
 doit	7700
 partie	7700
+jusqu'	7691
 car	7680
 eu	7680
 mal	7680
@@ -179,6 +188,7 @@ nouveau	7630
 nouvelle	7630
 part	7630
 travail	7630
+aujourd'hui	7620
 compte	7620
 merci	7620
 prendre	7620
@@ -277,6 +287,7 @@ mère	7450
 passer	7450
 près	7450
 quel	7450
+quelqu'un	7450
 tes	7450
 vois	7450
 aucun	7440
@@ -666,6 +677,7 @@ réseau	7080
 salle	7080
 texte	7080
 veulent	7080
+lorsqu'	7076
 appel	7070
 celles	7070
 certain	7070
@@ -1435,6 +1447,7 @@ situé	6750
 tenu	6750
 théorie	6750
 verre	6750
+puisqu'	6747
 actuelle	6740
 agence	6740
 artiste	6740
@@ -6630,6 +6643,7 @@ téléphonique	5980
 vaisselle	5980
 vêtement	5980
 âgés	5980
+ç'	5980
 écosse	5980
 épais	5980
 éteindre	5980
@@ -6686,7 +6700,6 @@ innocence	5970
 interroge	5970
 jalousie	5970
 jouets	5970
-jusqu	5970
 lambert	5970
 manifestement	5970
 mannequin	5970
@@ -7774,6 +7787,7 @@ molécules	5880
 nie	5880
 ordi	5880
 ouvrière	5880
+p'tit	5880
 paires	5880
 parrain	5880
 perles	5880
@@ -9254,6 +9268,7 @@ vosges	5780
 électeur	5780
 émet	5780
 éventuels	5780
+quoiqu'	5778
 ab	5770
 abandonnés	5770
 ais	5770
@@ -16290,6 +16305,7 @@ portuaire	5390
 praticien	5390
 prieuré	5390
 protestantisme	5390
+prud'hommes	5390
 prédiction	5390
 prélever	5390
 préserve	5390
@@ -17458,6 +17474,7 @@ yuan	5340
 éligibles	5340
 épines	5340
 étangs	5340
+quelqu'	5336
 abordables	5330
 abusive	5330
 accessoirement	5330
@@ -17612,6 +17629,7 @@ niçois	5330
 obtenant	5330
 obtiens	5330
 ossements	5330
+p'tite	5330
 pandémie	5330
 panthère	5330
 parages	5330
@@ -17629,6 +17647,7 @@ populiste	5330
 porterait	5330
 postée	5330
 poudres	5330
+presqu'île	5330
 progéniture	5330
 prononcent	5330
 propulsé	5330
@@ -18557,6 +18576,7 @@ ordonna	5290
 orientaux	5290
 orientées	5290
 ornements	5290
+p'tits	5290
 pancartes	5290
 parure	5290
 perdure	5290
@@ -19066,7 +19086,6 @@ précoces	5270
 préférais	5270
 pâtissier	5270
 pâturages	5270
-quelqu	5270
 quittez	5270
 rabaisser	5270
 raccordement	5270
@@ -23831,6 +23850,7 @@ respectes	5090
 resteras	5090
 rigolez	5090
 ringard	5090
+rock'n'roll	5090
 ruissellement	5090
 récifs	5090
 récup	5090
@@ -24341,7 +24361,6 @@ lev	5070
 liner	5070
 littéral	5070
 lorette	5070
-lorsqu	5070
 lunaires	5070
 lupus	5070
 lyrics	5070
@@ -25591,6 +25610,7 @@ lounge	5030
 lyre	5030
 lâchés	5030
 lépreux	5030
+m'sieur	5030
 madère	5030
 mainstream	5030
 manioc	5030
@@ -26378,6 +26398,7 @@ zad	5010
 évitée	5010
 évoluera	5010
 ôté	5010
+presqu'	5008
 abondent	5000
 aboutira	5000
 abréviations	5000
@@ -33219,6 +33240,7 @@ poulies	4800
 praticable	4800
 productrices	4800
 profiler	4800
+prud'homme	4800
 précisez	4800
 préemption	4800
 préfète	4800
@@ -34696,6 +34718,7 @@ ordonnancement	4760
 orphelines	4760
 osa	4760
 oserai	4760
+p'tites	4760
 pantins	4760
 paroissial	4760
 partirais	4760
@@ -36560,7 +36583,6 @@ prémonitoire	4710
 préparais	4710
 prêtera	4710
 pudding	4710
-puisqu	4710
 pèle	4710
 pédant	4710
 pénalisés	4710
@@ -36906,6 +36928,7 @@ perdrez	4700
 pernicieux	4700
 philanthropique	4700
 phéromones	4700
+pin's	4700
 piquait	4700
 placera	4700
 plaisez	4700
@@ -38422,6 +38445,7 @@ impunis	4660
 imputation	4660
 inadéquation	4660
 inaptes	4660
+inch'allah	4660
 incinérateur	4660
 inclination	4660
 inconditionnels	4660
@@ -43621,6 +43645,7 @@ quark	4530
 quarto	4530
 quiet	4530
 quotité	4530
+r'n'b	4530
 radiologue	4530
 rapprochera	4530
 recommencement	4530
@@ -49505,6 +49530,7 @@ magnifier	4390
 magnétiseur	4390
 maltraitent	4390
 maléfices	4390
+mam'zelle	4390
 manchons	4390
 manigance	4390
 maraudeur	4390
@@ -49972,29 +49998,3 @@ mémorisé	4380
 métamorphe	4380
 métayers	4380
 nabuchodonosor	4380
-nanotechnologie	4380
-narrations	4380
-nitouche	4380
-nommerai	4380
-nénuphars	4380
-névrosés	4380
-ognon	4380
-oint	4380
-ophtalmologue	4380
-opposables	4380
-opposons	4380
-orientable	4380
-oronte	4380
-ourdou	4380
-panaches	4380
-parcouraient	4380
-parlementer	4380
-participais	4380
-participatives	4380
-pastoralisme	4380
-patronymique	4380
-payerai	4380
-pellet	4380
-permafrost	4380
-pieuvres	4380
-piler	4380

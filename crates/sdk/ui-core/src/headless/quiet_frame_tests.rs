@@ -360,7 +360,7 @@ fn every_mutable_entry_point_invalidates_local_state() {
         ("headless.rs", include_str!("../headless.rs")),
         ("caller_palette.rs", include_str!("caller_palette.rs")),
         ("controls.rs", include_str!("controls.rs")),
-        ("document_history.rs", include_str!("document_history.rs")),
+        ("history.rs", include_str!("history.rs")),
         (
             "invocation_results.rs",
             include_str!("invocation_results.rs"),

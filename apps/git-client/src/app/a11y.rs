@@ -1,11 +1,11 @@
 //! What assistive technology addresses: the targets the last paint recorded, the semantic hit they resolve to, the entries published for a reader and the tree a change becomes.
 
 use super::{
-    BranchAction, ChangeArea, ChangesHit, DiffHit, GitClientApp, Hit, HunkAction, PanelHit, Rect,
+    BranchAction, ChangeArea, ChangesHit, DiffHit, GitClientState, Hit, HunkAction, PanelHit, Rect,
     TextInput, Widget, change_list, changes, history, t, t_args,
 };
 
-impl GitClientApp {
+impl GitClientState {
     /// The semantic inventory of the last paint: one node per control and
     /// row, keyed by a stable action target.
     pub(super) fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {

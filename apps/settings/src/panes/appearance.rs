@@ -21,23 +21,29 @@
 //! live in that pane alone, where people look for them, and this page links
 //! there with one row instead of a second copy of the controls.
 //!
-//! A control that sets one field is bound to that field of the section, the
-//! others to an [`AppearanceEffect`]; either writes the section, and the pane
-//! shows what the section holds, whoever changed it.
+//! The page is view code over the section ([`view`]): a control that sets
+//! one field is bound to that field, the theme tiles to its verb, and the
+//! page shows what the section holds, whoever changed it. Choosing a
+//! picture of the person's own goes through the portals, an
+//! [`AppearanceEffect`].
 
+use std::rc::Rc;
+
+use provider_settings_ui::bound::{SettingRows as _, record_item};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::framework::{ActionControl as _, Actions, EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_resource;
-use ui::widget::{AppModel, ModelPath, Widget};
-use vello::kurbo::Rect;
+use ui::widget::Element;
 
-use crate::host::{Followed, PaneCx};
+use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::prefs::{AppearanceDevicePrefs, DesktopControlsDevice};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, block, note, rows, section, value_row};
+use provider_settings_ui::widgets::{
+    Item, SettingsSection, block, note, page_of, rows, section, value_row,
+};
 
 mod theme_tiles;
 use theme_tiles::ThemeTiles;
@@ -242,12 +248,11 @@ pub enum AppearanceEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AppearanceEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    let host = app.host();
     match effect {
         AppearanceEffect::InspectAppearance => {
-            let prefs = host.settings::<AppearancePrefs>().get();
+            let prefs = app.storage().settings::<AppearancePrefs>().get();
             serde_json::to_value(AppearanceInspection::from(&prefs))
                 .map(Effected::value)
                 .map_err(|error| format!("the appearance preferences could not be read: {error}"))
@@ -259,12 +264,12 @@ pub(crate) fn answer(
 /// Ask for a picture through the file-chooser portal, then hand it to the
 /// Wallpaper portal, which previews it and asks before applying it. The
 /// pane shows where the request stands.
-fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer {
-    if !app.host().reaches_devices() {
+fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
+    if !app.reaches_devices() {
         return Err("only a window someone uses opens the file chooser".into());
     }
     let target = match app
-        .host()
+        .storage()
         .settings::<AppearancePrefs>()
         .get()
         .wallpaper_target
@@ -279,7 +284,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     let accept = t("settings-appearance-choose");
     let pictures = t("settings-appearance-pictures");
     let confirm = t("settings-appearance-confirm-preview");
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || {
             let pick = ui::portal::PickRequest::open(&title, &accept)
@@ -314,7 +319,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
                 )),
             }
         },
-        |app: &mut SettingsApp, outcome: Result<Option<String>, String>, _| match outcome {
+        |app: &SettingsApp, outcome: Result<Option<String>, String>, _| match outcome {
             Ok(None) => {
                 app.wallpaper_status().set(None);
                 Ok(Effected::done())
@@ -331,330 +336,295 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     ))
 }
 
-pub struct AppearancePane {
-    cx: PaneCx,
-    prefs: Followed<AppearancePrefs>,
-    /// This device's chrome preferences (the top bar).
-    desktop: Followed<DesktopControlsDevice>,
-    /// The appearance this device's OS image ships.
-    device: Followed<AppearanceDevicePrefs>,
-    /// The desk widgets' choices, edited on this pane too.
-    desk: Followed<crate::prefs::DeskWidgetsPrefs>,
-    /// Where the last wallpaper request stands, written by its effect.
-    wallpaper_status: LocalState<Option<String>>,
-    /// What the page was built showing ([`Shape`]).
-    shape: Shape,
-    composed: ui::widget::Composed,
-}
-
-/// What the page shows of the values other than through a control that
-/// follows its field: the chosen theme's tile, the chosen wallpaper, the
-/// schedule's rows, the desk widgets that are on and where the wallpaper
-/// request stands. A change in any of them rebuilds the page; any other
-/// change only moves its control.
-#[derive(Clone, PartialEq)]
-struct Shape {
-    theme: String,
-    wallpaper: Option<String>,
-    schedule: [String; 3],
-    desk: [bool; 4],
-    status: Option<String>,
-    /// Whether the wallpaper thumbnails have been decoded.
-    thumbnails: bool,
-}
-
-impl AppearancePane {
-    fn shape(&self) -> Shape {
-        let prefs = self.prefs();
-        let desk = self.desk.get();
-        Shape {
-            theme: prefs.theme_choice(),
-            wallpaper: prefs.wallpaper.clone(),
-            schedule: [
-                prefs.schedule.clone(),
-                prefs.sunrise.clone(),
-                prefs.sunset.clone(),
-            ],
-            desk: [
-                desk.music.enabled,
-                desk.team.enabled,
-                desk.calendar.enabled,
-                desk.system_monitor.enabled,
-            ],
-            status: self.wallpaper_status.get(),
-            thumbnails: THUMBNAILS.get().is_some(),
-        }
+/// The Appearance page as view code over the person's appearance section,
+/// with this device's top bar and the desk widgets: each control bound to
+/// its field or verb, the page following every change of them.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    // The picker shows the person's own picture until the shipped ones are
+    // decoded; their landing shows them.
+    let decoded = LocalState::new(THUMBNAILS.get().is_some());
+    if !decoded.get() {
+        let writer = decoded.writer();
+        crate::device_read::Reading::new(move || {
+            read_thumbnails();
+            writer.set(true);
+        })
+        .refresh();
     }
-}
-
-impl AppearancePane {
-    /// The pane over `cx`'s appearance preferences, showing
-    /// `wallpaper_status`.
-    pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
-        let prefs = cx.follow::<AppearancePrefs>();
-        let desktop = cx.follow::<DesktopControlsDevice>();
-        let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
-        let device = cx.follow::<AppearanceDevicePrefs>();
-        // The picker shows the person's own picture until the shipped
-        // ones are decoded; their landing wakes the window to show them.
-        if THUMBNAILS.get().is_none() {
-            crate::device_read::Reading::new(read_thumbnails).refresh();
-        }
-        let mut pane = Self {
-            cx,
-            prefs,
-            desktop,
-            device,
-            desk,
-            wallpaper_status,
-            shape: Shape {
-                theme: String::new(),
-                wallpaper: None,
-                schedule: Default::default(),
-                desk: [false; 4],
-                status: None,
-                thumbnails: false,
+    let actions = cx.actions();
+    let status = app.wallpaper_status().clone();
+    let prefs = cx.settings::<AppearancePrefs>();
+    cx.record(&prefs, move |cx| {
+        let mut groups = vec![
+            theme_card(cx, &actions),
+            {
+                let (actions, decoded) = (actions.clone(), decoded.clone());
+                cx.switch(&status, move |cx, status| {
+                    wallpaper_card(cx, &actions, &decoded, status.as_deref())
+                })
             },
-            composed: ui::widget::Composed::default(),
-        };
-        pane.shape = pane.shape();
-        pane
-    }
+            cx.switch(&schedule_shown(cx), |cx, _| {
+                schedule_card(cx).into_element()
+            }),
+        ];
+        let desktop = cx.settings::<DesktopControlsDevice>();
+        if let Some(top_bar) = record_item(cx, &desktop, hide_top_bar) {
+            groups.push(
+                section(&t("settings-appearance-desktop-card"), rows(vec![top_bar])).into_element(),
+            );
+        }
+        let desk = cx.settings::<crate::prefs::DeskWidgetsPrefs>();
+        if let Some(card) = cx.record(&desk, desk_widgets::card) {
+            groups.push(card);
+        }
+        page_of(groups)
+    })
+}
 
-    pub fn prefs(&self) -> &AppearancePrefs {
-        self.prefs.get()
-    }
-
-    /// The theme, the density and the interface scale, and the way to
-    /// the accessibility options.
-    fn theme_card(&self) -> SettingsSection {
-        let cx = &self.cx;
-        let paths = AppearancePrefs::paths();
-        section(
-            &t("settings-appearance-theme-card"),
-            rows(vec![
-                // Each theme drawn in its own colours, the chosen one ringed.
-                block(Box::new(cx.bind_verb(
-                    ThemeTiles::new(self.prefs().theme_choice()),
-                    AppearancePrefs::PICK_THEME,
-                ))),
-                cx.row(t("settings-appearance-density"))
-                    .described(t("settings-appearance-density-desc"))
-                    .id("appearance.density")
-                    .of(&self.prefs, paths.density)
-                    .pictures(
-                        DENSITIES.iter().map(|(_, density)| f64::from(*density)),
-                        |density: &f64| density_label(*density),
-                        |density: &f64| ui::widget::Picture::Density(*density as f32),
-                    ),
-                cx.row(t("settings-appearance-ui-scale"))
-                    .id("appearance.ui_scale")
-                    .of(&self.prefs, paths.ui_scale)
-                    .among(UI_SCALES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-                        ui_scale_label(*scale).to_owned()
-                    }),
-                // Contrast, motion and text size are Accessibility's alone.
-                cx.row(t("settings-appearance-accessibility"))
-                    .described(t("settings-appearance-accessibility-desc"))
-                    .button(
-                        "appearance.accessibility",
-                        &t("settings-appearance-accessibility-open"),
-                        crate::effects::open_pane(crate::categories::Category::Accessibility),
-                    ),
-            ]),
+/// The theme, the density and the interface scale, and the way to the
+/// accessibility options.
+fn theme_card(cx: &ViewCx<AppearancePrefs>, actions: &Actions<Settings>) -> Element {
+    let paths = AppearancePrefs::paths();
+    // Each theme drawn in its own colours, the chosen one ringed.
+    let tiles = cx.switch(&cx.value(AppearancePrefs::theme_choice), |cx, theme| {
+        Box::new(
+            cx.actions()
+                .bind(ThemeTiles::new(theme.clone()), AppearancePrefs::PICK_THEME),
         )
-    }
-
-    fn build_composition(&self) -> Box<dyn Widget> {
-        let theme_card = self.theme_card();
-        let desktop_card = section(
-            &t("settings-appearance-desktop-card"),
-            rows(vec![hide_top_bar(&self.cx, &self.desktop)]),
-        );
-
-        crate::widgets::page(vec![
-            theme_card,
-            self.wallpaper_card(),
-            self.schedule_card(),
-            desktop_card,
-            self.desk_widgets_card(),
-        ])
-    }
-
-    fn wallpaper_card(&self) -> SettingsSection {
-        let cx = &self.cx;
-        let mut body: Vec<Item> = vec![
-            block(Box::new(self.wallpaper_picker())),
-            cx.row(t("settings-appearance-use-for"))
-                .id("appearance.wallpaper_scope")
-                .of(&self.prefs, AppearancePrefs::paths().wallpaper_scope)
-                .among(values(&WALLPAPER_SCOPES), |scope: &String| {
-                    scope_label(scope)
+    });
+    let open = crate::effects::open_pane(crate::categories::Category::Accessibility);
+    section(
+        &t("settings-appearance-theme-card"),
+        rows(vec![
+            block(tiles),
+            cx.setting(t("settings-appearance-density"))
+                .described(t("settings-appearance-density-desc"))
+                .id("appearance.density")
+                .pictures(
+                    paths.density,
+                    DENSITIES.iter().map(|(_, density)| f64::from(*density)),
+                    |density: &f64| density_label(*density),
+                    |density: &f64| ui::widget::Picture::Density(*density as f32),
+                ),
+            cx.setting(t("settings-appearance-ui-scale"))
+                .id("appearance.ui_scale")
+                .among(
+                    paths.ui_scale,
+                    UI_SCALES.iter().map(|(_, scale)| *scale),
+                    |scale: &f64| ui_scale_label(*scale).to_owned(),
+                ),
+            // Contrast, motion and text size are Accessibility's alone.
+            cx.setting(t("settings-appearance-accessibility"))
+                .described(t("settings-appearance-accessibility-desc"))
+                .id("appearance.accessibility")
+                .button(&t("settings-appearance-accessibility-open"), |button| {
+                    actions.bind_effect_invocation(button, &open)
                 }),
-            cx.row(t("settings-appearance-show-on"))
-                .id("appearance.wallpaper_target")
-                .of(&self.prefs, AppearancePrefs::paths().wallpaper_target)
-                .among(values(&WALLPAPER_TARGETS), |target: &String| {
-                    target_label(target)
-                }),
-        ];
-        if let Some(status) = &self.shape.status {
-            body.push(note(status));
-        }
-        section(&t("settings-appearance-wallpaper-card"), rows(body))
-    }
+        ]),
+    )
+    .into_element()
+}
 
-    /// The shipped pictures this system has installed, each choosing itself
-    /// the moment it is pressed, then the person's own picture. The chosen
-    /// one is marked.
-    fn wallpaper_picker(&self) -> ui::widget::MediaGrid {
-        self.wallpaper_picker_of(installed_thumbnails())
-    }
-
-    fn wallpaper_picker_of(&self, thumbnails: &[Thumbnail]) -> ui::widget::MediaGrid {
-        let chosen = tilo_wallpapers::choice(self.prefs().wallpaper.as_deref());
-        let mut cards: Vec<ui::widget::MediaCard> = thumbnails
-            .iter()
-            .map(|(wallpaper, thumbnail)| {
-                let id = wallpaper.id.as_str();
-                let card = ui::widget::MediaCard::new(
-                    format!("appearance.wallpaper.{id}"),
-                    ui::widget::MediaSource::Image(thumbnail.clone()),
-                )
-                .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
-                .title(t(&format!("settings-wallpaper-{id}")))
-                .meta(wallpaper.author.as_str())
-                .selected(chosen == Some(tilo_wallpapers::Choice::Bundled(wallpaper)));
-                self.cx
-                    .bind_field_with(card, AppearancePrefs::paths().wallpaper, move |()| {
-                        Ok(Some(id.to_owned()))
-                    })
+/// The wallpapers, where the chosen one is used and shown, and where the
+/// last request for a picture of the person's own stands (`status`).
+fn wallpaper_card(
+    cx: &ViewCx<AppearancePrefs>,
+    actions: &Actions<Settings>,
+    decoded: &LocalState<bool>,
+    status: Option<&str>,
+) -> Element {
+    let paths = AppearancePrefs::paths();
+    let picker = {
+        let actions = actions.clone();
+        cx.switch(decoded, move |cx, _| {
+            let actions = actions.clone();
+            let chosen = cx.value(|prefs: &AppearancePrefs| prefs.wallpaper.clone());
+            cx.switch(&chosen, move |cx, chosen| {
+                Box::new(wallpaper_picker(
+                    cx,
+                    &actions,
+                    chosen.as_deref(),
+                    installed_thumbnails(),
+                ))
             })
-            .collect();
-        cards.push(
-            self.cx.bind_invocation(
-                ui::widget::MediaCard::new(
-                    "appearance.wallpaper.choose",
-                    ui::widget::MediaSource::Kind(ui::icons::Icon::Image),
-                )
-                .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
-                .title(t("settings-appearance-your-picture"))
-                .selected(chosen == Some(tilo_wallpapers::Choice::Custom)),
-                AppearanceEffect::ChooseWallpaper,
+        })
+    };
+    let mut body = vec![
+        block(picker),
+        cx.setting(t("settings-appearance-use-for"))
+            .id("appearance.wallpaper_scope")
+            .among(
+                paths.wallpaper_scope,
+                values(&WALLPAPER_SCOPES),
+                |scope: &String| scope_label(scope),
             ),
-        );
-        ui::widget::MediaGrid::new(cards).with_size(ui::widget::MediaSize::Small)
+        cx.setting(t("settings-appearance-show-on"))
+            .id("appearance.wallpaper_target")
+            .among(
+                paths.wallpaper_target,
+                values(&WALLPAPER_TARGETS),
+                |target: &String| target_label(target),
+            ),
+    ];
+    if let Some(status) = status {
+        body.push(note(status));
     }
+    section(&t("settings-appearance-wallpaper-card"), rows(body)).into_element()
+}
 
-    fn schedule_card(&self) -> SettingsSection {
-        let cx = &self.cx;
-        let paths = AppearancePrefs::paths();
-        let times = || TIMES.iter().map(|time| (*time).to_owned());
-        let mut body = vec![
-            cx.row(t("settings-appearance-schedule"))
-                .id("appearance.schedule")
-                .of(&self.prefs, paths.schedule)
-                .among(values(&SCHEDULES), |schedule: &String| {
-                    schedule_label(schedule)
-                }),
-        ];
-        let schedule = self.prefs().schedule();
-        if !schedule.config.follow_sun {
-            body.push(
-                cx.row(t("settings-appearance-day-starts"))
-                    .id("appearance.sunrise")
-                    .of(&self.prefs, paths.sunrise)
-                    .among(times(), String::clone),
-            );
-            body.push(
-                cx.row(t("settings-appearance-night-starts"))
-                    .id("appearance.sunset")
-                    .of(&self.prefs, paths.sunset)
-                    .among(times(), String::clone),
-            );
-        }
-        let today = schedule
-            .config
-            .resolve(schedule.location, ui::theme::local_moment());
-        let today_value = t_args(
-            "settings-appearance-today-value",
-            &[
-                (
-                    "day",
-                    settings_store::day_schedule::format_hhmm(today.sunrise).into(),
-                ),
-                (
-                    "night",
-                    settings_store::day_schedule::format_hhmm(today.sunset).into(),
-                ),
-            ],
+/// The shipped pictures this system has installed, each choosing itself the
+/// moment it is pressed, then the person's own picture.
+fn wallpaper_picker(
+    cx: &ViewCx<AppearancePrefs>,
+    actions: &Actions<Settings>,
+    chosen: Option<&str>,
+    thumbnails: &'static [Thumbnail],
+) -> ui::widget::MediaGrid {
+    let mut cards = wallpaper_cards(chosen, thumbnails);
+    let custom = cards.pop();
+    let mut bound: Vec<ui::widget::MediaCard> = cards
+        .into_iter()
+        .zip(thumbnails)
+        .map(|(card, (wallpaper, _))| {
+            let id = wallpaper.id.as_str();
+            match cx
+                .actions()
+                .set_binding(AppearancePrefs::paths().wallpaper, move |()| {
+                    Ok(Some(id.to_owned()))
+                }) {
+                Some(binding) => card.bind_action(binding),
+                None => card.unavailable(),
+            }
+        })
+        .collect();
+    bound.extend(custom.map(|card| {
+        actions.bind_effect_invocation(
+            card,
+            &SettingsEffect::from(AppearanceEffect::ChooseWallpaper),
+        )
+    }));
+    ui::widget::MediaGrid::new(bound).with_size(ui::widget::MediaSize::Small)
+}
+
+/// The picker's cards, unbound: one per shipped picture in `thumbnails`,
+/// then the person's own, the one `chosen` names marked.
+fn wallpaper_cards(chosen: Option<&str>, thumbnails: &[Thumbnail]) -> Vec<ui::widget::MediaCard> {
+    let chosen = tilo_wallpapers::choice(chosen);
+    let mut cards: Vec<ui::widget::MediaCard> = thumbnails
+        .iter()
+        .map(|(wallpaper, thumbnail)| {
+            let id = wallpaper.id.as_str();
+            ui::widget::MediaCard::new(
+                format!("appearance.wallpaper.{id}"),
+                ui::widget::MediaSource::Image(thumbnail.clone()),
+            )
+            .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
+            .title(t(&format!("settings-wallpaper-{id}")))
+            .meta(wallpaper.author.as_str())
+            .selected(chosen == Some(tilo_wallpapers::Choice::Bundled(wallpaper)))
+        })
+        .collect();
+    cards.push(
+        ui::widget::MediaCard::new(
+            "appearance.wallpaper.choose",
+            ui::widget::MediaSource::Kind(ui::icons::Icon::Image),
+        )
+        .aspect(ui::widget::MediaAspect::Ratio(WALLPAPER_ASPECT))
+        .title(t("settings-appearance-your-picture"))
+        .selected(chosen == Some(tilo_wallpapers::Choice::Custom)),
+    );
+    cards
+}
+
+/// What the day-and-night card shows other than through its controls: the
+/// schedule and its times, whose change builds the card again.
+fn schedule_shown(cx: &ViewCx<AppearancePrefs>) -> LocalState<[String; 3]> {
+    cx.value(|prefs: &AppearancePrefs| {
+        [
+            prefs.schedule.clone(),
+            prefs.sunrise.clone(),
+            prefs.sunset.clone(),
+        ]
+    })
+}
+
+/// When the day and the night begin: at sunset and sunrise, or at the
+/// times chosen; and today's.
+fn schedule_card(cx: &ViewCx<AppearancePrefs>) -> SettingsSection {
+    let paths = AppearancePrefs::paths();
+    let times = || TIMES.iter().map(|time| (*time).to_owned());
+    let mut body = vec![
+        cx.setting(t("settings-appearance-schedule"))
+            .id("appearance.schedule")
+            .among(paths.schedule, values(&SCHEDULES), |schedule: &String| {
+                schedule_label(schedule)
+            }),
+    ];
+    let prefs = cx.read(|prefs| prefs.cloned().unwrap_or_default());
+    let schedule = prefs.schedule();
+    if !schedule.config.follow_sun {
+        body.push(
+            cx.setting(t("settings-appearance-day-starts"))
+                .id("appearance.sunrise")
+                .among(paths.sunrise, times(), String::clone),
         );
-        body.push(value_row(&t("settings-appearance-today"), &today_value));
-        body.push(note(&t(
-            if schedule.config.follow_sun && schedule.location.is_none() {
-                "settings-appearance-schedule-no-location"
-            } else {
-                "settings-appearance-schedule-follow"
-            },
-        )));
-        section(&t("settings-appearance-day-night-card"), rows(body))
+        body.push(
+            cx.setting(t("settings-appearance-night-starts"))
+                .id("appearance.sunset")
+                .among(paths.sunset, times(), String::clone),
+        );
     }
+    let today = schedule
+        .config
+        .resolve(schedule.location, ui::theme::local_moment());
+    let today_value = t_args(
+        "settings-appearance-today-value",
+        &[
+            (
+                "day",
+                settings_store::day_schedule::format_hhmm(today.sunrise).into(),
+            ),
+            (
+                "night",
+                settings_store::day_schedule::format_hhmm(today.sunset).into(),
+            ),
+        ],
+    );
+    body.push(value_row(&t("settings-appearance-today"), &today_value));
+    body.push(note(&t(
+        if schedule.config.follow_sun && schedule.location.is_none() {
+            "settings-appearance-schedule-no-location"
+        } else {
+            "settings-appearance-schedule-follow"
+        },
+    )));
+    section(&t("settings-appearance-day-night-card"), rows(body))
 }
 
 pub(crate) mod values;
 
-pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControlsDevice>) -> Item {
-    cx.row(t("settings-appearance-hide-top-bar"))
+/// "Hide the top bar": this device's desktop control, as the page and the
+/// settings search show it.
+pub(crate) fn hide_top_bar(cx: &ViewCx<DesktopControlsDevice>) -> Item {
+    cx.setting(t("settings-appearance-hide-top-bar"))
         .described(t("settings-appearance-hide-top-bar-desc"))
         .id("appearance.hide_top_bar")
-        .of(desktop, DesktopControlsDevice::paths().hide_top_bar)
-        .toggle()
+        .toggle(DesktopControlsDevice::paths().hide_top_bar)
 }
 
-impl Widget for AppearancePane {
-    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // The controls follow their fields; the page is rebuilt only when
-        // what it shows otherwise changes.
-        self.prefs.refresh();
-        self.desktop.refresh();
-        self.device.refresh();
-        self.desk.refresh();
-        let shape = self.shape();
-        if shape != self.shape {
-            self.shape = shape;
-            self.composed.invalidate();
-        }
-        self.composed.sync(state, root);
-    }
-    crate::panes::composed_pane!(kept);
-
-    fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        // This pane paints only its composition. Keep a child's local visual
-        // change local instead of expanding it to the whole form.
-        if let Some(composed) = self.composed.element() {
-            composed.collect_damage(regions);
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "AppearancePane"
-    }
-
-    /// Surface the user's current appearance choice so the running Settings
-    /// window re-scales and re-themes live the instant a control changes. The
-    /// host [`ui::App`] (with `appearance_reconcile` enabled by `main`) polls
-    /// this each frame and applies any field that differs. We hand back the
-    /// *base* colour theme unscaled — the App folds in high-contrast, the UI
-    /// scale, and the text scale itself, keeping that bookkeeping in one place.
-    fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
-        let prefs = self.prefs.get();
-        Some(ui::theme::AppearanceIntent {
-            base_theme: prefs.base_theme(self.device.get()),
-            high_contrast: prefs.high_contrast,
-            reduce_motion: prefs.reduce_motion,
-            text_scale: prefs.text_scale as f32,
-            ui_scale: prefs.ui_scale as f32,
-        })
+/// The look the person chose, for the window to show itself in while the
+/// page that changes it is open: the toolkit folds in the contrast, the
+/// interface scale and the text scale.
+pub(crate) fn intent(
+    prefs: &AppearancePrefs,
+    device: &AppearanceDevicePrefs,
+) -> ui::theme::AppearanceIntent {
+    ui::theme::AppearanceIntent {
+        base_theme: prefs.base_theme(device),
+        high_contrast: prefs.high_contrast,
+        reduce_motion: prefs.reduce_motion,
+        text_scale: prefs.text_scale as f32,
+        ui_scale: prefs.ui_scale as f32,
     }
 }
 
@@ -662,14 +632,12 @@ impl Widget for AppearancePane {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::effects::SettingsEffect;
     use crate::resource::SettingsShell;
-    use std::collections::HashMap;
-    use taffy::{NodeId, TaffyTree};
     use ui::prelude::TestApp;
     use ui::theme::Theme;
+    use ui::widget::Widget;
 
-    use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
+    use crate::testing::{APPEARANCE, edit_field, invoke_section};
 
     /// Every appearance control's effect writes the person's `appearance`
     /// section, where the compositor and every app read it; a value outside
@@ -684,33 +652,17 @@ mod tests {
             serde_json::json!({ "theme": "Automatic" }),
         )
         .unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "ui_scale",
-            1.5,
-        )
-        .unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "text_scale",
-            1.15,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "ui_scale", 1.5).unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "text_scale", 1.15)
+            .unwrap();
         edit_field(&mut app, APPEARANCE, "high_contrast", true).unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "schedule",
-            "custom",
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "schedule", "custom")
+            .unwrap();
         edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
         edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
-        crate::host::testing::edit_field(
+        crate::testing::edit_field(
             &mut app,
-            crate::host::testing::APPEARANCE,
+            crate::testing::APPEARANCE,
             "wallpaper_scope",
             "all",
         )
@@ -745,13 +697,12 @@ mod tests {
         assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
     }
 
-    /// The pane shows the stored section, follows a change made elsewhere,
-    /// and hands the toolkit the look the person chose.
+    /// The page follows the section, whoever changes it, and while it is
+    /// open the window shows itself in the look the person chose.
     #[test]
-    fn the_pane_follows_the_section_and_expresses_its_intent() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        cx.settings::<AppearancePrefs>()
+    fn the_page_follows_the_section_and_the_window_takes_its_look() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
                 mode: "dark".into(),
                 dark_theme: "dark-cool".into(),
@@ -760,41 +711,36 @@ mod tests {
                 ..AppearancePrefs::default()
             })
             .unwrap();
-        let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        let paths = AppearancePrefs::paths();
-        assert_eq!(pane.prefs().theme_choice(), "Dark cool");
-        let text_size = pane.prefs.shown(&paths.text_scale, |scale| {
-            crate::panes::accessibility::text_size_label(*scale)
-        });
-        assert_eq!(
-            text_size.get(),
-            crate::panes::accessibility::text_size_label(1.15)
-        );
-        let ui_scale = pane
-            .prefs
-            .shown(&paths.ui_scale, |scale| ui_scale_label(*scale).to_owned());
-        assert_eq!(ui_scale.get(), "125%");
-        let reduce_motion = pane.prefs.shown(&paths.reduce_motion, bool::clone);
+        crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
+        app.settle();
+        let intent = || {
+            |window: &mut crate::window::Inspected| ui::widget::Widget::appearance_intent(window)
+        };
+        let shown = app
+            .with_widget::<crate::window::Inspected, _>(intent())
+            .flatten()
+            .expect("the Appearance page expresses the look");
+        assert_eq!(shown.base_theme.name, "Dark cool");
+        assert_eq!(shown.ui_scale, 1.25);
+        assert_eq!(shown.text_scale, 1.15);
 
-        cx.settings::<AppearancePrefs>()
+        app.settings::<AppearancePrefs>()
             .update(|prefs| {
                 prefs.choose_theme("Dark graphite");
                 prefs.reduce_motion = true;
             })
             .unwrap();
-        let doc = ui::automerge::AutoCommit::new();
-        pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.prefs().theme_choice(), "Dark graphite");
-        assert!(reduce_motion.get());
-        assert!(pane.take_structure_dirty());
-
-        let intent = pane
-            .appearance_intent()
-            .expect("the appearance pane always expresses an intent");
-        assert_eq!(intent.base_theme.name, "Dark graphite");
-        assert_eq!(intent.ui_scale, 1.25);
-        assert_eq!(intent.text_scale, 1.15);
-        assert!(intent.reduce_motion);
+        app.settle();
+        let shown = app
+            .with_widget::<crate::window::Inspected, _>(intent())
+            .flatten()
+            .expect("the Appearance page expresses the look");
+        assert_eq!(shown.base_theme.name, "Dark graphite");
+        assert!(shown.reduce_motion);
+        assert!(
+            app.harness().a11y_node_named("125%").is_some(),
+            "the interface scale shows what the section holds"
+        );
     }
 
     /// "Hide the top bar" is this device's desktop control: the toggle
@@ -827,30 +773,13 @@ mod tests {
             "the shell's schema reads the same leaves"
         );
 
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        let hidden = pane
-            .desktop
-            .shown(&DesktopControlsDevice::paths().hide_top_bar, bool::clone);
-        assert!(!hidden.get(), "visible by default");
-        cx.settings::<DesktopControlsDevice>()
-            .update(|controls| controls.hide_top_bar = true)
-            .unwrap();
-        let doc = ui::automerge::AutoCommit::new();
-        pane.sync(&doc, &ui::automerge::ROOT);
-        assert!(hidden.get());
-
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
+        settle(&mut app);
         assert!(
-            node_map
-                .values()
-                .filter_map(|&widget| unsafe { (*widget).test_id() })
+            shown_ids(&mut app)
+                .iter()
                 .any(|id| id == "appearance.hide_top_bar"),
-            "the pane offers the toggle"
+            "the page offers the toggle"
         );
         assert!(
             crate::categories::Category::Appearance.matches("top bar"),
@@ -974,7 +903,7 @@ mod tests {
         app.harness().send(&ui::synthetic_input::mouse_release());
         settle(&mut app);
         assert_eq!(
-            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
             Some(Category::Accessibility)
         );
         let accessibility = shown_ids(&mut app);
@@ -1011,19 +940,10 @@ mod tests {
             .collect();
         assert_eq!(hits, vec![Category::Appearance]);
 
-        let profile = tempfile::tempdir().unwrap();
-        let mut pane = AppearancePane::new(
-            PaneCx::in_profile(profile.path().to_path_buf()),
-            LocalState::new(None),
-        );
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-        let ids: Vec<String> = node_map
-            .values()
-            .filter_map(|&widget| unsafe { (*widget).test_id() }.map(str::to_string))
-            .collect();
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, Category::Appearance);
+        settle(&mut app);
+        let ids = shown_ids(&mut app);
         for id in ["appearance.wallpaper.choose", "appearance.wallpaper_scope"] {
             assert!(
                 ids.iter().any(|candidate| candidate == id),
@@ -1060,8 +980,6 @@ mod tests {
     /// chosen, then whatever the section names.
     #[test]
     fn the_wallpaper_picker_marks_the_chosen_picture() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let thumbnails: Vec<_> = tilo_wallpapers::all()
             .iter()
             .map(|wallpaper| {
@@ -1071,10 +989,9 @@ mod tests {
                 )
             })
             .collect();
-        let selected = |pane: &AppearancePane| -> Vec<(String, bool)> {
+        let selected = |chosen: Option<&str>| -> Vec<(String, bool)> {
             use ui::widget::Widget as _;
-            pane.wallpaper_picker_of(&thumbnails)
-                .children()
+            wallpaper_cards(chosen, &thumbnails)
                 .iter()
                 .map(|card| {
                     let id = card.test_id().unwrap_or_default().to_owned();
@@ -1083,8 +1000,7 @@ mod tests {
                 })
                 .collect()
         };
-        let pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        let cards = selected(&pane);
+        let cards = selected(None);
         let default = tilo_wallpapers::default_wallpaper().unwrap();
         assert_eq!(cards.len(), tilo_wallpapers::all().len() + 1);
         assert_eq!(
@@ -1098,11 +1014,7 @@ mod tests {
             .collect();
         assert_eq!(chosen, vec![format!("appearance.wallpaper.{}", default.id)]);
 
-        cx.settings::<AppearancePrefs>()
-            .update(|prefs| prefs.wallpaper = Some(tilo_wallpapers::CUSTOM.into()))
-            .unwrap();
-        let pane = AppearancePane::new(cx, LocalState::new(None));
-        let chosen: Vec<String> = selected(&pane)
+        let chosen: Vec<String> = selected(Some(tilo_wallpapers::CUSTOM))
             .into_iter()
             .filter(|(_, chosen)| *chosen)
             .map(|(id, _)| id)

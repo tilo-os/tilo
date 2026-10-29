@@ -34,6 +34,25 @@ fn retain_newest(history: &mut Vec<Notification>) {
     }
 }
 
+/// Age `banners` for being `on_screen` at `now`, `held` or not, where
+/// `was_held` is whether they were held at the last call: every copy of the
+/// live banners (the log, a stack drawing them) ages them the same way.
+pub(super) fn present_banners<'n>(
+    banners: impl IntoIterator<Item = &'n mut Notification>,
+    was_held: &mut bool,
+    (now, on_screen, held): (Instant, &[u64], bool),
+) {
+    let released = *was_held && !held;
+    *was_held = held;
+    for n in banners {
+        let shown = on_screen.contains(&n.id);
+        n.dwell.present(now, shown, held);
+        if released && shown {
+            n.dwell.grant(n.dismiss_after, now, RELEASE_GRACE);
+        }
+    }
+}
+
 fn clear_deadline(now: Instant) -> Instant {
     now.checked_add(CLEAR_UNDO_WINDOW).unwrap_or(now)
 }
@@ -100,15 +119,7 @@ impl NotificationLog {
     /// keeps all it had; letting go leaves each at least
     /// [`RELEASE_GRACE`].
     pub fn present(&mut self, now: Instant, on_screen: &[u64], held: bool) {
-        let released = self.held && !held;
-        self.held = held;
-        for n in &mut self.active {
-            let shown = on_screen.contains(&n.id);
-            n.dwell.present(now, shown, held);
-            if released && shown {
-                n.dwell.grant(n.dismiss_after, now, RELEASE_GRACE);
-            }
-        }
+        present_banners(&mut self.active, &mut self.held, (now, on_screen, held));
     }
 
     /// Whether the person held the banners at the last [`Self::present`].

@@ -44,6 +44,8 @@ mod find_workflow;
 mod format_workflow;
 mod lsp_workflow;
 mod surface;
+mod view;
+pub(crate) use view::window;
 #[cfg(test)]
 mod tests;
 mod window_bar;
@@ -174,7 +176,7 @@ pub struct CodeApp {
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
     status: StatusModel,
-    panel: BottomPanel,
+    panel: Box<BottomPanel>,
 
     /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
@@ -191,6 +193,14 @@ pub struct CodeApp {
     /// the next sync, and the files it may name.
     opened: std::rc::Rc<std::cell::RefCell<Opened>>,
     live_state: Option<ui::framework::Live<crate::project::Project>>,
+    /// The `(revision, loads)` of the project last presented from
+    /// `live_state`.
+    followed: Option<(u64, u64)>,
+    /// What the editor shares with the view it is laid out in.
+    store: view::Shared,
+    /// Whether the files, symbols and search hits were projected again
+    /// since the view's store last took them.
+    shown_stale: bool,
     /// The file ids whose text the window demanded last.
     demanded: Vec<String>,
     /// A command invoked through its published effect. An effect handler has
@@ -589,12 +599,15 @@ impl CodeApp {
             panel_entry: ui::framework::BarCommands::new(),
             editor: EditorView::new(),
             status: StatusModel::new(),
-            panel: BottomPanel::new(),
+            panel: Box::new(BottomPanel::new()),
             #[cfg(test)]
             test_hook: None,
             dispatch: None,
             presented: std::rc::Rc::default(),
             opened: std::rc::Rc::default(),
+            followed: None,
+            store: view::Shared::default(),
+            shown_stale: true,
             live_state: None,
             demanded: Vec::new(),
             pending_command: None,
@@ -984,7 +997,8 @@ impl CodeApp {
         }
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the framework dispatcher, this window's liveness, the person's
+    /// preferences and the project the document holds.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::project::Project>,
@@ -1403,6 +1417,7 @@ impl CodeApp {
             }
             return;
         }
+        self.shown_stale = true;
         let changed = self.refresh_search_symbols(doc, observed);
         let started = std::time::Instant::now();
         let results = self.search_result_refs();
@@ -1428,6 +1443,7 @@ impl CodeApp {
     }
 
     /// The symbols and project-search results as search entries.
+    #[cfg(test)]
     pub(crate) fn code_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.search_entries.clone()
     }
@@ -2370,6 +2386,8 @@ impl Widget for CodeApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.follow_document();
+        self.follow_store();
         if let Some(settings) = &self.settings {
             self.editor.set_text_zoom(settings.get().editor_zoom);
         }
@@ -2442,6 +2460,7 @@ impl Widget for CodeApp {
             self.laid_out = chrome;
             self.structure_dirty = true;
         }
+        self.publish_shown();
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
@@ -2744,7 +2763,7 @@ impl Widget for CodeApp {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![&self.editor];
         if self.panel_visible {
-            out.push(&self.panel);
+            out.push(&*self.panel);
         }
         out
     }
@@ -2752,7 +2771,7 @@ impl Widget for CodeApp {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.editor];
         if self.panel_visible {
-            out.push(&mut self.panel);
+            out.push(&mut *self.panel);
         }
         out
     }
@@ -2763,6 +2782,11 @@ impl Widget for CodeApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    /// A scenario a capture staged is staged on the next sync.
+    fn needs_idle_sync(&self) -> bool {
+        !self.store.borrow().staged.is_empty()
     }
 
     /// A capture waits while a scenario is still staging, a project search

@@ -499,6 +499,9 @@ pub struct TabBar {
     /// ([`TabBar::set_search_control`]); the tabs then carry no search chip.
     search_control: Option<f64>,
     controls: super::window_controls::WindowControls,
+    /// The window can be carried by its bar ([`TabBar::set_carriable`]): a
+    /// press on a tab never lifts the tab, the whole window moves instead.
+    carriable: bool,
     hover_control: Option<super::window_controls::WindowControl>,
     pressed_control: Option<super::window_controls::WindowControl>,
     /// The window is maximized: its maximize control shows restore.
@@ -516,7 +519,7 @@ pub struct TabBar {
     location_images: HashMap<u64, icons::AppImage>,
     /// The active tab's slots: in the title's row while the window shows
     /// one tab, in a row of their own under the tabs while it shows several.
-    toolbar_row: super::window_toolbar_row::ToolbarRow,
+    toolbar_row: Box<super::window_toolbar_row::ToolbarRow>,
     /// The motion the person allows, from the last layout's theme.
     motion: EffectiveMotion,
     /// A tab being named in place ([`TabBar::begin_rename`]).
@@ -673,6 +676,7 @@ impl TabBar {
             window_controls: false,
             search_control: None,
             controls: super::window_controls::WindowControls::default(),
+            carriable: false,
             hover_control: None,
             pressed_control: None,
             maximized: false,
@@ -680,7 +684,7 @@ impl TabBar {
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
             location_images: HashMap::new(),
-            toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
+            toolbar_row: Box::new(super::window_toolbar_row::ToolbarRow::new()),
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,
@@ -3011,6 +3015,51 @@ impl TabBar {
         true
     }
 
+    /// Whether the window can be carried by its bar from anywhere that is
+    /// not a control (it stands on a canvas): its title and location carry
+    /// it, and a click on them still does what it does.
+    pub fn set_carriable(&mut self, carriable: bool) {
+        self.carriable = carriable;
+        self.toolbar_row.set_carriable(carriable);
+    }
+
+    /// Whether `p` is on one of the bar's controls: the window's own, the
+    /// toolbar's (not its location), a tab's close or action chip, the
+    /// new-tab button, the desktop chip.
+    pub fn control_hit(&self, p: Point) -> bool {
+        if self.controls.hit(p).is_some()
+            || (self.active_toolbar().is_some() && self.toolbar_row.control_hit(p))
+            || (self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p))
+            || self.desktop_control_hit(p)
+            || self.action_chip_at(p).is_some()
+        {
+            return true;
+        }
+        (0..self.tabs.len()).any(|i| self.close_hit_rect(i).is_some_and(|r| r.contains(p)))
+    }
+
+    /// The press under way became a carry of the whole window: whatever it
+    /// was going to do on the bar (lift a tab, act on the location) it no
+    /// longer does.
+    pub fn cancel_press_for_carry(&mut self) {
+        self.touch();
+        self.press_origin = None;
+        self.pending_drag = None;
+        self.toolbar_row.cancel_press();
+    }
+
+    /// Whether the bar has a menu, the emoji picker or the location's
+    /// suggestions open over the window.
+    pub fn popup_open(&self) -> bool {
+        self.active_toolbar().is_some() && self.toolbar_row.popup_open()
+    }
+
+    /// Close what the bar has open over the window. Whether anything was.
+    pub fn close_popups(&mut self) -> bool {
+        self.touch();
+        self.toolbar_row.close_popups()
+    }
+
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
@@ -4138,7 +4187,7 @@ impl Widget for TabBar {
         let control = self.controls.hit(point)?;
         let (rect, key) = match control {
             super::window_controls::WindowControl::History => {
-                (self.controls.history, "standalone-history-title")
+                (self.controls.history, "history-mode-title")
             }
             super::window_controls::WindowControl::Maximize => (
                 self.controls.maximize,
@@ -4310,9 +4359,7 @@ impl Widget for TabBar {
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
-                            .with_name(crate::i18n::I18nManager::lookup_plain(
-                                "standalone-history-title",
-                            ))
+                            .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
                             .with_action_target(format!("tab-history:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4378,7 +4425,7 @@ impl Widget for TabBar {
             if let Some(control) = self.history.get(&self.active_id) {
                 let mut history = button(
                     Role::ToggleButton,
-                    crate::i18n::I18nManager::lookup_plain("standalone-history-title"),
+                    crate::i18n::I18nManager::lookup_plain("history-mode-title"),
                     WINDOW_HISTORY_TARGET,
                     self.controls.history,
                 );
@@ -5165,7 +5212,7 @@ impl TabBar {
                 pull(p.y - resist.origin.y) / 2.0,
             );
             *handled = true;
-        } else if let Some((idx, origin)) = self.press_origin
+        } else if let Some((idx, origin)) = self.press_origin.filter(|_| !self.carriable)
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
             && let Some(t) = self.tabs.get(idx)
         {
@@ -8821,6 +8868,74 @@ mod tests {
             });
         }
         slots
+    }
+
+    /// A window on a canvas is carried by its bar from anywhere that is not
+    /// a control: its title and location are not controls, its buttons are.
+    /// A click on the location still edits it; a press that became a carry
+    /// does nothing on release; a press on the title never lifts the tab.
+    /// Whatever the bar has open over the window closes on request.
+    #[test]
+    fn a_carriable_bar_is_grabbed_by_its_title_and_location_and_clicks_still_work() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
+        b.set_window_controls(true);
+        b.set_toolbar(1, Some(crowded_slots()));
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        b.set_carriable(true);
+        let (_, _, location, actions) = b.toolbar_rects();
+        let more = b.toolbar_row.slots().overflow;
+        assert!(
+            !b.control_hit(location.center()),
+            "the location carries the window"
+        );
+        assert!(!b.control_hit(b.tab_rects[0].center()), "so does the title");
+        assert!(b.control_hit(actions[0].center()), "an action is a control");
+        assert!(b.control_hit(more.center()));
+        assert!(b.control_hit(b.window_controls().close.center()));
+
+        // A click on the location edits it, as on any bar.
+        let mut handled = false;
+        dispatch_cursor(&mut b, location.center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        assert!(
+            !b.editing_location(),
+            "nothing happens until the press ends"
+        );
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+        assert!(b.editing_location(), "the click edits the location");
+        assert!(b.cancel_location_edit());
+
+        // A press there that became a carry does nothing when it ends.
+        dispatch_cursor(&mut b, location.center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        b.cancel_press_for_carry();
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+        assert!(!b.editing_location(), "a carry is no click");
+
+        // A press on the title that travels never lifts the tab.
+        let title = b.tab_rects[0].center();
+        dispatch_cursor(&mut b, title, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        dispatch_cursor(
+            &mut b,
+            title + vello::kurbo::Vec2::new(40.0, 30.0),
+            &mut handled,
+        );
+        assert!(!b.drag_in_flight(), "the window is carried, not its tab");
+        b.cancel_press_for_carry();
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+
+        // An open menu closes when the bar is asked to close its popups.
+        b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));
+        dispatch_cursor(&mut b, more.center(), &mut handled);
+        dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+        dispatch_left_button(&mut b, ElementState::Released, &mut handled);
+        assert!(b.popup_open(), "the overflow menu opened");
+        assert!(b.close_popups());
+        assert!(!b.popup_open(), "and closed");
+        assert!(!b.close_popups(), "nothing was left open");
     }
 
     /// At most three actions stand in the row, fewer when the location

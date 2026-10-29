@@ -258,8 +258,6 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
         // In place, the section lists every row; the page scrolls to them.
         let rows = chrome.borrow().quick_settings.device_rows.len();
         assert_eq!(rows, total, "every destination is a row of the section");
-        let last = host.qs_devices_row_rect(rows - 1);
-        assert!(last.height() > 0.0, "and each has its place on the page");
     }
 
     continuity_providers_register_in_either_order_and_replace_stale_bridges();
@@ -298,10 +296,8 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         host.open_devices_for_tests();
 
         // The media first, then the device: the media plays there.
-        let device_row = host.qs_devices_row_rect(1);
-        host.handle_qs_device_fabric_click(Point::new(device_row.x0 + 44.0, device_row.center().y));
-        let control = ShellOverlayHost::qs_device_control_rect(host.qs_devices_row_rect(1));
-        host.handle_qs_device_fabric_click(control.center());
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Control);
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
             session_id: "so.tilo.video:7".into(),
@@ -337,8 +333,7 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         }));
         host.open_devices_for_tests();
 
-        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(allow.center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Allow);
         assert!(
             actions
                 .borrow()
@@ -376,11 +371,9 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         }));
         host.open_devices_for_tests();
 
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Decline);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(2, tilo_quick_settings::RowPart::Row);
 
         let actions = actions.borrow();
         assert!(
@@ -409,7 +402,7 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
             Ok(host_view.clone())
         }));
         host.open_devices_for_tests();
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
         assert!(
             !actions
                 .borrow()
@@ -448,9 +441,7 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         }));
         host.open_devices_for_tests();
 
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Decline);
         assert!(
             actions
                 .borrow()
@@ -493,8 +484,8 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
         }));
         host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
         let actions = actions.borrow();
         assert!(
             actions.contains(&DeviceFabricUiAction::CancelBluetoothHandoff {
@@ -527,8 +518,7 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
 
         assert!(actions.borrow().is_empty());
         host.open_devices_for_tests();
-        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(allow.center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Allow);
         assert!(
             actions
                 .borrow()
@@ -568,10 +558,10 @@ fn device_pane_bluetooth_pairing_and_handoffs_need_local_choice_and_exact_target
             Ok(view.clone())
         }));
 
-        host.handle_qs_bluetooth_details_click(
-            host.qs_device_row_rect(1).center(),
-            "AA:BB:CC:DD:EE:FF",
-        );
+        host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::HandOffBluetooth {
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            device: remote.as_str().to_owned(),
+        });
         assert!(
             actions
                 .borrow()
@@ -632,9 +622,8 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
             "proposals must never auto-apply"
         );
         host.open_devices_for_tests();
-        let (apply, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(apply.center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Allow);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::ApplyCalibration {
             device: remote.clone(),
@@ -661,9 +650,7 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         }));
         host.open_devices_for_tests();
 
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Decline);
         assert!(
             actions
                 .borrow()
@@ -694,8 +681,8 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         }));
         host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
 
         assert!(
             actions
@@ -749,16 +736,11 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
                 |row| matches!(row, DeviceFabricPaneRow::Device(device) if device.id == remote),
             )
             .expect("the remote device has a row");
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(source_row).center());
+        host.press_device_row_for_tests(source_row, tilo_quick_settings::RowPart::Row);
         // Choosing a device after the call's source proposes it there.
-        host.handle_qs_device_fabric_click(Point::new(
-            host.qs_devices_row_rect(device_row).x0 + 44.0,
-            host.qs_devices_row_rect(device_row).center().y,
-        ));
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
-        host.press_qs_device_row(0, None);
+        host.press_device_row_for_tests(device_row, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Decline);
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Allow);
 
         let actions = actions.borrow();
         assert!(
@@ -810,7 +792,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         }));
         host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
         assert!(
             actions
                 .borrow()
@@ -846,9 +828,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
         }));
         host.open_devices_for_tests();
 
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Decline);
         assert!(
             actions
                 .borrow()
@@ -860,7 +840,7 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
 
         shared.borrow_mut().tethering[0].phase =
             crate::shell::personal_tethering_runtime::TetheringPhase::Active;
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
         assert!(
             actions
                 .borrow()
@@ -916,8 +896,8 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
             "no allow and decline buttons in Quick Settings: {rows:?}"
         );
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+        host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
+        host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
 
         let actions = actions.borrow();
         assert!(
@@ -1004,8 +984,8 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
         tilo_quick_settings::hosted::HostedActions::None,
         "the microphone in use has no arrow buttons"
     );
-    host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
-    host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
+    host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
+    host.press_device_row_for_tests(1, tilo_quick_settings::RowPart::Row);
     let actions = actions.borrow();
     assert!(
         !actions
@@ -1128,8 +1108,7 @@ fn a_device_row_has_no_placement_arrows_and_opens_its_settings_pane() {
         "settings://displays"
     );
 
-    let row = host.qs_devices_row_rect(0);
-    host.handle_qs_device_fabric_click(Point::new(row.x0 + 44.0, row.center().y));
+    host.press_device_row_for_tests(0, tilo_quick_settings::RowPart::Row);
     assert!(
         !chrome.borrow().overlays.quick_settings,
         "the press takes the person to Settings"

@@ -53,7 +53,7 @@ impl InstallerPreview {
             .context
             .as_ref()
             .ok_or("installer-desktop-unavailable")?;
-        let child = context.surface(child)?;
+        let child = context.mount(|cx| crate::setup::view::setup_window(cx, child))?;
         let back = self
             .button(
                 "installer.back",

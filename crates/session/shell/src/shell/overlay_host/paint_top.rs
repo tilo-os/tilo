@@ -1,4 +1,4 @@
-//! Top overlays: the palette card, portal dialogs and the search banner.
+//! Top overlays: the search card, portal dialogs and the sheets.
 
 #[allow(
     clippy::wildcard_imports,
@@ -93,8 +93,18 @@ impl ShellOverlayHost {
 
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
+        let directory_outputs = self.layer_outputs();
         overlay_part(scene, "shell.directory", desktop, |scene| {
-            self.draw_directory_sheet(scene, transform, text_renderer, theme);
+            use super::layers::ShellLayer as _;
+            self.layers.directory.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&directory_outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
 
@@ -172,10 +182,9 @@ impl ShellOverlayHost {
         });
     }
 
-    /// The command palette's card while it is shown, arriving or leaving,
-    /// and the bounds of everything it painted in scene coordinates: the
-    /// card, its edge and its `e4` shadow. `None` when the search filters'
-    /// "More" list is open, which may hang past the card.
+    /// The launcher's card while search is shown, arriving or leaving, and
+    /// the bounds of everything it painted in scene coordinates: the card,
+    /// its edge and its `e4` shadow. Nothing without a launcher.
     pub(super) fn draw_palette_card(
         &mut self,
         scene: &mut Scene,
@@ -184,15 +193,16 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Vec<Rect>> {
-        let palette_rect = self.palette.get_rect();
-        // Summoned from no control, the palette appears in place, from its
-        // own centre (`ui::motion::Appear`).
+        let card = self.search_card();
+        // Summoned from no control, search appears in place, from its own
+        // centre (`ui::motion::Appear`).
         let pose = ui::motion::Appear::pose(
             self.palette_transition.progress(ui::motion::frame_now()),
-            palette_rect.center(),
+            card.center(),
             self.motion.get(),
         );
         let in_flight = pose.opacity < 1.0;
+        let launcher = self.launcher.as_mut()?;
         if in_flight {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -202,53 +212,19 @@ impl ShellOverlayHost {
                 &self.rect,
             );
         }
-        let palette_xform = pose.applied_to(transform);
+        let card_xform = pose.applied_to(transform);
         // The launcher paints its card, its shadow and its chips itself.
-        if let Some(launcher) = self.launcher.as_mut() {
-            launcher
-                .app
-                .draw(scene, palette_xform, text_renderer, theme, presence);
-            if in_flight {
-                scene.pop_layer();
-            }
-            let shadow = ui::widget::floating_surface::card_shadow(theme);
-            let card = palette_rect.inflate(2.0, 2.0);
-            let painted = ui::surface::shadow_bounds(palette_rect, &shadow)
-                .map_or(card, |shadow| shadow.union(card));
-            return Some(vec![palette_xform.transform_rect_bbox(painted)]);
-        }
-        // The one floating card's shadow, faded with the card by the layer.
-        ui::widget::floating_surface::paint_card_shadow(
-            scene,
-            palette_xform,
-            palette_rect,
-            1.0,
-            theme,
-        );
-        let shadow = ui::widget::floating_surface::card_shadow(theme);
-        // A cloned theme with `surfaces.raised` pre-tinted, since
-        // `CommandPalette` (in `quick-ui`) paints its own surface from
-        // there and has no override plumbed in.
-        let palette_theme = palette_surface_theme(theme);
-        self.palette.draw(
-            scene,
-            palette_xform,
-            text_renderer,
-            &palette_theme,
-            presence,
-        );
-        if !self.palette.shows_field_only() && self.palette.filter_band_shown() {
-            self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
-        }
+        launcher
+            .app
+            .draw(scene, card_xform, text_renderer, theme, presence);
         if in_flight {
             scene.pop_layer();
         }
-        // The card snaps and strokes its edge on its outline: two pixels
-        // cover both, antialiasing included.
-        let card = palette_rect.inflate(2.0, 2.0);
-        let painted = ui::surface::shadow_bounds(palette_rect, &shadow)
-            .map_or(card, |shadow| shadow.union(card));
-        (!self.search_filters.more_open).then(|| vec![palette_xform.transform_rect_bbox(painted)])
+        let shadow = ui::widget::floating_surface::card_shadow(theme);
+        let edge = card.inflate(2.0, 2.0);
+        let painted =
+            ui::surface::shadow_bounds(card, &shadow).map_or(edge, |shadow| shadow.union(edge));
+        Some(vec![card_xform.transform_rect_bbox(painted)])
     }
 
     /// Draw an OS-owned review sheet. The requesting application controls
@@ -631,36 +607,6 @@ impl ShellOverlayHost {
                     .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
             );
         });
-    }
-
-    /// Paint the filter band into the palette's reserved strip and ask the
-    /// palette for the rows it needs.
-    pub(super) fn draw_search_banner(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.sync_search_filters();
-        let band = if self.palette.get_rect().width() <= 0.0 {
-            Rect::ZERO
-        } else {
-            self.palette.filter_strip_rect()
-        };
-        let previous_rows = self.search_filters.search_chip_rows;
-        let rows_needed = self.search_filters.draw(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            FilterStripSlot {
-                band,
-                row_height: self.palette.filter_strip_row_height(),
-                reserved_rows: self.palette.host_filter_strip_rows(),
-            },
-            self.last_cursor,
-        );
-        if rows_needed != previous_rows && self.palette.set_host_filter_strip_rows(rows_needed) {
-            self.palette_layout_dirty = true;
-        }
     }
 }
 

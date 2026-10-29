@@ -54,6 +54,11 @@ impl Switch {
         )
     }
 
+    /// `part`, built once, whose bindings `alive` keeps until the part goes.
+    pub(crate) fn mounted(alive: Rc<()>, part: Element) -> Element {
+        Self::element(Box::new(|_| None), alive, part)
+    }
+
     /// The switch as an element, its widget table compiled once whatever
     /// the key.
     fn element(rebuild: Rebuild, alive: Rc<()>, part: Element) -> Element {
@@ -139,6 +144,39 @@ impl Widget for Switch {
 
     fn wants_pointer_capture(&self) -> bool {
         self.part.wants_pointer_capture()
+    }
+
+    // The switch stands for its part in its container: a part that is a
+    // band on its way, or a column one moves in, moves what follows the
+    // switch as it would its own followers.
+    fn disclosing(&self) -> Option<ui_core::widget::Disclosing> {
+        self.part.disclosing()
+    }
+
+    fn place_disclosing(&mut self, slot: Rect) {
+        self.part.place_disclosing(slot);
+    }
+
+    fn is_band(&self) -> bool {
+        self.part.is_band()
+    }
+
+    fn note_placement(&mut self, placement: ui_core::widget::Placement) {
+        self.part.note_placement(placement);
+    }
+
+    fn paint_bounds(&self) -> Rect {
+        self.part.paint_bounds()
+    }
+
+    // The switch draws nothing of its own: what changed is what changed in
+    // its part, not the whole part's box.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.part.collect_damage(regions);
+    }
+
+    fn damage_covers_own_box(&self) -> bool {
+        self.part.damage_covers_own_box()
     }
 
     fn take_structure_dirty(&mut self) -> bool {

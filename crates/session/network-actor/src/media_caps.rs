@@ -1,7 +1,7 @@
 //! What each peer can encode and decode, from their
 //! [`NeighbourMsg::MediaCapabilities`](neighbour_wire::NeighbourMsg) adverts.
 //!
-//! A peer advertises when its link to a neighbour comes up and again when
+//! A peer advertises when a session with another comes up and again when
 //! what it can do changes, not on a timer, so an advert holds until the peer
 //! says otherwise or departs: the network forgets a departed peer's advert
 //! ([`forget`]). A peer with no advert is treated as

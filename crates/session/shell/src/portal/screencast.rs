@@ -797,9 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn screencast_options_select_sources_sizes_and_provisioning() {
-        // Phase `selected_source_types_respects_multiple_and_mask`.
-        // Single-source: only the first (monitor preferred).
+    fn selected_source_types_respects_multiple_and_mask() {
         assert_eq!(
             selected_source_types(source_type::MONITOR | source_type::WINDOW, false),
             vec![source_type::MONITOR]
@@ -822,29 +820,30 @@ mod tests {
         }
         assert_eq!(source_type::ALL, 1 | 2 | 4);
         assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
-        // Phase `screencast_provisioner_records_source_type_and_size`.
-        // The provisioner records the request the Start path forwards, including the selected source type + size.
-        {
-            let ws_id = WorkspaceId(40);
-            let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
-            let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
-            let req = PipewireStreamRequest {
-                caller: PortalCaller::new(ws_id, "org.example"),
-                width: 1024,
-                height: 768,
-                framerate: 30,
-                source_type: source_type::WINDOW,
-                cursor_mode: cursor_mode::HIDDEN,
-            };
-            let info = sc_handle.provision(&req).expect("provision");
-            assert_eq!(info.node_id, 13);
-            assert_eq!(info.size, (1024, 768));
-            assert_eq!(info.source_type, source_type::WINDOW);
-            let seen = provisioner.requests();
-            assert_eq!(seen.len(), 1);
-            assert_eq!(seen[0].caller.app_id, "org.example");
-            assert_eq!(seen[0].source_type, source_type::WINDOW);
-        }
+    }
+
+    // The provisioner records the request the Start path forwards, including the selected source type + size.
+    #[test]
+    fn screencast_provisioner_records_source_type_and_size() {
+        let ws_id = WorkspaceId(40);
+        let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
+        let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
+        let req = PipewireStreamRequest {
+            caller: PortalCaller::new(ws_id, "org.example"),
+            width: 1024,
+            height: 768,
+            framerate: 30,
+            source_type: source_type::WINDOW,
+            cursor_mode: cursor_mode::HIDDEN,
+        };
+        let info = sc_handle.provision(&req).expect("provision");
+        assert_eq!(info.node_id, 13);
+        assert_eq!(info.size, (1024, 768));
+        assert_eq!(info.source_type, source_type::WINDOW);
+        let seen = provisioner.requests();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].caller.app_id, "org.example");
+        assert_eq!(seen[0].source_type, source_type::WINDOW);
     }
 
     fn durable_record(app_id: &str) -> RestoreData {

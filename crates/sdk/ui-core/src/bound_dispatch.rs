@@ -44,8 +44,7 @@ pub(crate) use input_provenance::physical_text;
 pub(crate) use input_provenance::{
     Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
 };
-// The native app runtime drains attributed invocations; it is not built for wasm32.
-#[cfg(not(target_arch = "wasm32"))]
+// Both app hosts drain attributed invocations, the web desktop's included.
 pub(crate) use input_provenance::take_attributed_with_origin;
 use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
 
@@ -2962,7 +2961,7 @@ pub(crate) fn invoke_resource_action(
                         .as_ref()
                         .map_or(binding.app_id.as_str(), |route| route.app_id.as_str());
                     let ambient = ambient
-                        .unwrap_or(&binding.operation_context)
+                        .unwrap_or(&*binding.operation_context)
                         .clone()
                         .with_app(owner_app, owner_app);
                     let encoded = encode_resource_action(
@@ -3272,7 +3271,7 @@ pub struct CallbackBinding {
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: UserId,
-    pub(crate) operation_context: tilo_actions::ActionContext,
+    pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).
     pub(crate) writes_as_author: bool,
@@ -3484,9 +3483,6 @@ pub(crate) struct RecordActionState {
     pending: Option<PendingRecordAction>,
     pub(crate) generation: Option<u64>,
     statuses: HashMap<(UserId, crate::application::InstanceId), crate::undo::UndoStatus>,
-    /// The summary of each undo or redo span (before, after) last described:
-    /// every frame asks for the status, the span moves only with an edit.
-    summaries: HashMap<(Vec<ChangeHash>, Vec<ChangeHash>, u64), String>,
     /// The status last answered per author's window, with where the
     /// document, the history and the pending action stood: a frame asks
     /// every time, and it changes only when one of them moves.
@@ -3513,7 +3509,6 @@ impl Default for RecordActionState {
             pending: None,
             generation: Some(0),
             statuses: HashMap::new(),
-            summaries: HashMap::new(),
             answered: HashMap::new(),
             refusals: Vec::new(),
             notices: crate::record::RoomNotices::default(),
@@ -3732,7 +3727,7 @@ pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash
 /// process's output) closes the step open before it and is left out of every
 /// step, so no undo takes it back with someone's edit.
 pub(crate) fn report_typed_action(
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     before: Vec<ChangeHash>,
     after: Vec<ChangeHash>,
     step: bool,
@@ -3983,7 +3978,7 @@ impl ActionFrame {
     /// Leave the change from `before` to `after` out of every undo step: the
     /// step open before it is finished at `before`, and the next one starts
     /// at `after`.
-    fn pass_over(&mut self, before: Vec<ChangeHash>, after: Vec<ChangeHash>, doc: &mut AutoCommit) {
+    fn pass_over(&mut self, before: Vec<ChangeHash>, after: Vec<ChangeHash>, doc: &AutoCommit) {
         let boundary = self
             .operations
             .iter()
@@ -4020,7 +4015,7 @@ impl ActionFrame {
     }
     fn status(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         author: &UserId,
         instance: crate::application::InstanceId,
     ) -> crate::undo::UndoStatus {
@@ -4067,55 +4062,33 @@ impl ActionFrame {
     /// [`Self::status`] read afresh.
     fn status_now(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         author: &UserId,
         instance: crate::application::InstanceId,
     ) -> crate::undo::UndoStatus {
-        let undo = self
-            .history
-            .next_undo_in(doc, author, instance)
-            .map(|entry| (entry.before, entry.after));
-        let redo = self
-            .history
-            .next_redo_in(doc, author, instance)
-            .map(|entry| (entry.after, entry.before));
+        let undo = self.history.next_undo_in(doc, author, instance);
+        let redo = self.history.next_redo_in(doc, author, instance);
         let key = (author.clone(), instance);
         let mut status = self.state.statuses.get(&key).cloned().unwrap_or_default();
         let pending_undo = self.pending_undo(doc, author, instance);
         status.can_undo = undo.is_some() || pending_undo;
         status.can_redo = redo.is_some() && !pending_undo;
-        // diff closes an AutoCommit transaction. Summaries are refreshed only
-        // at committed boundaries; inspecting status preserves pending typing.
+        // Summaries are refreshed only at committed boundaries; inspecting
+        // status preserves pending typing.
         if doc.pending_ops() == 0 {
             self.state.statuses.retain(|(author, instance), _| {
                 self.history.next_undo_in(doc, author, *instance).is_some()
                     || self.history.next_redo_in(doc, author, *instance).is_some()
             });
-            // Described in this thread's locale: a new locale describes again.
-            let locale = crate::i18n::I18nManager::revision();
-            let mut summary = |(before, after): (Vec<ChangeHash>, Vec<ChangeHash>)| {
-                let span = (before, after, locale);
-                if let Some(kept) = self.state.summaries.get(&span) {
-                    return kept.clone();
-                }
-                let described = crate::history_source::change_summary(doc, &span.0, &span.1);
-                // A handful of spans are current at a time (an undo and a
-                // redo per window): start afresh rather than grow.
-                if self.state.summaries.len() >= 64 {
-                    self.state.summaries.clear();
-                }
-                self.state.summaries.insert(span, described.clone());
-                described
-            };
-            status.undo_summary = undo.map(&mut summary);
-            status.redo_summary = redo.map(&mut summary);
+            status.undo_summary = undo.as_ref().and_then(crate::undo::step_summary);
+            status.redo_summary = redo.as_ref().and_then(crate::undo::step_summary);
             if status.can_undo || status.can_redo {
                 self.state.statuses.insert(key, status.clone());
             }
         }
         if pending_undo {
-            // The live transaction has no stable diff yet. Do not describe
-            // an older entry as the pending action that Undo will select.
+            // The pending action has no step yet. Do not describe an older
+            // entry as the pending action that Undo will select.
             status.undo_summary = None;
             status.redo_summary = None;
         }
@@ -4173,7 +4146,7 @@ impl ActionFrame {
         }
     }
 
-    fn finish_pending_at(&mut self, after: Vec<ChangeHash>, doc: &mut AutoCommit) {
+    fn finish_pending_at(&mut self, after: Vec<ChangeHash>, doc: &AutoCommit) {
         if let Some(pending) = self.state.pending.take() {
             let author = pending.author.clone();
             let instance = pending.instance_id;
@@ -4319,7 +4292,7 @@ impl CallbackBinding {
     /// The entry of edits this binding makes: its operation context, by its
     /// author unless the context names someone.
     pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
-        let mut context = self.operation_context.clone();
+        let mut context = (*self.operation_context).clone();
         if context.invoker.is_none() {
             context.invoker = Some(tilo_actions::ActionInvoker::actor(self.author.0.clone()));
         }

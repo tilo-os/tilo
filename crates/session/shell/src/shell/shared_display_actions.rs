@@ -165,18 +165,4 @@ pub(crate) mod test_support {
         );
         home
     }
-
-    pub(crate) fn owner() -> crate::shell::chrome_state::Chrome {
-        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
-        let mut tree = WorkspaceTree::default();
-        let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, "Display fixture");
-        workspace.set_owner("shell-fixture");
-        tree.desktop.workspaces.push(workspace);
-        tree.desktop.active = id;
-        crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
-            WorkspaceTreeHandle::new(tree),
-            crate::shell::hosted_inputs::HostedTileInputs::default(),
-        )
-    }
 }

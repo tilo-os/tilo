@@ -28,9 +28,7 @@
 
 use std::time::{Duration, Instant};
 
-use settings::SettingsApp;
 use settings::categories::Category;
-use ui::headless::{Framed, viewport};
 
 const W: f32 = 1472.0;
 const H: f32 = 920.0;
@@ -118,33 +116,31 @@ fn budget(label: &str, p50: u64, limit_us: u64) {
     }
 }
 
-fn mount(config: &crate::support::ScratchConfig) -> Framed<SettingsApp> {
-    mount_on(config, Category::DEFAULT)
+fn mount() -> crate::support::Window {
+    mount_on(Category::DEFAULT)
 }
 
-fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Framed<SettingsApp> {
-    Framed::new(
-        ui::State::new(),
-        config.app().with_category(category),
-        viewport((W, H)),
-        ui::Theme::dark(),
-    )
+fn mount_on(category: Category) -> crate::support::Window {
+    crate::support::window_on(category, (W, H))
 }
 
 /// Switch to `category`'s page the way the open action does, and lay the
 /// window out again. The hosted click around it is measured in [`hosted`].
-fn switch(app: &mut Framed<SettingsApp>, category: Category) {
-    Framed::split(app).0.select(category);
-    Framed::harness_mut(app).relayout();
+fn switch(app: &mut crate::support::Window, category: Category) {
+    app.effect(&settings::effects::open_pane(category))
+        .expect("the pane opens");
+    app.harness().relayout();
 }
 
 #[test]
 fn cold_start_to_first_frame() {
     let mut samples = Samples::default();
     for _ in 0..5 {
-        let config = crate::support::ScratchConfig::new();
         let t = Step::start();
-        let app = mount(&config);
+        let mut app = crate::support::Window::new().expect("settings opens headlessly");
+        app.harness()
+            .resize((W as u32, H as u32))
+            .expect("settings lays out");
         samples.push_per(&t, 1);
         drop(app);
     }
@@ -154,8 +150,7 @@ fn cold_start_to_first_frame() {
 
 #[test]
 fn page_switch() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount(&config);
+    let mut app = mount();
     let cats = [
         Category::Sound,
         Category::Displays,
@@ -168,19 +163,20 @@ fn page_switch() {
         switch(&mut app, c);
     }
     let mut samples = Samples::default();
-    Framed::harness_mut(&mut app).begin_profiling();
+    app.harness().begin_profiling();
     for _ in 0..4 {
         for c in cats {
             let t = Step::start();
             switch(&mut app, c);
             samples.push_per(&t, 1);
-            assert_eq!(app.selected(), c, "the switch must show the page");
+            assert_eq!(
+                crate::support::selected(&mut app),
+                c,
+                "the switch must show the page"
+            );
         }
     }
-    passes(
-        "page switch",
-        &Framed::harness_mut(&mut app).take_profile_samples(),
-    );
+    passes("page switch", &app.harness().take_profile_samples());
     let (p50, _) = summary("settings page switch", &mut samples);
     budget("page switch", p50, 8_000);
 }
@@ -189,8 +185,7 @@ fn page_switch() {
 /// tiles, the keyboard) switch as fast as the plain ones.
 #[test]
 fn drawn_pages_switch() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount(&config);
+    let mut app = mount();
     let cats = [
         Category::TimeDate,
         Category::Power,
@@ -202,19 +197,20 @@ fn drawn_pages_switch() {
         switch(&mut app, c);
     }
     let mut samples = Samples::default();
-    Framed::harness_mut(&mut app).begin_profiling();
+    app.harness().begin_profiling();
     for _ in 0..4 {
         for c in cats {
             let t = Step::start();
             switch(&mut app, c);
             samples.push_per(&t, 1);
-            assert_eq!(app.selected(), c, "the switch must show the page");
+            assert_eq!(
+                crate::support::selected(&mut app),
+                c,
+                "the switch must show the page"
+            );
         }
     }
-    passes(
-        "drawn page switch",
-        &Framed::harness_mut(&mut app).take_profile_samples(),
-    );
+    passes("drawn page switch", &app.harness().take_profile_samples());
     let (p50, _) = summary("settings drawn page switch", &mut samples);
     budget("drawn page switch", p50, 8_000);
 }
@@ -223,13 +219,22 @@ fn drawn_pages_switch() {
 /// a press, four moves and a release, reported per event.
 #[test]
 fn globe_drag_frame() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount_on(&config, Category::TimeDate);
-    let h = Framed::harness_mut(&mut app);
+    // Time & Date is view code over its sections, built only in the app's
+    // view; a capture's clock is the sample one, whose zones the globe
+    // places.
+    let mut app =
+        crate::support::Window::capture_at(Some(Category::TimeDate.slug()), (W as u32, H as u32))
+            .expect("settings opens on Time & date");
+    let h = app.harness();
     // The clock is read off the UI thread; the globe is drawn once it lands.
     let globe = tilo_test_env::wait_for("the globe is laid out", || {
         let _ = h.poll_frame();
-        h.targets().get("time.timezone-map").copied()
+        // The globe is the page's one canvas.
+        h.a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::Canvas)
+            .and_then(|(_, node)| node.bounds())
+            .map(|b| vello::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1))
     });
     let c = globe.center();
     let mut samples = Samples::default();
@@ -245,9 +250,8 @@ fn globe_drag_frame() {
 
 #[test]
 fn scroll_frame() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount_on(&config, Category::Displays);
-    let h = Framed::harness_mut(&mut app);
+    let mut app = mount_on(Category::Displays);
+    let h = app.harness();
     h.click_at(f64::from(W) - 6.0, f64::from(H) / 2.0);
     for _ in 0..3 {
         h.scroll(0.0, -1.0);
@@ -266,27 +270,14 @@ fn scroll_frame() {
 /// Settings, which narrows its sidebar in place.
 #[test]
 fn keystroke_in_window_search() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount(&config);
+    let mut app = mount();
     let mut search = ui::widget::SearchDriver::default();
-    {
-        let settings: &mut SettingsApp = &mut app;
-        search.open(ui::window_toolbar::SearchOffer::of(settings).into());
-    }
     let mut query = String::new();
     let mut samples = Samples::default();
     for ch in "displaysoundnetwork".chars() {
         query.push(ch);
         let t = Step::start();
-        let settings: &mut SettingsApp = &mut app;
-        search.drive(
-            settings,
-            &query,
-            ui::widget::FindOptions::default(),
-            None,
-            false,
-        );
-        Framed::harness_mut(&mut app).relayout();
+        crate::support::bar_search(&mut app, &mut search, &query);
         samples.push_per(&t, 1);
     }
     let (p50, _) = summary("settings keystroke", &mut samples);
@@ -296,8 +287,7 @@ fn keystroke_in_window_search() {
 /// Attribution only: where one page switch spends its time.
 #[test]
 fn page_switch_attribution() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount(&config);
+    let mut app = mount();
     for c in [Category::Sound, Category::Displays, Category::Network] {
         switch(&mut app, c);
     }
@@ -305,16 +295,17 @@ fn page_switch_attribution() {
     for _ in 0..5 {
         for c in [Category::Sound, Category::Displays, Category::Network] {
             let t = Step::start();
-            Framed::split(&mut app).0.select(c);
+            app.effect(&settings::effects::open_pane(c))
+                .expect("the pane opens");
             select.push_per(&t, 1);
             let t = Step::start();
-            Framed::harness_mut(&mut app).relayout();
+            app.harness().relayout();
             layout.push_per(&t, 1);
         }
     }
-    summary("attribution select() (pane build)", &mut select);
-    summary("attribution relayout after select", &mut layout);
-    let h = Framed::harness_mut(&mut app);
+    summary("attribution open (pane build)", &mut select);
+    summary("attribution relayout after open", &mut layout);
+    let h = app.harness();
     h.begin_profiling();
     h.click_at(700.0, 400.0);
     for f in h.take_profile_samples() {
@@ -326,9 +317,8 @@ fn page_switch_attribution() {
 /// content must be laid out and drawn again.
 #[test]
 fn resize_step() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount_on(&config, Category::Displays);
-    let h = Framed::harness_mut(&mut app);
+    let mut app = mount_on(Category::Displays);
+    let h = app.harness();
     for i in 0..6 {
         h.resize((1472 - i, 920 - i)).unwrap();
     }

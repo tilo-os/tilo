@@ -218,10 +218,317 @@ pub(crate) struct KeptBand {
     /// Where it stood in its container, if a container placed it.
     pub placement: Option<Placement>,
     /// Its last paint at its full height (at rest, or on its way and
-    /// clipped as it was drawn), where it was laid out.
-    pub painted: vello::Scene,
+    /// clipped as it was drawn), where it was laid out; `None` when it was
+    /// never drawn. Content that draws nothing still paints.
+    pub painted: Option<vello::Scene>,
     /// It was shown when dropped (or already leaving).
     pub shown: bool,
+}
+
+/// How far a band is in taking up the motion of the band a rebuild dropped
+/// where it stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Carry {
+    /// Not laid out yet.
+    Fresh,
+    /// Its identity matched nothing: its place is looked up once it is
+    /// laid out.
+    Placing,
+    /// Settled: it leaves its motion when dropped.
+    Bound,
+}
+
+/// What every band keeps of its motion ([`Disclosing::Band`]): how much of
+/// it is drawn, where it stands while it is out of its container's layout,
+/// what it last painted, and what it leaves when dropped, for the band a
+/// rebuild puts in its place or for its column to draw it leaving.
+///
+/// `visible` is whether the band's owner shows it now; a band that is only
+/// there while it shows passes `true`.
+pub(crate) struct BandMotion {
+    /// How much of the band is drawn while it arrives or leaves: its box
+    /// opens or closes from the top, what follows moving with its edge.
+    pub disclosure: crate::motion::Disclosure,
+    /// The motion the person allows, from the last theme seen.
+    pub motion: crate::tokens::EffectiveMotion,
+    /// Where the band is drawn while it moves, and was last laid out at
+    /// rest: its slot and full height.
+    pub laid_rect: vello::kurbo::Rect,
+    /// Whether the layout gives the band its place: shown and at rest. On
+    /// its way in or out it stands out of the layout, which keeps what
+    /// follows where it is.
+    pub laid_in_flow: bool,
+    carry: Carry,
+    /// On its way out of the layout with no container to place it: it lands.
+    pub unplaced: bool,
+    /// Its layout must be built again: it took up a band on its way, or
+    /// arrived, after its first layout.
+    pub structure_dirty: bool,
+    /// Its last paint at its full height: what its column draws leaving
+    /// when its view stops building it; `None` until it is drawn.
+    painted: Option<vello::Scene>,
+    /// Where it stands in its column.
+    placement: Option<Placement>,
+}
+
+impl BandMotion {
+    /// At rest, shown or not: first paint shows the band at rest; only a
+    /// change moves it.
+    pub fn new(shown: bool) -> Self {
+        Self {
+            disclosure: if shown {
+                crate::motion::Disclosure::opened()
+            } else {
+                crate::motion::Disclosure::closed()
+            },
+            motion: crate::tokens::EffectiveMotion::default(),
+            laid_rect: vello::kurbo::Rect::ZERO,
+            laid_in_flow: shown,
+            carry: Carry::Fresh,
+            unplaced: false,
+            structure_dirty: false,
+            painted: None,
+            placement: None,
+        }
+    }
+
+    /// Whether the layout gives the band its place: shown and not on its
+    /// way. A moving band stands out of the layout, in the slot its
+    /// container gives it ([`Widget::place_disclosing`]).
+    pub fn in_flow(&self, visible: bool) -> bool {
+        visible && !self.disclosure.is_sliding()
+    }
+
+    /// Whether the band is drawn on its way in or out.
+    pub fn in_motion(&self) -> bool {
+        self.disclosure.is_moving()
+    }
+
+    /// Whether the band should join or leave the layout: it came to rest,
+    /// or set off.
+    pub fn layout_moved(&self, visible: bool) -> bool {
+        self.laid_in_flow != self.in_flow(visible)
+    }
+
+    /// Show or hide the band's `node` with it. True when the style changed.
+    pub fn style_display(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        node: NodeId,
+        visible: bool,
+    ) -> bool {
+        self.laid_in_flow = self.in_flow(visible);
+        let display = if self.laid_in_flow {
+            taffy::Display::Flex
+        } else {
+            taffy::Display::None
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        if current.display == display {
+            return false;
+        }
+        let mut style = current.clone();
+        style.display = display;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// At its first build: go on from the band with the same `key` a
+    /// rebuild dropped, if there is one.
+    pub fn build(&mut self, key: &str, visible: bool) {
+        if self.carry != Carry::Fresh {
+            return;
+        }
+        if let Some(kept) = crate::motion::take_kept::<KeptBand>(key) {
+            self.take_up(kept, visible);
+            self.carry = Carry::Bound;
+        } else {
+            self.carry = Carry::Placing;
+        }
+    }
+
+    /// At its first build, for a band known by its key alone (shown while
+    /// it is built): go on from the band with the same `key` a rebuild
+    /// dropped, else arrive at once. It never takes up the place of a band
+    /// with another key, which leaves as this one arrives, and it never
+    /// stands in the layout on its way in: what follows is laid out once,
+    /// where it stands without it.
+    pub fn build_keyed(&mut self, key: &str) {
+        if self.carry != Carry::Fresh {
+            return;
+        }
+        self.carry = Carry::Bound;
+        match crate::motion::take_kept::<KeptBand>(key) {
+            Some(kept) => self.take_up(kept, true),
+            None => self.arrive(true, false),
+        }
+    }
+
+    /// At its first layout, laid out at `rect`, when its key matched
+    /// nothing: it takes up the band that stood here before (what it says
+    /// changed), or it arrived. Arriving, a shown band moves in unless
+    /// `arrives_in_place` or its window is showing its first frame.
+    pub fn place_first(&mut self, rect: vello::kurbo::Rect, visible: bool, arrives_in_place: bool) {
+        if self.carry != Carry::Placing {
+            return;
+        }
+        self.carry = Carry::Bound;
+        match self
+            .laid_in_flow
+            .then(|| crate::motion::take_kept_at::<KeptBand>(rect))
+            .flatten()
+        {
+            Some(kept) => self.take_up(kept, visible),
+            None => self.arrive(visible, arrives_in_place),
+        }
+        if self.layout_moved(visible) {
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Go on from where the band a rebuild dropped was: shown at rest
+    /// stays at rest, opening goes on opening, and a change of shown
+    /// against it moves from there.
+    fn take_up(&mut self, kept: KeptBand, visible: bool) {
+        self.disclosure = kept.disclosure;
+        self.laid_rect = kept.laid_rect;
+        if self.disclosure.is_open() != visible {
+            self.disclosure.show_change(visible, self.motion);
+        }
+    }
+
+    /// Nothing was here before: a shown band moves in, unless it arrives
+    /// in place or its window is showing its first frame.
+    fn arrive(&mut self, visible: bool, arrives_in_place: bool) {
+        if visible && !arrives_in_place && crate::motion::window_has_shown() {
+            self.disclosure = crate::motion::Disclosure::closed();
+            self.disclosure.show_change(true, self.motion);
+        }
+    }
+
+    /// Frames while it moves, and one more to take it into the layout at
+    /// rest.
+    pub fn needs_frame(&self, visible: bool) -> bool {
+        self.in_motion() || self.layout_moved(visible)
+    }
+
+    pub fn note_placement(&mut self, placement: Placement) {
+        self.placement = Some(placement);
+    }
+
+    /// Its slot, where its container puts it while it is out of the
+    /// layout: the full height it was last measured at stays.
+    pub fn place(&mut self, slot: vello::kurbo::Rect) {
+        self.unplaced = false;
+        let height = self.laid_rect.height();
+        self.laid_rect = vello::kurbo::Rect::new(slot.x0, slot.y0, slot.x1, slot.y0 + height);
+    }
+
+    /// Where it paints: while it moves it has no box of its own (`rect`),
+    /// but is drawn in its slot.
+    pub fn paint_bounds(&self, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
+        if self.in_motion() {
+            self.laid_rect
+        } else {
+            rect
+        }
+    }
+
+    /// The band on its way, out of the layout; `None` in it or at rest.
+    pub fn disclosing(&self) -> Option<Disclosing> {
+        if self.laid_in_flow || !self.in_motion() {
+            return None;
+        }
+        let extent = self.laid_rect.height();
+        Some(Disclosing::Band {
+            extent,
+            drawn: self.disclosure.reveal(extent).height,
+        })
+    }
+
+    /// On its way out of the layout with no container to put it in its
+    /// slot, it lands at `visible`, for the next layout to take in. True
+    /// when it did.
+    pub fn land_unplaced(&mut self, visible: bool) -> bool {
+        if !self.unplaced || self.laid_in_flow {
+            return false;
+        }
+        self.disclosure.snap(visible);
+        true
+    }
+
+    /// The scene to paint the band's contents into this frame, at its full
+    /// height and where it is laid out or placed.
+    pub fn take_painted(&mut self) -> vello::Scene {
+        let mut painted = self.painted.take().unwrap_or_default();
+        painted.reset();
+        painted
+    }
+
+    /// Show `painted` (from [`Self::take_painted`]) at rest, and keep it,
+    /// so its column can draw it leaving when its view stops building it.
+    pub fn show_at_rest(
+        &mut self,
+        painted: vello::Scene,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+    ) {
+        scene.append(&painted, Some(transform));
+        self.painted = Some(painted);
+    }
+
+    /// Show `painted` (from [`Self::take_painted`]) as far as the band is
+    /// drawn: its box opens or closes from the top over its contents, which
+    /// fade in over the second half. Kept: dropped on its way, the band
+    /// leaves from where it is drawn with this paint, never blank.
+    pub fn show_moving(
+        &mut self,
+        painted: vello::Scene,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+    ) {
+        let band = self.laid_rect;
+        let reveal = self.disclosure.reveal(band.height());
+        if reveal.height > 0.0 && reveal.opacity > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal.opacity,
+                transform,
+                &vello::kurbo::Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+            );
+            scene.append(&painted, Some(transform));
+            scene.pop_layer();
+        }
+        self.painted = Some(painted);
+    }
+
+    /// The band is dropped: leave its motion under `key` for the band a
+    /// rebuild puts in its place, or for its column to draw it leaving.
+    /// `rect` is its box in the layout; a band never laid out leaves
+    /// nothing.
+    pub fn leave(&mut self, key: String, rect: vello::kurbo::Rect, visible: bool) {
+        if self.carry != Carry::Bound {
+            return;
+        }
+        let at = if self.laid_in_flow {
+            rect
+        } else {
+            self.laid_rect
+        };
+        crate::motion::keep(
+            key,
+            Some(at),
+            KeptBand {
+                disclosure: self.disclosure,
+                laid_rect: at,
+                placement: self.placement,
+                painted: self.painted.take(),
+                shown: visible,
+            },
+        );
+    }
 }
 
 /// A band its view stopped building, leaving: its last paint collapsing
@@ -253,6 +560,9 @@ impl Ghost {
 
     /// Draw what is left of it, `dy` below its slot.
     fn draw(&self, scene: &mut vello::Scene, transform: vello::kurbo::Affine, dy: f64) {
+        let Some(painted) = &self.kept.painted else {
+            return;
+        };
         let reveal = self.kept.disclosure.reveal(self.rect.height());
         if reveal.height <= 0.0 || reveal.opacity <= 0.0 {
             return;
@@ -272,7 +582,7 @@ impl Ghost {
         );
         let laid = self.kept.laid_rect;
         scene.append(
-            &self.kept.painted,
+            painted,
             Some(
                 place
                     * vello::kurbo::Affine::translate((
@@ -346,7 +656,7 @@ impl Ghosts {
             }
             // Gone by a key's result, or never painted: nothing to draw,
             // and never a blank band.
-            if !kept.disclosure.is_drawn() || kept.painted.encoding().is_empty() {
+            if !kept.disclosure.is_drawn() || kept.painted.is_none() {
                 continue;
             }
             // Its slot: before the widget that followed it, under the one

@@ -1113,13 +1113,15 @@ struct NavShared {
 
 /// The navigation list. See the module docs.
 pub struct NavList {
-    tree: TreeImpl<(), NavModel>,
+    tree: Box<TreeImpl<(), NavModel>>,
     shared: Rc<RefCell<NavShared>>,
     keys: NavKeys,
     /// The sections as the app handed them, before any filter.
     sections: Vec<NavSection>,
     /// The filter the window's field applies to filterable sections.
     filter: String,
+    /// The state the filter is kept in ([`Self::bind_filter`]).
+    filter_binding: Option<LocalBinding<String>>,
     /// What was open before a filter opened every match, restored when the
     /// filter clears.
     unfiltered_open: Option<Vec<NodeId>>,
@@ -1245,11 +1247,12 @@ impl NavList {
                 }
             });
         let mut list = Self {
-            tree,
+            tree: Box::new(tree),
             shared,
             keys,
             sections,
             filter: String::new(),
+            filter_binding: None,
             unfiltered_open: None,
             source: None,
             headings: false,
@@ -1356,14 +1359,14 @@ impl NavList {
     /// Give the list a stable id for tests and inspection.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.tree = self.tree.with_id(id);
+        self.tree = Box::new(self.tree.with_id(id));
         self
     }
 
     /// The name the list is announced by ("Mailboxes", "Settings").
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
-        self.tree = self.tree.with_accessible_name(name);
+        self.tree = Box::new(self.tree.with_accessible_name(name));
         self
     }
 
@@ -1371,7 +1374,7 @@ impl NavList {
     /// (`TreeView::with_semantic_key`).
     #[must_use]
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
-        self.tree = self.tree.with_semantic_key(key);
+        self.tree = Box::new(self.tree.with_semantic_key(key));
         self
     }
 
@@ -1390,6 +1393,18 @@ impl NavList {
         let (value, binding) = LocalBinding::new(state);
         self.set_selected(value.as_deref());
         self.shared.borrow_mut().binding = Some(binding);
+        self
+    }
+
+    /// Keep the filter in `state`: the list narrows to what the state holds,
+    /// and a filter given to the list (the window's search, through its
+    /// [`Filterable`]) is written back, so a view reads what the person
+    /// searches for from its own state.
+    #[must_use]
+    pub fn bind_filter(mut self, state: &LocalState<String>) -> Self {
+        let (value, binding) = LocalBinding::new(state);
+        self.set_filter(&value);
+        self.filter_binding = Some(binding);
         self
     }
 
@@ -1520,7 +1535,7 @@ impl NavList {
             shared.item_actions = actions.into_iter().map(|action| action.id).collect();
             shared.on_action = Some(Box::new(on_action));
         }
-        self.tree = self.tree.with_row_actions(row_actions);
+        self.tree = Box::new(self.tree.with_row_actions(row_actions));
         self
     }
 
@@ -1537,7 +1552,7 @@ impl NavList {
     #[must_use]
     pub fn on_rename(mut self, f: impl FnMut(&str, String) + 'static) -> Self {
         self.shared.borrow_mut().on_rename = Some(Box::new(f));
-        self.tree = self.tree.rename_on_double_click();
+        self.tree = Box::new(self.tree.rename_on_double_click());
         self
     }
 
@@ -1565,7 +1580,7 @@ impl NavList {
     pub fn on_delete(mut self, f: impl FnMut(String) + 'static) -> Self {
         self.shared.borrow_mut().on_delete = Some(Box::new(f));
         let shared = Rc::clone(&self.shared);
-        self.tree = self.tree.on_delete(move |id| {
+        self.tree = Box::new(self.tree.on_delete(move |id| {
             let mut shared = shared.borrow_mut();
             let Some(key) = shared.keys.get(&id).cloned() else {
                 return;
@@ -1573,7 +1588,7 @@ impl NavList {
             if let Some(callback) = shared.on_delete.as_mut() {
                 callback(key);
             }
-        });
+        }));
         self
     }
 
@@ -1602,7 +1617,7 @@ impl NavList {
     pub fn on_move(mut self, f: impl FnMut(&str, NavDrop) + 'static) -> Self {
         self.shared.borrow_mut().on_move = Some(Box::new(f));
         let shared = Rc::clone(&self.shared);
-        self.tree = self.tree.with_reorder(
+        self.tree = Box::new(self.tree.with_reorder(
             |model: &NavModel, source: NodeId, target: &DropTarget<NodeId>| {
                 if !model.is_item(source) || !model.is_item(target.key) {
                     return false;
@@ -1631,7 +1646,7 @@ impl NavList {
                 // back new sections.
                 false
             },
-        );
+        ));
         self
     }
 
@@ -1838,6 +1853,9 @@ impl NavList {
         self.rebuild();
         if !filtering && let Some(open) = self.unfiltered_open.take() {
             self.tree.restore_expanded(open);
+        }
+        if let Some(binding) = self.filter_binding.as_mut() {
+            binding.publish(&self.filter);
         }
     }
 
@@ -2163,7 +2181,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn AdaptiveNav>(self);
             return;
         }
-        crate::widget::Widget::provide(&self.tree, request);
+        crate::widget::Widget::provide(&*self.tree, request);
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
@@ -2189,7 +2207,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn Filterable>(self);
             return;
         }
-        crate::widget::Widget::provide_mut(&mut self.tree, request);
+        crate::widget::Widget::provide_mut(&mut *self.tree, request);
     }
 
     fn build_layout(
@@ -2198,7 +2216,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         theme: &crate::Theme,
         node_map: &mut HashMap<crate::taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> crate::taffy::NodeId {
-        let node = crate::widget::Widget::build_layout(&mut self.tree, taffy, theme, node_map);
+        let node = crate::widget::Widget::build_layout(&mut *self.tree, taffy, theme, node_map);
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
         node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
@@ -2218,14 +2236,17 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         if let Some(next) = next {
             self.set_selected(next.as_deref());
         }
+        if let Some(filter) = self.filter_binding.as_mut().and_then(LocalBinding::poll) {
+            self.set_filter(&filter);
+        }
         self.pull();
         self.take_asks();
-        crate::widget::Widget::sync(&mut self.tree, state, path);
+        crate::widget::Widget::sync(&mut *self.tree, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let pulled = self.pull() | self.take_asks();
-        crate::widget::Widget::update(&mut self.tree, state, path) || pulled
+        crate::widget::Widget::update(&mut *self.tree, state, path) || pulled
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2241,7 +2262,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     /// the tree's row; availability changes without the tree changing, so
     /// those few are copied on every walk.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
-        let mut access = crate::widget::Widget::accessibility_shared(&self.tree)?;
+        let mut access = crate::widget::Widget::accessibility_shared(&*self.tree)?;
         let shared = self.shared.borrow();
         if shared
             .selection_actions
@@ -2266,7 +2287,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         theme: &crate::Theme,
         presence: &crate::PresenceCtx,
     ) {
-        crate::widget::Widget::draw(&mut self.tree, scene, transform, text, theme, presence);
+        crate::widget::Widget::draw(&mut *self.tree, scene, transform, text, theme, presence);
         if let Some(feed) = &self.feed {
             let model = self.tree.model();
             let rows = self
@@ -2279,18 +2300,18 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
                     Some((key.to_owned(), rect))
                 })
                 .collect();
-            feed.publish_rows(crate::widget::Widget::get_rect(&self.tree), rows);
+            feed.publish_rows(crate::widget::Widget::get_rect(&*self.tree), rows);
         }
     }
 
     /// Never hidden: answered without building the rows.
     fn accessibility_hidden(&self) -> bool {
-        crate::widget::Widget::accessibility_hidden(&self.tree)
+        crate::widget::Widget::accessibility_hidden(&*self.tree)
     }
 
     /// The tree's own node, without building its rows.
     fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
-        let mut root = crate::widget::Widget::accessibility_root(&self.tree)?;
+        let mut root = crate::widget::Widget::accessibility_root(&*self.tree)?;
         disable_unavailable(&mut root, &self.shared.borrow());
         Some(root)
     }
@@ -2320,7 +2341,7 @@ impl crate::widget::controls::ActionControls for NavList {
             view.choice.install_custody(domain, attachment);
         }
         drop(shared);
-        crate::widget::controls::install_control_custody(&mut self.tree, domain, attachment);
+        crate::widget::controls::install_control_custody(&mut *self.tree, domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -2332,12 +2353,12 @@ impl crate::widget::controls::ActionControls for NavList {
                 .find_map(crate::widget::ActionEmitter::take);
             selection.or_else(|| shared.view.as_mut().and_then(|view| view.choice.take()))
         };
-        taken.or_else(|| crate::widget::controls::take_control_invocation(&mut self.tree))
+        taken.or_else(|| crate::widget::controls::take_control_invocation(&mut *self.tree))
     }
 
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let shared = self.shared.borrow();
-        let mut bindings = crate::widget::controls::control_action_bindings(&self.tree);
+        let mut bindings = crate::widget::controls::control_action_bindings(&*self.tree);
         // The tree exports only the current paint window. Keep its control
         // inventory equally bounded, including after filtering or scrolling.
         for (node, _, _) in self
@@ -2383,7 +2404,7 @@ impl crate::widget::controls::ActionControls for NavList {
             !shared.selection_actions.is_empty()
                 && rows().any(|key| shared.selection_actions.contains_key(key))
         };
-        selection || crate::widget::controls::has_action_control_bindings(&self.tree)
+        selection || crate::widget::controls::has_action_control_bindings(&*self.tree)
     }
 
     fn refresh_control_action_availability(
@@ -2398,7 +2419,7 @@ impl crate::widget::controls::ActionControls for NavList {
             view.choice.refresh_availability(allowed);
         }
         drop(shared);
-        crate::widget::controls::refresh_control_action_availability(&mut self.tree, allowed);
+        crate::widget::controls::refresh_control_action_availability(&mut *self.tree, allowed);
     }
 }
 

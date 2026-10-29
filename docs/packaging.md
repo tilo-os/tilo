@@ -73,7 +73,10 @@ nix build .#tilo-session
 ```
 
 All FHS packages share `dist/stage-payload.sh`; `dist/verify-payload.sh` asserts
-the installed paths and the session/portal wiring. Release builds exclude the
+the installed paths and the session/portal wiring. Every package, Nix included,
+ships `tilo`, the command a terminal reaches the desktop's apps and actions with
+(`tilo actions`, `tilo do`, `tilo open`). `dist/verify-cli-shims.sh` refuses a
+package whose app command shim has no sidecar, at build and after install. Release builds exclude the
 test-control socket. Video encode and decode go through the distribution's
 GStreamer (a stable 1.x ABI), which picks hardware codecs at runtime.
 

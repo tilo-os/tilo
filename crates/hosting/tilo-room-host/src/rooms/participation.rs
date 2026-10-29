@@ -5,15 +5,18 @@
 //! records in the clear; each record's channel is an MLS group, and the node
 //! takes part in every one of the rooms it governs, as one participant among
 //! the room's member devices ([`channel_crypto::peer`]): it creates a
-//! channel's group when the first member asks or its own endpoint writes,
-//! admits the room's governed member devices that ask, removes the ones
-//! governance removed, and applies and checks the commits any other
+//! channel's group when the first member asks or its own endpoint writes and
+//! no group of it is known, asks to be admitted to one another participant
+//! created, admits the room's governed member devices that ask, removes the
+//! ones governance removed, and applies and checks the commits any other
 //! participant writes. A channel is one record's: a device a Read Deny on
 //! that record, its app or a pattern over it withholds ([`Readers`]) is kept
 //! out of that channel alone. A channel id is a hash of its record's route,
 //! so the node keeps each route a device proved with its request
 //! ([`Participant::learn_route`]); a channel whose route it does not know is
-//! withheld from whoever a Deny over a pattern could keep out of it. A relay
+//! withheld from every member, as it may be a member's own record, and the
+//! node commits nothing to it: it cannot tell who may read it, so it only
+//! follows the commits of participants that can. A relay
 //! with a plain host certificate governs rooms without taking part in their
 //! channels: it only keeps and forwards their sealed frames.
 //!
@@ -35,6 +38,13 @@ use tilo_lock::MutexRecover as _;
 /// Channels one room takes part in.
 const MAX_CHANNELS: usize = 4096;
 
+/// Channels remembered as having a group the node takes no part in.
+const MAX_GROUPS_SEEN: usize = 1 << 16;
+
+/// How long the node waits for a Welcome before it asks again, with a fresh
+/// member key.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Routes one room keeps: one per channel it may take part in, and as many
 /// again for channels asked about that it never opened.
 const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
@@ -49,7 +59,7 @@ pub(super) struct Readers {
     /// record.
     withheld: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>,
     /// Who is kept out of every channel whose record the node cannot name:
-    /// whoever a Deny over a pattern of records could keep out of it.
+    /// every member device, as such a channel may be a member's own record.
     unrouted: BTreeSet<Ed25519PublicKey>,
 }
 
@@ -66,15 +76,16 @@ impl Readers {
         }
     }
 
-    /// The devices that may read `channel`.
-    pub(super) fn of(&self, channel: ChannelId) -> BTreeSet<Ed25519PublicKey> {
-        let withheld = self.withheld.get(&channel).unwrap_or(&self.unrouted);
-        self.room.difference(withheld).copied().collect()
+    /// The devices that may read `channel`; `None` while the node cannot
+    /// name its record, and so cannot tell.
+    pub(super) fn of(&self, channel: ChannelId) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let withheld = self.withheld.get(&channel)?;
+        Some(self.room.difference(withheld).copied().collect())
     }
 
     /// Whether a Read Deny keeps `channel`'s record from any device; a
-    /// channel whose record the node cannot name counts as withheld when
-    /// a Deny over a pattern of records could reach it.
+    /// channel whose record the node cannot name counts as withheld, as it
+    /// may be a member's own.
     #[cfg(feature = "web")]
     pub fn withholds(&self, channel: ChannelId) -> bool {
         !self
@@ -100,7 +111,11 @@ impl Readers {
                 .withheld
                 .keys()
                 .chain(later.withheld.keys())
-                .all(|channel| self.of(*channel).is_subset(&later.of(*channel)))
+                .all(|channel| {
+                    let read =
+                        |readers: &Self| readers.of(*channel).unwrap_or_else(|| unnamed(readers));
+                    read(self).is_subset(&read(later))
+                })
     }
 }
 
@@ -111,6 +126,11 @@ pub(super) struct Participation {
     key: SigningKey,
     vault: VaultKey,
     peers: HashMap<ChannelId, ChannelPeer>,
+    /// When the node last asked to be admitted to each channel it waits for.
+    asked: HashMap<ChannelId, std::time::Instant>,
+    /// Channels whose frames passed through while the node took no part in
+    /// them: they have a group, which the node joins rather than create one.
+    groups_seen: std::collections::HashSet<ChannelId>,
     delivery: u64,
 }
 
@@ -289,6 +309,8 @@ impl Participation {
             key: key.clone(),
             vault,
             peers: HashMap::new(),
+            asked: HashMap::new(),
+            groups_seen: std::collections::HashSet::new(),
             delivery: 0,
         }
     }
@@ -298,16 +320,24 @@ impl Participation {
     }
 
     /// The devices whose membership of `channel` governance backs: its
-    /// readers and this node.
-    fn allowed(&self, readers: &Readers, channel: ChannelId) -> BTreeSet<Ed25519PublicKey> {
-        let mut allowed = readers.of(channel);
+    /// readers and this node. `None` while the node cannot name the channel's
+    /// record.
+    fn allowed(&self, readers: &Readers, channel: ChannelId) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let mut allowed = readers.of(channel)?;
         allowed.insert(self.device());
-        allowed
+        Some(allowed)
     }
 
     /// Whether `channel`'s peer is open, opening it from disk when cold, or
-    /// creating it with its group when `create` and none is kept.
+    /// creating it with its group when `create` and no group of it is known
+    /// here.
     fn ensure(&mut self, channel: ChannelId, create: bool) -> Result<bool, String> {
+        let wanted = create;
+        let create = create && !self.groups_seen.contains(&channel);
+        if create && let Some(peer) = self.peers.get_mut(&channel) {
+            peer.found_now(&self.vault)
+                .map_err(|error| error.to_string())?;
+        }
         if !self.peers.contains_key(&channel) {
             if self.peers.len() >= MAX_CHANNELS {
                 return Err("the room takes part in too many channels".into());
@@ -316,10 +346,27 @@ impl Participation {
             let opened = ChannelPeer::open(&self.dir, channel, signer, &self.vault)
                 .map_err(|error| error.to_string())?;
             let peer = match opened {
-                Some(peer) => peer,
+                Some(mut peer) => {
+                    if create {
+                        peer.found_now(&self.vault)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    peer
+                }
                 None if create => {
                     std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
                     ChannelPeer::create_now(
+                        Some(&self.dir),
+                        channel,
+                        Box::new(self.key.clone()),
+                        &self.vault,
+                    )
+                    .map_err(|error| error.to_string())?
+                }
+                // A group the node saw and is not in: it asks to join.
+                None if wanted && self.groups_seen.contains(&channel) => {
+                    std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
+                    ChannelPeer::waiting(
                         Some(&self.dir),
                         channel,
                         Box::new(self.key.clone()),
@@ -385,7 +432,10 @@ impl Participation {
         if route.is_some_and(|route| !route.proves(&self.room, request.channel)) {
             return Err("access request names a route that is not its channel's".into());
         }
-        if !allowed.of(request.channel).contains(&request.device) {
+        if !allowed
+            .of(request.channel)
+            .is_some_and(|readers| readers.contains(&request.device))
+        {
             return Ok(());
         }
         let channel = request.channel;
@@ -398,9 +448,12 @@ impl Participation {
             .map_err(|error| error.to_string())
     }
 
-    /// Apply `frame`, a commit another participant wrote (the frame is
+    /// Apply `frame`, a frame another participant wrote (the frame is
     /// signed, so whoever relayed it does not matter), to the channel when
-    /// this room takes part in it.
+    /// this room takes part in it. A frame of a channel the node holds
+    /// nothing of tells it the channel has a group: when a member asks for
+    /// it or its own endpoint opens it, the node asks to be admitted rather
+    /// than create a second one.
     pub(super) fn frame(
         &mut self,
         frame: MlsGovernanceFrame,
@@ -409,14 +462,20 @@ impl Participation {
         let channel = frame.channel;
         let members = self.allowed(allowed, channel);
         if !self.ensure(channel, false)? {
+            if self.groups_seen.len() < MAX_GROUPS_SEEN {
+                self.groups_seen.insert(channel);
+            }
             return Ok(());
         }
         let Some(peer) = self.peers.get_mut(&channel) else {
             return Ok(());
         };
-        peer.receive(frame, &members, &self.vault)
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        match &members {
+            Some(members) => peer.receive(frame, members, &self.vault),
+            None => peer.follow(frame, &self.vault),
+        }
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     /// Bring every channel that has a device asking in line with `allowed`,
@@ -426,12 +485,50 @@ impl Participation {
         let channels: Vec<ChannelId> = self
             .peers
             .iter()
-            .filter(|(channel, peer)| !peer.asking(&self.allowed(allowed, **channel)).is_empty())
+            .filter(|(channel, peer)| {
+                peer.holds_unshared_keys()
+                    || self
+                        .allowed(allowed, **channel)
+                        .is_some_and(|members| !peer.asking(&members).is_empty())
+            })
             .map(|(channel, _)| *channel)
             .collect();
-        let mut messages = Vec::new();
+        let mut messages = self.ask()?;
         for channel in channels {
             messages.extend(self.reconcile(channel, allowed)?);
+        }
+        Ok(messages)
+    }
+
+    /// Ask to be admitted to every channel the node waits for: once, and
+    /// again with a fresh member key when no Welcome came in [`ASK_AGAIN`].
+    fn ask(&mut self) -> Result<Vec<NeighbourMsg>, String> {
+        let now = std::time::Instant::now();
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let mut messages = Vec::new();
+        for (channel, peer) in &mut self.peers {
+            if peer.access() != channel_crypto::Access::Waiting {
+                self.asked.remove(channel);
+                continue;
+            }
+            let last = self.asked.get(channel).copied();
+            if last.is_some_and(|last| now.duration_since(last) < ASK_AGAIN) {
+                continue;
+            }
+            let request = peer
+                .access_request_now(wall, last.is_some(), &self.vault)
+                .map_err(|error| error.to_string())?;
+            self.asked.insert(*channel, now);
+            if let Some(request) = request {
+                self.delivery = self.delivery.saturating_add(1);
+                messages.push(NeighbourMsg::MlsAccessRequest {
+                    room: self.room.clone(),
+                    request: Box::new(request),
+                    delivery: self.delivery,
+                });
+            }
         }
         Ok(messages)
     }
@@ -454,7 +551,6 @@ impl Participation {
         channel: ChannelId,
         readers: &Readers,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let allowed = self.allowed(readers, channel);
         let room = self.room.clone();
         if !self.ensure(channel, false)? {
             return Ok(Vec::new());
@@ -462,8 +558,18 @@ impl Participation {
         let Some(peer) = self.peers.get_mut(&channel) else {
             return Ok(Vec::new());
         };
-        peer.reconcile_now(&allowed, &self.vault)
-            .map_err(|error| error.to_string())?;
+        // A node that cannot name the channel's record cannot tell who may
+        // read it: it commits nothing, and removes no one.
+        let allowed = readers.of(channel).map(|mut allowed| {
+            allowed.insert(Ed25519PublicKey::from_bytes(
+                self.key.verifying_key().to_bytes(),
+            ));
+            allowed
+        });
+        if let Some(allowed) = &allowed {
+            peer.reconcile_now(allowed, &self.vault)
+                .map_err(|error| error.to_string())?;
+        }
         let frames = peer.outbox().to_vec();
         // The host retains them for whoever subscribes later and delivers
         // them to whoever is live as soon as they are handed over.
@@ -539,8 +645,12 @@ mod tests {
             HashMap::from([(payroll, devices(&[2]))]),
             BTreeSet::new(),
         );
-        assert_eq!(denied.of(payroll), devices(&[1]));
-        assert_eq!(denied.of(notes), devices(&[1, 2]));
+        assert_eq!(denied.of(payroll), Some(devices(&[1])));
+        assert_eq!(
+            denied.of(notes),
+            None,
+            "a record not named is no one's to read"
+        );
         assert!(participant.moves_channels(&denied));
         participant.hand_over(2, &denied);
         assert!(!participant.moves_channels(&denied));
@@ -580,7 +690,10 @@ mod tests {
         let (payroll, notes) = (ChannelId::new(), ChannelId::new());
         let allowed = Readers::new(
             BTreeSet::from([device_key]),
-            HashMap::from([(payroll, BTreeSet::from([device_key]))]),
+            HashMap::from([
+                (payroll, BTreeSet::from([device_key])),
+                (notes, BTreeSet::new()),
+            ]),
             BTreeSet::new(),
         );
         std::fs::create_dir_all(tmp.path().join("member")).unwrap();
@@ -632,7 +745,7 @@ mod tests {
         let channel = ChannelId::new();
         let allowed = Readers::new(
             BTreeSet::from([device_key]),
-            HashMap::new(),
+            HashMap::from([(channel, BTreeSet::new())]),
             BTreeSet::new(),
         );
         let ahead = access_request(&tmp.path().join("earlier"), &device, channel, 100);
@@ -653,9 +766,10 @@ mod tests {
     }
 
     /// "Finance: Deny Read" for one device, as `readers` hands it over: every
-    /// finance channel whose route the node knows is withheld from it, as
-    /// is a channel whose record it does not know; another app's routed
-    /// channel is not. A route that is not its channel's refuses the request.
+    /// finance channel whose route the node knows is withheld from it, and a
+    /// channel whose record it does not know from everyone (no group is
+    /// made for it); another app's routed channel is not. A route that is
+    /// not its channel's refuses the request.
     #[test]
     fn a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels() {
         let tmp = tempfile::tempdir().unwrap();
@@ -682,11 +796,14 @@ mod tests {
             ]),
             BTreeSet::from([key(&denied)]),
         );
-        assert_eq!(allowed.of(payroll_channel), BTreeSet::from([key(&other)]));
-        assert_eq!(allowed.of(unknown), BTreeSet::from([key(&other)]));
+        assert_eq!(
+            allowed.of(payroll_channel),
+            Some(BTreeSet::from([key(&other)]))
+        );
+        assert_eq!(allowed.of(unknown), None);
         assert_eq!(
             allowed.of(draft_channel),
-            BTreeSet::from([key(&denied), key(&other)])
+            Some(BTreeSet::from([key(&denied), key(&other)]))
         );
 
         let member = tmp.path().join("member");
@@ -722,8 +839,7 @@ mod tests {
         let members = |channel: ChannelId| participation.members(channel).unwrap();
         assert!(!members(payroll_channel).contains(&key(&denied)));
         assert!(members(payroll_channel).contains(&key(&other)));
-        assert!(!members(unknown).contains(&key(&denied)));
-        assert!(members(unknown).contains(&key(&other)));
+        assert!(participation.members(unknown).is_none());
         assert!(members(draft_channel).contains(&key(&denied)));
         assert!(members(draft_channel).contains(&key(&other)));
     }
@@ -781,7 +897,7 @@ mod tests {
         let channel = ChannelId::new();
         let allowed = Readers::new(
             BTreeSet::from([device_key]),
-            HashMap::new(),
+            HashMap::from([(channel, BTreeSet::new())]),
             BTreeSet::new(),
         );
         let mut member = ChannelPeer::waiting(

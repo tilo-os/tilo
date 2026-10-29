@@ -1,4 +1,4 @@
-//! Quick settings readings, geometry and list scrolling.
+//! Quick settings readings and the popover's geometry.
 
 #[allow(
     clippy::wildcard_imports,
@@ -15,6 +15,7 @@ impl ShellOverlayHost {
     /// Bind the owning native session's existing event-loop wake.
     pub fn set_quick_settings_wake(&mut self, wake: crate::session_runtime::Wake) {
         self.qs_action_slot.set_radio_wake(Arc::clone(&wake));
+        self.quick_settings.set_wake(Arc::clone(&wake));
         self.qs_refresh.set_host_wake(wake);
     }
 
@@ -37,7 +38,7 @@ impl ShellOverlayHost {
     /// bumps the revision — the per-iteration body of
     /// [`Self::apply_quick_settings_readings`].
     pub(super) fn apply_one_qs_reading(
-        &mut self,
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
         reading: crate::shell::quick_settings_refresh::QsReading,
     ) {
@@ -270,7 +271,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn apply_wifi_join_result(
-        &mut self,
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
         join: crate::shell::quick_settings_refresh::WifiJoinResult,
     ) {
@@ -338,11 +339,7 @@ impl ShellOverlayHost {
                     } else {
                         t("host-wifi-join-check-password")
                     };
-                    // Said in the prompt, the password selected so the next
-                    // keystroke replaces it.
-                    if self.wifi_password_prompt == Some(prompt.id) {
-                        self.wifi_prompt.reject(error.clone());
-                    }
+                    // Said in the prompt, under its field.
                     prompt.error = Some(error);
                 } else if st
                     .quick_settings
@@ -504,15 +501,6 @@ impl ShellOverlayHost {
         self.quick_settings_pose(now).to_local(point)
     }
 
-    #[cfg(test)]
-    pub(super) fn transform_quick_settings_point_for_test(
-        &self,
-        point: Point,
-        now: Instant,
-    ) -> Point {
-        self.quick_settings_pose(now).to_drawn(point)
-    }
-
     /// Quick Settings' pose at `now`, appearing from the tray. Painting and
     /// hit testing both go through it, so a control is hit where it is
     /// drawn. A page drilling in is hit at its resting place: its shift is
@@ -534,562 +522,40 @@ impl ShellOverlayHost {
             .is_some_and(|chrome| chrome.borrow().quick_settings.pasting())
     }
 
-    /// A drill-in is a compact continuation of Quick Settings, not a blank
-    /// fixed-height sheet. Its height follows the actual rows; the root
-    /// page's follows its open section. The one cap on
-    /// every page is the popover's available height in
-    /// [`Self::quick_settings_rect`] — the bar above and the desktop inset
-    /// below — the same budget the root page is fitted to; rows past it are
-    /// clipped by the panel, never painted over the desktop.
+    /// The popover is as tall as the panel's content lays out; the one
+    /// cap is the room under the bar ([`Self::quick_settings_rect`]), past
+    /// which the panel scrolls.
     pub(super) fn quick_settings_preferred_height(
         &self,
-        state: &crate::shell::chrome_state::ChromeState,
+        _state: &crate::shell::chrome_state::ChromeState,
     ) -> f64 {
-        use tilo_quick_settings::QsLevel;
-        match state.quick_settings.current_level() {
-            QsLevel::Root => self.qs_root.preferred_height(&state.quick_settings),
-            QsLevel::BluetoothDetails(_) => self
-                .device_fabric_call(DeviceFabricUiAction::Snapshot)
-                .map_or(216.0, |view| {
-                    let rows = view.devices.len().saturating_add(1);
-                    (78.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
-                        .clamp(216.0, 552.0)
-                }),
-            // `state` is the caller's shared borrow of this same chrome; the
-            // host reads it again for the rows' own actions.
-            QsLevel::Notifications => self.chrome.as_ref().map_or(0.0, |chrome| {
-                self.notification_center.preferred_height_for_width(
-                    &ChromeNotifications::new(chrome),
-                    &self.qs_type_lines,
-                    self.quick_settings_width(),
-                )
-            }),
-        }
+        self.quick_settings_content_height()
     }
 
-    /// Number of complete notification rows the current compact pane shows.
-    /// When the history overflows, the pager band's room is reserved so its
-    /// position and keyboard hint never overlap the final row.
-    #[cfg(test)]
-    pub(super) fn qs_notification_visible_rows(&self) -> usize {
-        self.chrome.as_ref().map_or(1, |chrome| {
-            self.notification_center.visible_rows(
-                &ChromeNotifications::new(chrome),
-                &self.qs_notification_layout(),
-            )
-        })
-    }
-
-    /// The notification centre's geometry for the current panel and text
-    /// scale — the one oracle paint, hit-testing and sizing read.
-    pub(super) fn qs_notification_layout(&self) -> CenterLayout {
-        let quiet = self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| ChromeNotifications::new(chrome).quiet_status().is_some());
-        CenterLayout::new(self.quick_settings_rect(), &self.qs_type_lines)
-            .drill_in()
-            .quiet(quiet)
-    }
-
-    /// Scroll the notification centre from a pointer wheel over the open
-    /// panel.
-    pub(super) fn handle_qs_notification_wheel(
-        &mut self,
-        delta: MouseScrollDelta,
-        scale_factor: f64,
-    ) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let notifications_open = {
-            let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::Notifications
-                )
-        };
-        if !notifications_open
-            || !self
-                .last_cursor
-                .is_some_and(|point| self.quick_settings_rect().contains(point))
-        {
-            return false;
-        }
-        let layout = self.qs_notification_layout();
-        self.notification_center.wheel(
-            &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-            &layout,
-            delta,
-            scale_factor,
-        );
-        true
-    }
-
-    /// Scrolling for a Quick Settings root page taller than its popover:
-    /// wheel, touchpad, a finger's drag (which the compositor emulates as a
-    /// wheel) and the page's scrollbar, through the toolkit's
-    /// [`ui::widget::ScrollRegion`]. Anything the region does not take
-    /// continues to the ordinary click and hover routing.
-    pub(super) fn route_qs_root_scroll(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let on_root = {
-            let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::Root
-                )
-        };
-        if !on_root && !self.qs_root.scroll_dragging() {
-            return false;
-        }
-        let mut taken = false;
-        let changed = self.qs_root.handle_scroll_event(
-            event,
-            scale_factor,
-            modifiers.state(),
-            &mut taken,
-            &self.overview_layout_theme,
-        );
-        if changed {
-            chrome.borrow_mut().bump();
-        }
-        if taken {
-            *handled = true;
-        }
-        taken
-    }
-
-    /// Step the root page's glide on an open popover, repainted as a
-    /// wheel's scroll is; returns whether it moved.
-    pub(super) fn advance_qs_root_scroll(&mut self) -> bool {
-        self.overlay_flags().quick_settings && self.qs_root.advance_scroll()
-    }
-
-    /// The root page's scrollbar is fading or gliding on an open popover.
-    pub(super) fn qs_root_scroll_fading(&self) -> bool {
-        self.overlay_flags().quick_settings
-            && self.qs_root.scroll_needs_frame(&self.overview_layout_theme)
-    }
-
-    /// Keyboard navigation for the notification centre, available without
-    /// pointer hover. Returns whether the centre consumed the key.
-    #[cfg(test)]
-    pub(super) fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
-        self.handle_qs_notification_keyboard_with_shift(logical_key, false)
-    }
-
-    pub(super) fn handle_qs_notification_keyboard_with_shift(
-        &mut self,
-        logical_key: &Key,
-        backwards: bool,
-    ) -> bool {
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
-        };
-        let layout = self.qs_notification_layout();
-        let outcome = self.notification_center.key_with_shift(
-            &ChromeNotifications::new(&chrome).with_agents(&self.room_activity),
-            &layout,
-            logical_key,
-            backwards,
-        );
-        self.apply_notification_center_outcome(outcome)
-    }
-
-    /// Carry out what the notification centre asked of the shell. Returns
-    /// whether the input was the centre's.
-    pub(super) fn apply_notification_center_outcome(&self, outcome: CenterOutcome) -> bool {
-        match outcome {
-            CenterOutcome::Ignored => return false,
-            CenterOutcome::Handled => {}
-            CenterOutcome::Back => self.pop_quick_settings_level(),
-            CenterOutcome::OpenApp { app_id, label } => self.launch_app(&app_id, &label),
-        }
-        true
-    }
-
-    pub(super) fn clamp_qs_clipboard_history_start(&mut self, history_len: usize) -> bool {
-        let max_start = history_len.saturating_sub(QS_CLIPBOARD_ROWS);
-        let next = self.qs_clipboard_history_start.min(max_start);
-        let changed = next != self.qs_clipboard_history_start;
-        self.qs_clipboard_history_start = next;
-        changed
-    }
-
-    pub(super) fn select_qs_clipboard_item(
-        &mut self,
-        history: &[crate::compositor::selection::ClipboardHistorySnapshot],
-        index: usize,
-    ) {
-        let Some(item) = history.get(index) else {
-            self.qs_selected_clipboard = None;
-            return;
-        };
-        self.qs_selected_clipboard = Some(item.id);
-        let visible = QS_CLIPBOARD_ROWS;
-        if index < self.qs_clipboard_history_start {
-            self.qs_clipboard_history_start = index;
-        } else if index >= self.qs_clipboard_history_start.saturating_add(visible) {
-            self.qs_clipboard_history_start = index.saturating_add(1).saturating_sub(visible);
-        }
-        self.bump_chrome();
-    }
-
-    pub(super) fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
-        let history_len = self.filtered_clipboard_history().len();
-        let max_start = history_len.saturating_sub(QS_CLIPBOARD_ROWS);
-        let current = self.qs_clipboard_history_start.min(max_start);
-        let next = if movement.is_negative() {
-            current.saturating_sub(movement.unsigned_abs())
-        } else {
-            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
-        }
-        .min(max_start);
-        if next == self.qs_clipboard_history_start {
-            return false;
-        }
-        self.qs_clipboard_history_start = next;
-        self.bump_chrome();
-        true
-    }
-
-    pub(super) fn handle_qs_clipboard_wheel(
-        &mut self,
-        delta: MouseScrollDelta,
-        scale_factor: f64,
-    ) -> bool {
-        // Only the picker opened to paste pages its copies under the wheel;
-        // in Quick Settings the wheel scrolls the page.
-        let clipboard_open = self.chrome.as_ref().is_some_and(|chrome| {
-            let state = chrome.borrow();
-            state.overlays.quick_settings && state.quick_settings.pasting()
-        });
-        if !clipboard_open
-            || !self
-                .last_cursor
-                .is_some_and(|point| self.quick_settings_rect().contains(point))
-        {
-            return false;
-        }
-        let rows = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
-            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
-        };
-        if rows.abs() <= f64::EPSILON {
-            return true;
-        }
-        self.qs_clipboard_wheel_remainder += rows;
-        let whole = self.qs_clipboard_wheel_remainder.trunc();
-        if whole.abs() >= 1.0 {
-            self.qs_clipboard_wheel_remainder -= whole;
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
-            )]
-            let movement = whole as isize;
-            let _ = self.scroll_qs_clipboard_history(movement);
-        }
-        true
-    }
-
-    /// Whether the open Clipboard section takes `logical_key`: typing
-    /// searches its copies; the arrows and Enter choose among them while no
-    /// control holds keyboard focus (as when Super+V opened it to paste).
-    pub(super) fn qs_clipboard_takes_key(
-        &self,
-        chrome: &Chrome,
-        logical_key: &Key,
-        control_down: bool,
-    ) -> bool {
-        let state = chrome.borrow();
-        let qs = &state.quick_settings;
-        if !state.overlays.quick_settings
-            || qs.current_level() != &tilo_quick_settings::QsLevel::Root
-            || qs.section != Some(tilo_quick_settings::QsSection::Clipboard)
-        {
-            return false;
-        }
-        match logical_key {
-            Key::Character(_) => !control_down,
-            Key::Named(NamedKey::Backspace) => true,
-            Key::Named(NamedKey::Escape) => !self.qs_clipboard_query.is_empty(),
-            Key::Named(
-                NamedKey::ArrowDown
-                | NamedKey::ArrowUp
-                | NamedKey::PageDown
-                | NamedKey::PageUp
-                | NamedKey::Home
-                | NamedKey::End
-                | NamedKey::Enter
-                | NamedKey::Space,
-            ) => !self.qs_root.has_keyboard_focus(),
-            _ => false,
-        }
-    }
-
-    pub(super) fn handle_qs_clipboard_keyboard(
-        &mut self,
-        logical_key: &Key,
-        control_down: bool,
-    ) -> bool {
-        let query_input = match logical_key {
-            Key::Character(value) if !control_down => {
-                let before = self.qs_clipboard_query.len();
-                let remaining = 80usize.saturating_sub(self.qs_clipboard_query.chars().count());
-                self.qs_clipboard_query.extend(
-                    value
-                        .chars()
-                        .filter(|character| !character.is_control())
-                        .take(remaining),
-                );
-                Some(self.qs_clipboard_query.len() != before)
-            }
-            Key::Named(NamedKey::Backspace) => {
-                Some(ui::delete_last_grapheme(&mut self.qs_clipboard_query))
-            }
-            Key::Named(NamedKey::Escape) if !self.qs_clipboard_query.is_empty() => {
-                self.qs_clipboard_query.clear();
-                Some(true)
-            }
-            _ => None,
-        };
-        if let Some(changed) = query_input {
-            if changed {
-                self.qs_clipboard_history_start = 0;
-                let history = self.filtered_clipboard_history();
-                self.qs_selected_clipboard = history.first().map(|item| item.id);
-                self.bump_chrome();
-            }
-            return true;
-        }
-        let history = self.filtered_clipboard_history();
-        if history.is_empty() {
-            self.qs_selected_clipboard = None;
-            return matches!(
-                logical_key,
-                Key::Named(
-                    NamedKey::ArrowDown
-                        | NamedKey::ArrowUp
-                        | NamedKey::PageDown
-                        | NamedKey::PageUp
-                        | NamedKey::Home
-                        | NamedKey::End
-                )
-            );
-        }
-        let current = self
-            .qs_selected_clipboard
-            .and_then(|id| history.iter().position(|item| item.id == id))
-            .unwrap_or(0);
-        let page = QS_CLIPBOARD_ROWS.max(1);
-        let target = match logical_key {
-            Key::Named(NamedKey::ArrowDown) => current.saturating_add(1),
-            Key::Named(NamedKey::ArrowUp) => current.saturating_sub(1),
-            Key::Named(NamedKey::PageDown) => current.saturating_add(page),
-            Key::Named(NamedKey::PageUp) => current.saturating_sub(page),
-            Key::Named(NamedKey::Home) => 0,
-            Key::Named(NamedKey::End) => history.len().saturating_sub(1),
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                let Some(id) = history.get(current).map(|item| item.id) else {
-                    return true;
-                };
-                self.choose_clipboard_item(id);
-                return true;
-            }
-            _ => return false,
-        }
-        .min(history.len().saturating_sub(1));
-        self.select_qs_clipboard_item(&history, target);
-        true
-    }
-
-    pub(super) fn qs_device_fabric_visible_rows(&self) -> usize {
-        usize_of_f64((self.quick_settings_rect().height() - 78.0) / 58.0).clamp(1, 7)
-    }
-
-    pub(super) fn clamp_qs_device_fabric_start(&mut self, row_count: usize) -> bool {
-        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
-        let next = self.qs_device_fabric_start.min(max_start);
-        let changed = next != self.qs_device_fabric_start;
-        self.qs_device_fabric_start = next;
-        changed
-    }
-
-    pub(super) fn scroll_qs_device_fabric(&mut self, movement: isize) -> bool {
-        let row_count = self
-            .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .map_or(0, |view| {
-                let bluetooth_details = self.chrome.as_ref().is_some_and(|chrome| {
-                    matches!(
-                        chrome.borrow().quick_settings.current_level(),
-                        tilo_quick_settings::QsLevel::BluetoothDetails(_)
-                    )
-                });
-                if bluetooth_details {
-                    view.devices.len().saturating_add(1)
-                } else {
-                    let realtime = self
-                        .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-                        .unwrap_or_default();
-                    device_fabric_pane_rows(&view, &realtime).len()
-                }
-            });
-        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
-        let current = self.qs_device_fabric_start.min(max_start);
-        let next = if movement.is_negative() {
-            current.saturating_sub(movement.unsigned_abs())
-        } else {
-            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
-        }
-        .min(max_start);
-        if next == self.qs_device_fabric_start {
-            return false;
-        }
-        self.qs_device_fabric_start = next;
-        self.bump_chrome();
-        true
-    }
-
-    pub(super) fn handle_qs_device_fabric_wheel(
-        &mut self,
-        delta: MouseScrollDelta,
-        scale_factor: f64,
-    ) -> bool {
-        let devices_open = self.chrome.as_ref().is_some_and(|chrome| {
-            let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::BluetoothDetails(_)
-                )
-        });
-        if !devices_open
-            || !self
-                .last_cursor
-                .is_some_and(|point| self.quick_settings_rect().contains(point))
-        {
-            return false;
-        }
-        let rows = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
-            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
-        };
-        if rows.abs() <= f64::EPSILON {
-            return true;
-        }
-        self.qs_device_fabric_wheel_remainder += rows;
-        let whole = self.qs_device_fabric_wheel_remainder.trunc();
-        if whole.abs() >= 1.0 {
-            self.qs_device_fabric_wheel_remainder -= whole;
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
-            )]
-            let movement = whole as isize;
-            let _ = self.scroll_qs_device_fabric(movement);
-        }
-        true
-    }
-
-    pub(super) fn handle_qs_device_fabric_keyboard(&mut self, logical_key: &Key) -> bool {
-        let page = isize::try_from(self.qs_device_fabric_visible_rows()).unwrap_or(isize::MAX);
-        match logical_key {
-            Key::Named(NamedKey::Enter | NamedKey::Space | NamedKey::Delete) => {
-                let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
-                    return true;
-                };
-                let realtime = self
-                    .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
-                    .unwrap_or_default();
-                let rows = device_fabric_pane_rows(&view, &realtime);
-                let consent = matches!(
-                    rows.get(self.qs_device_fabric_start),
-                    Some(
-                        DeviceFabricPaneRow::RemoteAudioConsent(_)
-                            | DeviceFabricPaneRow::SpeakerConsent(_)
-                            | DeviceFabricPaneRow::RealtimeConsent(_)
-                            | DeviceFabricPaneRow::GamepadAuthorization(_)
-                    )
-                ) || matches!(
-                    rows.get(self.qs_device_fabric_start),
-                    Some(DeviceFabricPaneRow::Tethering(status))
-                        if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
-                );
-                if consent {
-                    let (allow, decline) =
-                        Self::qs_realtime_consent_actions(self.qs_device_row_rect(0));
-                    self.handle_qs_device_fabric_click(
-                        if matches!(logical_key, Key::Named(NamedKey::Delete)) {
-                            decline.center()
-                        } else {
-                            allow.center()
-                        },
-                    );
-                } else if !matches!(logical_key, Key::Named(NamedKey::Delete)) {
-                    self.handle_qs_device_fabric_click(self.qs_device_row_rect(0).center());
-                }
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                let _ = self.scroll_qs_device_fabric(1);
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let _ = self.scroll_qs_device_fabric(-1);
-            }
-            Key::Named(NamedKey::PageDown) => {
-                let _ = self.scroll_qs_device_fabric(page);
-            }
-            Key::Named(NamedKey::PageUp) => {
-                let _ = self.scroll_qs_device_fabric(page.saturating_neg());
-            }
-            Key::Named(NamedKey::Home) => {
-                let _ = self.scroll_qs_device_fabric(-isize::MAX);
-            }
-            Key::Named(NamedKey::End) => {
-                let _ = self.scroll_qs_device_fabric(isize::MAX);
-            }
-            _ => return false,
-        }
-        true
-    }
-
+    /// The panel's named targets where they are on screen now (`qs-tile-wifi`,
+    /// `qs-row-battery`, …), and the now-playing card's, while it is open.
     pub fn quick_settings_semantic_rects(&self) -> Vec<(String, Rect)> {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return Vec::new();
-        };
-        let state = chrome.borrow();
-        if !state.overlays.quick_settings {
+        if !self.overlay_flags().quick_settings {
             return Vec::new();
         }
-        match state.quick_settings.current_level() {
-            tilo_quick_settings::QsLevel::Root => {
-                let mut rects = self.qs_root.semantic_rects(&state.quick_settings);
-                drop(state);
-                rects.extend(self.now_playing_semantic_rects());
-                rects
-            }
-            tilo_quick_settings::QsLevel::Notifications => {
-                drop(state);
-                self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
-                    self.notification_center.semantic_rects(
-                        &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-                        &self.qs_notification_layout(),
-                        "quick_settings_",
-                    )
-                })
-            }
-            tilo_quick_settings::QsLevel::BluetoothDetails(_) => Vec::new(),
-        }
+        let mut rects: Vec<(String, Rect)> = self
+            .quick_settings
+            .app()
+            .map(ui::widget::Widget::test_rects)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("qs-"))
+            .collect();
+        rects.extend(self.now_playing_semantic_rects());
+        rects
+    }
+
+    /// The Quick Settings target named `name` where it is on screen now.
+    pub fn quick_settings_target(&self, name: &str) -> Option<Rect> {
+        self.quick_settings_semantic_rects()
+            .into_iter()
+            .find(|(target, _)| target == name)
+            .map(|(_, rect)| rect)
     }
 
     /// May the local user invite into the room they're looking at? Asked
@@ -1123,9 +589,6 @@ pub(super) fn scanned_wifi_security(
 /// that walking into range shows up while the person looks, rarely enough
 /// that the radio is not kept busy.
 pub(super) const QS_WIFI_RESCAN: Duration = Duration::from_secs(10);
-
-/// Copies the Clipboard section shows at once.
-pub(super) const QS_CLIPBOARD_ROWS: usize = 6;
 
 /// The one local source a Quick Settings device click routes to another device.
 #[derive(Clone, Debug, PartialEq)]
@@ -1168,31 +631,6 @@ pub(super) const fn ui_power_profile(
         ActPP::Balanced => UiPP::Balanced,
         ActPP::Performance => UiPP::Performance,
     }
-}
-
-pub(super) fn focus_quick_settings_accessibility(
-    host: &mut ShellOverlayHost,
-    child_path: &[usize],
-) -> bool {
-    let Some(chrome) = host.chrome.clone() else {
-        return false;
-    };
-    let notifications_open = matches!(
-        chrome.borrow().quick_settings.current_level(),
-        tilo_quick_settings::QsLevel::Notifications
-    );
-    if notifications_open
-        && let [0, dialog_path @ ..] = child_path
-        && host.notification_center.focus_accessibility_path(
-            &ChromeNotifications::new(&chrome).with_agents(&host.room_activity),
-            &host.qs_notification_layout(),
-            dialog_path,
-        )
-    {
-        return true;
-    }
-    host.qs_root
-        .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
 }
 
 /// Exact conservative extent of Quick Settings after its animation layer has settled. This must

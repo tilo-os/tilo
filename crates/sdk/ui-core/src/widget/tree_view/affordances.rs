@@ -198,7 +198,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             menu.push(item);
         }
         menu.open_at([f32_of_f64(at.x), f32_of_f64(at.y)]);
-        self.menu = menu;
+        *self.menu = menu;
         self.menu_target = target;
         self.rename = None;
         true
@@ -868,7 +868,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         if !self.menu.is_open() {
             return None;
         }
-        let mut node = Widget::accessibility(&self.menu)?;
+        let mut node = Widget::accessibility(&*self.menu)?;
         namespace(&mut node);
         Some(node)
     }

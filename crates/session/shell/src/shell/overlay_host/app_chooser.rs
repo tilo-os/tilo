@@ -1,7 +1,8 @@
 //! The shell's app chooser, as an app asks for it (the chooser service's
-//! `ChooseApp`): the palette over the installed apps, each with its icon,
-//! filtered by typing. Choosing one answers the app with it instead of
-//! opening it; closing the palette answers that none was chosen.
+//! `ChooseApp`): search over the installed apps, each with its icon,
+//! filtered by typing, in the launcher's card. Choosing one answers the app
+//! with it instead of opening it; closing search answers that none was
+//! chosen.
 
 use std::sync::mpsc;
 
@@ -10,7 +11,6 @@ use tilo_dialogs::shell::ChosenApp;
 use super::ShellOverlayHost;
 use crate::shell::i18n::t_args;
 use crate::shell::search::{ResourceKind, SearchResult};
-use ui::widget::Widget as _;
 
 /// An app chooser on screen, waiting for the person's choice.
 pub(crate) struct PendingAppChooser {
@@ -46,14 +46,13 @@ impl ShellOverlayHost {
         {
             self.open_palette_with_scope(SearchScope::All);
         }
-        self.palette.set_query("");
-        self.palette.set_query_placeholder(t_args(
+        self.search.set_query("");
+        self.search.set_query_placeholder(t_args(
             "host-app-chooser-placeholder",
             &[("purpose", purpose.into())],
         ));
         self.last_search_query = "\0app-chooser\0".into();
         self.palette_visible = true;
-        self.palette.set_focus(true);
         self.palette_layout_dirty = true;
         self.app_chooser = Some(PendingAppChooser {
             reply,
@@ -85,7 +84,7 @@ impl ShellOverlayHost {
         };
         self.answer_app_chooser(Some(app));
         self.palette_visible = false;
-        self.palette.close();
+        self.search.close();
         true
     }
 

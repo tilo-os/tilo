@@ -1,10 +1,13 @@
-//! Governor-owned terminal audit, committed with its signed room checkpoint.
+//! A device's own terminal audit: each member's receipts are their own
+//! slice of the room, written by their devices and checked by every
+//! receiver ([`tilo_peer_state::room::effect_slices_kept`]). A device keeps
+//! its newest receipts' commit receipts hot and archives the rest to a cold
+//! history it anchors in its slice.
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredEffectReceipt {
@@ -82,10 +85,13 @@ pub(crate) fn validate_history(
     view: &crate::NativeCommittedView,
     store: &dyn crate::Store,
 ) -> Result<(), String> {
-    let signed_root = view.peer().workspace().workspace_effect_history_root()?;
+    let signed_root = view
+        .peer()
+        .workspace()
+        .workspace_effect_history_root(view.device())?;
     let Some(root) = view.record.effect_history_root else {
-        if signed_root.is_some() && view.device() == view.governor() {
-            return Err("native governor history index is missing from its owner record".into());
+        if signed_root.is_some() {
+            return Err("this device's effect history index is missing from its record".into());
         }
         return Ok(());
     };
@@ -128,9 +134,10 @@ fn archive_one(
     };
     validate_fact(view, &fact, &effects)?;
     let root = crate::effect_history::insert(store, view.record.effect_history_root, fact)?;
+    let device = view.device().clone();
     view.peer
         .workspace_mut()
-        .set_workspace_effect_history_root(root, key, now)?;
+        .set_workspace_effect_history_root(&device, root, key, now)?;
     view.record.effect_history_root = Some(root);
     // Older readers must refuse an archived owner record, not ignore the
     // index and mint a different original receipt for an already-known UUID.
@@ -161,86 +168,44 @@ fn decode(
 mod tests;
 
 impl NativeWorkspaceOwner {
-    /// Commit the broker's exact redacted terminal receipt before acknowledging it.
-    /// Original arguments/results never enter the room; governor signing custody
-    /// is supplied out of band, not granted by the receipt.
+    /// Commit the broker's exact redacted terminal receipt, of an invocation
+    /// this device served, before acknowledging it: written into this
+    /// device's person's slice of the room, signed by `key`, the device's
+    /// own, and published as any room change of its own. Original
+    /// arguments and results never enter the room.
     ///
     /// # Errors
-    /// Refuses invalid receipts, absent governor custody, changed retries, quota
-    /// exhaustion or failed durable publication.
+    /// Refuses invalid receipts, a key that is not this device's, another's
+    /// receipt, changed retries or failed durable publication.
     pub fn commit_effect_receipt(
         &self,
         request: &OwnerCommitRequest,
-        governor: &DeviceCert,
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<OwnerCommitReceipt, String> {
-        self.commit_effect_receipt_for(request, governor, key, now, None)
-    }
-
-    /// Commit the authenticated member's audit with the same immutable ledger
-    /// and durable barrier as a local broker audit.
-    ///
-    /// # Errors
-    /// Refuses stale admission, impersonation, quota exhaustion or absent governor custody.
-    pub fn commit_member_effect_receipt(
-        &self,
-        request: &OwnerCommitRequest,
-        caller: &DeviceCert,
-        governor: &DeviceCert,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<OwnerCommitReceipt, String> {
-        self.commit_effect_receipt_for(request, governor, key, now, Some(caller))
-    }
-
-    fn commit_effect_receipt_for(
-        &self,
-        request: &OwnerCommitRequest,
-        governor: &DeviceCert,
-        key: &SigningKey,
-        now: SystemTime,
-        caller: Option<&DeviceCert>,
     ) -> Result<OwnerCommitReceipt, String> {
         let effect = decode(request)?;
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid effect room")?;
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        if candidate.governor() != governor
-            || candidate.device() != governor
-            || key.verifying_key().to_bytes() != governor.device_public_key
-        {
-            return Err("effect receipt lacks exact current governor signing custody".into());
+        let device = candidate.device().clone();
+        if key.verifying_key().to_bytes() != device.device_public_key {
+            return Err("an effect receipt is signed by this device's own key".into());
         }
         let id = effect.invocation.0.to_string();
         let mut checked = candidate.peer.clone();
-        let is_new = if let Some(caller) = caller {
-            let CommitOperation::EffectReceipt {
-                invocation,
-                redacted,
-            } = &request.operation
-            else {
-                return Err("member request is not an effect receipt".into());
-            };
-            checked.workspace_mut().apply_member_effect_receipt(
-                caller,
-                *invocation,
-                redacted,
-                key,
-                now,
-            )?
-        } else {
-            checked
-                .workspace_mut()
-                .apply_workspace_effect_receipt(&effect, key, now)?
-        };
-        // A received signed root without its exact retained owner history is not
-        // an empty index. No creator authority is inferred from an unknown UUID.
-        if candidate.peer.workspace().workspace_effect_history_root()?
+        let is_new = checked
+            .workspace_mut()
+            .apply_own_effect_receipt(&device, &effect, key, now)?;
+        // A signed root without this device's exact retained history is not
+        // an empty index. No authority is inferred from an unknown UUID.
+        if candidate
+            .peer
+            .workspace()
+            .workspace_effect_history_root(&device)?
             != candidate.record.effect_history_root
         {
-            return Err("native effect index is unavailable for the signed governance root".into());
+            return Err("native effect index is unavailable for the signed root".into());
         }
         if let Some(existing) = candidate.record.effect_receipts.get(&id) {
             if existing.receipt.binding != binding {
@@ -260,28 +225,35 @@ impl NativeWorkspaceOwner {
             return Ok(fact.receipt);
         }
         if !is_new {
-            return Err("signed effect UUID lacks its immutable owner receipt history".into());
+            return Err("signed effect UUID lacks its immutable receipt history".into());
         }
+        let governs = candidate.device() == candidate.governor();
+        let before = candidate.peer.room_heads().unwrap_or_default();
         if candidate.record.effect_receipts.len() >= 128 {
             archive_one(&mut candidate, self.0.store.as_ref(), key, now)?;
         }
         let mut peer = candidate.peer.clone();
         peer.workspace_mut()
-            .apply_workspace_effect_receipt(&effect, key, now)?;
+            .apply_own_effect_receipt(&device, &effect, key, now)?;
         let generation = candidate
             .generation()
             .checked_add(1)
             .ok_or("effect generation exhausted")?;
-        // The signed delta includes the root update as well as the new receipt.
-        self.with_current(room, |previous| {
-            peer.publication_mut().durable_mutation_messages(
-                &previous.peer,
-                key,
-                now,
-                generation,
-            )?;
-            Ok(())
-        })?;
+        let written = if governs {
+            // The signed delta includes the root update as well as the new receipt.
+            self.with_current(room, |previous| {
+                peer.publication_mut().durable_mutation_messages(
+                    &previous.peer,
+                    key,
+                    now,
+                    generation,
+                )?;
+                Ok(())
+            })?;
+            Vec::new()
+        } else {
+            peer.room_changes_since(&before)
+        };
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = generation;
@@ -296,11 +268,20 @@ impl NativeWorkspaceOwner {
                 receipt: receipt.clone(),
             },
         );
-        crate::publication::replace_governance_checkpoint(
-            &mut candidate,
-            receipt.binding.clone(),
-            now,
-        )?;
+        if governs {
+            crate::publication::replace_governance_checkpoint(
+                &mut candidate,
+                receipt.binding.clone(),
+                now,
+            )?;
+        } else if !written.is_empty() {
+            crate::publication::add_member_changes(
+                &mut candidate,
+                written,
+                receipt.binding.clone(),
+                now,
+            )?;
+        }
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }

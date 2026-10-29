@@ -486,6 +486,8 @@ impl LauncherSource for FixtureSource {
                 }
             }
             Ask::Back => self.back(answer),
+            // The surface keeps the person's choice itself.
+            Ask::Select { .. } => {}
             Ask::Dismissed => {
                 self.steps = None;
                 self.others = None;

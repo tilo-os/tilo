@@ -682,26 +682,23 @@ mod tests {
     }
 
     #[test]
-    fn status_bridge_publishes_volume_immediately_and_polls_only_when_asked() {
-        // Phase `the_bridge_publishes_a_volume_without_waiting_for_a_poll`.
-        {
-            let b = StatusBridge::new();
-            assert_eq!(b.snapshot().volume, None);
-            b.set_volume(VolumeState {
-                level: 0.8,
-                muted: false,
-            });
-            assert!((b.snapshot().volume.unwrap().level - 0.8).abs() < f32::EPSILON);
-        }
+    fn the_bridge_publishes_a_volume_without_waiting_for_a_poll() {
+        let b = StatusBridge::new();
+        assert_eq!(b.snapshot().volume, None);
+        b.set_volume(VolumeState {
+            level: 0.8,
+            muted: false,
+        });
+        assert!((b.snapshot().volume.unwrap().level - 0.8).abs() < f32::EPSILON);
+    }
 
-        // Phase `a_bridge_starts_no_poller_until_asked`.
-        {
-            let b = StatusBridge::new();
-            assert!(
-                !b.is_polling(),
-                "a screenshot render must not depend on the host's hardware"
-            );
-        }
+    #[test]
+    fn a_bridge_starts_no_poller_until_asked() {
+        let b = StatusBridge::new();
+        assert!(
+            !b.is_polling(),
+            "a screenshot render must not depend on the host's hardware"
+        );
     }
 
     #[test]

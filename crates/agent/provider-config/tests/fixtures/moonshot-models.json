@@ -1,0 +1,7 @@
+{
+ "object": "list",
+ "data": [
+  {"id": "kimi-k2-0905-preview", "object": "model", "owned_by": "moonshot", "context_length": 262144, "supports_image_in": false, "supports_video_in": false, "supports_reasoning": false},
+  {"id": "kimi-latest", "object": "model", "owned_by": "moonshot", "context_length": 131072, "supports_image_in": true, "supports_video_in": false, "supports_reasoning": false}
+ ]
+}
