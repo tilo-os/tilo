@@ -759,11 +759,7 @@ impl Hosted {
     /// since the broker took it, the caller builds it whole.
     ///
     /// Nothing is validated again: no rule reads a label.
-    fn relabel(
-        &mut self,
-        surface: &Rc<Surface>,
-        inputs: SurfaceInputs,
-    ) -> bool {
+    fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
         let Some((from, (published_at, published_packages))) = &self.published_from else {
             return false;
         };
