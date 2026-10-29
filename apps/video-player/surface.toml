@@ -78,3 +78,28 @@ params = [
   { name = "epoch_ms", required = true, schema = { type = "integer", minimum = 0 } },
 ]
 
+[[resources]]
+kind = "video-player.recent"
+label = "Recent videos"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, DeviceVideos>" },
+]
+
+[[resources.verbs]]
+id = "keep"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "rows", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "stood"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "position_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
