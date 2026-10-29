@@ -99,6 +99,32 @@ pub struct ToolRef {
     pub images: BTreeMap<String, String>,
 }
 
+/// What a `write` is asked: the files, and what they hold afterwards:
+/// `text` (base64 of the bytes when `base64`), or, for contents of any
+/// size, `content`.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
+pub struct WriteFiles {
+    /// The device whose files change.
+    pub device: String,
+    /// Absolute paths of the files.
+    pub paths: Vec<String>,
+    /// Only make a file that is not there yet.
+    #[serde(default)]
+    pub no_clobber: Option<bool>,
+    /// The contents, as given.
+    #[serde(default)]
+    pub text: String,
+    /// `text` is base64 of the contents, for contents that are not text.
+    #[serde(default)]
+    pub base64: Option<bool>,
+    /// The contents instead of `text`, any size: a `tilo.content:<hash>`
+    /// reference to the environment's content store on the device.
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
 /// What happens to an environment's home when a session ends.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomePolicy {
@@ -206,10 +232,16 @@ impl Environment {
     /// and is kept.
     #[action]
     pub fn set_home(&mut self, #[param("Directory")] path: String) -> Result<(), String> {
-        let grant = dir_grant(Path::new(&path), true)?;
+        let path = path.trim();
+        let path = if path.len() > 1 {
+            path.trim_end_matches('/')
+        } else {
+            path
+        };
+        let grant = dir_grant(Path::new(path), true)?;
         self.grants.retain(|c| c.id != grant.id);
         self.grants.push(grant);
-        self.home_dir = path.trim_end_matches('/').to_owned();
+        path.clone_into(&mut self.home_dir);
         Ok(())
     }
 
@@ -499,26 +531,16 @@ impl Environment {
         &mut self,
         cx: &mut ActionCx,
         files: &mut Outbox<FileTask, Vec<UndoEntry>>,
-        #[param("The device whose files change")] device: String,
-        #[param("Absolute paths of the files")] paths: Vec<String>,
-        #[param("The contents, as given")] text: String,
-        #[param("`text` is base64 of the contents, for contents that are not text")] base64: Option<
-            bool,
-        >,
-        #[param("Only make a file that is not there yet")] no_clobber: Option<bool>,
-        #[param(
-            "The contents instead of `text`, any size: a tilo.content:<hash> reference to the environment's content store on the device"
-        )]
-        content: Option<String>,
+        #[param("The files and what they hold", flatten)] write: WriteFiles,
     ) -> Result<(), String> {
         let action = FileAction::Write(WriteOp {
-            files: paths_of(paths),
-            text,
-            base64: base64.unwrap_or(false),
-            content: content_param(content.as_deref())?,
-            no_clobber: no_clobber.unwrap_or(false),
+            files: paths_of(write.paths),
+            text: write.text,
+            base64: write.base64.unwrap_or(false),
+            content: content_param(write.content.as_deref())?,
+            no_clobber: write.no_clobber.unwrap_or(false),
         });
-        self.queue_file(cx, files, device, action)
+        self.queue_file(cx, files, write.device, action)
     }
 
     /// Restore a kept file.
@@ -660,7 +682,7 @@ impl Environment {
                 text: op.text.clone(),
                 content: op.content.as_deref().map(files::content_reference),
             }),
-            FileAction::Write(op) => Self::WRITE.with(environment::Write {
+            FileAction::Write(op) => Self::WRITE.with(WriteFiles {
                 device,
                 paths: texts(&op.files),
                 text: op.text.clone(),

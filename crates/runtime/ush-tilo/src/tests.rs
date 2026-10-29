@@ -254,7 +254,7 @@ fn a_write_of_any_size_is_one_action_naming_its_content() {
     let (_tmp, granted, _) = fixture();
     let line = "0123456789abcdef".repeat(8);
     let lines = 2 * MAX_TEXT_BYTES / line.len();
-    let big: String = (0..lines).map(|_| format!("{line}\n")).collect();
+    let big = format!("{line}\n").repeat(lines);
     std::fs::write(granted.join("big.txt"), &big).unwrap();
     let environment = Granting::new(&granted);
     let (mut sh, out, err) = shell(Arc::clone(&environment), &granted);

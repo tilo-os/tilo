@@ -252,6 +252,7 @@ fn a_ten_megabyte_redirect_is_one_undoable_history_entry() {
     assert!(content.store().has(named.first().unwrap()));
 
     undo_from_history(&state, &writes[0]);
+    drop(state);
     assert_eq!(
         std::fs::read_to_string(&copy).unwrap(),
         "what was there\n",
@@ -285,7 +286,7 @@ fn cd_home_reaches_the_workspace_folder() {
         ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
         ("HOME".to_owned(), home.display().to_string()),
     ];
-    let (_guest, mut shell, out, err) = session_shell(&state, env, root.clone());
+    let (_guest, mut shell, out, err) = session_shell(&state, env, root);
     let status = shell.run_script("cd ~ && echo x > f && pwd");
     let err = String::from_utf8_lossy(&err.take()).into_owned();
     assert_eq!(status, 0, "{err}");
@@ -359,8 +360,8 @@ fn an_existing_environment_gets_home_without_losing_anything() {
 
     // The old home reads where it is, and is not written through.
     let state = Arc::new(Mutex::new(state));
-    let env = vec![("HOME".to_owned(), after.home_dir.clone())];
-    let (_guest, mut shell, out, err) = session_shell(&state, env, workspace.clone());
+    let env = vec![("HOME".to_owned(), after.home_dir)];
+    let (_guest, mut shell, out, err) = session_shell(&state, env, workspace);
     let status = shell.run_script(&format!(
         "cat {0}/.bashrc {0}/.config/tool.toml",
         old_home.display()

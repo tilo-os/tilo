@@ -580,6 +580,24 @@ impl Programs for SessionGuest {
 // The session that runs it: the record, the broker, the shell, and the guest
 // when a program needs one.
 
+/// Where the session's shell starts: `~` when the grants reach it, else the
+/// first directory they grant.
+fn starting_dir(policy: &Policy, home: &Path, now: Option<u64>) -> PathBuf {
+    std::iter::once(home.to_path_buf())
+        .filter(|home| policy.permits(home, collab_types::caps::Access::Read, now))
+        .chain(policy.trusted_dirs(now))
+        .chain(policy.readable_dirs(now))
+        .next()
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// The text of `path`, read as every file is: through the grants.
+fn read_through(host: &dyn ush_shell::Host, path: &Path) -> std::io::Result<String> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut host.open_read(path)?, &mut text)?;
+    Ok(text)
+}
+
 impl Session {
     /// Run the session's shell on the Tilo side ([`crate::tilo_side`]): the
     /// interpreter here, outside every guest, reading what the record grants
@@ -686,14 +704,7 @@ impl Session {
         let now = Some(unix_now());
         let policy = Policy::new(resolved.environment.grants.clone());
         let home = crate::home::home_of(&resolved.environment, &user);
-        // The session starts at `~` when the grants reach it, else in the
-        // first directory they grant.
-        let cwd = std::iter::once(home.clone())
-            .filter(|home| policy.permits(home, collab_types::caps::Access::Read, now))
-            .chain(policy.trusted_dirs(now))
-            .chain(policy.readable_dirs(now))
-            .next()
-            .unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = starting_dir(&policy, &home, now);
         let mut shell = ush_shell::Shell::new(
             Arc::clone(&host),
             self.shell_env(&resolved, &user, &home),
@@ -703,11 +714,7 @@ impl Session {
         let status = if let Some(script) = script {
             shell.run_to_exit(script)
         } else {
-            // Read as every file is: through the grants.
-            let rc = host.open_read(&home.join(".ushrc")).and_then(|mut file| {
-                let mut text = String::new();
-                std::io::Read::read_to_string(&mut file, &mut text).map(|_| text)
-            });
+            let rc = read_through(&*host, &home.join(".ushrc"));
             if let Ok(text) = rc {
                 shell.set_interactive(true);
                 let _ = shell.run_script(&text);
