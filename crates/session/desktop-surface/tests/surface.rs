@@ -895,8 +895,15 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
         "and swiping back follows the fingers again"
     );
 
-    // Vertical scrolling is never the strip's.
+    // Vertical scrolling over a window is the app's, never the strip's
+    // (over the desktop's own bars it pans the strip).
     pause();
+    let (_, shown) = handle.shown_tabs()[0];
+    let at = shown.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
     let before = pan_offset(&handle);
     for _ in 0..10 {
         page_wheel(&mut driver, 1.0, 30.0);
