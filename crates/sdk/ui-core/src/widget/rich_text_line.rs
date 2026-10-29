@@ -177,6 +177,10 @@ pub struct RichTextLine {
     /// last built against: when it moves, a `:name:` may have become a
     /// picture or stopped being one.
     emoji_revision: Option<u64>,
+    /// A field of its own (a composer) rather than a block editor's line: its keys stay the
+    /// field's (Enter, the arrows and Backspace at the start go to the field and the view's key
+    /// bindings), and nothing is signalled to a block editor.
+    composer: bool,
 }
 
 impl RichTextLine {
@@ -219,7 +223,13 @@ impl RichTextLine {
             author_runs: Vec::new(),
             mention_paint: None,
             emoji_revision: None,
+            composer: false,
         }
+    }
+
+    /// Make the line a field of its own (a composer): see the field's docs.
+    pub fn set_composer(&mut self, composer: bool) {
+        self.composer = composer;
     }
 
     /// Paint mentions in the colours `paint` gives each participant.
@@ -1340,6 +1350,8 @@ impl Widget for RichTextLine {
             }
 
             match logical_key {
+                // A composer's keys are its field's.
+                _ if self.composer => {}
                 // Wrapped prose owns real newlines in its Text object. Let
                 // TextInput splice Shift+Enter so marks, undo, and peers see
                 // the same line break, without creating another list item.

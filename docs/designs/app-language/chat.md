@@ -143,17 +143,8 @@ view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens
     } composer: {
         if let r = replying { reply_banner(r, cancel: replying = .none) }
         rich_input(bind: draft, placeholder: "Message {in.name}") {
-            ui.Completion(trigger: "@", from: [in.members, workspace.members])
-            ui.Completion(trigger: "#", from: query(TextChannel))
-            ui.Completion(trigger: ":", from: std.emoji)
-            ui.Completion(trigger: "/", from: actions(in))
             on paste(files): std.attach(draft, files)
             on drop(files): std.attach(draft, files)
-            ui.Key(chord: "up", when: draft.is_empty) { edit_last(in) }
-            ui.Key(chord: "escape", when: replying != .none) { set(replying, .none) }
-            ui.Key(chord: "enter") {
-                send(in, body: draft, reply_to: replying).then(set(draft, .empty)).then(set(replying, .none))
-            }
         }
     }
 }
@@ -195,8 +186,10 @@ view voice(v: VoiceChannel) {
 
 ## Completion drawers
 
-The view picks triggers and sources (`complete "@" from: [in.members, workspace.members]`);
-everything below is the system's drawer, the same in every input.
+The drawers are the system's behaviour of every rich input; no view declares them. The
+system gives the sources (`@` the people in this conversation, then the members; `#` channels
+and other resources from the search index; `:` the emoji; `/` the actions available here),
+once, and everything below happens in the window as each key is typed.
 
 - **The query is the token.** What's typed after the trigger stays in the input as a tinted
   pending token (`@mi`); there's no separate search field. It opens on the trigger keystroke,
@@ -245,10 +238,10 @@ everything below is the system's drawer, the same in every input.
   bottom, never jumping while reading history, a "new messages" pill.
 - **Motion:** keyed inserts, removals, edits and reactions animate on the platform's springs;
   swipes follow the finger and commit or spring back; reduced motion is respected.
-- **Attached components:** `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`, `ui.Completion` and
-  `ui.Key` draw nothing where they stand and attach to the view or input they're in. No new
-  statement syntax; the same meaning everywhere. Destructive items are undone afterwards, not
-  confirmed first (the platform rule).
+- **Attached components:** `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing
+  where they stand and attach to the view they're in. No new statement syntax; the same meaning
+  everywhere. Destructive items are undone afterwards, not confirmed first (the platform rule).
+  Keys are default shortcuts on the actions offered, a separate design.
 - **Menus and input:** the menu's typing field (filter, or ask the agent), remaining allowed
   actions, keyboard navigation, long-press, phone sheets; completion lists, markdown shortcuts and
   uploads with progress. All of it runs in the UI host at frame rate; the app answers data and
@@ -276,6 +269,7 @@ everything below is the system's drawer, the same in every input.
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??`, lens parameters | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` to build |
 | `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
-| `ui.Completion`, `ui.Key`, transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
+| `rich_input` with its completion drawers (`@` room people and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
+| Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' lens state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |

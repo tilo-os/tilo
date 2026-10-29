@@ -489,6 +489,13 @@ pub enum ToApp {
         key: String,
         text: String,
     },
+    /// The bound rich-text control `key` now holds `rich`: its paragraphs, marks and
+    /// references (the runtime brings the field to it by splices and marks).
+    EditRich {
+        lane: Lane,
+        key: String,
+        rich: rich::RichText,
+    },
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve {
         lane: Lane,
@@ -659,5 +666,37 @@ mod tests {
         let mut other = bytes;
         other[0] = 9;
         assert!(decode_batch::<ToUi>(&other).is_err(), "another version");
+    }
+
+    #[test]
+    fn rich_text_with_nothing_in_it_round_trips_both_ways() {
+        let empty = rich::RichText::default();
+        let plain = rich::RichText {
+            blocks: vec![rich::Block {
+                kind: "paragraph".into(),
+                text: "hi".into(),
+                ..rich::Block::default()
+            }],
+            embeds: Vec::new(),
+        };
+        for value in [empty.clone(), plain] {
+            let batch = vec![ToUi::Patch {
+                lane: Lane::Root,
+                patches: vec![Patch::SetProp {
+                    path: Vec::new(),
+                    name: "value".to_owned(),
+                    value: Some(Value::Rich(value.clone())),
+                }],
+            }];
+            let bytes = encode_batch(&batch).expect("encodes");
+            assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
+            let edit = vec![ToApp::EditRich {
+                lane: Lane::Root,
+                key: "draft".into(),
+                rich: value,
+            }];
+            let bytes = encode_batch(&edit).expect("encodes");
+            assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);
+        }
     }
 }

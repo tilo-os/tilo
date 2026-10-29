@@ -20,11 +20,14 @@ use winit::keyboard::Key;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::autocomplete::{Suggestion, SuggestionList};
+#[cfg(test)]
+use crate::widget::autocomplete::Suggestion;
+use crate::widget::autocomplete::SuggestionList;
+use crate::widget::completion::{
+    self, Candidate, CompletionSource, Entry, MAX_ROWS, Pick, PreparedSource, Tier,
+};
+use crate::widget::completion_card;
 use crate::widget::mention_picker::{self, MentionCandidate};
-
-/// The most rows offered for one token.
-const MAX_ROWS: usize = 8;
 /// How much of a shortcode may be typed before it is no longer one.
 const MAX_SHORTCODE_LEN: usize = 32;
 
@@ -117,24 +120,23 @@ pub struct EmojiQuery {
     pub query: String,
 }
 
-/// Which trigger a token answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CompletionKind {
-    Emoji,
-    Mention,
-}
-
 /// The token the caret sits in, and what accepting it replaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CompletionToken {
-    pub(crate) kind: CompletionKind,
-    /// Byte offset of the `:` or `@`.
+    /// The character that opened it.
+    pub(crate) trigger: char,
+    /// Byte offset of the trigger.
     pub(crate) start: usize,
     /// One past the last byte a pick replaces.
     pub(crate) end: usize,
     /// What was typed after the trigger, up to the caret.
     pub(crate) query: String,
 }
+
+/// How long a token may grow before it stops being one: names have spaces,
+/// so a space cannot end one; this stops a stray trigger holding the drawer
+/// open over a whole sentence.
+const MAX_QUERY_LEN: usize = 40;
 
 /// Whether `previous` lets a `:` or `@` open a token: the start of the text,
 /// whitespace, or punctuation that does not make the character part of a
@@ -195,58 +197,107 @@ pub fn emoji_query_at_caret(text: &str, caret: usize) -> Option<EmojiQuery> {
     })
 }
 
-/// The rows the catalogue offers for what was typed after the `:`.
-fn emoji_rows(query: &str) -> Vec<Suggestion> {
-    crate::emoji_catalogue::shortcode_matches(query, MAX_ROWS)
+/// The catalogue's emoji for what was typed after the `:`, as a source.
+fn emoji_source(query: &str) -> CompletionSource {
+    let candidates = crate::emoji_catalogue::shortcode_matches(query, MAX_ROWS)
         .into_iter()
         .map(|shortcode| {
-            let label = if shortcode.emoji.starts_with(':') {
+            let name = if shortcode.emoji.starts_with(':') {
                 shortcode.name.clone()
             } else {
-                shortcode.emoji.clone()
+                format!("{} {}", shortcode.emoji, shortcode.name)
             };
-            Suggestion::labelled(shortcode.emoji, label)
-                .with_detail(format!(":{}:", shortcode.name))
+            // The catalogue has matched already; the name carries the
+            // shortcode so the drawer's own matching keeps every row.
+            Candidate::text(name, shortcode.emoji).with_handle(format!(":{}:", shortcode.name))
         })
-        .collect()
+        .collect();
+    CompletionSource::new(':', vec![Tier::new(candidates)])
 }
 
-/// The rows the roster offers for what was typed after the `@`.
-fn mention_rows(roster: &[MentionCandidate], query: &str) -> Vec<Suggestion> {
-    mention_picker::rank(roster, query)
-        .into_iter()
-        .take(MAX_ROWS)
-        .map(mention_picker::mention_suggestion)
-        .collect()
+/// The roster as the `@` source of a field whose view gave none.
+fn roster_source(roster: &[MentionCandidate]) -> CompletionSource {
+    CompletionSource::new(
+        '@',
+        vec![Tier::new(
+            roster.iter().map(mention_picker::candidate).collect(),
+        )],
+    )
 }
 
-/// What a key did to the open list.
+/// The token for `trigger` ending at `caret`: the trigger where it opens a
+/// token, then what was typed up to the caret, without a newline or a second
+/// trigger. A `:` takes shortcode characters only (`10:30` is a time), and a
+/// `/` runs a command only at the start of the field.
+fn token_for(text: &str, caret: usize, trigger: char) -> Option<CompletionToken> {
+    let caret = text.floor_char_boundary(caret.min(text.len()));
+    if trigger == ':' {
+        let query = emoji_query_at_caret(text, caret)?;
+        return Some(CompletionToken {
+            trigger,
+            start: query.start,
+            end: query.end,
+            query: query.query,
+        });
+    }
+    let head = text.get(..caret)?;
+    let at = head.rfind(trigger)?;
+    if !opens_token(head.get(..at)?.chars().next_back()) {
+        return None;
+    }
+    if trigger == '/' && !head.get(..at)?.trim().is_empty() {
+        return None;
+    }
+    let query = head.get(at.saturating_add(trigger.len_utf8())..)?;
+    if query.len() > MAX_QUERY_LEN || query.contains('\n') || query.contains(trigger) {
+        return None;
+    }
+    if query.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(CompletionToken {
+        trigger,
+        start: at,
+        end: caret,
+        query: query.to_owned(),
+    })
+}
+
+/// What a key did to the open drawer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompletionKey {
-    /// Not the list's: the field handles it.
+    /// Not the drawer's: the field handles it.
     Pass,
-    /// The list moved, dismissed itself or accepted nothing.
+    /// The drawer moved, closed or accepted nothing.
     Handled,
-    /// Accept this row, replacing the token.
-    Accept(Suggestion),
+    /// Accept this pick in place of the token.
+    Accept(Pick),
 }
 
-/// The inline candidate list of one field.
+/// The completion drawer of one field: the sources its view gave, the token
+/// at the caret, and the rows it shows for it.
 #[derive(Default)]
 pub(crate) struct CompletionList {
     list: SuggestionList,
+    /// The rows shown, as the list shows them.
+    entries: Vec<Entry>,
     token: Option<CompletionToken>,
-    /// The token the person dismissed with Escape: it stays dismissed while
-    /// they type on after it.
-    dismissed: Option<(usize, CompletionKind)>,
+    /// The token the person dismissed with Escape (or a space with nothing
+    /// matching): it stays closed while they type on after it.
+    dismissed: Option<(usize, char)>,
+    /// What the view gave each trigger, folded once.
+    sources: Vec<PreparedSource>,
+    /// The person moved the selection off the first row: a row they chose keeps its place
+    /// while they type on; untouched, the selection stays on the best match.
+    chosen: bool,
 }
 
 impl CompletionList {
     pub(crate) fn is_open(&self) -> bool {
-        self.token.is_some() && !self.list.suggestions().is_empty()
+        self.token.is_some() && !self.entries.is_empty()
     }
 
-    /// The token the open list answers.
+    /// The token the open drawer answers.
     pub(crate) fn token(&self) -> Option<&CompletionToken> {
         self.token.as_ref().filter(|_| self.is_open())
     }
@@ -257,20 +308,60 @@ impl CompletionList {
         self.list.suggestions()
     }
 
+    /// The selected row, when one is.
+    pub(crate) fn selected(&self) -> Option<&Entry> {
+        self.list.highlight().and_then(|at| self.entries.get(at))
+    }
+
+    /// Complete from `sources`, one per trigger, in place of the built-in
+    /// `:` and `@` for the triggers they name. Unchanged sources keep their
+    /// folding.
+    pub(crate) fn set_sources(&mut self, sources: Vec<CompletionSource>) -> bool {
+        let same = sources.len() == self.sources.len()
+            && sources
+                .iter()
+                .zip(&self.sources)
+                .all(|(next, held)| *next == held.source);
+        if same {
+            return false;
+        }
+        self.sources = sources.into_iter().map(PreparedSource::new).collect();
+        true
+    }
+
     pub(crate) fn close(&mut self) {
         self.token = None;
+        self.chosen = false;
+        self.entries.clear();
         self.list.clear();
     }
 
-    /// Close the list and keep this token closed while the person types on
+    /// Close the drawer and keep this token closed while the person types on
     /// after it: what accepting a row leaves behind is no longer a token.
     pub(crate) fn dismiss(&mut self) {
-        self.dismissed = self.token.as_ref().map(|token| (token.start, token.kind));
+        self.dismissed = self
+            .token
+            .as_ref()
+            .map(|token| (token.start, token.trigger));
         self.close();
     }
 
-    /// Follow the caret: offer what `text` holds at `caret` under `setting`,
-    /// from `roster` for mentions. Returns whether anything shown changed.
+    /// The triggers the field answers: the view's, then the built-in `:` and
+    /// `@` where the setting offers them and the view gave none.
+    fn triggers(&self, setting: TextCompletion) -> Vec<char> {
+        let mut triggers: Vec<char> = self.sources.iter().map(PreparedSource::trigger).collect();
+        if setting.emoji() && !triggers.contains(&':') {
+            triggers.push(':');
+        }
+        if setting.mentions() && !triggers.contains(&'@') {
+            triggers.push('@');
+        }
+        triggers
+    }
+
+    /// Follow the caret: offer what `text` holds at `caret`, from the view's
+    /// sources, or under `setting` from the catalogue and `roster`. Returns
+    /// whether anything shown changed.
     pub(crate) fn follow(
         &mut self,
         text: &str,
@@ -278,110 +369,163 @@ impl CompletionList {
         roster: &[MentionCandidate],
         setting: TextCompletion,
     ) -> bool {
-        let was = (self.token.clone(), self.list.suggestions().to_vec());
+        let was = (self.token.clone(), self.entries.clone());
         let token = self
-            .token_at(text, caret, setting)
-            .filter(|token| self.dismissed != Some((token.start, token.kind)));
+            .triggers(setting)
+            .into_iter()
+            .filter_map(|trigger| token_for(text, caret, trigger))
+            // The trigger nearest the caret is the token being typed.
+            .max_by_key(|token| token.start)
+            .filter(|token| self.dismissed != Some((token.start, token.trigger)));
         let Some(token) = token else {
             self.close();
-            return was != (self.token.clone(), self.list.suggestions().to_vec());
+            return was != (self.token.clone(), self.entries.clone());
         };
         self.dismissed = None;
-        let rows = match token.kind {
-            CompletionKind::Emoji => emoji_rows(&token.query),
-            CompletionKind::Mention => mention_rows(roster, &token.query),
+        let fallback;
+        let source = match self.sources.iter().find(|s| s.trigger() == token.trigger) {
+            Some(source) => source,
+            None => {
+                fallback = PreparedSource::new(if token.trigger == ':' {
+                    emoji_source(&token.query)
+                } else {
+                    roster_source(roster)
+                });
+                &fallback
+            }
         };
-        if rows.is_empty() {
-            self.close();
-            return was != (self.token.clone(), self.list.suggestions().to_vec());
+        let rows = completion::rows(source, &token.query);
+        let matched = rows.iter().any(|entry| matches!(entry, Entry::Item { .. }));
+        // A space after a token nothing matches was prose all along.
+        if !matched && token.query.ends_with(char::is_whitespace) {
+            self.token = Some(token);
+            self.dismiss();
+            return was != (self.token.clone(), self.entries.clone());
         }
-        let keep = self
+        let same_token = self
+            .token
+            .as_ref()
+            .is_some_and(|held| held.start == token.start && held.trigger == token.trigger);
+        if !same_token {
+            self.chosen = false;
+        }
+        let kept = self
             .list
-            .highlighted()
-            .map(|row| row.value.clone())
-            .and_then(|value| rows.iter().position(|row| row.value == value));
-        self.list.set_suggestions(rows);
-        self.list.set_highlight(Some(keep.unwrap_or(0)));
+            .highlight()
+            .filter(|_| self.chosen)
+            .and_then(|at| {
+                let key = self.entries.get(at)?.key()?.to_owned();
+                Some((key, at))
+            });
+        let (rows, selected) =
+            completion::keep_place(rows, kept.as_ref().map(|(key, at)| (key.as_str(), *at)));
+        self.list
+            .set_suggestions(rows.iter().map(Entry::suggestion).collect());
+        self.list.set_highlight(selected);
+        self.entries = rows;
         self.token = Some(token);
-        was != (self.token.clone(), self.list.suggestions().to_vec())
+        was != (self.token.clone(), self.entries.clone())
     }
 
-    fn token_at(
-        &self,
-        text: &str,
-        caret: usize,
-        setting: TextCompletion,
-    ) -> Option<CompletionToken> {
-        if setting.mentions()
-            && let Some(query) = mention_picker::query_at_caret(text, caret)
-        {
-            return Some(CompletionToken {
-                kind: CompletionKind::Mention,
-                start: query.start,
-                end: text.floor_char_boundary(caret.min(text.len())),
-                query: query.query,
-            });
-        }
-        if setting.emoji()
-            && let Some(query) = emoji_query_at_caret(text, caret)
-        {
-            return Some(CompletionToken {
-                kind: CompletionKind::Emoji,
-                start: query.start,
-                end: query.end,
-                query: query.query,
-            });
-        }
-        None
-    }
-
-    /// A key while the list is open. The field passes every key here first;
-    /// [`CompletionKey::Pass`] means the list does not want it.
+    /// A key while the drawer is open. The field passes every key here first;
+    /// [`CompletionKey::Pass`] means the drawer does not want it.
     pub(crate) fn handle_key(&mut self, key: &Key) -> CompletionKey {
+        use winit::keyboard::NamedKey;
         if !self.is_open() {
             return CompletionKey::Pass;
         }
         match key {
-            Key::Named(winit::keyboard::NamedKey::ArrowDown) => {
+            Key::Named(NamedKey::ArrowDown) => {
+                self.chosen = true;
                 self.list.move_highlight(true);
                 CompletionKey::Handled
             }
-            Key::Named(winit::keyboard::NamedKey::ArrowUp) => {
+            Key::Named(NamedKey::ArrowUp) => {
+                self.chosen = true;
                 self.list.move_highlight(false);
                 CompletionKey::Handled
             }
-            Key::Named(winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Tab) => {
-                match self.list.highlighted() {
-                    Some(row) => CompletionKey::Accept(row.clone()),
-                    None => CompletionKey::Handled,
-                }
+            Key::Named(NamedKey::PageDown) => {
+                self.chosen = true;
+                self.list.page(true);
+                CompletionKey::Handled
             }
-            Key::Named(winit::keyboard::NamedKey::Escape) => {
-                self.dismissed = self.token.as_ref().map(|token| (token.start, token.kind));
-                self.close();
+            Key::Named(NamedKey::PageUp) => {
+                self.chosen = true;
+                self.list.page(false);
+                CompletionKey::Handled
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Tab) => match self.pick_selected() {
+                Some(pick) => CompletionKey::Accept(pick),
+                // Nothing to pick (only "No matches"): Enter goes on to the
+                // field, so a message still sends.
+                None => CompletionKey::Pass,
+            },
+            Key::Named(NamedKey::Escape) => {
+                self.dismiss();
                 CompletionKey::Handled
             }
             _ => CompletionKey::Pass,
         }
     }
 
-    /// The row under `point`, for a click.
-    pub(crate) fn click_at(&self, point: Point) -> Option<Suggestion> {
+    /// What picking the selected row does.
+    fn pick_selected(&self) -> Option<Pick> {
+        self.list
+            .highlight()
+            .and_then(|at| self.entries.get(at))
+            .and_then(|entry| self.pick(entry))
+    }
+
+    fn pick(&self, entry: &Entry) -> Option<Pick> {
+        match entry {
+            Entry::Item { candidate, .. } if candidate.command.is_some() => {
+                Some(Pick::Command(candidate.clone()))
+            }
+            Entry::Item { candidate, .. } => Some(Pick::Insert(candidate.clone())),
+            Entry::Create { query, .. } => Some(Pick::Create {
+                trigger: self.token.as_ref()?.trigger,
+                query: query.clone(),
+            }),
+            Entry::Header { .. } | Entry::NoMatch(_) => None,
+        }
+    }
+
+    /// The pick under `point`, for a click or a tap.
+    pub(crate) fn click_at(&self, point: Point) -> Option<Pick> {
         if !self.is_open() {
             return None;
         }
         self.list
             .row_at(point)
-            .and_then(|index| self.list.suggestions().get(index).cloned())
+            .and_then(|index| self.entries.get(index))
+            .and_then(|entry| self.pick(entry))
     }
 
-    /// Whether `point` is over the open list.
+    /// Hover arms nothing, it lifts the row under the pointer.
+    pub(crate) fn hover_at(&mut self, point: Point) -> bool {
+        self.is_open() && self.list.hover_at(point)
+    }
+
+    /// Whether `point` is over the open drawer.
     pub(crate) fn contains(&self, point: Point) -> bool {
         self.is_open() && self.list.rect().is_some_and(|rect| rect.contains(point))
     }
 
-    /// Paint the list under the caret, inside `viewport` when the window's
-    /// is known.
+    /// The drawer's rect, while it is open.
+    pub(crate) fn rect(&self) -> Option<Rect> {
+        self.is_open().then(|| self.list.rect()).flatten()
+    }
+
+    /// Whether the drawer still moves (its height, a source's progress).
+    pub(crate) fn is_animating(&self) -> bool {
+        self.is_open() && self.list.is_animating(crate::motion::frame_now())
+    }
+
+    /// Paint the drawer at the caret: above it when the field sits in the
+    /// lower half of the window (a composer), below otherwise; on a compact
+    /// window docked across it above the field. On a wide window the selected
+    /// row's card stands beside the drawer.
     pub(crate) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -389,16 +533,79 @@ impl CompletionList {
         text: &mut TextRenderer,
         theme: &Theme,
         caret: Rect,
+        field: Rect,
         viewport: Option<Rect>,
     ) {
         if !self.is_open() {
             return;
         }
-        self.list.set_anchor(caret);
+        let breakpoint = viewport
+            .map(|viewport| crate::tokens::Breakpoint::of(viewport.width(), &theme.tokens.metrics));
+        let docked = breakpoint.is_some_and(crate::tokens::Breakpoint::is_compact);
+        self.list.set_docked(docked);
+        self.list.set_anchor(if docked { field } else { caret });
+        let lower = viewport.is_some_and(|viewport| caret.center().y > viewport.center().y);
+        self.list.set_side(if lower {
+            crate::widget::PopoverSide::Above
+        } else {
+            crate::widget::PopoverSide::Below
+        });
+        self.list
+            .set_min_width(f64::from(theme.tokens.metrics.panel_width_list));
         if let Some(viewport) = viewport {
             self.list.set_viewport(viewport);
         }
         self.list.paint(scene, transform, text, theme);
+        if breakpoint.is_some_and(crate::tokens::Breakpoint::is_wide)
+            && let (Some(panel), Some(viewport), Some(Entry::Item { candidate, .. })) =
+                (self.list.rect(), viewport, self.selected())
+            // A card that would only repeat the row's name is left out.
+            && (candidate.handle.is_some()
+                || candidate.aside.is_some()
+                || candidate.label.is_some()
+                || candidate.command.is_some())
+        {
+            completion_card::paint(scene, transform, text, theme, candidate, panel, viewport);
+        }
+    }
+
+    /// The drawer for assistive technology: a list naming how many results
+    /// it holds, its rows, the selected one marked.
+    pub(crate) fn access(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let panel = self.rect()?;
+        let count = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Item { .. }))
+            .count();
+        let mut args = fluent::FluentArgs::new();
+        args.set("count", count);
+        let name = crate::i18n::I18nManager::lookup("completion-results", Some(&args));
+        let mut node = AccessNode::new(Role::ListBox)
+            .with_name(&name)
+            .with_bounds(panel)
+            .with_live(Politeness::Polite);
+        if let Some(Entry::Item { candidate, .. }) = self.selected() {
+            node = node.with_description(&candidate.name);
+        }
+        let rows = self
+            .list
+            .access_rows(|row| {
+                use std::hash::{Hash as _, Hasher as _};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                (&row.value, &row.label).hash(&mut hasher);
+                hasher.finish()
+            })
+            .into_iter()
+            .map(|mut row| {
+                if row.role == Role::Button {
+                    row.role = Role::ListBoxOption;
+                }
+                row
+            })
+            .collect();
+        Some(node.with_children(rows))
     }
 }
 

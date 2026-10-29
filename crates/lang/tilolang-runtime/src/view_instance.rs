@@ -397,6 +397,8 @@ impl ViewInstance {
         let bad = || RuntimeError::BadArgs(format!("a {} does not fit {ty}", value.kind_name()));
         let stored = match (&ty, value) {
             (Ty::Text, Value::Text(t)) => Value::Text(t.clone()),
+            // A rich input's draft: its paragraphs and the references marked in them.
+            (Ty::RichText, Value::Rich(r)) => Value::Rich(r.clone()),
             (Ty::Int, Value::Int(i)) => Value::some(Value::Int(*i)),
             (Ty::Int, Value::Text(t)) => {
                 Value::some(Value::Int(t.trim().parse().map_err(|_| bad())?))

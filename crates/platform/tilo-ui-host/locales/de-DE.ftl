@@ -30,3 +30,8 @@ tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
 tilolang-did = { $action }: { $title }
+tilolang-replying-to = Antwort an
+tilolang-thread-replies = { $count ->
+    [one] 1 Antwort
+   *[other] { $count } Antworten
+}

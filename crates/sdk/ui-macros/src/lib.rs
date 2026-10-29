@@ -189,10 +189,11 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                             merge = match how.value().as_str() {
                                 "splice" => quote!(Splice),
                                 "register" => quote!(Register),
+                                "rich" => quote!(Rich),
                                 _ => {
                                     return Err(syn::Error::new(
                                         how.span(),
-                                        "a binding merges by \"splice\" or \"register\"",
+                                        "a binding merges by \"splice\", \"rich\" or \"register\"",
                                     ));
                                 }
                             };

@@ -1276,6 +1276,9 @@ impl Instance {
                 insert,
             } => self.splice(lane, &key, seq, (at, delete), &insert),
             ToApp::Edit { lane, key, text } => self.edit(lane, &key, Value::Text(text)),
+            ToApp::EditRich { lane, key, rich } => {
+                self.edit(lane, &key, Value::Rich(wire::runtime_rich(&rich)))
+            }
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
