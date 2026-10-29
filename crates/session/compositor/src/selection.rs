@@ -347,7 +347,7 @@ impl State {
                 set_data_device_selection(&display, &self.seat, mimes.clone(), Served::X11);
             }
             Selection::Primary => {
-                set_primary_selection(&display, &self.seat, mimes.clone(), Served::X11)
+                set_primary_selection(&display, &self.seat, mimes.clone(), Served::X11);
             }
         }
         *self.selections.offered_mut(selection) = mimes;
