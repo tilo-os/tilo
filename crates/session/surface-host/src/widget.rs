@@ -37,6 +37,10 @@ pub struct WidgetHost {
     covers: bool,
     /// A frame is owed: input arrived or the placement changed.
     owed: bool,
+    /// Moves with every frame the tree drew: what it publishes changes only
+    /// with what it shows, so a reader of its resources reads them again
+    /// only when this moved.
+    revision: u64,
 }
 
 impl WidgetHost {
@@ -70,6 +74,7 @@ impl WidgetHost {
             modifiers: ModifiersState::empty(),
             covers: false,
             owed: true,
+            revision: 0,
         }
     }
 
@@ -92,6 +97,13 @@ impl WidgetHost {
     /// The toolkit's host of the widget tree, to drive it directly.
     pub fn host_mut(&mut self) -> &mut FrameHarness {
         &mut self.host
+    }
+
+    /// Where what the tree publishes stands: it may have changed only when
+    /// this moved since it was last read.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Where the tree is shown.
@@ -247,6 +259,7 @@ impl SurfaceHost for WidgetHost {
         if !(drew || std::mem::take(&mut self.owed)) {
             return;
         }
+        self.revision = self.revision.wrapping_add(1);
         self.scene.reset();
         self.scene
             .append(self.host.scene(), Some(Affine::scale(self.placement.scale)));

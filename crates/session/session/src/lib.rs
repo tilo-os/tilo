@@ -114,6 +114,14 @@ impl Layers {
         self.each(|host| host.resources()).concat()
     }
 
+    /// Where what the desk's and the chrome's trees publish stands.
+    fn revisions(&self) -> [u64; 2] {
+        [
+            self.desktop.with_widgets(|host| host.revision()),
+            self.chrome.borrow().revision(),
+        ]
+    }
+
     /// Invoke the published action `action` of `resource` on the layer
     /// that publishes it.
     fn invoke(
@@ -146,6 +154,9 @@ struct Shared {
     quick_settings: Option<Rc<Cell<bool>>>,
     /// The system services.
     services: RefCell<Services>,
+    /// Where everything the session publishes stood when search last read
+    /// it: the desk's, the chrome's and the services' revisions.
+    observed: Cell<Option<[u64; 3]>>,
 }
 
 impl Shared {
@@ -179,13 +190,12 @@ impl Shared {
         });
         for choice in choices {
             self.search.perform(&room, choice, &mut |own| {
-                self
-                    .invoke(
-                        own.address.resource.as_str(),
-                        own.address.action.as_str(),
-                        &own.arguments,
-                    )
-                    .map(drop)
+                self.invoke(
+                    own.address.resource.as_str(),
+                    own.address.action.as_str(),
+                    &own.arguments,
+                )
+                .map(drop)
             });
         }
         // What the session's own actions asked of it.
@@ -211,7 +221,11 @@ impl Shared {
     ) -> Result<ResourceOperationStart, DoorError> {
         match self.layers.invoke(resource, action, arguments) {
             Err(DoorError::Unknown(address)) => {
-                match self.services.borrow_mut().invoke(resource, action, arguments) {
+                match self
+                    .services
+                    .borrow_mut()
+                    .invoke(resource, action, arguments)
+                {
                     Some(Ok(Started::Done(output))) => {
                         Ok(ResourceOperationStart::Completed(output))
                     }
@@ -224,8 +238,20 @@ impl Shared {
         }
     }
 
-    /// Read what the session publishes for search, after a frame.
+    /// Where everything the session publishes stands: it may have changed
+    /// only when this moved.
+    fn revision(&self) -> [u64; 3] {
+        let [desk, chrome] = self.layers.revisions();
+        [desk, chrome, self.services.borrow().revision()]
+    }
+
+    /// Hand search what the session publishes when it changed: read after
+    /// a frame, as the desk cannot read its own tree while it opens search.
     fn observe(&self) {
+        let now = Some(self.revision());
+        if self.observed.replace(now) == now {
+            return;
+        }
         let open_tabs = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -382,6 +408,7 @@ impl Session {
             intents,
             quick_settings,
             services: RefCell::new(services),
+            observed: Cell::new(None),
         });
         shared.observe();
         Ok(Self {
