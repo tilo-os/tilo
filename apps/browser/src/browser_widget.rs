@@ -58,8 +58,7 @@ use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
 mod continuity;
-#[cfg(test)]
-mod extension_shortcut_tests;
+mod extension_shortcuts;
 mod library;
 pub(crate) mod personal;
 #[cfg(test)]
@@ -4141,33 +4140,6 @@ impl BrowserWidget {
             return true;
         }
         false
-    }
-
-    /// Run the extension command whose shortcut `event` presses
-    /// (`chrome.commands`): the page never gets the key.
-    fn handle_extension_shortcut(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-    ) -> bool {
-        let WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return false;
-        };
-        if key.state != ElementState::Pressed
-            || key.repeat
-            || self.show_settings
-            || self.show_library
-            || !self.extensions.shortcut(
-                &key.logical_key,
-                key.physical_key,
-                modifiers.state(),
-                &self.engine,
-            )
-        {
-            return false;
-        }
-        self.structure_dirty = true;
-        true
     }
 
     /// Browser-standard Ctrl/Cmd+L. Focus is kept inside the chrome, so a
