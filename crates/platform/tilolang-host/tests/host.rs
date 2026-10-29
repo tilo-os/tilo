@@ -736,7 +736,8 @@ fn query() -> ActionDirectoryQuery {
 #[test]
 fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) = running_with("ada", APP, counter(), Rc::clone(&directory));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     assert_eq!(
         directory.borrow().offered,
