@@ -29,6 +29,9 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         if let Some(category) = &app.category {
             options.push(format!("category: .{category}"));
         }
+        if app.own_records {
+            options.push("records: .own".to_owned());
+        }
         let options = if options.is_empty() {
             String::new()
         } else {

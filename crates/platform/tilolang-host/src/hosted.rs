@@ -299,10 +299,13 @@ impl Hosted {
                 me: spec.person.clone(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: kept
-                    .indexes
-                    .as_ref()
-                    .map(|indexes| tilolang_tilo::index::room_dir(indexes, &spec.room)),
+                index_dir: kept.indexes.as_ref().map(|indexes| {
+                    tilolang_tilo::index::record_dir(
+                        indexes,
+                        &spec.room,
+                        record.route().record.as_deref(),
+                    )
+                }),
                 record_loader: None,
                 sink: None,
             },
@@ -358,6 +361,12 @@ impl Hosted {
         &self.record
     }
 
+    /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
+    /// stages one: its changes are the person's steps on the instance's record.
+    pub fn stage(&mut self, scenario: &str) {
+        self.instance.stage(Some(scenario));
+    }
+
     /// One frame: what the room sent taken in, the runtime brought up to date with the record,
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
@@ -406,6 +415,22 @@ impl Hosted {
         // The invoker is who the broker admitted, with the participant and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
+        // A member's own record is that person's alone: anyone else is refused before anything
+        // of it is read.
+        let person = match invoker.kind {
+            ActorKind::Person => Some(invoker.actor.as_str()),
+            _ => invoker.on_behalf_of.as_deref(),
+        };
+        if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
+            let update = failed(
+                invocation,
+                Refused::new("permission_denied", "this is another member's own record"),
+            );
+            self.record
+                .manager_mut()
+                .send(CollabRequest::UpdateInvocation { id, update });
+            return true;
+        }
         let attributed = context
             .as_deref()
             .map(|context| context.clone().with_invoker(invoker.clone()));

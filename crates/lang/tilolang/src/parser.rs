@@ -174,6 +174,14 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
+/// The options an app's header gives after its title.
+#[derive(Default)]
+struct AppOptions {
+    icon: Option<String>,
+    category: Option<String>,
+    own_records: bool,
+}
+
 /// The launcher categories an app declares (`category: .office`), as the platform's menu
 /// categories name them in lower case.
 pub const APP_CATEGORIES: &[&str] = &[
@@ -349,18 +357,19 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// The options after the app's title: `(icon: .note, category: .office)`, each at most once.
-    fn app_options(&mut self) -> PResult<(Option<String>, Option<String>)> {
-        let (mut icon, mut category) = (None, None);
+    /// The options after the app's title: `(icon: .note, category: .office, records: .own)`,
+    /// each at most once.
+    fn app_options(&mut self) -> PResult<AppOptions> {
+        let (mut icon, mut category, mut records) = (None, None, None);
         if !self.eat(&Tok::LParen) {
-            return Ok((icon, category));
+            return Ok(AppOptions::default());
         }
         loop {
             self.skip_nl();
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon` or `category`")?;
+            let key = self.ident("`icon`, `category` or `records`")?;
             self.expect(&Tok::Colon)?;
             self.expect(&Tok::Dot)?;
             let value = self.ident("a name after the dot, such as `.note`")?;
@@ -383,10 +392,25 @@ impl<'a> Parser<'a> {
                     }
                     &mut category
                 }
+                "records" => {
+                    if !matches!(value.name.as_str(), "own" | "shared") {
+                        return self.fail(
+                            value.span,
+                            format!(
+                                "`.{}` is not where records are kept; an app's records are \
+                                 `.shared` with the workspace or each member's `.own`",
+                                value.name
+                            ),
+                        );
+                    }
+                    &mut records
+                }
                 other => {
                     return self.fail(
                         key.span,
-                        format!("an app has an `icon:` and a `category:`, not `{other}:`"),
+                        format!(
+                            "an app has an `icon:`, a `category:` and `records:`, not `{other}:`"
+                        ),
                     );
                 }
             };
@@ -400,7 +424,11 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((icon, category))
+        Ok(AppOptions {
+            icon,
+            category,
+            own_records: records.as_deref() == Some("own"),
+        })
     }
 
     fn plain_string(&mut self, what: &str) -> PResult<String> {
@@ -524,12 +552,17 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id().ok()?;
             let title = self.plain_string("the app title in quotes").ok()?;
-            let (icon, category) = self.app_options().ok()?;
+            let AppOptions {
+                icon,
+                category,
+                own_records,
+            } = self.app_options().ok()?;
             AppHeader {
                 id,
                 title,
                 icon,
                 category,
+                own_records,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -569,12 +602,13 @@ impl<'a> Parser<'a> {
                 })
                 .ok();
             match title {
-                Some((id, title, (icon, category))) => {
+                Some((id, title, options)) => {
                     header = Some(AppHeader {
                         id,
                         title,
-                        icon,
-                        category,
+                        icon: options.icon,
+                        category: options.category,
+                        own_records: options.own_records,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }
