@@ -22,10 +22,7 @@ fn sample(w: f64) -> VideoEditorApp {
         <crate::VideoEditor as ui::framework::ResourceApp>::ID,
     ));
     app.rect = Rect::new(0.0, 0.0, w, 800.0);
-    ui::framework::ResourceSurface::<Project, VideoEditorEffect>::present(
-        &mut app,
-        &std::rc::Rc::new(crate::seed::sample_project()),
-    );
+    app.present(&std::rc::Rc::new(crate::seed::sample_project()));
     Widget::sync(&mut app, &doc, &automerge::ROOT);
     app
 }

@@ -4,7 +4,7 @@
 )]
 use super::*;
 
-type Cx = ui::framework::EffectCx<Project, VideoEditorApp>;
+type Cx = ui::framework::EffectCx<Project>;
 
 impl VideoEditorApp {
     // ---- project files ---------------------------------------------------
@@ -14,13 +14,6 @@ impl VideoEditorApp {
     // to ask about. A project file is a projection of it: Export project
     // file writes the project as one wherever the person chooses, and Open
     // project file brings one in as the project, one edit Undo takes back.
-
-    /// Whether the project holds nothing a user would mind losing.
-    pub(super) fn project_is_empty(&self) -> bool {
-        self.project.clips.is_empty()
-            && self.project.media.is_empty()
-            && self.project.tracks.is_empty()
-    }
 
     /// The project's name, as the window bar's location says it.
     pub(super) fn project_label(&self) -> String {
@@ -50,71 +43,67 @@ impl VideoEditorApp {
         if let Some(path) = path {
             let path = path.into_path_buf();
             let read = crate::project_file::load(&path);
-            return self.bring_in_project(read, &path, path.parent(), cx);
+            let brought = bring_in_project(read, &path, path.parent(), cx);
+            return self.show_brought_in(brought);
         }
         let request = portal::open_project_request();
+        // The person answers the chooser after this effect returned: what
+        // the window shows of the answer reaches it on its next sync.
+        let later = self.later();
         // Where files have paths, relative media resolves beside the file;
         // elsewhere (a browser page) the chooser hands over its contents.
         if tilo_files::available(tilo_files::Feature::NativePaths) {
-            return Ok(cx.choose_path(request, |app: &mut Self, chosen, cx| {
+            return Ok(cx.choose_path(request, move |(), chosen, cx| {
                 let Some(path) = chosen else {
                     return Err("project file selection was cancelled".into());
                 };
                 let read = crate::project_file::load(&path);
-                app.bring_in_project(read, &path, path.parent(), cx)
+                let brought = bring_in_project(read, &path, path.parent(), cx);
+                Self::show_later(&later, cx, brought)
             }));
         }
-        Ok(cx.choose_file(request, |app: &mut Self, chosen, cx| {
+        Ok(cx.choose_file(request, move |(), chosen, cx| {
             let Some(file) = chosen else {
                 return Err("project file selection was cancelled".into());
             };
             let read = crate::project_file::decode(&file.bytes);
-            app.bring_in_project(read, Path::new(&file.name), None, cx)
+            let brought = bring_in_project(read, Path::new(&file.name), None, cx);
+            Self::show_later(&later, cx, brought)
         }))
     }
 
-    /// Replace the project with what the file at `path` held (`read`), its
-    /// relative media found in `dir` when the file has one here.
-    ///
-    /// The replacement is one edit of the resource, so it is one undo step
-    /// and replicates to a peer like any other.
-    fn bring_in_project(
-        &mut self,
-        read: Result<crate::model::Project, crate::project_file::ProjectFileError>,
-        path: &Path,
-        dir: Option<&Path>,
+    /// What [`bring_in_project`] answered, shown on the window at its next
+    /// sync.
+    fn show_later(
+        later: &super::hosting::Later,
         cx: &Cx,
+        brought: Result<(crate::model::Project, Notice), String>,
     ) -> ui::framework::EffectAnswer {
-        let mut project = match read {
-            Ok(project) => project,
-            Err(e) => {
-                let reason = e.to_string();
+        let answer = match &brought {
+            Ok(_) => Ok(ui::framework::Effected::done()),
+            Err(reason) => Err(reason.clone()),
+        };
+        later.run(cx, move |app| {
+            // The effect was answered above; this only shows it.
+            let _shown = app.show_brought_in(brought);
+        });
+        answer
+    }
+
+    /// Show the project a file brought in (or why it could not), and answer
+    /// the effect with it.
+    fn show_brought_in(
+        &mut self,
+        brought: Result<(crate::model::Project, Notice), String>,
+    ) -> ui::framework::EffectAnswer {
+        let (project, notice) = match brought {
+            Ok(brought) => brought,
+            Err(reason) => {
                 self.project_notice.show(Notice::failed(reason.clone()));
                 return Err(reason);
             }
         };
-        if let Some(dir) = dir {
-            crate::project_file::anchor_media(&mut project, dir);
-        }
-        // The name follows the file unless the file's own project carries a
-        // real one — a project still called "Untitled" opened from
-        // `Holiday.qvp` should read as Holiday.
-        if (project.name.trim().is_empty() || project.name == "Untitled")
-            && let Some(n) = crate::project_file::name_from_path(path)
-        {
-            project.name = n;
-        }
-        // An open that throws a timeline away says the way back, because an
-        // accidental one otherwise feels final when it is not.
-        let replaced = !self.project_is_empty();
-        let mut notice = Self::opened_notice(path, &project);
-        if replaced {
-            notice.text.push_str(". Undo to go back");
-            notice.action = Some(super::notices::NoticeAction::Undo);
-        }
         self.project_notice.show(notice);
-
-        cx.submit(crate::resource::load_project(&project));
         self.project = project;
         self.clip_edit_bases.clear();
         // The view belongs to the project that was open, not to this one.
@@ -164,15 +153,18 @@ impl VideoEditorApp {
         let bytes = crate::project_file::encode(&self.project).map_err(|e| e.to_string())?;
         let Some(path) = path else {
             let suggested = crate::project_file::with_extension(&self.project_label());
+            let later = self.later();
             return Ok(cx.save_file(
                 portal::export_project_request(&suggested),
                 bytes,
-                |app: &mut Self, saved, _| {
+                move |(), saved, cx| {
                     if !saved {
                         return Err("the project file export was cancelled".into());
                     }
-                    app.project_notice
-                        .show(Notice::ok("Exported the project file"));
+                    later.run(cx, |app| {
+                        app.project_notice
+                            .show(Notice::ok("Exported the project file"));
+                    });
                     Ok(ui::framework::Effected::done())
                 },
             ));
@@ -391,4 +383,45 @@ impl VideoEditorApp {
             names.join(", "),
         ))
     }
+}
+
+/// Whether `project` holds nothing a user would mind losing.
+fn holds_nothing(project: &crate::model::Project) -> bool {
+    project.clips.is_empty() && project.media.is_empty() && project.tracks.is_empty()
+}
+
+/// Replace the project with what the file at `path` held (`read`), its
+/// relative media found in `dir` when the file has one here: the project
+/// and what to say about it, or why it could not be read.
+///
+/// The replacement is one edit of the resource, so it is one undo step and
+/// replicates to a peer like any other.
+fn bring_in_project(
+    read: Result<crate::model::Project, crate::project_file::ProjectFileError>,
+    path: &Path,
+    dir: Option<&Path>,
+    cx: &Cx,
+) -> Result<(crate::model::Project, Notice), String> {
+    let mut project = read.map_err(|e| e.to_string())?;
+    if let Some(dir) = dir {
+        crate::project_file::anchor_media(&mut project, dir);
+    }
+    // The name follows the file unless the file's own project carries a
+    // real one — a project still called "Untitled" opened from
+    // `Holiday.qvp` should read as Holiday.
+    if (project.name.trim().is_empty() || project.name == "Untitled")
+        && let Some(n) = crate::project_file::name_from_path(path)
+    {
+        project.name = n;
+    }
+    // An open that throws a timeline away says the way back, because an
+    // accidental one otherwise feels final when it is not.
+    let replaced = !holds_nothing(&cx.live().get());
+    let mut notice = VideoEditorApp::opened_notice(path, &project);
+    if replaced {
+        notice.text.push_str(". Undo to go back");
+        notice.action = Some(super::notices::NoticeAction::Undo);
+    }
+    cx.submit(crate::resource::load_project(&project));
+    Ok((project, notice))
 }

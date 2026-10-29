@@ -13,7 +13,7 @@ use super::VideoEditorApp;
 use crate::export::{Container, ExportSettings, Resolution};
 use crate::model::Project;
 
-type Cx = ui::framework::EffectCx<Project, VideoEditorApp>;
+type Cx = ui::framework::EffectCx<Project>;
 
 /// What a render was asked for.
 pub(super) struct RenderRequest {
@@ -64,7 +64,7 @@ impl VideoEditorApp {
                 crate::files::remove(&destination);
                 rendered
             },
-            move |_, rendered, _| {
+            move |(), rendered, _| {
                 let Rendered { hash, bytes } = rendered?;
                 let address = ui::tilo_actions::content_resource(&hash)
                     .ok_or("the render has no content address")?;

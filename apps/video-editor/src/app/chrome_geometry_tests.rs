@@ -14,10 +14,7 @@ fn app_sized(w: f64, h: f64) -> VideoEditorApp {
     let doc = crate::seed::sample_document();
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, w, h);
-    ui::framework::ResourceSurface::<Project, crate::actions::VideoEditorEffect>::present(
-        &mut app,
-        &std::rc::Rc::new(crate::seed::sample_project()),
-    );
+    app.present(&std::rc::Rc::new(crate::seed::sample_project()));
     app.sync(&doc, &automerge::ROOT);
     app
 }
