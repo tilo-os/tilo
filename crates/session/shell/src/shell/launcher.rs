@@ -1550,6 +1550,16 @@ impl LaunchSession {
         THREAD_SESSION.with(|slot| *slot.borrow_mut() = Some(self));
     }
 
+    /// Let go of the session this thread adopted, before the thread ends:
+    /// dropped by the thread's own teardown instead, a session that was the
+    /// last to hold its workspace tree would drop the tree after the
+    /// thread-locals the tree's drop reads.
+    #[cfg(any(test, target_os = "linux"))]
+    fn disown() {
+        let adopted = THREAD_SESSION.with(|slot| slot.borrow_mut().take());
+        drop(adopted);
+    }
+
     pub(crate) fn push(&self, event: LaunchEvent) {
         if matches!(
             event.kind,
