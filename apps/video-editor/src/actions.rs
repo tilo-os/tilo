@@ -1,6 +1,6 @@
 //! What the editor does beyond the project's own verbs — revealing an item,
-//! showing a panel, splitting what its person selected, the project file and
-//! render jobs ([`VideoEditorEffect`]) — and the verbs
+//! showing a panel, splitting what its person selected, project file import
+//! and export and render jobs ([`VideoEditorEffect`]) — and the verbs
 //! it offers bound to where its person is: their playhead, and the mix their
 //! monitor measured ([`surface_declarations`]).
 //!
@@ -15,7 +15,7 @@ use crate::resource::video_project;
 
 /// What the editor does beyond the project's own verbs: revealing a track,
 /// clip, effect, marker or source, showing the media, the inspector or the
-/// export settings, splitting the selection, and the project file and render
+/// export settings, splitting the selection, and project file and render
 /// jobs.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
@@ -60,21 +60,22 @@ pub enum VideoEditorEffect {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    /// Open project.
-    #[effect(job)]
-    OpenProject {
+    /// Open project file.
+    ///
+    /// Brings a video project file (`.qvp`) in as this project, in place of
+    /// what the timeline holds; Undo takes it back.
+    #[effect(job, cancellable, opens_path = "qvp")]
+    OpenProjectFile {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    /// Save project.
-    #[effect(job)]
-    Save {
-        #[param("Direct filesystem path; omit to save to the current project file")]
-        path: Option<String>,
-    },
-    /// Save project as.
-    #[effect(job)]
-    SaveAs {
+    /// Export project file.
+    ///
+    /// Writes the project as a video project file (`.qvp`) to hand to
+    /// someone or open elsewhere. The project itself is always kept; this
+    /// is a copy of it.
+    #[effect(job, cancellable, risk = "project_file_risk")]
+    ExportProjectFile {
         #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
@@ -212,6 +213,17 @@ pub enum VideoEditorEffect {
         #[param("The picture's width in pixels, even, 16 to 1920; 640 when omitted")]
         width: Option<u32>,
     },
+}
+
+/// Writing a project file where the person chooses risks nothing; over a
+/// path a caller names, it may replace a file, so it asks first.
+fn project_file_risk(effect: &VideoEditorEffect) -> tilo_actions::RiskLevel {
+    match effect {
+        VideoEditorEffect::ExportProjectFile { path: Some(_) } => {
+            tilo_actions::RiskLevel::Destructive
+        }
+        _ => tilo_actions::RiskLevel::None,
+    }
 }
 
 /// Where this participant is, which the verbs it offers are bound to.

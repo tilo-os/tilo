@@ -195,14 +195,12 @@ fn a_chooser_refusal_reads_as_a_failure_in_its_own_words() {
         (REFUSAL, ToastKind::Error)
     );
 
+    // A project file's chooser answers its effect with the refusal.
     recorder.respond_to_pick(PortalOutcome::Failed(REFUSAL.into()));
-    let _ = app.effect(&VideoEditorEffect::OpenProject { path: None });
-    app.settle();
-    let shown = ui::window_toolbar::notice().unwrap();
-    assert_eq!(
-        (shown.text.as_str(), shown.kind),
-        (REFUSAL, ToastKind::Error)
-    );
+    let refused = app
+        .effect(&VideoEditorEffect::OpenProjectFile { path: None })
+        .unwrap_err();
+    assert!(refused.to_string().contains(REFUSAL), "{refused}");
 }
 
 #[test]

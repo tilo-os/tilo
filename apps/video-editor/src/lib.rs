@@ -11,8 +11,8 @@
 //!   * [`resource`] — the project's verbs and the app: the
 //!     collaborative, undoable source of truth is [`model::Project`] itself,
 //!     stored by `#[derive(Model)]`; `seed` holds the demo project.
-//!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
-//!     Open: the same Automerge document, framed and stamped,
+//!   * [`project_file`] — the versioned `.qvp` file a project is exported
+//!     as and opened from: the same Automerge document, framed and stamped,
 //!     so a project can be copied and handed to someone.
 //!   * [`preview`] — the composited-frame producer: a representative frame
 //!     from clip metadata, or (behind the `decode` feature) a

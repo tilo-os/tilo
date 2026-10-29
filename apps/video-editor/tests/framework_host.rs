@@ -302,7 +302,12 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     );
     // Reading or writing a file is an outside effect: it asks first, like
     // any other.
-    for action in ["export", "import", "open-project", "save", "save-as"] {
+    for action in [
+        "export",
+        "import",
+        "open-project-file",
+        "export-project-file",
+    ] {
         assert_eq!(agent_answer(&mut app, action), Answer::Ask, "{action}");
     }
     // Rendering into content reads.
