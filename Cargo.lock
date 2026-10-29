@@ -13627,22 +13627,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "registry-review"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ed25519-dalek 3.0.0",
- "hex",
- "registry-server",
- "registry-types",
- "tempfile",
- "tilo-app",
- "tilo-app-package",
- "tilo-clock",
- "workspace-hack",
-]
-
-[[package]]
 name = "registry-server"
 version = "0.1.0"
 dependencies = [
@@ -27196,7 +27180,6 @@ dependencies = [
  "regex-lite",
  "regex-syntax",
  "registry-client",
- "registry-review",
  "registry-server",
  "registry-types",
  "reis",

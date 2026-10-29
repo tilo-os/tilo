@@ -275,58 +275,6 @@ overwritten. Rust callers use `applications::approve_reviewed` or
 The original CLI forms remain supported. These commands use existing local
 operator access; they introduce no remotely callable approval endpoint.
 
-## Native operator review
-
-On the registry host, the native operator tool uses the same local review
-library as the CLI. Build it with `cargo build --locked -p registry-review`,
-then open an explicitly private window:
-
-```bash
-target/debug/tilo-registry-review --private --registry-dir /path/to/registry
-```
-
-Choose **Refresh applications**, inspect the signed request, its exact
-namespaces, contact, note and proof locations, then name the reviewer.
-**Approve namespaces** checks ownership proofs again. **Reject with feedback**
-returns the written reason through the publisher's existing status endpoint.
-Both decisions require confirmation and refuse a replacement application;
-refresh and inspect the new request before deciding again.
-
-The pending queue is device-local view state. Only reviewer/feedback drafts
-use the SDK document and its undo/history on a disposable private profile;
-no registry queue or contact data is synced. Revoking owner access hides the
-review pane and refuses its actions. A shared launch reads no registry data.
-The tool needs the operator's existing filesystem access to an initialized
-registry; it grants no access, opens no approval service and holds no registry
-signing key. Public publication still uses the registry's existing signing
-workflow. The same window also reviews package submissions through the CLI's shared signed-byte inspection and approval workflow.
-
-The action surface is `Refresh`, `Inspect {publisher}`, followed by
-`Approve {publisher, review_id, reviewer}` or
-`Reject {publisher, review_id, reviewer, reason}`. `Inspect` returns the exact
-snapshot and review id; automated operators use the same confirmation and
-stale-review checks as the controls. Queue pages contain at most 20 rows.
-
-Choose **Refresh packages** to list pending package summaries without downloading
-anything. **Verify and inspect packages** explicitly reads uploaded artifacts or
-fetches external versions with the CLI's bounded, public-network-only policy.
-The detail view shows verified versions, byte counts and signed sandbox requests;
-review never launches a package. Verification errors remain visible and block
-approval while leaving rejection available. Name the reviewer and write a reason
-before either confirmed decision. Approval rechecks bytes, current authorization
-and the exact pending request before staging metadata and publishing reviewed
-uploads. Signed registry snapshot publication remains a separate operator step.
-
-Package agents use `PackageReview::RefreshPackages`, `InspectPackage {package}`, then
-`ApprovePackage {package, review_id, reviewer, reason}` or
-`RejectPackage {package, review_id, reviewer, reason}`. Inspection returns the full
-submission, its review id, and either `verified_packages` or `inspection_error`.
-Refresh and `PackagePage {page}` return at most 20 addressable summaries; no package
-bytes or full signatures are returned in discovery. Registration and package
-operations share one busy state, the same private-window requirement and owner
-permission checks. Switching inspected requests clears feedback for the previous
-request; registry state stays outside draft history.
-
 ## Bootstrapping your own instance
 
 ### 1. Generate an owner keypair

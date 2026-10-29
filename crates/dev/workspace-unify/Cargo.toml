@@ -864,7 +864,6 @@ doc = false
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
-"registry-review" = { path = "../../../crates/dev/registry-review", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -3276,7 +3275,6 @@ doc = false
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
-"registry-review" = { path = "../../../crates/dev/registry-review", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
