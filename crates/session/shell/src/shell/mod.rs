@@ -31,6 +31,7 @@ pub use broker_services::decide_receipt_against_surfaces;
 pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
+pub(crate) mod answer_window;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -204,6 +205,7 @@ pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
+pub(crate) mod task_programs;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;

@@ -276,6 +276,13 @@ pub trait Host: Send + Sync {
         None
     }
 
+    /// The app showing the session, editing the line at the prompt as a
+    /// field ([`crate::field`]): Terminal's native editing and dictation.
+    /// `None` when there is none.
+    fn field(&self) -> Option<Arc<dyn crate::field::Field>> {
+        None
+    }
+
     /// The programs this host can run, by name, looked for along `path`
     /// (the shell's `PATH`): the environment's tools, for Tab completion.
     fn programs(&self, path: &str) -> Vec<String> {

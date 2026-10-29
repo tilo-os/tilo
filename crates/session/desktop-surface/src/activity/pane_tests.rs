@@ -2737,6 +2737,83 @@ mod tasks_link_tests {
         );
     }
 
+    /// The agent composer follows the task, not the history: it names the run by its task, and
+    /// the same one record is undone, nothing else; a task that changed nothing is refused.
+    #[test]
+    fn one_record_of_a_run_is_undone_by_its_task() {
+        use tilo_actions::remote::workspace_activity as wire;
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"ef".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Move the card to Done",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[
+                ui::RunStep {
+                    app: "so.tilo.notes".into(),
+                    record: "file:/notes/release.note".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+                ui::RunStep {
+                    app: "so.tilo.lang.board".into(),
+                    record: String::new(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(
+            doc,
+            &key,
+            "tasks.tracker/issues/release"
+        ));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+
+        let query = |task: &str| {
+            serde_json::to_value(wire::RecordQuery {
+                task: Some(task.into()),
+                app_id: "so.tilo.lang.board".into(),
+                ..wire::RecordQuery::default()
+            })
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap()
+        };
+        let outcome = pane
+            .serve_action(
+                wire::UNDO_RECORD,
+                &query("tasks.tracker/issues/release"),
+                &mut tree,
+                None,
+            )
+            .unwrap();
+        assert!(outcome.handled);
+        let undo = host.undos.borrow().last().cloned().unwrap();
+        assert_eq!(undo.task_id, "tasks.tracker/issues/release");
+        assert_eq!(
+            undo.steps,
+            vec![("so.tilo.lang.board".to_owned(), String::new())],
+            "only that app's record of the task is undone"
+        );
+        assert!(
+            pane.serve_action(
+                wire::UNDO_RECORD,
+                &query("tasks.tracker/issues/other"),
+                &mut tree,
+                None
+            )
+            .is_err()
+        );
+    }
+
     /// A record the host did not undo is named, not dropped: the task view
     /// says what did not come back.
     #[test]

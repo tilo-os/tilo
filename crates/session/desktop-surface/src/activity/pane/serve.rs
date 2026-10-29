@@ -875,13 +875,18 @@ impl RoomActivityPane {
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
             wire::UNDO_RECORD => {
                 let query: wire::RecordQuery = read(arguments)?;
-                if !self.select_range(&query.range) {
-                    return Err(t("activity-history-gone"));
-                }
-                let Some(task) = self
-                    .selected_agent_run()
-                    .and_then(|indexed| indexed.run.task.clone())
-                else {
+                let task = if let Some(task) = query.task {
+                    // Named by its task: the run recorded for it, if it changed anything.
+                    self.task_agent_run(&task)
+                        .and_then(|indexed| indexed.run.task.clone())
+                } else {
+                    if !self.select_range(&query.range) {
+                        return Err(t("activity-history-gone"));
+                    }
+                    self.selected_agent_run()
+                        .and_then(|indexed| indexed.run.task.clone())
+                };
+                let Some(task) = task else {
                     return Err(t("activity-undo-task-unavailable"));
                 };
                 // Asked of the task, so undo names the run's group in the
