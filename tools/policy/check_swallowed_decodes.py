@@ -125,6 +125,29 @@ def chain_swallows(code: str, end: int) -> bool:
     return False
 
 
+def converted_later(code: str, at: int) -> bool:
+    """Whether the expression around the call turns the absence back into an
+    error (`.and_then(|s| s.parse().ok()).ok_or_else(|| invalid(..))?`)."""
+    depth = 0
+    index = at
+    while index < len(code):
+        char = code[index]
+        if char in "([{":
+            if char == "{" and depth <= 0:
+                return False
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < -4:
+                return False
+        elif char == ";" and depth <= 0:
+            return False
+        elif char == "." and depth <= 0 and re.match(r"\.\s*ok_or(?:_else)?\s*\(", code[index:]):
+            return True
+        index += 1
+    return False
+
+
 def block_after(code: str, at: int) -> tuple[int, int] | None:
     brace = code.find("{", at)
     if brace < 0:
@@ -190,7 +213,7 @@ def findings_in(text: str) -> list[tuple[int, str]]:
         start = statement_start(code, call.start())
         prefix = code[start : call.start()]
         how = None
-        if chain_swallows(code, call_end):
+        if chain_swallows(code, call_end) and not converted_later(code, call_end):
             how = "error discarded"
         elif re.match(r"\s*let\s+_\s*(?::[^=]*)?=\s*$", prefix) and not before.endswith("."):
             how = "result bound to `_`"
