@@ -30,6 +30,7 @@ pub mod displays;
 mod env;
 mod keys;
 mod lists;
+mod notifications;
 mod panels;
 mod setup;
 mod sheets;
@@ -176,6 +177,12 @@ fn no_session_actions(action: SessionAction) -> Result<(), String> {
     pub quick_settings: Option<Rc<dyn PanelHost>>,
     /// The person's settings: shortcuts, input, gestures.
     pub config: SessionConfig,
+    /// The system services the session hosts: what they publish is the
+    /// session's, beside the desktop's.
+    pub services: Vec<Box<dyn Service>>,
+    /// What apps sent the notifications daemon: shown as banners and kept
+    /// in the desk's notification centre.
+    pub notifications: Option<tilo_notifications_service::Notifications>,
 }
 
 impl Default for Options {
@@ -245,6 +252,8 @@ impl Layers {
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
             captures: None,
+            services: Vec::new(),
+            notifications: None,
         }
     }
 }
@@ -309,6 +318,8 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
         | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
         _ => None,
     }
+    /// The daemon's notifications on the desktop.
+    notifications: RefCell<notifications::SessionNotifications>,
 }
 
 impl Shared {
@@ -935,6 +946,24 @@ impl Mount<'_> {
             }
         }
     }
+/// The notification banners, mounted on a layer of their own over the
+/// first output; the desk then shows only the centre of `notices`.
+fn mount_banners(
+    compositor: &mut Compositor,
+    options: &Options,
+    notices: &tilo_desktop_surface::DesktopNotifications,
+) -> tilo_notification_banners::Link {
+    let banners = tilo_notification_banners::Link::new();
+    match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
+            notices.show_banners_elsewhere();
+        }
+        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+    }
+    banners
 }
 
 /// A running session: the compositor and the desktop it hosts.
@@ -1027,7 +1056,9 @@ impl Session {
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let asks = Rc::new(RefCell::new(Vec::new()));
-        let (desktop, policy) = desktop_with(options.salt, options.scale, |surface, handle| {
+        let notices = tilo_desktop_surface::DesktopNotifications::default();
+        let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
+            surface.set_notifications(notices.clone());
             Box::new(
                 DeskLayer::new(
                     Box::new(surface),
@@ -1123,6 +1154,8 @@ impl Session {
             }
             Err(error) => tracing::warn!(%error, "notification banners not mounted"),
         }
+        let presentation = options.presentation;
+        let banners = mount_banners(&mut compositor, &options, &notices);
 
         let readings = Rc::new(RefCell::new(None));
         let quick_settings = options.quick_settings.clone().and_then(|panel| {
@@ -1205,6 +1238,11 @@ impl Session {
             services: RefCell::new(services),
             observed: Cell::new(None),
             places_seen: RefCell::default(),
+            notifications: RefCell::new(notifications::SessionNotifications::new(
+                options.notifications,
+                notices,
+                banners.clone(),
+            )),
         });
         if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
             shared.search.restore(&kept);
@@ -1674,6 +1712,9 @@ impl Session {
         self.compositor.dispatch(timeout)?;
         self.settle()?;
         self.windows.step(&mut self.compositor, Instant::now());
+        self.shared.services.borrow_mut().poll();
+        self.shared.notifications.borrow_mut().step();
+        self.shared.follow_asks();
         self.compositor.render()?;
         self.shared.follow_asks();
         self.follow_lock();
@@ -1703,6 +1744,8 @@ impl Session {
             self.follow_lock();
         }
         self.compositor.run(|compositor| {
+            shared.services.borrow_mut().poll();
+            shared.notifications.borrow_mut().step();
             shared.follow_asks();
             shared.observe();
             stop(compositor)

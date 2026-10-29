@@ -75,6 +75,20 @@ fn main() -> std::process::ExitCode {
         search: search_options(),
     let options = Options {
         config: SessionConfig::load(),
+    let (mut services, _following) = services();
+    let desktop = match DesktopServices::start(&buses) {
+        Ok(desktop) => {
+            services.extend(desktop.services());
+            Some(desktop)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the desktop services did not start");
+            None
+        }
+    };
+    let options = Options {
+        services,
+        notifications: desktop.as_ref().map(DesktopServices::notifications),
         ..Options::default()
         services,
         wake,

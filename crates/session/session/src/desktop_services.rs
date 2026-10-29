@@ -76,6 +76,7 @@ impl DesktopServices {
         let woken = Arc::clone(wake);
         questions.on_change(move || woken());
         let notifications = tilo_notifications_service::Notifications::new();
+        let notifications = tilo_notifications_service::Notifications::for_session();
         let roaming = RoamingWifiSlot::default();
         let (portal, session) = runtime.block_on(on_session_bus(
             &buses.session,
@@ -128,6 +129,12 @@ impl DesktopServices {
             )));
         }
         services
+    }
+
+    /// What apps sent the notifications daemon, for the session to show.
+    #[must_use]
+    pub fn notifications(&self) -> tilo_notifications_service::Notifications {
+        self.notifications.clone()
     }
 
     /// Where the network secrets agent finds the Wi-Fi passphrases that
@@ -262,6 +269,13 @@ async fn on_session_bus(
             drop(drained.drain());
         }
     });
+    // Sandboxed apps' notifications are the daemon's, shown the same way.
+    if let Some(portal) = &portal
+        && let Err(error) =
+            tilo_portal::notification::serve_on(portal, &connection, notifications.clone()).await
+    {
+        tracing::warn!(%error, "the notification portal did not start");
+    }
     let daemon = tilo_notifications_service::serve_on(
         connection.clone(),
         notifications.clone(),
