@@ -1,5 +1,5 @@
 {
-  "format": 2,
+  "format": 3,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -164,6 +164,13 @@
               }
             }
           }
+        },
+        {
+          "name": "actions",
+          "doc": "Actions offered on something (`actions(r)`), each a command after `items`.",
+          "type": {
+            "list": "action"
+          }
         }
       ],
       "slots": [
@@ -313,17 +320,28 @@
       "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
       "props": [
         {
+          "name": "reactions",
+          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).",
+          "type": {
+            "map": {
+              "key": "text",
+              "value": {
+                "set": "principal"
+              }
+            }
+          }
+        },
+        {
           "name": "emoji",
-          "doc": "The emoji reacted with, in the order they were first used.",
+          "doc": "The emoji reacted with, in the order they were first used: the older form, with `by`, read while `reactions` is not given.",
           "type": {
             "list": "text"
           },
-          "required": true,
           "positional": true
         },
         {
           "name": "by",
-          "doc": "Who reacted with each, in the same order.",
+          "doc": "Who reacted with each of `emoji`, in the same order.",
           "type": {
             "list": {
               "list": "principal"

@@ -221,3 +221,99 @@ fn slots_and_events_print_back_as_written() {
         "printing is stable"
     );
 }
+
+const CHAT: &str = r#"type Message {
+    text: Text (title)
+    reactions: Map<List<Principal>>
+}
+
+type Conversation {
+    title: Text (title)
+    messages: Collection<Message>
+}
+
+action pin(m: Message) (label: "Pin", icon: .pin) {
+    m.text = "pinned"
+}
+"#;
+
+#[test]
+fn a_map_field_is_a_map_prop_whole_in_a_view() {
+    let c = compile_body(&format!(
+        "{CHAT}\nview reactions_of(m: Message) {{\n    ui.Reactions(reactions: m.reactions)\n}}"
+    ));
+    validate(&c.wasm);
+    let (code, message) = one_error(
+        "type Tally {\n    counts: Map<Int>\n}\nview tally(t: Tally) {\n    ui.Reactions(reactions: t.counts)\n}",
+    );
+    assert_eq!(code, "E020");
+    assert!(
+        message.contains("Map<Text, Set<Principal>>") && message.contains("Map<Int>"),
+        "{message}"
+    );
+    let (code, _) = one_error(&format!(
+        "{CHAT}\nfn whole(m: Message) -> Int {{\n    let r = m.reactions\n    1\n}}"
+    ));
+    assert_eq!(code, "E080", "outside a view a map is read by key");
+}
+
+#[test]
+fn the_older_reactions_form_still_compiles() {
+    let c = compile_body("view old() {\n    ui.Reactions([\"👍\"], can_react: false)\n}");
+    validate(&c.wasm);
+}
+
+#[test]
+fn an_action_list_is_an_action_prop_run_by_events_of_the_node() {
+    let c = compile_body(&format!(
+        "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: actions(m))\n}}"
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(
+        strings.contains("ui_actions"),
+        "the actions reach the host as offered"
+    );
+    let (code, message) = one_error(&format!(
+        "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: [m.text])\n}}"
+    ));
+    assert_eq!(code, "E020");
+    assert!(message.contains("List<Action>"), "{message}");
+}
+
+#[test]
+fn collections_and_maps_are_view_parameters() {
+    let c = compile_body(&format!(
+        "{CHAT}
+view lines(items: Collection<Message>) {{
+    for m in items {{
+        text(m.text)
+    }}
+}}
+
+view tally(r: Map<List<Principal>>) {{
+    ui.Reactions(reactions: r)
+}}
+
+view thread(c: Conversation) {{
+    lines(c.messages)
+    if let m = c.messages.last() {{
+        tally(m.reactions)
+    }}
+}}"
+    ));
+    validate(&c.wasm);
+    let (code, _) = one_error(&format!(
+        "{CHAT}\nfn count(items: Collection<Message>) -> Int {{\n    items.len()\n}}"
+    ));
+    assert_eq!(code, "E023", "only a view takes a collection as it is");
+}
+
+#[test]
+fn a_collection_fits_a_list_prop_only_of_what_it_holds() {
+    let (code, message) = one_error(&format!(
+        "{CHAT}\nview bar(c: Conversation) {{\n    ui.EmojiBar(c.messages)\n}}"
+    ));
+    assert_eq!(code, "E020");
+    assert!(message.contains("List<Text>"), "{message}");
+}

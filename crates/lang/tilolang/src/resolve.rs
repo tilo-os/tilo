@@ -1359,7 +1359,7 @@ impl Resolver<'_> {
                     _ => Ty::Collection(boxed),
                 };
                 if ty.is_container() && !field_position {
-                    self.err("E023", te.span, format!("`{}` can only be the type of a field; use `List<T>` for values you pass around", name.name));
+                    self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
                 }
                 ty
@@ -1523,7 +1523,9 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    fn params(&mut self, params: &[ast::Param]) -> Vec<ParamInfo> {
+    /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
+    /// is: a view is handed it live (views are components, and these are their props).
+    fn params(&mut self, params: &[ast::Param], view: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
             if out.iter().any(|x| x.name == p.name.name) {
@@ -1534,7 +1536,7 @@ impl Resolver<'_> {
                 );
                 continue;
             }
-            let ty = self.resolve_type(&p.ty, false);
+            let ty = self.resolve_type(&p.ty, view);
             out.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
@@ -1609,7 +1611,7 @@ impl Resolver<'_> {
                 );
             }
             let ast_params = params;
-            let params = self.params(params);
+            let params = self.params(params, kind == CKind::View);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
