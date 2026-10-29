@@ -323,6 +323,8 @@ impl DrmBackend {
                 SessionEvent::PauseSession => pause(&session_inner),
                 SessionEvent::ActivateSession => {
                     resume(&session_inner);
+                    // Another session may have left its own ramps.
+                    data.state.gamma.forget_applied();
                     scan_connectors(&session_inner, &mut data.state);
                 }
             })
@@ -498,6 +500,32 @@ impl Backend for DrmBackend {
             scan_connectors(&self.inner, state);
         }
         Ok(())
+    }
+
+    /// Through the CRTC's legacy gamma ioctl, which atomic drivers turn
+    /// into their `GAMMA_LUT`: the display engine applies it after the
+    /// planes are blended, so it holds for directly scanned-out buffers too.
+    fn set_gamma(
+        &mut self,
+        _state: &mut State,
+        name: &str,
+        ramp: Option<&crate::gamma::Ramp>,
+    ) -> Result<(), BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        let (gpu, crtc) = inner
+            .lit_mut(name)
+            .ok_or_else(|| BackendError(format!("{name}: not lit")))?;
+        let device = gpu.manager.device();
+        let identity;
+        let ramp = if let Some(ramp) = ramp {
+            ramp
+        } else {
+            identity = crate::gamma::Ramp::identity(gamma_size(device, crtc).unwrap_or(0));
+            &identity
+        };
+        device
+            .set_gamma(crtc, &ramp.red, &ramp.green, &ramp.blue)
+            .map_err(|error| failed(&format!("{name}: gamma ramp"), error))
     }
 
     fn set_display_config(&mut self, config: &DisplayConfig) {
@@ -868,6 +896,14 @@ fn judge_wake(
             lit.wake = None;
         }
     }
+}
+
+/// The entries of `crtc`'s gamma ramp; `None` when it has none.
+fn gamma_size(device: &DrmDevice, crtc: crtc::Handle) -> Option<usize> {
+    let info = device.get_crtc(crtc).ok()?;
+    usize::try_from(info.gamma_length())
+        .ok()
+        .filter(|size| *size >= 2)
 }
 
 /// Whether `crtc` reads back active (its atomic `ACTIVE`, else a bound
@@ -1435,6 +1471,9 @@ fn light(
     };
     crate::output::advertise(&output, &state.display);
     state.add_output(&output, location);
+    state
+        .gamma
+        .set_size(name, gamma_size(gpu.manager.device(), crtc));
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
     Some(Lit {

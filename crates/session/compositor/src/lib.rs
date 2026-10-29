@@ -29,6 +29,7 @@ mod cursor;
 pub mod dim;
 mod display_change;
 mod dnd;
+pub mod gamma;
 pub mod gestures;
 pub mod host;
 pub mod idle;
@@ -286,10 +287,29 @@ impl Compositor {
         Ok(())
     }
 
-    /// Switch the panels whose wanted power changed.
+    /// Switch the panels whose wanted power changed and write the gamma
+    /// ramps that changed.
     fn sync_power(&mut self) {
         let LoopData { state, backend } = &mut self.data;
         backend.sync_power(state);
+        backend.sync_gamma(state);
+    }
+
+    /// Turn night light on at a colour temperature in kelvin (clamped to
+    /// [`gamma::NIGHT_LIGHT_KELVIN`]; 6500 changes nothing, lower is
+    /// warmer) or off (`None`), on every output whose display engine
+    /// carries a gamma ramp. A gamma tool holding an output's ramp keeps
+    /// it until it lets go.
+    pub fn set_night_light(&mut self, kelvin: Option<u32>) -> Result<(), Error> {
+        self.data.state.gamma.set_night_light(kelvin);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Night light's colour temperature, while it is on.
+    pub fn night_light(&self) -> Option<u32> {
+        self.data.state.gamma.night_light()
     }
 
     /// Apply idle transitions a session request caused, at once.
@@ -567,6 +587,9 @@ impl Compositor {
     /// cannot take is refused whole.
     pub fn set_display_config(&mut self, config: &DisplayConfig) -> Result<(), Error> {
         self.data.backend.set_display_config(config);
+        if config.night_light != self.night_light() {
+            self.set_night_light(config.night_light)?;
+        }
         let changes = config.changes(&self.data.state.output_states());
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
