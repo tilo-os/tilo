@@ -872,7 +872,7 @@ mod tests {
 #[cfg(any(test, feature = "test-support"))]
 pub fn reviewed_app_routing_fixture() -> (tempfile::TempDir, MigrationIntent) {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_support::qualified_tempdir();
     let source = root.path().join("source");
     let directory = root.path().join("intent");
     std::fs::create_dir(&source).unwrap();
