@@ -141,6 +141,7 @@ imports! {
     (VersionEnd, "version_end", "ii", "i"),
     (CollOrdered, "coll_ordered", "ii", "i"),
     (CollWhereWith, "coll_where_with", "iii", "i"),
+    (CollMoveTo, "coll_move_to", "iiil", ""),
     (Query, "query", "iiii", "i"),
     (Filters, "filters", "i", "i"),
     (IdentPart, "ident_part", "ii", "i"),

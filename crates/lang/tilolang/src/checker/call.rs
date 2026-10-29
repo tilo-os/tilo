@@ -1007,12 +1007,12 @@ impl Checker<'_> {
     /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
-        let usage = "write `.move(item, after: other)` or `.move(item, before: other)`";
+        let usage = "write `.move(item, after: other)`, `.move(item, before: other)` or `.move(item, to: index)`";
         let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
             self.err(
                 "E022",
                 span,
-                format!("`.move` takes the item and its new neighbour: {usage}"),
+                format!("`.move` takes the item and where it goes: {usage}"),
             );
             return Ex::error();
         };
@@ -1020,16 +1020,18 @@ impl Checker<'_> {
         let after = match side {
             Some("after") => true,
             Some("before") => false,
+            // An index, as a drag gives one: resolved, when the action runs, to the item it
+            // then comes before, which is what is recorded (convergence.md, "Actions").
+            Some("to") => {
+                let item = self.expr_as(&item.value, t);
+                let index = self.expr_as(&place.value, &Ty::Int);
+                return Ex::host(Imp::CollMoveTo, vec![b, fid, item, index], Ty::Unit);
+            }
             _ => {
-                let what = if place.name.is_none() {
-                    "a position"
-                } else {
-                    "this"
-                };
                 self.err(
-                    "E107",
+                    "E022",
                     place.value.span,
-                    format!("{what} is counted on what this device sees, so a move made at the same time elsewhere puts the item in the wrong place; name its neighbour: {usage}"),
+                    format!("`.move` names where the item goes: {usage}"),
                 );
                 let _ = self.expr(&place.value, None);
                 return Ex::error();

@@ -32,6 +32,8 @@ action move_first(l: TodoList, i: Item) {
   if let first = l.items.first() { l.items.move(i, before: first) }
 }
 
+action place(l: TodoList, i: Item, at: Int) { l.items.move(i, to: at) }
+
 action tag(l: TodoList, t: Text) { l.tags.add(t) }
 
 action finish(i: Item) { i.done = true }

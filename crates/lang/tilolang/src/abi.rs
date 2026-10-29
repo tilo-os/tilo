@@ -155,6 +155,7 @@ imports! {
     VersionEnd = "version_end" ([H, I32] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
     CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
+    CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
