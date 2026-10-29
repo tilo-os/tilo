@@ -193,6 +193,7 @@ pub struct PowerSeat {
     offers: Rc<Cell<Offers>>,
     asked: Rc<RefCell<Vec<PowerEffect>>>,
     rows: Rc<RefCell<Vec<(PowerEffect, Rect)>>>,
+    panel: Rc<Cell<Rect>>,
 }
 
 impl crate::Seat for PowerSeat {
@@ -219,6 +220,12 @@ impl PowerSeat {
     /// Where each row of the open menu is, in the sheet's own coordinates.
     pub fn rows(&self) -> Vec<(PowerEffect, Rect)> {
         self.rows.borrow().clone()
+    }
+
+    /// The open menu's panel, its title and rows inside it, in the sheet's
+    /// own coordinates; empty while nothing is open.
+    pub fn panel(&self) -> Rect {
+        self.panel.get()
     }
 
     fn ask(&self, effect: PowerEffect) {
@@ -423,6 +430,11 @@ impl PowerMenu {
             Vec::new()
         };
         *seat.rows.borrow_mut() = rows;
+        seat.panel.set(if self.menu.is_open() {
+            self.menu.get_rect()
+        } else {
+            Rect::ZERO
+        });
         if !self.menu.is_drawn() && seat.presentation().phase() == Phase::Leaving {
             seat.presentation().gone();
         }

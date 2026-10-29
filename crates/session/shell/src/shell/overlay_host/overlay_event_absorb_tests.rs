@@ -1606,14 +1606,7 @@ fn overlay_cases() -> [OverlayCase; 5] {
         OverlayCase {
             name: "power-menu",
             open: |h| h.host.force_power_menu_for_visual_test(),
-            rect: |h| {
-                h.host
-                    .power_menu_semantic_rects()
-                    .into_iter()
-                    .map(|(_, rect)| rect)
-                    .reduce(|all, rect| all.union(rect))
-                    .unwrap_or(Rect::ZERO)
-            },
+            rect: |h| h.host.power_menu_panel_rect(),
             modal: false,
         },
     ]
