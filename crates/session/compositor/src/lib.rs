@@ -23,6 +23,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod backend;
+pub mod capture;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -609,6 +610,7 @@ impl Compositor {
         // policy places them where the surfaces just laid them out.
         self.data.state.rearrange();
         self.data.backend.render(&mut self.data.state)?;
+        self.data.backend.serve_captures(&mut self.data.state);
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())

@@ -147,6 +147,14 @@ impl NestedBackend {
             renderer.dmabuf_formats().iter().copied().collect(),
             Some(node),
         );
+        state.enable_dmabuf_capture(
+            node.dev_id(),
+            renderer
+                .egl_context()
+                .dmabuf_render_formats()
+                .iter()
+                .copied(),
+        );
 
         let size = window.size();
         let mut output_config = OutputConfig::new(
@@ -279,6 +287,25 @@ impl Backend for NestedBackend {
             ))
             .unwrap_or(now);
         Ok(())
+    }
+
+    fn capture(
+        &mut self,
+        state: &mut State,
+        frame: &crate::capture::Frame,
+    ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+        let mut guard = self.inner.borrow_mut();
+        let inner = &mut *guard;
+        if inner.output.name() != frame.output() {
+            return Err(BackendError(format!("no output named {}", frame.output())).into());
+        }
+        let output = inner.output.clone();
+        crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut inner.renderer,
+            state,
+            &output,
+            frame,
+        )
     }
 
     fn configure(

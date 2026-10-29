@@ -88,6 +88,19 @@ pub trait Backend {
         Ok(())
     }
 
+    /// Draw a capture frame's part of its output into the client's buffer
+    /// (see [`crate::capture::copy`]). Backends that cannot draw again
+    /// outside their frames refuse.
+    fn capture(
+        &mut self,
+        _state: &mut State,
+        frame: &crate::capture::Frame,
+    ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+        Err(crate::capture::CaptureError::Backend(BackendError(
+            format!("{}: this backend does not capture", frame.output()),
+        )))
+    }
+
     /// The last frame drawn on the output named `name`.
     fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(

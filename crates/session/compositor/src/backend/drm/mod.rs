@@ -287,21 +287,7 @@ impl DrmBackend {
 
         let udev = UdevBackend::new(&seat).map_err(|error| failed("udev", error))?;
         let gpu_path = primary_gpu(&seat, &udev)?;
-        let primary = open_gpu(handle, &inner, &gpu_path)?;
-        {
-            let mut inner = inner.borrow_mut();
-            inner.primary = Some(primary.render);
-            let formats = inner
-                .renderers
-                .single_renderer(&primary.render)
-                .map_err(|error| failed("renderer", error))?
-                .dmabuf_formats()
-                .iter()
-                .copied()
-                .collect();
-            state.enable_dmabuf(formats, Some(primary.node));
-            inner.gpus.insert(primary.node.dev_id(), primary);
-        }
+        drive_primary(handle, &inner, state, &gpu_path)?;
         // The other GPUs drive their displays; one that cannot be opened
         // leaves the rest working.
         let others =
@@ -373,6 +359,25 @@ impl Backend for DrmBackend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         render_ready(&self.inner, state);
         Ok(())
+    }
+
+    fn capture(
+        &mut self,
+        state: &mut State,
+        frame: &crate::capture::Frame,
+    ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+        let mut inner = self.inner.borrow_mut();
+        let Inner {
+            gpus,
+            renderers,
+            primary,
+            ..
+        } = &mut *inner;
+        let primary = primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        capture_on(&mut renderer, gpus, state, frame)
     }
 
     fn configure(
@@ -675,6 +680,26 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
     }
 }
 
+/// Draw a capture frame of an output of one of `gpus` with the primary
+/// GPU's `renderer`.
+fn capture_on(
+    renderer: &mut Renderer<'_>,
+    gpus: &HashMap<u64, Gpu>,
+    state: &mut State,
+    frame: &crate::capture::Frame,
+) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
+    let output = gpus
+        .values()
+        .flat_map(|gpu| gpu.outputs.values())
+        .map(|lit| &lit.output)
+        .find(|output| output.name() == frame.output())
+        .cloned()
+        .ok_or_else(|| BackendError(format!("no lit output named {}", frame.output())))?;
+    crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
+        renderer, state, &output, frame,
+    )
+}
+
 fn vblank(
     inner: &Rc<RefCell<Inner>>,
     state: &State,
@@ -918,6 +943,41 @@ fn resume(inner: &Rc<RefCell<Inner>>) {
         }
     }
     inner.active = true;
+}
+
+/// Open the primary GPU, which renders every output, and offer its formats
+/// to clients.
+fn drive_primary(
+    handle: &LoopHandle<'static, LoopData>,
+    inner: &Rc<RefCell<Inner>>,
+    state: &mut State,
+    path: &Path,
+) -> Result<(), BackendError> {
+    let primary = open_gpu(handle, inner, path)?;
+    let mut inner = inner.borrow_mut();
+    inner.primary = Some(primary.render);
+    let formats = inner
+        .renderers
+        .single_renderer(&primary.render)
+        .map_err(|error| failed("renderer", error))?
+        .dmabuf_formats()
+        .iter()
+        .copied()
+        .collect();
+    state.enable_dmabuf(formats, Some(primary.node));
+    let capture_formats: Vec<_> = inner
+        .renderers
+        .single_renderer(&primary.render)
+        .map_err(|error| failed("renderer", error))?
+        .as_mut()
+        .egl_context()
+        .dmabuf_render_formats()
+        .iter()
+        .copied()
+        .collect();
+    state.enable_dmabuf_capture(primary.node.dev_id(), capture_formats);
+    inner.gpus.insert(primary.node.dev_id(), primary);
+    Ok(())
 }
 
 /// Open the GPU at `path` and drive its displays, rendered by the primary.
