@@ -34,7 +34,6 @@ pub use tilo_output_passes::xrgb_history::{
 };
 
 mod bridge;
-mod damage;
 mod diagnostics;
 mod output_view;
 mod retained_target;
@@ -49,7 +48,6 @@ mod tests;
 #[cfg(target_os = "linux")]
 mod window_cycle_memory_tests;
 mod xrgb;
-pub(crate) use damage::{coalesce_damage, damage_area};
 use diagnostics::DispatchStageObserver;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
@@ -59,6 +57,7 @@ pub use subrect::{
     swizzle_subrect_rgba_to_xrgb8888_composited, swizzle_subrect_rgba_to_xrgb8888_transformed,
 };
 use tilo_lock::MutexRecover as _;
+pub(crate) use ui::damage::{coalesce_damage, damage_area};
 
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
