@@ -447,21 +447,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::Permissions],
-        build: |app, _| {
-            permissions::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    permissions::build_with_disk_unlock(
-                        app.host(),
-                        area,
-                        model_pane(disk_unlock::area(app).map(disk_unlock::DiskUnlockArea::model)),
-                    )
-                },
-            )
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::TimeDate],
         build: |app, _| {
             time_date::area(app).map_or_else(
