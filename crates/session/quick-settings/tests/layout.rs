@@ -408,6 +408,38 @@ fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
 }
 
 #[test]
+fn a_control_dragged_part_way_waits_for_the_release_and_lands_there() {
+    let (mut app, host) = hosted("edit");
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let (x, y) = (bluetooth.x0 + 20.0, bluetooth.center().y);
+    let travel = bluetooth.height() * 1.6;
+    let harness = app.harness();
+    harness.send(&ui::synthetic_input::cursor_moved(x, y));
+    harness.send(&ui::synthetic_input::mouse_press());
+    for step in 1..=4_u8 {
+        harness.send(&ui::synthetic_input::cursor_moved(
+            x,
+            y + travel * f64::from(step) / 4.0,
+        ));
+    }
+    app.settle();
+    assert!(
+        host.ran().is_empty(),
+        "nothing moves while the control is held"
+    );
+    app.harness().send(&ui::synthetic_input::mouse_release());
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 2,
+        }],
+        "let go past the next control, it lands after it"
+    );
+}
+
+#[test]
 fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     let mut panel = QuickSettings::default();
     panel.open_section(QsSection::Bluetooth);
