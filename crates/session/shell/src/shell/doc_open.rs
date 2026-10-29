@@ -1910,15 +1910,16 @@ mod tests {
             let mut harness = mounted_files(tmp.path(), &files);
             let explorer =
                 file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.navigate(files);
+            explorer.state().navigate(files);
             let idx = explorer
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|e| e.name == "agenda.odt")
                 .expect("the explorer lists the document");
             let mut runner = file_explorer::files_app::SystemRunner;
             assert!(
-                explorer.open_entry(idx, &mut runner).unwrap(),
+                explorer.state().open_entry(idx, &mut runner).unwrap(),
                 "activating a file row hands it off"
             );
 
@@ -1972,18 +1973,20 @@ mod tests {
             let mut harness = mounted_files(tmp.path(), &files);
             let explorer =
                 file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.navigate(files);
+            explorer.state().navigate(files);
             let idx = explorer
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|e| e.name == "archive.zzz")
                 .expect("the explorer lists the file");
             let mut runner = file_explorer::files_app::SystemRunner;
-            explorer.open_entry(idx, &mut runner).unwrap();
+            explorer.state().open_entry(idx, &mut runner).unwrap();
 
             // Files says what failed in its notice card (ef59750fad), not
             // the fading status bubble.
             let status = explorer
+                .state()
                 .notice_line()
                 .unwrap_or_else(|| panic!("the refusal must reach the user"));
             assert!(
