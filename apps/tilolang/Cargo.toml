@@ -37,6 +37,11 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
+# The Board package with cards on it: its window's bindings, actions and card menus.
+[[test]]
+name = "board"
+path = "tests/board.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 
