@@ -193,6 +193,23 @@ impl DesktopPolicy {
             .is_some_and(|tab| self.handle.focus_tab(tab))
     }
 
+    /// `window` is waiting for the person: its tab says so until they
+    /// look at it. False when the desktop holds no such window or it is
+    /// the one in front.
+    pub fn ask_attention(&mut self, window: u64) -> bool {
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.ask_attention(tab))
+    }
+
+    /// Whether `window` is waiting for the person.
+    #[must_use]
+    pub fn asks_attention(&self, window: u64) -> bool {
+        self.handle
+            .read(|tree| tab_of(tree, window))
+            .is_some_and(|tab| self.handle.asks_attention(tab))
+    }
+
     /// Where the windows are as of the surface's last layout pass.
     #[must_use]
     pub fn layout(&self) -> Layout {
