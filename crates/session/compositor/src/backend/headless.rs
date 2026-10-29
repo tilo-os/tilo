@@ -3,7 +3,7 @@
 //!
 //! No GPU and no devices; input arrives through
 //! [`Compositor::input`](crate::Compositor::input). Frames are drawn when
-//! asked ([`Compositor::render`](crate::Compositor::render)) and each draws
+//! asked ([`Compositor::render`](crate::Compositor::render)), each drawing
 //! only what changed since the last.
 
 use smithay::backend::allocator::Fourcc;
@@ -14,55 +14,10 @@ use smithay::output::Output;
 use smithay::reexports::pixman::Image;
 use smithay::utils::{Buffer, Rectangle, Size};
 
+use super::{Backend, BackendError, Screenshot, failed};
 use crate::output::OutputConfig;
-use crate::render::output_elements;
+use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
-
-/// The colour behind every window: the desktop's background before a
-/// wallpaper surface covers it.
-const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
-
-/// An output's pixels, read back after a frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Screenshot {
-    /// Width in physical pixels.
-    pub width: u32,
-    /// Height in physical pixels.
-    pub height: u32,
-    /// Rows of RGBA8, top first, `width * 4` bytes each.
-    pub rgba: Vec<u8>,
-}
-
-impl Screenshot {
-    /// The RGBA of one pixel, if it lies inside the image.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let offset = (y as usize)
-            .checked_mul(self.width as usize)?
-            .checked_add(x as usize)?
-            .checked_mul(4)?;
-        let pixel = self.rgba.get(offset..offset.checked_add(4)?)?;
-        pixel.try_into().ok()
-    }
-}
-
-/// Why a headless frame failed.
-#[derive(Debug)]
-pub struct RenderError(String);
-
-impl std::fmt::Display for RenderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for RenderError {}
-
-fn failed(what: &str, error: impl std::fmt::Debug) -> RenderError {
-    RenderError(format!("{what}: {error:?}"))
-}
 
 struct HeadlessOutput {
     output: Output,
@@ -74,25 +29,24 @@ struct HeadlessOutput {
 }
 
 /// The CPU renderer and every headless output's image.
-pub(crate) struct HeadlessBackend {
+pub struct HeadlessBackend {
     renderer: PixmanRenderer,
     outputs: Vec<HeadlessOutput>,
 }
 
 impl HeadlessBackend {
-    pub(crate) fn new() -> Result<Self, RenderError> {
+    /// A backend with no outputs yet.
+    pub fn new() -> Result<Self, BackendError> {
         let renderer = PixmanRenderer::new().map_err(|error| failed("pixman renderer", error))?;
         Ok(Self {
             renderer,
             outputs: Vec::new(),
         })
     }
+}
 
-    pub(crate) fn add_output(
-        &mut self,
-        state: &mut State,
-        config: &OutputConfig,
-    ) -> Result<(), RenderError> {
+impl Backend for HeadlessBackend {
+    fn add_output(&mut self, state: &mut State, config: &OutputConfig) -> Result<(), BackendError> {
         let output = config.create(&state.display, "headless");
         let size = Size::<i32, Buffer>::from(config.size);
         let target = self
@@ -110,8 +64,7 @@ impl HeadlessBackend {
         Ok(())
     }
 
-    /// Draw every output's frame and tell its clients it was shown.
-    pub(crate) fn render(&mut self, state: &State) -> Result<(), RenderError> {
+    fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         for output in &mut self.outputs {
             let elements = output_elements(&mut self.renderer, state, &output.output);
             let mut framebuffer = self
@@ -135,13 +88,12 @@ impl HeadlessBackend {
         Ok(())
     }
 
-    /// The last frame of the output named `name`.
-    pub(crate) fn screenshot(&mut self, name: &str) -> Result<Screenshot, RenderError> {
+    fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
         let output = self
             .outputs
             .iter_mut()
             .find(|output| output.output.name() == name)
-            .ok_or_else(|| RenderError(format!("no output named {name}")))?;
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
         let width = output.target.width();
         let height = output.target.height();
         let size = Size::<i32, Buffer>::from((

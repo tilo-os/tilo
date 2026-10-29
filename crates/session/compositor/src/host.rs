@@ -14,6 +14,9 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 pub struct HostLayer {
     /// The buffer's top-left corner in the logical layout.
     pub location: (i32, i32),
+    /// The size it covers in the logical layout: the buffer is scaled to
+    /// fit, so a host draws at the output's (possibly fractional) scale.
+    pub size: (i32, i32),
     /// The pixels; the buffer's own render context records what changed.
     pub buffer: MemoryRenderBuffer,
 }
@@ -39,4 +42,7 @@ pub trait SurfaceHost {
 
     /// Scroll over the surface, in logical pixels.
     fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}
+
+    /// A frame is about to be drawn: bring the layers up to date.
+    fn prepare_frame(&mut self) {}
 }
