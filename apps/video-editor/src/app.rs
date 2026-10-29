@@ -6037,8 +6037,7 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -8501,14 +8500,6 @@ impl VideoEditorApp {
             max_scroll,
             footer_hint,
         }
-    }
-}
-
-impl ui::widget::controls::ActionControls for VideoEditorApp {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
     }
 }
 

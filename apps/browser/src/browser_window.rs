@@ -413,7 +413,6 @@ impl Widget for BrowserWindow {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
         dyn ui::application_view::ApplicationViewState,
-        dyn ui::widget::controls::ActionControls,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -791,19 +790,6 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
-    }
-}
-
-impl ui::widget::controls::ActionControls for BrowserWindow {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self
-            .exit_panel
-            .as_mut()
-            .and_then(|panel| ui::widget::controls::take_control_invocation(panel.as_mut()))
-        {
-            return Some(invocation);
-        }
-        self.page.take_control_invocation()
     }
 }
 

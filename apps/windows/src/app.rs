@@ -2132,11 +2132,6 @@ impl ui::widget::Decorator for WindowsWindow {
         &mut self.shell
     }
 
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls;
-        inner = shell
-    );
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow_document();
         {
@@ -2290,12 +2285,6 @@ impl ui::widget::Decorator for WindowsWindow {
     }
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
-    }
-}
-
-impl ui::widget::controls::ActionControls for WindowsWindow {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        ui::widget::controls::ActionControls::take_control_invocation(&mut self.shell)
     }
 }
 

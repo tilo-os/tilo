@@ -109,7 +109,6 @@ impl Widget for WordProcessorWidget {
     ui::provides!(
         dyn ui::collaboration::participants::Participants,
         dyn ui::undo::LocalUndo,
-        dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::semantic_document_read::SemanticReaders,
@@ -329,38 +328,6 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
         Some(crate::semantic_read::changes::summary(doc, changes).into())
-    }
-}
-
-impl ui::widget::controls::ActionControls for WordProcessorWidget {
-    fn install_control_custody(
-        &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::install_control_custody(child, domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        self.for_each_child(&mut |child| {
-            bindings.extend(ui::widget::controls::control_action_bindings(child));
-        });
-        bindings
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::refresh_control_action_availability(child, allowed);
-        }
     }
 }
 

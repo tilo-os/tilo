@@ -1857,10 +1857,7 @@ impl Store {
 }
 
 impl Widget for RemoteApp {
-    ui::provides!(
-        dyn ui::widget::Collaborative,
-        dyn ui::widget::controls::ActionControls
-    );
+    ui::provides!(dyn ui::widget::Collaborative);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -2091,12 +2088,6 @@ impl Widget for RemoteApp {
         // A live session needs continuous frames so incoming remote data
         // (PTY output, framebuffer updates) is drained and painted.
         self.session.borrow().live_active() || self.body().needs_animation_frame()
-    }
-}
-
-impl ui::widget::controls::ActionControls for RemoteApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(self.body_mut())
     }
 }
 

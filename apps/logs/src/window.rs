@@ -937,8 +937,6 @@ fn export_picked(picked: &PortalChannel, entries: &[LogEntry]) -> Option<String>
     }
 }
 impl Widget for LogsWindow {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow_document();
         self.journal.borrow_mut().poll();
@@ -1085,12 +1083,6 @@ impl Widget for LogsWindow {
 
     fn needs_animation_frame(&self) -> bool {
         self.shell.needs_animation_frame()
-    }
-}
-
-impl ui::widget::controls::ActionControls for LogsWindow {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        ui::widget::controls::take_control_invocation(&mut self.shell)
     }
 }
 
