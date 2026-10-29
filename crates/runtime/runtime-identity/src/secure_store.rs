@@ -15,7 +15,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use tilo_secrets::{PutOptions, SecretError, SecretStore};
@@ -214,7 +214,7 @@ impl BrokerFileProvider {
     fn ensure_root(&self) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
         self.check_root()?;
-        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+        tilo_files::native::private::restrict_directory(&self.root)
     }
 
     /// The secrets directory is a real directory this user owns. Reading a
