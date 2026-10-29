@@ -475,6 +475,13 @@ impl TabBar {
         }
     }
 
+    /// Whether `at` is on the chip, where it was painted.
+    pub(super) fn desktop_control_hit(&self, at: Point) -> bool {
+        self.desktop_control
+            .painted
+            .is_some_and(|rect| rect.contains(at))
+    }
+
     /// A press at `at` on the chip: report it. Whether it was on the chip.
     pub(super) fn press_desktop_control(&mut self, at: Point) -> bool {
         self.touch();

@@ -393,6 +393,17 @@ impl Hosted {
         &self.record
     }
 
+    /// The package the instance runs.
+    #[must_use]
+    pub fn bundle(&self) -> &Bundle {
+        &self.bundle
+    }
+
+    /// Keep the package's types with an origin in step with `origin`'s service.
+    pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
+        self.instance.add_origin(origin);
+    }
+
     /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
     /// stages one: its changes are the person's steps on the instance's record.
     pub fn stage(&mut self, scenario: &str) {

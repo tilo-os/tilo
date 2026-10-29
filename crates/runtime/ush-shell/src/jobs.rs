@@ -514,6 +514,9 @@ impl Host for JobHost {
     fn programs(&self, path: &str) -> Vec<String> {
         self.inner.programs(path)
     }
+    fn field(&self) -> Option<Arc<dyn crate::field::Field>> {
+        self.inner.field()
+    }
 }
 
 /// A job's output: it waits while the job is stopped, and fails once the

@@ -18,7 +18,7 @@ pub mod app;
 #[cfg(target_os = "linux")]
 pub mod hosted;
 pub mod i18n;
-pub mod mail;
+
 pub mod names;
 #[cfg(test)]
 pub mod packages;

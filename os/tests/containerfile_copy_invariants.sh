@@ -135,6 +135,8 @@ containerfile="$repo/os/Containerfile"
 # existing policies. Their two rootfs payload rows are the intentional delta.
 # The version-bound cooperative Bash editor at /usr/lib/tilo/ush/bash-editor.so
 # is an intentional ush component payload addition; no permission is activated.
+# It is removed again: an environment session runs ush's own shell, whose line
+# editor serves Terminal's editor capability itself, so nothing loads it.
 # The signed SDK font-catalog tree adds one native-builder-payload row.
 # Combining the application publisher with the existing runtime publisher
 # COPY preserves their exact payload mappings and the 156-instruction budget.
@@ -341,7 +343,7 @@ containerfile="$repo/os/Containerfile"
 # the 93tilo-boot-face module, which carried the login screen's face into the
 # initramfs for Plymouth's sign-in screen, and its row with a COPY of its own
 # are gone.
-expected_contract=755710d35f5021794189c797341d70dc8938c26f4cd03a894b43d5c5a32045c6
+expected_contract=0225138db325993a37aebb7b4f200165f1a6f85d4ae048385dff26a06d8f0798
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
