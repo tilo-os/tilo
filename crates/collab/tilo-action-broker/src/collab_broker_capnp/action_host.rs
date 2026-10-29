@@ -115,6 +115,9 @@ pub(super) struct LaunchDestination {
     pub(super) workspace: Workspace,
     pub(super) app_id: String,
     pub(super) record: Option<String>,
+    /// The resource the request names under its app's id now, when it was written under an id
+    /// the app had before (`tl:<old>:<id>`); delivered as that, the request staying as written.
+    pub(super) resource: Option<String>,
 }
 
 impl BrokerActor {
@@ -1838,9 +1841,27 @@ impl CapnpBrokerState {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<LaunchDestination, ActionHostError> {
-        let address = &request.target.address;
+        // A target written under an id its app had before (a reference kept in a note) opens the
+        // app that took its place, on the resource as that app publishes it; the request stays
+        // as written.
+        let earlier = self
+            .services
+            .launcher
+            .as_ref()
+            .map(|launcher| launcher.earlier_ids())
+            .unwrap_or_default();
+        let resource = earlier.current_resource(&request.target.address.resource);
+        let current_address = resource.as_ref().map(|resource| {
+            tilo_actions::ActionAddress::new(
+                resource.clone(),
+                request.target.address.action.clone(),
+            )
+        });
+        let address = current_address.as_ref().unwrap_or(&request.target.address);
         let (room, app_id, record, offered) =
             if let Some((room, app_id)) = application_provider(&request.target.provider) {
+                let current = earlier.current(app_id).to_owned();
+                let app_id = current.as_str();
                 let offered = self
                     .published_surfaces()
                     .into_iter()
@@ -1855,7 +1876,7 @@ impl CapnpBrokerState {
                 let record = application_provider_record(&request.target.provider);
                 (
                     room.to_owned(),
-                    app_id.to_owned(),
+                    current.clone(),
                     record.map(str::to_owned),
                     offered,
                 )
@@ -1932,6 +1953,7 @@ impl CapnpBrokerState {
             workspace,
             app_id,
             record,
+            resource,
         })
     }
 
@@ -1970,7 +1992,13 @@ impl CapnpBrokerState {
         };
         let room = destination.workspace.room().to_string();
         let app_id = &destination.app_id;
-        let address = &request.target.address;
+        let current_address = destination.resource.as_ref().map(|resource| {
+            tilo_actions::ActionAddress::new(
+                resource.clone(),
+                request.target.address.action.clone(),
+            )
+        });
+        let address = current_address.as_ref().unwrap_or(&request.target.address);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
         let expired = || ActionHostError::Unavailable {
@@ -2004,6 +2032,7 @@ impl CapnpBrokerState {
             if let Some(peer_id) = ready {
                 let mut delivered = request.clone();
                 delivered.target.provider = peer_id.to_string();
+                delivered.target.address = address.clone();
                 if let Some(native) = native {
                     return native.deliver(self, peer_id).await.map_err(refusal);
                 }

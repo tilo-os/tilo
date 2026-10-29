@@ -129,7 +129,10 @@ impl Inner {
                 }
             }
         }
-        Titles { by_resource }
+        Titles {
+            by_resource,
+            earlier: crate::shell::launcher::installed_earlier_ids(),
+        }
     }
 }
 
@@ -137,6 +140,9 @@ impl Inner {
 /// with the app that published it.
 struct Titles<'a> {
     by_resource: HashMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>,
+    /// The ids apps had before: a reference written under one names what
+    /// the renamed app publishes.
+    earlier: tilo_action_policy::EarlierIds,
 }
 
 impl Titles<'_> {
@@ -144,6 +150,8 @@ impl Titles<'_> {
     /// `room` is called now.
     fn of(&self, room: &str, reference: &str) -> Option<&str> {
         let (app, resource) = referent(reference)?;
+        let app = self.earlier.current(&app).to_owned();
+        let resource = self.earlier.current_resource(&resource).unwrap_or(resource);
         self.by_resource
             .get(&(room, resource.as_str()))?
             .iter()

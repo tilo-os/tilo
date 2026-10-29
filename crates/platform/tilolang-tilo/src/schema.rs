@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::sync::{PoisonError, RwLock};
 
+use tilo_action_policy::EarlierIds;
+
 /// The key holding a resource's type id.
 pub const TYPE_KEY: &str = "$type";
 /// The key holding a resource's app id.
@@ -271,10 +273,11 @@ pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
         .find(|schema| schema.app == app && schema.name == name)
 }
 
-/// The ids each app was published under before (`app ... (previously: so.tilo.old)`), by app.
-fn successions() -> &'static RwLock<BTreeMap<String, Vec<String>>> {
-    static SUCCESSIONS: RwLock<BTreeMap<String, Vec<String>>> = RwLock::new(BTreeMap::new());
-    &SUCCESSIONS
+/// The ids each app was published under before (`app ... (previously: so.tilo.old)`): the one
+/// lookup ([`EarlierIds`]) records, grants and references read through.
+fn successions() -> &'static RwLock<EarlierIds> {
+    static SUCCESSIONS: std::sync::OnceLock<RwLock<EarlierIds>> = std::sync::OnceLock::new();
+    SUCCESSIONS.get_or_init(RwLock::default)
 }
 
 /// Record that `app` was published under the ids `before` earlier: the records the room holds
@@ -284,16 +287,8 @@ pub fn register_previously(app: &str, before: &[String]) {
     let mut held = successions()
         .write()
         .unwrap_or_else(PoisonError::into_inner);
-    let ids: Vec<String> = before
-        .iter()
-        .filter(|old| old.as_str() != app)
-        .cloned()
-        .collect();
-    if ids.is_empty() {
-        held.remove(app);
-    } else {
-        held.insert(app.to_owned(), ids);
-    }
+    held.remove(app);
+    held.insert(app, before.iter().cloned());
 }
 
 /// The ids `app` was published under before.
@@ -302,9 +297,8 @@ pub fn previously(app: &str) -> Vec<String> {
     successions()
         .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(app)
-        .cloned()
-        .unwrap_or_default()
+        .of(app)
+        .to_vec()
 }
 
 /// The app the records stored under `stored` belong to: the app that was published as `stored`
@@ -314,9 +308,18 @@ pub fn successor(stored: &str) -> String {
     successions()
         .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .find(|(_, before)| before.iter().any(|old| old == stored))
-        .map_or_else(|| stored.to_owned(), |(app, _)| app.clone())
+        .current(stored)
+        .to_owned()
+}
+
+/// The ids every loaded package's app was published under before, as grants are decided with
+/// them (`Context::with_earlier_ids`).
+#[must_use]
+pub fn earlier_ids() -> EarlierIds {
+    successions()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 /// The keys the records of `app` may be stored under: its own id, then each it had before.

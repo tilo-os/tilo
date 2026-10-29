@@ -2093,6 +2093,34 @@ pub(crate) fn installed_app(
     app
 }
 
+/// The ids installed apps were published under before, as the catalogue believes them
+/// ([`tilo_installed_apps::earlier_ids`]): the one lookup a window, a launch or an open written
+/// under an earlier id goes through. Read again only when a registry changed; empty for an
+/// unreadable catalogue.
+pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
+    static EARLIER: Mutex<Option<(Vec<Option<RegistryStamp>>, tilo_action_policy::EarlierIds)>> =
+        Mutex::new(None);
+    let stamps = registry_stamps();
+    if let Some((at, ids)) = lock(&EARLIER).as_ref()
+        && *at == stamps
+    {
+        return ids.clone();
+    }
+    let ids = package_store::Catalog::from_env()
+        .ok()
+        .and_then(|catalog| tilo_installed_apps::earlier_ids(&catalog).ok())
+        .unwrap_or_default();
+    *lock(&EARLIER) = Some((stamps, ids.clone()));
+    ids
+}
+
+/// The installed app `package_id` names: its own, or the app that took the place of the id it
+/// had before.
+pub(crate) fn find_installed(apps: &[InstalledApp], package_id: &str) -> Option<InstalledApp> {
+    let find = |id: &str| apps.iter().find(|app| app.package_id == id).cloned();
+    find(package_id).or_else(|| find(installed_earlier_ids().successor(package_id)?))
+}
+
 /// Which version of a registry file is on disk. An install replaces the registry by one
 /// rename, its commit point, so a completed install always shows as another file here.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -3462,13 +3490,9 @@ fn launch_with_context(
     media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
     let apps = installed_apps()?;
-    let app = apps
-        .iter()
-        .find(|a| a.package_id == package_id)
-        .cloned()
-        .ok_or_else(|| LaunchError::NotInstalled {
-            package_id: package_id.to_string(),
-        })?;
+    let app = find_installed(&apps, package_id).ok_or_else(|| LaunchError::NotInstalled {
+        package_id: package_id.to_string(),
+    })?;
     if !app.has_gui {
         return Err(LaunchError::NotAGuiApp {
             package_id: package_id.to_string(),
@@ -6862,6 +6886,8 @@ pub fn spawn_launch(
 use crate::shell::state::WorkspaceExt as _;
 use tilo_lock::MutexRecover as _;
 
+#[cfg(test)]
+mod earlier_ids_tests;
 #[cfg(test)]
 mod tests;
 
