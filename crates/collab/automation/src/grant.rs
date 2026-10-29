@@ -749,6 +749,7 @@ mod tests {
         let shortcut = crate::Shortcut {
             id: "bridge".into(),
             name: "Bridge".into(),
+            version: String::new(),
             inputs: vec![],
             steps: vec![crate::Step::new(
                 "post",
@@ -802,6 +803,7 @@ mod tests {
         let shortcut = crate::Shortcut {
             id: "bridge".into(),
             name: "Bridge".into(),
+            version: String::new(),
             inputs: vec![],
             steps: vec![crate::Step::new(
                 "send",
@@ -873,6 +875,7 @@ mod tests {
         let shortcut = crate::Shortcut {
             id: "bridge".into(),
             name: "Bridge".into(),
+            version: String::new(),
             inputs: vec![],
             steps: vec![crate::Step::new(
                 "send",

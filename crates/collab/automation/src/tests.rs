@@ -434,6 +434,7 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
     Shortcut {
         id: id.into(),
         name: "Tidy inbox".into(),
+        version: String::new(),
         inputs: Vec::new(),
         steps,
         step_timeout_secs: None,

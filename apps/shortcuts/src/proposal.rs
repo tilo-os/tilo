@@ -145,6 +145,7 @@ impl Proposal {
         Shortcut {
             id: String::new(),
             name: String::new(),
+            version: String::new(),
             inputs: Vec::new(),
             output: None,
             grant: Vec::new(),

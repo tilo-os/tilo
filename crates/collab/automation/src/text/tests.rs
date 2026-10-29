@@ -86,32 +86,7 @@ fn step(name: &str, action: &str, resource: Selector, args: BTreeMap<String, Bin
 }
 
 fn program() -> Shortcut {
-    Shortcut {
-        id: "filing".into(),
-        name: "File the notes".into(),
-        inputs: vec![ActionParam::required(
-            "folder",
-            ParamType::Text,
-            "Where they go",
-        )],
-        steps: vec![
-            step(
-                "listed",
-                "file",
-                Selector::FirstOfKind("notes.note".into()),
-                BTreeMap::from([("folder".to_owned(), Binding::Input("folder".into()))]),
-            ),
-            Step::new(
-                "each",
-                StepKind::ForEach {
-                    items: Binding::step("listed", "/titles"),
-                    item: "title".into(),
-                    body: vec![step(
-                        "filed",
-                        "file",
-                        Selector::Fixed("notes.note:1".into()),
-                        BTreeMap::from([("folder".to_owned(), Binding::Var("title".into()))]),
-                    )],
+        version: String::new(),
                 },
             ),
         ],
@@ -156,24 +131,7 @@ fn a_nested_block_is_indented_and_parsed_back_nested() {
         app_label: &bare,
     };
     let shortcut = Shortcut {
-        id: "branching".into(),
-        name: "Maybe file".into(),
-        inputs: vec![ActionParam::required(
-            "folder",
-            ParamType::Text,
-            "Where they go",
-        )],
-        steps: vec![Step::new(
-            "checked",
-            StepKind::If {
-                cond: Condition::Truthy(Binding::Input("folder".into())),
-                then: vec![step(
-                    "listed",
-                    "file",
-                    Selector::FirstOfKind("notes.note".into()),
-                    BTreeMap::from([("folder".to_owned(), Binding::Input("folder".into()))]),
-                )],
-                otherwise: Vec::new(),
+        version: String::new(),
             },
         )],
         step_timeout_secs: None,
@@ -294,20 +252,7 @@ fn a_problem_the_checker_reports_lands_on_the_line_that_states_the_step() {
     // The loop's body files a note the step above never listed: the
     // checker reads a name nothing set.
     let shortcut = Shortcut {
-        id: "broken".into(),
-        name: "File the notes".into(),
-        inputs: Vec::new(),
-        steps: vec![Step::new(
-            "each",
-            StepKind::ForEach {
-                items: Binding::step("listed", "/titles"),
-                item: "title".into(),
-                body: vec![step(
-                    "filed",
-                    "file",
-                    Selector::FirstOfKind("notes.note".into()),
-                    BTreeMap::from([("folder".to_owned(), Binding::Var("title".into()))]),
-                )],
+        version: String::new(),
             },
         )],
         step_timeout_secs: None,
@@ -380,19 +325,7 @@ fn every_kind_of_value_prints_the_same_program_back() {
         ));
     }
     let shortcut = Shortcut {
-        id: "values".into(),
-        name: "Every value".into(),
-        inputs: vec![ActionParam::required(
-            "folder",
-            ParamType::Text,
-            "Where they go",
-        )],
-        steps,
-        step_timeout_secs: None,
-        output: None,
-        grant: Vec::new(),
-        triggers: Vec::new(),
-        saved_by: None,
+        version: String::new(),
     };
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,
@@ -418,38 +351,7 @@ fn every_kind_of_value_prints_the_same_program_back() {
 /// A program that holds one of each kind of step, so a rendering of it
 /// covers each of them.
 fn every_step(folder: Binding) -> Shortcut {
-    Shortcut {
-        id: "kinds".into(),
-        name: "Every step".into(),
-        inputs: vec![
-            ActionParam::required("folder", ParamType::Text, "Where they go"),
-            ActionParam::required("count", ParamType::Integer, "How many"),
-        ],
-        steps: vec![
-            step(
-                LISTED,
-                "file",
-                Selector::FirstOfKind("notes.note".into()),
-                BTreeMap::from([("folder".to_owned(), folder.clone())]),
-            ),
-            // Both steps read alike, so the second's name carries the number
-            // that keeps one name per step.
-            step(
-                "file on any Notes.note in notes 2",
-                "file",
-                Selector::FromBinding(folder.clone()),
-                BTreeMap::from([("folder".to_owned(), folder.clone())]),
-            ),
-            Step::new(
-                "each",
-                StepKind::ForEach {
-                    items: Binding::step(LISTED, "/titles"),
-                    item: "title".into(),
-                    body: vec![Step::new(
-                        String::new(),
-                        StepKind::SetVar {
-                            name: "kept".into(),
-                            value: Binding::Var("title".into()),
+        version: String::new(),
                         },
                     )],
                 },
@@ -627,15 +529,7 @@ fn every_kind_of_trigger_prints_the_same_program_back() {
         TriggerSpec::NearbyDevice { device: None },
     ];
     let shortcut = Shortcut {
-        id: "triggered".into(),
-        name: "Triggered".into(),
-        inputs: Vec::new(),
-        steps: Vec::new(),
-        step_timeout_secs: None,
-        output: None,
-        grant: Vec::new(),
-        triggers: triggers.clone(),
-        saved_by: None,
+        version: String::new(),
     };
     let (text, _) = match render(&shared, &shortcut, &BTreeMap::new()) {
         Ok(rendered) => rendered,

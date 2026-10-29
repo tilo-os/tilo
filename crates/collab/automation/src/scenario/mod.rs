@@ -695,6 +695,7 @@ mod tests {
         let shortcut = Shortcut {
             id: "tidy".into(),
             name: "Tidy".into(),
+            version: String::new(),
             inputs: Vec::new(),
             steps: vec![Step::new(
                 "rename",
@@ -735,6 +736,7 @@ mod tests {
         let shortcut = Shortcut {
             id: "branchy".into(),
             name: "Branchy".into(),
+            version: String::new(),
             inputs: Vec::new(),
             steps: vec![
                 Step::new(

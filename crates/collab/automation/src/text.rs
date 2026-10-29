@@ -1310,6 +1310,7 @@ impl Reader<'_> {
         let mut shortcut = Shortcut {
             id: String::new(),
             name: String::new(),
+            version: String::new(),
             inputs: Vec::new(),
             steps: Vec::new(),
             step_timeout_secs: None,

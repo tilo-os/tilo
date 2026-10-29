@@ -120,6 +120,7 @@ mod tests {
         Shortcut {
             id: "echo".into(),
             name: "Echo".into(),
+            version: String::new(),
             inputs: Vec::new(),
             steps: vec![Step::new(
                 "post",

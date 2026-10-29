@@ -91,6 +91,7 @@ mod tests {
         Shortcut {
             id: "p".into(),
             name: "P".into(),
+            version: String::new(),
             inputs: Vec::new(),
             steps,
             step_timeout_secs: None,

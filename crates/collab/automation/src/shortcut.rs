@@ -27,6 +27,15 @@ pub struct Shortcut {
     /// The person's name for it. Carried into history as the purpose of every
     /// action the shortcut takes.
     pub name: String,
+    /// Which shape of program this is, as the author named it: a version of
+    /// the program, bumped whatever the steps or their meaning change. Empty
+    /// for a program nobody named one for, and for every program stored
+    /// before this field existed
+    /// ([`LEGACY_SHORTCUT_SCHEMA_VERSION`](crate::schema::LEGACY_SHORTCUT_SCHEMA_VERSION)).
+    /// A run records the version it ran, so a history entry says which
+    /// program produced it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
     /// What a run is started with, in the same typed vocabulary actions use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<ActionParam>,
@@ -77,6 +86,10 @@ pub struct Step {
     /// ([`StepPolicy::Fail`](crate::StepPolicy::Fail)).
     #[serde(default, skip_serializing_if = "StepPolicy::is_fail")]
     pub on_error: StepPolicy,
+    /// What the step is for, in the author's words, when the step's action
+    /// does not say it. An editor shows it; a run never reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(flatten)]
     pub kind: StepKind,
 }
@@ -88,6 +101,7 @@ impl Step {
         Self {
             id: id.into(),
             on_error: StepPolicy::Fail,
+            label: None,
             kind,
         }
     }
@@ -96,6 +110,13 @@ impl Step {
     #[must_use]
     pub fn with_policy(mut self, on_error: StepPolicy) -> Self {
         self.on_error = on_error;
+        self
+    }
+
+    /// The same step, labelled with what it is for.
+    #[must_use]
+    pub fn labelled(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
         self
     }
 }
