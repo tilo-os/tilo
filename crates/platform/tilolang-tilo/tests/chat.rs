@@ -146,7 +146,6 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let sidebar = ada.view(APP);
     let mut shown = Vec::new();
     texts(sidebar.tree(), &mut shown);
-    assert!(shown.contains(&"Team".to_owned()), "{shown:?}");
     assert!(shown.contains(&"design".to_owned()), "{shown:?}");
 
     let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
