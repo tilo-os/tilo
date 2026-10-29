@@ -159,7 +159,9 @@ impl ShellOverlayHost {
             ),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ApplicationsProvider::new(),
+            crate::shell::search::providers::ApplicationsProvider::with_preferences(
+                search_registry.preferences_handle(),
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NativeApplicationsProvider::default(),

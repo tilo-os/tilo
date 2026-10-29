@@ -173,8 +173,14 @@ fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
 /// person took off their apps.
 type Generation = (u64, u128, u64, u64);
 
+/// The source id of the host apps within this provider, switched on and
+/// off on its own in the search sources.
+pub const HOST_APPS_SOURCE: &str = "host-applications";
+
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
+    /// Whether the person switched host apps off, read per row.
+    preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     index: BackgroundIndex<Generation, ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
@@ -264,10 +270,26 @@ impl ApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::Application],
+            preferences: None,
             index: BackgroundIndex::new("tilo-app-search-index"),
             #[cfg(test)]
             source: None,
         }
+    }
+
+    /// The provider that leaves out host apps while the person switched
+    /// their source ([`HOST_APPS_SOURCE`]) off in `preferences`.
+    pub fn with_preferences(preferences: crate::shell::search::SearchPreferencesHandle) -> Self {
+        Self {
+            preferences: Some(preferences),
+            ..Self::new()
+        }
+    }
+
+    fn host_apps_enabled(&self) -> bool {
+        self.preferences
+            .as_ref()
+            .is_none_or(|preferences| preferences.borrow().provider_enabled(HOST_APPS_SOURCE))
     }
 
     #[cfg(test)]
@@ -970,6 +992,9 @@ impl SearchProvider for ApplicationsProvider {
         if let Some(app) = installed {
             return self.installed_rows("", vec![app], &[Some(0)]).pop();
         }
+        if !self.host_apps_enabled() {
+            return None;
+        }
         snapshot.entries.iter().find_map(|entry| match entry {
             ApplicationEntry::Host(app)
                 if app.desktop_id.eq_ignore_ascii_case(app_id)
@@ -985,6 +1010,9 @@ impl SearchProvider for ApplicationsProvider {
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND
+    }
+    fn sources(&self) -> Vec<(&'static str, String)> {
+        vec![(HOST_APPS_SOURCE, t("search-provider-host-apps"))]
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
@@ -1155,6 +1183,7 @@ impl ApplicationsProvider {
                 &score,
                 &snapshot.installed_ids,
             ),
+            ApplicationEntry::Host(_) if !self.host_apps_enabled() => return None,
             ApplicationEntry::Host(app) => vec![self.host_row(app, score[0].unwrap_or(0))],
         };
         rows.pop()
@@ -1170,8 +1199,12 @@ impl ApplicationsProvider {
         )
     }
 
-    /// The host app `desktop_id` in the current snapshot.
+    /// The host app `desktop_id` in the current snapshot, while host apps
+    /// are searched.
     fn host_app(&self, desktop_id: &str) -> Option<HostApp> {
+        if !self.host_apps_enabled() {
+            return None;
+        }
         self.snapshot()?
             .entries
             .iter()

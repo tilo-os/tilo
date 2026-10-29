@@ -230,3 +230,52 @@ fn every_host_app_is_addressable_and_opens_by_window_identity() {
     assert_eq!(row.id, "org.fixture.App150");
     assert!(provider.opens_app(&row, "fixture-window"));
 }
+
+/// Host apps are a search source of their own: switched off, their rows
+/// leave while Tilo apps stay, and the switch is listed with the others.
+#[test]
+fn host_apps_switch_off_on_their_own() {
+    let preferences = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::shell::search::SearchPreferences::default(),
+    ));
+    let source = ApplicationsTestSource::with_host_apps(
+        vec![installed("so.tilo.notes", "Notes")],
+        Vec::new(),
+        vec![app("org.fixture.Calculator", "Calculator")],
+    );
+    let provider = std::rc::Rc::new(ApplicationsProvider {
+        source: Some(source),
+        ..ApplicationsProvider::with_preferences(std::rc::Rc::clone(&preferences))
+    });
+    let mut registry = crate::shell::search::SearchRegistry::with_preferences_handle(
+        std::rc::Rc::clone(&preferences),
+    );
+    registry.register(provider.clone());
+    assert!(
+        registry
+            .provider_catalog_handle()
+            .borrow()
+            .iter()
+            .any(|(id, _)| id == HOST_APPS_SOURCE),
+        "the host apps' switch is a search source"
+    );
+    let chrome = chrome_rc();
+    let doc = AutoCommit::new();
+    let state = chrome.borrow();
+    let ctx = || SearchContext {
+        query_scope: None,
+        include_programmatic: false,
+        needle: "",
+        wanted: &[ResourceKind::Application],
+        chrome: &state,
+        doc: &doc,
+        doc_root: &automerge::ROOT,
+    };
+    assert!(provider.resolve("org.fixture.Calculator", ctx()).is_some());
+    preferences
+        .borrow_mut()
+        .set_provider_enabled(HOST_APPS_SOURCE, false);
+    assert!(provider.resolve("org.fixture.Calculator", ctx()).is_none());
+    assert!(provider.app_row("org.fixture.Calculator").is_none());
+    assert!(provider.resolve("so.tilo.notes", ctx()).is_some());
+}
