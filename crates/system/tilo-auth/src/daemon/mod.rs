@@ -523,16 +523,19 @@ impl Daemon {
         });
     }
 
-    /// The account `user` names, when `peer` may ask about it: root, that
-    /// person, or the greeter, which asks about whoever is signing in.
-    fn subject_for_greeter(&self, peer: Peer, user: &str) -> Result<Result<Account, Reply>> {
-        let greeter = self
-            .accounts
+    /// Whether `peer` is the greeter's account.
+    fn is_greeter(&self, peer: Peer) -> bool {
+        self.accounts
             .by_name(&self.cfg.greeter_user)
             .ok()
             .flatten()
-            .map(|a| a.uid);
-        if greeter == Some(peer.uid) && !self.privileged(peer) {
+            .is_some_and(|a| a.uid == peer.uid)
+    }
+
+    /// The account `user` names, when `peer` may ask about it: root, that
+    /// person, or the greeter, which asks about whoever is signing in.
+    fn subject_for_greeter(&self, peer: Peer, user: &str) -> Result<Result<Account, Reply>> {
+        if self.is_greeter(peer) && !self.privileged(peer) {
             return Ok(self
                 .accounts
                 .by_name(user)?
@@ -668,12 +671,21 @@ impl Daemon {
         self.verify_locked(&mut state, &account, typed)
     }
 
+    /// A change proven by the current secret comes from root or that person.
+    /// One proven by the recovery key comes from root or the greeter, whose
+    /// login screen offers it to whoever cannot sign in (sign-in.md §5.3):
+    /// the key is the proof, and whoever holds it can already open the
+    /// volume at the disk prompt.
     fn set_secret(&self, peer: Peer, user: &str, proof: &Proof<'_>, new: &str) -> Result<Reply> {
-        let account = match self.subject(peer, user)? {
+        let subject = match proof {
+            Proof::Current(_) => self.subject(peer, user)?,
+            Proof::Recovery(_) => self.subject_for_greeter(peer, user)?,
+        };
+        let account = match subject {
             Ok(account) => account,
             Err(reply) => return Ok(reply),
         };
-        if matches!(proof, Proof::Recovery(_)) && !self.privileged(peer) {
+        if matches!(proof, Proof::Recovery(_)) && !self.privileged(peer) && !self.is_greeter(peer) {
             return Ok(Reply::refused(Refusal::NotPermitted));
         }
         let mut state = self.lock();
