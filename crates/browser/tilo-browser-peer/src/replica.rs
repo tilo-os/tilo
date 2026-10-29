@@ -1,6 +1,6 @@
 //! Each joined room as its governance admits it: the page holds its rooms
 //! in the same joined-room owner native devices hold theirs in
-//! ([`tilo_joined_room::NativeWorkspaceOwner`]), kept in the page's
+//! ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), kept in the page's
 //! storage through its [`PeerStore`].
 //!
 //! The host sends a subscriber the room's bootstrap ahead of its replay
@@ -8,7 +8,7 @@
 //! contract's membership answer, the room's governing authority, roster and
 //! revocations. The owner holds the room on that answer, vouched for by the
 //! host the page authenticated to
-//! ([`tilo_joined_room::NativeWorkspaceOwner::install_vouched`]), and admits
+//! ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]), and admits
 //! every governance message the host relays through it: members'
 //! certificates and the room document. What the room's governance says is
 //! read off that replica: whether it shares its members' layout, who its
@@ -32,7 +32,7 @@ use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::RoomId;
 use tilo_desktop_model::projection::{RoomLayout, room_layout, room_members};
-use tilo_joined_room::{
+use tilo_peer_state::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, Store,
 };
 use tilo_peer_state::TransportOrigin;

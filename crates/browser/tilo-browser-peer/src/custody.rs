@@ -76,7 +76,7 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
         Ok(())
     }
     /// The stored record of the rooms this device holds
-    /// ([`tilo_joined_room::NativeWorkspaceOwner`]), if any. A store
+    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner`]), if any. A store
     /// without it holds them for the session only.
     fn load_rooms(&self) -> Option<Vec<u8>> {
         None

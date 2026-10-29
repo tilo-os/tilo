@@ -30,7 +30,7 @@ impl ShellNetwork {
         owner: &NativeWorkspaceOwner,
         room: RoomId,
         creator: &tilo_user_identity::DeviceCert,
-        initialization: tilo_joined_room::ApplicationInitialization<'_>,
+        initialization: tilo_peer_state::owner::ApplicationInitialization<'_>,
     ) -> Result<[u8; 32], String> {
         let identity = self
             .host_identity

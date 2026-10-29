@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish.workspace = true
+description = "A device's workspace engine: its admitted replicas, their durable owner record, enrollment, outgoing custody and sessions with hosts."
+
+[features]
+# Fixtures and internals the desktop session's own owner tests assert on.
+test-support = ["dep:iroh-base"]
 
 [package.metadata.cargo-machete]
 # Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
@@ -44,15 +49,54 @@ channel-crypto = { path = "../channel-crypto" }
 # The relay workspace of a room and the retained entry id of a frame.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 thiserror.workspace = true
+parking_lot.workspace = true
+tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+iroh-base = { workspace = true, features = ["key"], optional = true }
+
+# The device's own transports and files: its enrollment and relay sessions,
+# its calls, the owner record on disk and the process's authorization
+# watchers. A page holds its rooms through the same owner over its own
+# storage and link, so the engine builds for wasm32 without them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+# Writes the file-backed store: owner-only, crash-safe replacement.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-content = { path = "../../system/content" }
+# The endpoint a relay session dials its pinned host from.
+iroh.workspace = true
+# The random id of each enrollment challenge request.
+getrandom.workspace = true
+rand_core.workspace = true
+# The device custody an enrollment presents to the issuing host.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+# The join client an enrollment redeems its invitation over, and the relay
+# session a joined room syncs through.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
+# The HTTPS client seam of a host reached over its HTTPS routes.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# The relay voice carrier a call participation authorizes.
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
 tempfile.workspace = true
+# The governor a renewal test proves membership to.
+tilo-governor = { path = "../tilo-governor" }
+# The governed-room acceptance test runs against a real relay.
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+iroh-base = { workspace = true, features = ["key"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "renewed_membership"
+required-features = ["test-support"]
 
 [lints]
 workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }

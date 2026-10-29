@@ -16,8 +16,8 @@ use tilo_action_broker::channel_encryption::{
     GovernanceTransport, InboundChannelGovernance,
 };
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
-use tilo_joined_room::testing::governor::TestGovernor;
-use tilo_owner_commit::CommitOperation;
+use tilo_peer_state::owner::testing::governor::TestGovernor;
+use tilo_peer_state::owner_commit::CommitOperation;
 use tilo_peer_state::{
     StatePeer,
     join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
@@ -1126,7 +1126,7 @@ fn settled_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 fn the_rooms_the_desktop_session_enrolled_are_refused() {
     let directory = tempfile::tempdir().unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    let record = tilo_joined_room::owner_file_of(
+    let record = tilo_peer_state::owner::owner_file_of(
         &directory
             .path()
             .join(super::super::workspace::DESKTOP_WORKSPACE),
@@ -1464,7 +1464,7 @@ fn signed_write(
     room: RoomId,
     app: &str,
     key: &SigningKey,
-) -> tilo_owner_commit::OwnerCommitRequest {
+) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
     const RECORD: &str = "tab:0000000000000001";
     let room = room.to_string();
     let mut doc = AutoCommit::new();
@@ -1487,7 +1487,7 @@ fn signed_write(
         u64::try_from(sequence).unwrap(),
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
-    tilo_owner_commit::OwnerCommitRequest {
+    tilo_peer_state::owner_commit::OwnerCommitRequest {
         room,
         operation: CommitOperation::Document {
             app: app.into(),

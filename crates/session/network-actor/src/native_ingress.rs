@@ -1,6 +1,6 @@
 //! Closed relay provenance for rooms installed by the native durable owner.
 //!
-//! The session itself is `tilo_joined_room::session`'s; this actor keeps one
+//! The session itself is `tilo_peer_state::owner::session`'s; this actor keeps one
 //! route per enrolled room, dials it again when its pin changes and runs
 //! the connected session's pump beside every other host session. A room
 //! hosted on this device is not dialled: its session goes to this device's
@@ -12,8 +12,8 @@ use super::{
 };
 use crate::local_host::LocalHost;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-pub use tilo_joined_room::session::{Connect, Input, Scope};
 use tilo_peer_state::join::TransportHint;
+pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
 
 struct Route {
     connect: Connect,
@@ -23,7 +23,7 @@ struct Route {
     pending: Option<tokio::task::JoinHandle<()>>,
     /// Dials in a row the host closed without answering this device's
     /// hello: a refusal, or a host from before versioned handshakes. Past
-    /// [`tilo_joined_room::session::UNANSWERED_BEFORE_PROBE`] the next one
+    /// [`tilo_peer_state::owner::session::UNANSWERED_BEFORE_PROBE`] the next one
     /// probes which.
     unanswered: u32,
     /// The room's host is this device's own: its session stays in process.
@@ -73,7 +73,7 @@ impl Routes {
 }
 
 /// Prove this device's membership of `connect`'s room with its renewed
-/// certificate ([`tilo_joined_room::enroll::renew_membership`]), over the
+/// certificate ([`tilo_peer_state::owner::enroll::renew_membership`]), over the
 /// route its sessions take; the next heartbeat dials with it.
 /// A route whose custody no longer matches its room: when the device's
 /// certificate was renewed, it proves its membership with the renewal and
@@ -120,7 +120,7 @@ fn renew(
     let hosted_here = connect
         .owner()
         .with_current(room, |view| {
-            Ok(tilo_joined_room::session::hosted_by(
+            Ok(tilo_peer_state::owner::session::hosted_by(
                 view.transport_hint()?,
                 &own,
             ))
@@ -134,7 +134,7 @@ fn renew(
         (None, false) => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
     };
     Some(tokio::spawn(async move {
-        match tilo_joined_room::enroll::renew_membership(
+        match tilo_peer_state::owner::enroll::renew_membership(
             client,
             identity,
             connect.owner().clone(),
@@ -174,7 +174,7 @@ impl ActorState {
                 .connect
                 .material(identity)
                 .is_ok_and(|(hint, cert, ..)| {
-                    tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
+                    tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
                 })
         })
     }
@@ -490,7 +490,8 @@ impl ActorState {
             let Ok((hint, cert, revocations, _)) = material else {
                 continue;
             };
-            route.local = tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key);
+            route.local =
+                tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key);
             let key = identity.device_signing_key.clone();
             let member = Member {
                 cert,
@@ -514,7 +515,7 @@ impl ActorState {
             // stream on this device's hello without a word, as a refusal
             // does: after a few, ask it the way such a host reads.
             let probe = route.https.is_none()
-                && route.unanswered >= tilo_joined_room::session::UNANSWERED_BEFORE_PROBE;
+                && route.unanswered >= tilo_peer_state::owner::session::UNANSWERED_BEFORE_PROBE;
             route.pending = Some(spawn_dial(Dial {
                 ws,
                 serial: route.serial,
@@ -616,7 +617,7 @@ impl ActorState {
         serial: u64,
         (hint, via): (TransportHint, TransportHint),
         certificate: DeviceCert,
-        result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
+        result: Box<Result<RelayCoeditSession, tilo_peer_state::owner::session::DialError>>,
     ) {
         self.tally.note(if via == hint {
             "NativeGovernorDial"
@@ -661,7 +662,7 @@ impl ActorState {
         let governor = via == hint;
         if governor {
             route.unanswered = match &*result {
-                Err(tilo_joined_room::session::DialError::NoAnswer(_)) => {
+                Err(tilo_peer_state::owner::session::DialError::NoAnswer(_)) => {
                     route.unanswered.saturating_add(1)
                 }
                 _ => 0,
@@ -676,8 +677,8 @@ impl ActorState {
                 // device, or speaks another version, is said.
                 let unreachable = matches!(
                     error,
-                    tilo_joined_room::session::DialError::NoAnswer(_)
-                        | tilo_joined_room::session::DialError::Failed(_)
+                    tilo_peer_state::owner::session::DialError::NoAnswer(_)
+                        | tilo_peer_state::owner::session::DialError::Failed(_)
                 );
                 dial_refused(&self.subscribers, ws, payload.endpoint_addr.id, error);
                 let up = self.host_sessions.keys().any(|(topic, _)| *topic == ws);
@@ -835,19 +836,23 @@ fn spawn_dial(dial: Dial) -> tokio::task::JoinHandle<()> {
         let probing = (probe, endpoint.clone(), expected_device.clone());
         let result = match https {
             Some(super::HttpsRoute(http)) => {
-                tilo_joined_room::session::dial_https(http, ws, &via, cert, key, revocations).await
+                tilo_peer_state::owner::session::dial_https(http, ws, &via, cert, key, revocations)
+                    .await
             }
             None => {
-                tilo_joined_room::session::dial(endpoint, ws, &via, cert, key, revocations).await
+                tilo_peer_state::owner::session::dial(endpoint, ws, &via, cert, key, revocations)
+                    .await
             }
         };
         let result = match result {
-            Err(tilo_joined_room::session::DialError::NoAnswer(reason)) if probing.0 => {
-                match tilo_joined_room::session::probe_version(&probing.1, &via, &probing.2).await {
+            Err(tilo_peer_state::owner::session::DialError::NoAnswer(reason)) if probing.0 => {
+                match tilo_peer_state::owner::session::probe_version(&probing.1, &via, &probing.2)
+                    .await
+                {
                     Some(theirs) => {
-                        Err(tilo_joined_room::session::DialError::PeerVersion { theirs })
+                        Err(tilo_peer_state::owner::session::DialError::PeerVersion { theirs })
                     }
-                    None => Err(tilo_joined_room::session::DialError::NoAnswer(reason)),
+                    None => Err(tilo_peer_state::owner::session::DialError::NoAnswer(reason)),
                 }
             }
             result => result,
@@ -895,8 +900,10 @@ fn join_local(
         } = member;
         let own_device = cert.device_public_key;
         let result = match host.connect_local(cert.clone(), key, revocations).await {
-            Ok(client) => tilo_joined_room::session::join_local(client, ws, &hint, own_device),
-            Err(error) => Err(tilo_joined_room::session::DialError::from(error)),
+            Ok(client) => {
+                tilo_peer_state::owner::session::join_local(client, ws, &hint, own_device)
+            }
+            Err(error) => Err(tilo_peer_state::owner::session::DialError::from(error)),
         };
         let _ = tx
             .send(InternalEvent::NativeHostConnected {
@@ -917,13 +924,13 @@ fn dial_refused(
     subscribers: &HashMap<u64, tokio::sync::mpsc::Sender<super::NetEvent>>,
     ws: u64,
     host: iroh::EndpointId,
-    error: tilo_joined_room::session::DialError,
+    error: tilo_peer_state::owner::session::DialError,
 ) {
     match error {
         // The room's host speaks another peer protocol version: the room
         // cannot sync until one side updates, which the person is told,
         // rather than holding a room that silently stays empty.
-        tilo_joined_room::session::DialError::PeerVersion { theirs } => {
+        tilo_peer_state::owner::session::DialError::PeerVersion { theirs } => {
             tracing::warn!(
                 ws,
                 theirs,
@@ -936,7 +943,7 @@ fn dial_refused(
         // The room removed this device's person: dialing again changes
         // nothing until they join again, which the shell does through the
         // room's door where it has one.
-        tilo_joined_room::session::DialError::NotAdmitted => {
+        tilo_peer_state::owner::session::DialError::NotAdmitted => {
             tracing::warn!(ws, "the room's host admits this device's person no longer");
             if let Some(subscriber) = subscribers.get(&ws) {
                 let _ = subscriber.try_send(super::NetEvent::NotAdmitted { ws });

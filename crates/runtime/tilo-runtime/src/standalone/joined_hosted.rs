@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tilo_desktop_model::RoomId;
-use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tilo_room_host::host::RoomHost;
 
@@ -114,7 +114,7 @@ impl Joined {
             .with_current(room, |view| {
                 Ok(view
                     .transport_hint()
-                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+                    .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
             })
             .unwrap_or(false)
     }
@@ -135,7 +135,7 @@ impl Joined {
                 .grant()
                 .transport
                 .iter()
-                .any(|hint| tilo_joined_room::session::hosted_by(hint, &own))
+                .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
         });
         match self.room_host().filter(|_| hosted_here) {
             Some(host) => WorkspaceJoinClient::local(host.join_service(), own),
@@ -154,8 +154,8 @@ impl Joined {
     ) -> Result<RelayCoeditSession, String> {
         let own = self.own_device();
         let key = self.custody.device_signing_key.clone();
-        if !tilo_joined_room::session::hosted_by(hint, &own) {
-            return Ok(tilo_joined_room::session::dial(
+        if !tilo_peer_state::owner::session::hosted_by(hint, &own) {
+            return Ok(tilo_peer_state::owner::session::dial(
                 self.endpoint.clone(),
                 ws,
                 hint,
@@ -171,7 +171,7 @@ impl Joined {
             .connect_local(device, key, revocations)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(tilo_joined_room::session::join_local(
+        Ok(tilo_peer_state::owner::session::join_local(
             client, ws, hint, own,
         )?)
     }

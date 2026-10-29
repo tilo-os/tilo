@@ -748,7 +748,7 @@ enum InternalEvent {
         /// room while the governor is out of reach.
         via: Box<tilo_peer_state::join::TransportHint>,
         certificate: DeviceCert,
-        result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
+        result: Box<Result<RelayCoeditSession, tilo_peer_state::owner::session::DialError>>,
     },
     ActionClosed {
         ws: WorkspaceId,
@@ -3586,7 +3586,7 @@ impl ActorState {
             NetCmd::NativeConnect(connect, None) => {
                 self.host_identity.as_ref().is_some_and(|identity| {
                     connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
-                        tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
+                        tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
                     })
                 })
             }

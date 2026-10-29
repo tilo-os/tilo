@@ -186,8 +186,11 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
     );
     let signing_identity = SigningKey::from_bytes(&[72; 32]);
     let viewer_key = SigningKey::from_bytes(&[71; 32]);
-    let mut viewer =
-        tilo_joined_room::testing::certificate(&signing_identity, &viewer_key, "Read-only device");
+    let mut viewer = tilo_peer_state::owner::testing::certificate(
+        &signing_identity,
+        &viewer_key,
+        "Read-only device",
+    );
     viewer.capabilities = tilo_user_identity::DeviceCapabilities::member();
     viewer.capabilities.foreign = true;
     tilo_user_identity::sign_device_cert(&mut viewer, &signing_identity).unwrap();
@@ -262,7 +265,7 @@ fn admit_viewer(
     let certificate = owner
         .with_current(room, |view| Ok(view.governor().clone()))
         .unwrap();
-    let mut governor = tilo_joined_room::testing::governor::TestGovernor::empty_interactive(
+    let mut governor = tilo_peer_state::owner::testing::governor::TestGovernor::empty_interactive(
         certificate,
         governor_key.clone(),
         &room.to_string(),

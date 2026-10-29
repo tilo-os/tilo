@@ -59,8 +59,6 @@ tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
 settings-store = { path = "../../system/settings-store" }
 tilo-peer-state = { path = "../tilo-peer-state" }
-# The owner commit requests and receipts the broker hands its room owner.
-tilo-owner-commit = { path = "../owner-commit" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 # The relay session client; the relay daemon is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
@@ -85,7 +83,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true, features = ["test-util"] }
 # Integration tests start a real relay.
 tilo-relay = { path = "../../hosting/tilo-relay" }
-tilo-joined-room = { path = "../tilo-joined-room", features = ["test-support"] }
+tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

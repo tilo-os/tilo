@@ -163,7 +163,7 @@ fn admit_checkpoint_reader(
             .unwrap()
             .unwrap();
     let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env().unwrap();
-    let now_ns = tilo_joined_room::testing::ns(now).unwrap();
+    let now_ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let role = tilo_identity_host::enrollment::EnrollmentRole::PersonalDevice;
     let token = fleet
         .mint_enrollment(
@@ -185,7 +185,7 @@ fn admit_checkpoint_reader(
             )
             .unwrap()
     } else {
-        tilo_joined_room::testing::certificate(
+        tilo_peer_state::owner::testing::certificate(
             &ed25519_dalek::SigningKey::from_bytes(&[117; 32]),
             &key,
             "Remote checkpoint reader",
@@ -199,7 +199,7 @@ fn admit_checkpoint_reader(
         join::MemberRole::Editor,
         Some(certificate.user_public_key),
         None,
-        tilo_joined_room::testing::ns(now)
+        tilo_peer_state::owner::testing::ns(now)
             .unwrap()
             .checked_add(60_000_000_000)
             .unwrap(),
@@ -242,7 +242,7 @@ fn admit_checkpoint_reader(
 fn prepare(fixture: &NativeFixture) -> serde_json::Value {
     let (key, _) =
         tilo_identity_host::broker::trusted_current_device(&fixture.room.to_string()).unwrap();
-    let declared = tilo_joined_room::ApplicationRecord::declared(
+    let declared = tilo_peer_state::owner::ApplicationRecord::declared(
         "so.tilo.chat",
         "checkpoint-test",
         "chat.workspace",

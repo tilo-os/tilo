@@ -1,5 +1,5 @@
 // Registered native RPC exercised against a real joined-room private owner.
-struct PrivatePersonOwner(tilo_joined_room::NativeWorkspaceOwner);
+struct PrivatePersonOwner(tilo_peer_state::owner::NativeWorkspaceOwner);
 impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
     fn command(
         &self,
@@ -31,12 +31,16 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut env = Environment::new();
-            let owner =
-                tilo_joined_room::open_file(&env.root.path().join("private-person-owner.json"))
-                    .unwrap();
-            tilo_joined_room::testing::enroll_interactive_governor(&owner, &env.key, &env.cert)
-                .unwrap();
-            let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+            let owner = tilo_peer_state::owner::open_file(
+                &env.root.path().join("private-person-owner.json"),
+            )
+            .unwrap();
+            tilo_peer_state::owner::testing::enroll_interactive_governor(
+                &owner, &env.key, &env.cert,
+            )
+            .unwrap();
+            let room =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = room.to_string();
             {

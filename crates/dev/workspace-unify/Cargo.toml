@@ -1203,7 +1203,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
@@ -1242,13 +1241,12 @@ doc = false
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-output-passes" = { path = "../../../crates/session/output-passes", default-features = false, features = ["test-support"] }
 "tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
-"tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-pc-keyboard-geometry" = { path = "../../../crates/platform/pc-keyboard-geometry", default-features = false, features = [] }
 "tilo-pdf" = { path = "../../../crates/platform/tilo-pdf", default-features = false, features = ["default"] }
-"tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = [] }
+"tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-polkit-agent" = { path = "../../../crates/session/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../../crates/session/portal", default-features = false, features = ["pipewire"] }
@@ -3659,7 +3657,6 @@ doc = false
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
 "tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
-"tilo-joined-room" = { path = "../../../crates/collab/tilo-joined-room", default-features = false, features = ["test-support"] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-lan-discovery" = { path = "../../../crates/collab/tilo-lan-discovery", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
@@ -3698,13 +3695,12 @@ doc = false
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-output-passes" = { path = "../../../crates/session/output-passes", default-features = false, features = ["test-support"] }
 "tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
-"tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-pc-keyboard-geometry" = { path = "../../../crates/platform/pc-keyboard-geometry", default-features = false, features = [] }
 "tilo-pdf" = { path = "../../../crates/platform/tilo-pdf", default-features = false, features = ["default"] }
-"tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = [] }
+"tilo-peer-state" = { path = "../../../crates/collab/tilo-peer-state", default-features = false, features = ["test-support"] }
 "tilo-platform-caps" = { path = "../../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-polkit-agent" = { path = "../../../crates/session/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../../crates/session/portal", default-features = false, features = ["pipewire"] }

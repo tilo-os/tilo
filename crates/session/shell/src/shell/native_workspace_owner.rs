@@ -1,4 +1,4 @@
-//! This device's native owner (`tilo_joined_room`'s), its record in a file
+//! This device's native owner (`tilo_peer_state::owner`'s), its record in a file
 //! of its own beside the state file ([`owner_file`]). The tree keeps a
 //! read-only projection of the record ([`WorkspaceTree::native_authority`])
 //! and follows each publication ([`TreeHost`]): a room installed is
@@ -26,11 +26,13 @@ use super::state::{RoomId, WorkspaceId, WorkspaceTreeHandle};
 use std::path::{Path, PathBuf};
 pub use store::NativeStateRuntime;
 pub(crate) use store::NativeStateWitness;
-pub use tilo_joined_room::NativeAuthorityStorage;
-use tilo_joined_room::{Change, FileHost};
-pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
+pub use tilo_peer_state::owner::NativeAuthorityStorage;
+use tilo_peer_state::owner::{Change, FileHost};
+pub(crate) use tilo_peer_state::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
 #[cfg(test)]
-pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus};
+pub(crate) use tilo_peer_state::owner::{
+    NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus,
+};
 
 #[cfg(test)]
 thread_local! {
@@ -40,7 +42,7 @@ thread_local! {
 
 /// Where the owner of the state file at `state` keeps its record.
 pub(crate) fn owner_file(state: &Path) -> PathBuf {
-    tilo_joined_room::owner_file_of(state)
+    tilo_peer_state::owner::owner_file_of(state)
 }
 
 /// The tree following the owner's publications.
@@ -179,7 +181,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
             .ok_or("native owner requires the actual state-file path")?
     };
     runtime.bind(&path).map_err(|e| e.to_string())?;
-    let owner = tilo_joined_room::open_file_with(
+    let owner = tilo_peer_state::owner::open_file_with(
         &owner_file(&path),
         std::sync::Arc::new(TreeHost { tree: tree.clone() }),
     )?;

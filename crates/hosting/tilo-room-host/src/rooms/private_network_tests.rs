@@ -20,7 +20,7 @@ const BODY: &str = "private-network-body-must-never-enter-the-public-room";
 /// host. Its private client uses the very endpoint and certificate that joined.
 struct NativeEditor {
     directory: tempfile::TempDir,
-    owner: tilo_joined_room::NativeWorkspaceOwner,
+    owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     endpoint: iroh::Endpoint,
     client: PrivateClient,
 }
@@ -51,7 +51,8 @@ impl NativeEditor {
             .await
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
-        let owner = tilo_joined_room::open_file(&directory.path().join("joined.json")).unwrap();
+        let owner =
+            tilo_peer_state::owner::open_file(&directory.path().join("joined.json")).unwrap();
         let endpoint = endpoint(key).await;
         let workspace = rooms.room(room).await.unwrap().lock().await.workspace_id();
         let identity = tilo_identity_host::custody::HostIdentity {
@@ -63,7 +64,7 @@ impl NativeEditor {
         };
         let enrollment = tilo_test_env::within(
             "native Editor invitation enrollment",
-            tilo_joined_room::enroll::prepare_and_complete(
+            tilo_peer_state::owner::enroll::prepare_and_complete(
                 tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint.clone()),
                 identity,
                 workspace,

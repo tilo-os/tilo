@@ -1,5 +1,5 @@
 //! Tests the actual receipt/context gate; durable owner publication is tested
-//! separately against signed empty-room enrollment in tilo-joined-room.
+//! separately against signed empty-room enrollment in `tilo_peer_state::owner`.
 use super::{
     CreationReceipt, CreationWorkspace, Initialization, NativeDocumentRead,
     NativeDocumentReadContext, NativeDocumentReads, Reply, Slot,

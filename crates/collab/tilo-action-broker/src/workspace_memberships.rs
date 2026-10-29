@@ -7,7 +7,7 @@ use super::{
     PublishedSurface,
 };
 use tilo_action_policy::roles::AgentPreset;
-use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 const APP: &str = "so.tilo.desktop";
@@ -1016,7 +1016,7 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
@@ -1030,7 +1030,7 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }
@@ -1055,7 +1055,7 @@ mod tests {
             Ok(())
         }
 
-        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
             Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
         }
     }

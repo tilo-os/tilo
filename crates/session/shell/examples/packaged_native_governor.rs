@@ -9,8 +9,8 @@ use std::{
     time::Duration,
 };
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
-use tilo_joined_room::testing::governor::TestGovernor;
 use tilo_peer_state::join::{JoinTransportRequest, JoinTransportResponse, MemberRole};
+use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 
 #[derive(Clone)]

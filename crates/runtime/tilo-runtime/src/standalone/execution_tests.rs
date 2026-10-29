@@ -9,7 +9,7 @@ fn caller(room: RoomId) -> Caller {
 #[test]
 fn runtime_execution_fence_closes_retained_callers_synchronously_and_only_in_its_room() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = tilo_joined_room::open_file(&directory.path().join("rooms.json")).unwrap();
+    let owner = tilo_peer_state::owner::open_file(&directory.path().join("rooms.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let room = tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let other_room =
@@ -37,7 +37,7 @@ fn runtime_execution_fence_closes_retained_callers_synchronously_and_only_in_its
 #[test]
 fn runtime_execution_subscription_precedes_recheck_and_failure_cannot_refresh_the_lease() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = tilo_joined_room::open_file(&directory.path().join("rooms.json")).unwrap();
+    let owner = tilo_peer_state::owner::open_file(&directory.path().join("rooms.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let room = tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let old = caller(room);
@@ -54,7 +54,7 @@ fn runtime_execution_subscription_precedes_recheck_and_failure_cannot_refresh_th
 #[test]
 fn runtime_execution_registration_capacity_and_owner_drop_are_fail_closed() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = tilo_joined_room::open_file(&directory.path().join("rooms.json")).unwrap();
+    let owner = tilo_peer_state::owner::open_file(&directory.path().join("rooms.json")).unwrap();
     let executions = ExecutionPins::new(&owner);
     let room = tilo_desktop_model::RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
     let pins = executions;

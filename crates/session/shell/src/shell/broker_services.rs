@@ -121,7 +121,7 @@ impl NativeOwnerCommitService {
         self.owner.opened(unavailable)
     }
 }
-impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
+impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
@@ -137,8 +137,8 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     }
     fn commit(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-    ) -> tilo_owner_commit::CommitFuture {
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         let writes = self.writes.clone();
@@ -150,7 +150,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
             let now = std::time::SystemTime::now();
             if !matches!(
                 request.operation,
-                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
             ) {
                 if let Some(network) = network.as_ref() {
                     network.check_native_custody(&owner, room)?;
@@ -285,7 +285,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         }
     }
     fn requires_room(&self, room: &str) -> bool {
-        tilo_owner_commit::OwnerCommitService::requires_room(self, room)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
     }
 
     /// The one app-access decision every opening of an app takes
@@ -364,8 +364,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     /// ([`host_membership::commit_at_own_host`]).
     fn execute(
         &self,
-        request: tilo_owner_commit::OwnerCommitRequest,
-    ) -> tilo_owner_commit::CommitFuture {
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {
@@ -376,7 +376,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
-                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                if let tilo_peer_state::owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     caller,
                     command,
                     ..
@@ -1240,9 +1240,9 @@ impl NativeShortcutLibrary {
         if let Some(network) = &network {
             network.check_native_custody(&owner, room)?;
         }
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: room.to_string(),
-            operation: tilo_owner_commit::CommitOperation::ShortcutChange {
+            operation: tilo_peer_state::owner_commit::CommitOperation::ShortcutChange {
                 invocation: uuid::Uuid::new_v4(),
                 caller: device.clone(),
                 change: serde_json::to_vec(&change).map_err(|error| error.to_string())?,
@@ -2573,8 +2573,9 @@ mod tests {
         let foreign_time = other.policy_time().unwrap().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
-        let certificate = tilo_joined_room::testing::certificate(&root, &device, "clock test");
-        let room_id = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
+        let certificate =
+            tilo_peer_state::owner::testing::certificate(&root, &device, "clock test");
+        let room_id = uuid::Uuid::parse_str(tilo_peer_state::owner::testing::ROOM).unwrap();
         assert_eq!(
             authority
                 .authorize_with_policy_time(room_id, &certificate, &foreign_time)

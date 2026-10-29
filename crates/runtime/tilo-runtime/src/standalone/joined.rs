@@ -20,12 +20,12 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_joined_room::{
+use tilo_peer_state::InputDisposition;
+use tilo_peer_state::owner::{
     NativeWorkspaceOwner,
     session::{Connect, Input, Scope},
 };
-use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
-use tilo_peer_state::InputDisposition;
+use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 use tilo_relay_session::{Inbound, RelayCoeditSession};
 use tokio::sync::Notify;
 
@@ -102,8 +102,8 @@ impl Joined {
         refused: BTreeSet<RoomId>,
         broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     ) -> io::Result<Arc<Self>> {
-        let owner =
-            tilo_joined_room::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
+        let owner = tilo_peer_state::owner::open_file(&profile.join(JOINED_ROOMS))
+            .map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
         let joined = Arc::new_cyclic(|this| Self {
             executions,
@@ -158,7 +158,7 @@ impl Joined {
             return Err("this device takes part in that room through the desktop session".into());
         }
         let topic = room_topic(room)?;
-        let enrollment = tilo_joined_room::enroll::prepare_and_complete(
+        let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
             self.join_client(invitation),
             self.custody.clone(),
             topic,
@@ -631,8 +631,8 @@ impl GovernanceTransport for Joined {
 /// record beside its workspace file in an adopted profile.
 pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<RoomId>> {
     let record =
-        tilo_joined_room::owner_file_of(&profile.join(super::workspace::DESKTOP_WORKSPACE));
-    tilo_joined_room::read_file(&record)
+        tilo_peer_state::owner::owner_file_of(&profile.join(super::workspace::DESKTOP_WORKSPACE));
+    tilo_peer_state::owner::read_file(&record)
         .map(|storage| storage.rooms().collect())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }

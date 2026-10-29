@@ -26,7 +26,7 @@ fn a_room_this_devices_own_host_serves_admits_an_app_opening_there() {
     // This device is the room's host, and serves the room itself.
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let state_file = directory.path().join("state.json");
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
     {
         let mut tree = tree.write();
         let active = tree.desktop.active;
@@ -39,14 +39,15 @@ fn a_room_this_devices_own_host_serves_admits_an_app_opening_there() {
     let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
     let person = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-    let mut certificate = tilo_joined_room::testing::certificate(&person, &device, "This host");
+    let mut certificate =
+        tilo_peer_state::owner::testing::certificate(&person, &device, "This host");
     certificate.capabilities = DeviceCapabilities {
         can_act_as_host: true,
         ..DeviceCapabilities::primary()
     };
     tilo_user_identity::cert::sign_device_cert(&mut certificate, &person)
         .expect("the certificate is signed");
-    tilo_joined_room::testing::enroll_interactive_governor(&owner, &device, &certificate)
+    tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &device, &certificate)
         .expect("this device's host lets its owner in");
     assert!(tree.read().holds_room(room), "the device holds its room");
 

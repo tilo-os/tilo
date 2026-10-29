@@ -418,7 +418,7 @@ def keep(source: pathlib.Path, into: pathlib.Path):
 
 
 def main() -> int:
-    os.environ.setdefault("RUST_LOG", "info,tilo_joined_room=debug,shell::shell::broker_services=debug,"
+    os.environ.setdefault("RUST_LOG", "info,tilo_peer_state=debug,shell::shell::broker_services=debug,"
                           "shell::network::actor=debug,shell::shell::network=debug")
     os.environ.setdefault("TILO_RELAY_LOG", "info")
     base = pathlib.Path("/target") if pathlib.Path("/target").is_dir() else REPO / "target"

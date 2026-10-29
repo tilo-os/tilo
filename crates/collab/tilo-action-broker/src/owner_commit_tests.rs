@@ -448,9 +448,9 @@ mod owner_commit_tests {
                 for cancelled in [false, true] {
                     let root = canonical_tempdir();
                     let mut fixture = owner_fixture_with_receipt_fault(root.path(), 1);
-                    let request = tilo_owner_commit::OwnerCommitRequest {
+                    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                         room: fixture.route.cluster_id.clone(),
-                        operation: tilo_owner_commit::CommitOperation::Document {
+                        operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
                             record: fixture.route.record_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
@@ -496,7 +496,7 @@ mod owner_commit_tests {
         fault: u8,
         required_room: Option<String>,
     }
-    impl tilo_owner_commit::OwnerCommitService for AlteredReceipt {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for AlteredReceipt {
         fn requires_room(&self, room: &str) -> bool {
             self.required_room
                 .as_deref()
@@ -507,8 +507,8 @@ mod owner_commit_tests {
         }
         fn commit(
             &self,
-            request: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             let response = self.inner.commit(request);
             let fault = self.fault;
             Box::pin(async move {
@@ -516,10 +516,11 @@ mod owner_commit_tests {
                 match fault {
                     1 => receipt.binding.room = uuid::Uuid::new_v4().to_string(),
                     2 => {
-                        receipt.binding.target = tilo_owner_commit::CommitTarget::Document {
-                            app: "other.app".into(),
-                            record: "other".into(),
-                        }
+                        receipt.binding.target =
+                            tilo_peer_state::owner_commit::CommitTarget::Document {
+                                app: "other.app".into(),
+                                record: "other".into(),
+                            }
                     }
                     3 => receipt.binding.request_digest[0] ^= 1,
                     4 => receipt.binding.basis[0] ^= 1,
@@ -1761,9 +1762,9 @@ mod owner_commit_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(1);
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
             assert!(publisher.requires_owner_for(&f.route.cluster_id));
-            let request = tilo_owner_commit::OwnerCommitRequest {
+            let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                 room: f.route.cluster_id.clone(),
-                operation: tilo_owner_commit::CommitOperation::Document {
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
                     record: f.route.record_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
@@ -2116,9 +2117,9 @@ mod owner_commit_tests {
             tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: f.route.cluster_id.clone(),
-            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).map_err(|error| error.to_string())?,
             },
@@ -2151,7 +2152,9 @@ mod owner_commit_tests {
         );
         let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
             serde_json::from_slice(match &request.operation {
-                tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } => redacted,
+                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                    redacted, ..
+                } => redacted,
                 _ => unreachable!(),
             })
             .unwrap();
@@ -2275,7 +2278,7 @@ mod owner_commit_tests {
         caller: &VerifiedActionCaller,
     ) -> (
         InvocationKey,
-        tilo_owner_commit::OwnerCommitRequest,
+        tilo_peer_state::owner_commit::OwnerCommitRequest,
         invocation_journal::PreparedEffect,
     ) {
         let key = f
@@ -2300,9 +2303,9 @@ mod owner_commit_tests {
             tilo_clock::unix_now_i64(),
         );
         effect.completed_at = 100;
-        let request = tilo_owner_commit::OwnerCommitRequest {
+        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
             room: f.route.cluster_id.clone(),
-            operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+            operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
                 invocation: key.invocation.0,
                 redacted: serde_json::to_vec(&effect).unwrap(),
             },

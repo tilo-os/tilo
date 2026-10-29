@@ -18,7 +18,7 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-joined-room/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "tilo-peer-state/test-support"]
 default = []
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters), and the sampling heap profiler installed
@@ -101,8 +101,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-desktop = { path = "../desktop" }
 tilo-wallpapers = { version = "0.1.0", path = "../../platform/tilo-wallpapers" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-# The owner commit service the native workspace owner implements.
-tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
@@ -414,8 +412,6 @@ tilo-room-host = { path = "../../hosting/tilo-room-host" }
 # their hosts put to them.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-# The native durable owner of enrolled rooms, kept inside the state file.
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -506,7 +502,7 @@ tilo-ntfs-mount = { path = "../../system/ntfs-mount" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
-tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
+tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 # Real app content for the frame's measurements.
 notes = { path = "../../../apps/notes" }

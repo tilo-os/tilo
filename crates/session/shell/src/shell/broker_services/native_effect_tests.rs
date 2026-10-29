@@ -12,9 +12,9 @@ use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 struct NativeFixture {
-    governor: tilo_joined_room::testing::governor::TestGovernor,
+    governor: tilo_peer_state::owner::testing::governor::TestGovernor,
     home: tilo_test_env::TestHome,
-    owner: tilo_joined_room::NativeWorkspaceOwner,
+    owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     broker: collab_broker::BrokerHandle,
     certificate: tilo_user_identity::DeviceCert,
     room: crate::shell::state::RoomId,
@@ -23,7 +23,9 @@ struct NativeFixture {
 
 #[test]
 fn a_devices_own_terminal_audit_commits_here_and_a_retry_answers_the_original_receipt() {
-    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
+    use tilo_peer_state::owner_commit::{
+        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
+    };
     let fixture = fixture();
     let service = super::NativeOwnerCommitService::new(
         native_workspace_owner::test_tree_of(&fixture.owner),
@@ -75,7 +77,9 @@ fn a_devices_own_terminal_audit_commits_here_and_a_retry_answers_the_original_re
 /// leave that loop answering everything else.
 #[test]
 fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
-    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
+    use tilo_peer_state::owner_commit::{
+        CommitOperation, OwnerCommitRequest, OwnerCommitService as _,
+    };
     let fixture = fixture();
     let tree = native_workspace_owner::test_tree_of(&fixture.owner);
     let service = super::NativeOwnerCommitService::new(tree.clone(), None);
@@ -230,7 +234,7 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
 /// first.
 #[test]
 fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_is_published() {
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
     // Held, not projected yet: as a room is between the commit that installs
     // it in the owner and its projection onto the tree.
     let NativeFixture {
@@ -670,7 +674,7 @@ fn fixture_with(
         &crate::firstboot::collaboration_identity_paths(),
     )
     .unwrap();
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    let room = crate::shell::state::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
     let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
     let selected = registry
         .load_reconciled()
@@ -691,7 +695,8 @@ fn fixture_with(
     let tree = initial.shared();
     let owner = native_workspace_owner::open(tree.clone()).unwrap();
     let governor =
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
+        tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+            .unwrap();
     // The normal service factory installs NativeCertificates, not a recording
     // authority or a test PolicyTime. Its real clock must retain the original.
     let authority = NativeCertificates::default();
@@ -837,9 +842,9 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
             .ok_or_else(|| "actual native effect receipt missing".into())
         })
         .unwrap();
-    let request = tilo_owner_commit::OwnerCommitRequest {
+    let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
         room: room.to_string(),
-        operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
             invocation: effect.invocation.0,
             redacted: serde_json::to_vec(&effect).unwrap(),
         },

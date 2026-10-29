@@ -72,12 +72,12 @@ async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
     assert!(tree.stand_in_room(workspace, governed));
     let tree = tree.shared();
     let governed_owner = crate::shell::native_workspace_owner::open(tree).unwrap();
-    let governor = tilo_joined_room::testing::certificate(
+    let governor = tilo_peer_state::owner::testing::certificate(
         &ed25519_dalek::SigningKey::from_bytes(&[72; 32]),
         &key,
         "Desktop",
     );
-    tilo_joined_room::testing::enroll_interactive_governor_in(
+    tilo_peer_state::owner::testing::enroll_interactive_governor_in(
         &governed_owner,
         &key,
         &governor,

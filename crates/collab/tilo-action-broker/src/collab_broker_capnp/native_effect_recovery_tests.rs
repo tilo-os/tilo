@@ -7,21 +7,22 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
-use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 
 struct NativeEffects {
-    owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
+    owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
     key: SigningKey,
     held: Arc<tokio::sync::Semaphore>,
     submitted: Arc<tokio::sync::Notify>,
 }
 impl OwnerCommitService for NativeEffects {
     fn health(&self) -> Result<(), String> {
-        let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        let room =
+            tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
         self.owner.with_current(room, |_| Ok(()))
     }
     fn requires_room(&self, room: &str) -> bool {
-        room == tilo_joined_room::testing::ROOM
+        room == tilo_peer_state::owner::testing::ROOM
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
@@ -40,7 +41,7 @@ impl OwnerCommitService for NativeEffects {
         })
     }
 }
-struct NativeAuthority(Arc<tilo_joined_room::NativeWorkspaceOwner>);
+struct NativeAuthority(Arc<tilo_peer_state::owner::NativeWorkspaceOwner>);
 impl crate::peer_actions::CertificateAuthority for NativeAuthority {
     fn authorize(
         &self,
@@ -60,7 +61,7 @@ impl crate::peer_actions::CertificateAuthority for NativeAuthority {
 }
 struct Fixture {
     directory: tempfile::TempDir,
-    owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
+    owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
     state: Arc<CapnpBrokerState>,
     caller: VerifiedActionCaller,
     membership: crate::test_support::WorkspaceTreeHandle,
@@ -71,15 +72,16 @@ struct Fixture {
 fn fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let owner =
-        Arc::new(tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap());
+        Arc::new(tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap());
     let key = SigningKey::from_bytes(&[92; 32]);
-    let certificate = tilo_joined_room::testing::certificate(
+    let certificate = tilo_peer_state::owner::testing::certificate(
         &SigningKey::from_bytes(&[91; 32]),
         &key,
         "Governor",
     );
-    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
-    let room = tilo_joined_room::testing::ROOM;
+    tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+        .unwrap();
+    let room = tilo_peer_state::owner::testing::ROOM;
     let mut workspace = crate::test_support::Workspace::in_room(
         crate::test_support::WorkspaceId(1),
         uuid::Uuid::parse_str(room).unwrap().into(),
@@ -162,7 +164,7 @@ fn prepare(f: &Fixture) -> DurableInvocation {
     receipt.completed_at = 100;
     let request = OwnerCommitRequest {
         room: key.room.clone(),
-        operation: tilo_owner_commit::CommitOperation::EffectReceipt {
+        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
             invocation: key.invocation.0,
             redacted: serde_json::to_vec(&receipt).unwrap(),
         },

@@ -333,20 +333,21 @@ pub(crate) mod signed_test_support {
     use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeRequest};
 
     struct NativeOwnerReceipts {
-        owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
+        owner: Arc<tilo_peer_state::owner::NativeWorkspaceOwner>,
         key: ed25519_dalek::SigningKey,
     }
 
-    impl tilo_owner_commit::OwnerCommitService for NativeOwnerReceipts {
+    impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerReceipts {
         fn health(&self) -> Result<(), String> {
-            let room = tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+            let room =
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
             self.owner.with_current(room, |_| Ok(()))
         }
 
         fn commit(
             &self,
-            request: tilo_owner_commit::OwnerCommitRequest,
-        ) -> tilo_owner_commit::CommitFuture {
+            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> tilo_peer_state::owner_commit::CommitFuture {
             let owner = self.owner.clone();
             let key = self.key.clone();
             Box::pin(async move {
@@ -433,17 +434,21 @@ pub(crate) mod signed_test_support {
             .expect("provision the production receipt signer");
             let mut workspace = Workspace::in_room(
                 WorkspaceId(9),
-                tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+                tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap(),
                 "Host actions",
             );
             let room = workspace.room().to_string();
             let (key, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room).unwrap();
             let owner = Arc::new(
-                tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap(),
+                tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
-            tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
-                .unwrap();
+            tilo_peer_state::owner::testing::enroll_interactive_governor(
+                &owner,
+                &key,
+                &certificate,
+            )
+            .unwrap();
             let publisher = PeerPublisher::with_optional_owner_commit(
                 None,
                 Arc::new(NativeOwnerReceipts {

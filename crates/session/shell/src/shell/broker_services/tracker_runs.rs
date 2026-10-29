@@ -320,7 +320,7 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
 
 impl TrackerRuns for NativeTrackerRuns {
     fn requires_room(&self, room: &str) -> bool {
-        tilo_owner_commit::OwnerCommitService::requires_room(&self.owner, room)
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(&self.owner, room)
     }
 
     /// Keep the newest snapshot of each run's turn: a later epoch, a later

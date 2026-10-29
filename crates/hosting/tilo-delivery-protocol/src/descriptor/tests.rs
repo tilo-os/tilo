@@ -11,7 +11,7 @@ use web_time::{Duration, SystemTime};
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 /// The same reads the committed native owner view answers in production
-/// (`tilo-joined-room`), here over a real governed `StatePeer`.
+/// (`tilo_peer_state::owner`), here over a real governed `StatePeer`.
 impl CommittedWorkspace for StatePeer {
     fn authority(&self) -> &DeviceCert {
         StatePeer::authority(self)

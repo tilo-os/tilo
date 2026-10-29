@@ -20,7 +20,7 @@ use std::{
     },
     time::SystemTime,
 };
-use tilo_owner_commit::{
+use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin};

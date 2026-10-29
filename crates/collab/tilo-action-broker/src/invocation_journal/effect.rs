@@ -4,7 +4,7 @@ use super::{
     InvocationUpdate,
 };
 use serde::{Deserialize, Serialize};
-use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

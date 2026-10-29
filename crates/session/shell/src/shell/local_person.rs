@@ -210,7 +210,7 @@ mod tests {
         // owner entered, governed by the person this device's protected
         // identity names.
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        let room = RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap();
         let active = tree.desktop.active;
         assert!(tree.stand_in_room(active, room));
         tree.desktop.workspaces[0].set_owner(&person);
@@ -219,7 +219,8 @@ mod tests {
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
         let (key, _) =
             tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
+        tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+            .unwrap();
         assert!(tree.read().holds_room(room));
         super::super::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {

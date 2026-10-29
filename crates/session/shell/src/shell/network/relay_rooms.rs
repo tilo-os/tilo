@@ -133,7 +133,7 @@ impl PersonsHost {
 /// placed on it. `None` when the room is governed elsewhere than where it
 /// is served.
 pub(super) fn hosting_governor(
-    view: &tilo_joined_room::NativeCommittedView,
+    view: &tilo_peer_state::owner::NativeCommittedView,
     room: RoomId,
 ) -> Result<Option<iroh::EndpointId>, String> {
     let (hint, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)

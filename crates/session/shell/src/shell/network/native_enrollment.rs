@@ -479,7 +479,7 @@ impl ShellNetwork {
             tracing::warn!(%error, "could not renew this device's certificate before enrolling");
         }
         let result = self
-            .wait_on(tilo_joined_room::enroll::prepare_and_complete(
+            .wait_on(tilo_peer_state::owner::enroll::prepare_and_complete(
                 client,
                 identity,
                 topic,
@@ -544,7 +544,7 @@ impl ShellNetwork {
         &self,
         owner: &NativeWorkspaceOwner,
         identity_topic: u64,
-        enrollment: &tilo_joined_room::VerifiedNativeEnrollment,
+        enrollment: &tilo_peer_state::owner::VerifiedNativeEnrollment,
     ) -> Result<RoomId, String> {
         let identity = self
             .host_identity

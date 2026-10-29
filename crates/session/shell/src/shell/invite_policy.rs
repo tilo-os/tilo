@@ -90,7 +90,7 @@ pub(crate) struct Governor {
 /// that acts as a host, and the room's transport hint names that same
 /// device. `None` when another kind of device governs it.
 pub(crate) fn governing_relay(
-    view: &tilo_joined_room::NativeCommittedView,
+    view: &tilo_peer_state::owner::NativeCommittedView,
 ) -> Option<iroh::EndpointId> {
     let (hint, _) =
         tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(

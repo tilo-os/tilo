@@ -165,7 +165,7 @@ impl ShellNetwork {
                 .with_current(room, |view| {
                     let hosted_here = view
                         .transport_hint()
-                        .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own));
+                        .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own));
                     if !hosted_here {
                         return Ok(false);
                     }
@@ -234,7 +234,7 @@ impl ShellNetwork {
             .with_current(room, |view| {
                 Ok(view
                     .transport_hint()
-                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+                    .is_ok_and(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own)))
             })
             .unwrap_or(false)
     }
@@ -333,7 +333,7 @@ impl ShellNetwork {
 
     /// Bring this device's replica of each room its own `host` governs back
     /// to the host's history where it diverged from it
-    /// ([`tilo_joined_room::NativeWorkspaceOwner::adopt_own_host_history`]):
+    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner::adopt_own_host_history`]):
     /// a replica an earlier build wrote membership changes into under this
     /// device's key refused the host's every write since, and no app opened
     /// there. The membership changes only that replica held (an agent
@@ -354,7 +354,7 @@ impl ShellNetwork {
                     .with_current(room, |view| {
                         Ok((view.device() == view.governor()
                             && view.transport_hint().is_ok_and(|hint| {
-                                tilo_joined_room::session::hosted_by(hint, &own)
+                                tilo_peer_state::owner::session::hosted_by(hint, &own)
                             }))
                         .then(|| (room, view.device().clone())))
                     })
@@ -734,7 +734,7 @@ impl ShellNetwork {
             .grant()
             .transport
             .iter()
-            .any(|hint| tilo_joined_room::session::hosted_by(hint, &own));
+            .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own));
         if !hosted_here {
             return None;
         }

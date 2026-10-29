@@ -168,7 +168,7 @@ def describe_notes(session, title: str) -> str:
 def main() -> int:
     os.environ.setdefault("RUST_LOG", "info,shell::shell::network=debug,shell::network=debug,"
                           "shell::shell::peer_sync_overlay=debug,shell::shell::overlay_host=debug,"
-                          "tilo_joined_room=debug,tilo_relay_session=debug,tilo_relay=debug,tilo_room_service=debug,"
+                          "tilo_peer_state=debug,tilo_relay_session=debug,tilo_relay=debug,tilo_room_service=debug,"
                           "channel_crypto=debug,shell::shell::mls_vault=debug,shell::shell::channel_policy=debug,"
                           "shell::shell::broker_services=debug,tilo_network_actor=debug")
     # Under /target on t, which keeps it; under the tree's target/ elsewhere.

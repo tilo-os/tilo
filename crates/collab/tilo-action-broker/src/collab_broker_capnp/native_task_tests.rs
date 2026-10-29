@@ -10,7 +10,9 @@ use crate::services::{
 };
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::roles::AgentPreset;
-use tilo_owner_commit::{CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::owner_commit::{
+    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
+};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[path = "native_task_launch_tests.rs"]
@@ -23,7 +25,7 @@ mod cross_app;
 mod store_witness;
 
 struct Native {
-    owner: tilo_joined_room::NativeWorkspaceOwner,
+    owner: tilo_peer_state::owner::NativeWorkspaceOwner,
     key: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
@@ -42,7 +44,7 @@ struct Native {
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
 fn room() -> tilo_desktop_model::RoomId {
-    tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap()
+    tilo_desktop_model::RoomId::parse(tilo_peer_state::owner::testing::ROOM).unwrap()
 }
 impl WorkspaceAuthority for Native {
     fn with_tree(
@@ -259,9 +261,10 @@ impl Fixture {
             tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .expect("provision the host admission and terminal receipt signer");
-        let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
+        let owner =
+            tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
-        let mut certificate = tilo_joined_room::testing::certificate(
+        let mut certificate = tilo_peer_state::owner::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
             &key,
             "Governor",
@@ -271,7 +274,8 @@ impl Fixture {
         certificate.capabilities.foreign = true;
         tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
             .unwrap();
-        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
+        tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
+            .unwrap();
         let native = Arc::new(Native {
             owner,
             key,

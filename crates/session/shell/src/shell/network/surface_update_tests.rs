@@ -8,8 +8,8 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
 use tilo_network_actor::{HostIdentity, native_ingress};
+use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture};
 
 /// The Chat surface this device has installed.
 const INSTALLED: &str = "[[resources]]\nkind = \"chat\"\nlabel = \"Chat\"\nversion = 1\n";
@@ -62,7 +62,7 @@ fn message_after(seed: &NeighbourMsg, text: &str, surface: [u8; 32]) -> Neighbou
 }
 
 /// Whether the room's chat as the device holds it carries `text`.
-fn holds(owner: &tilo_joined_room::NativeWorkspaceOwner, room: RoomId, text: &str) -> bool {
+fn holds(owner: &tilo_peer_state::owner::NativeWorkspaceOwner, room: RoomId, text: &str) -> bool {
     owner
         .with_current(room, |view| Ok(view.peer().document(APP, "")))
         .unwrap()
@@ -117,10 +117,10 @@ fn a_write_naming_a_newer_chat_surface_updates_chat_and_is_then_applied() {
     crate::shell::decide_receipt_against_surfaces();
 
     let directory = tempfile::tempdir().unwrap();
-    let owner = tilo_joined_room::open_file(&directory.path().join("owner.json")).unwrap();
+    let owner = tilo_peer_state::owner::open_file(&directory.path().join("owner.json")).unwrap();
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
-    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_peer_state::owner::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     let (certificate, hint, continuity) = owner

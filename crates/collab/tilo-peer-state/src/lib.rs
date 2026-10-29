@@ -40,6 +40,8 @@ mod governed_routes;
 pub use collab_types::DocumentMutation;
 
 pub mod outbox;
+pub mod owner;
+pub mod owner_commit;
 
 pub mod durability;
 

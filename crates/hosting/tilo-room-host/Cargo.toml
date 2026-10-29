@@ -82,8 +82,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
 tilo-relay-store = { path = "../tilo-relay-store", features = ["test-support"] }
-# Native enrollment and the private owner in the private network tests.
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
