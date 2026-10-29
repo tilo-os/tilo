@@ -94,7 +94,7 @@ pub(crate) enum DisplayRequest {
 impl DisplayRequest {
     /// The published action this choice is.
     pub(crate) fn action_id(self) -> &'static str {
-        use crate::shell::search::providers::actions as ids;
+        use crate::shell::actions as ids;
         match self {
             Self::Layout(DisplayLayoutMode::Extend) => ids::DISPLAY_EXTEND_ID,
             Self::Layout(DisplayLayoutMode::Mirror) => ids::DISPLAY_MIRROR_ID,

@@ -298,7 +298,7 @@ impl SessionActionsProvider {
         }
         let shortcuts = settings_store::hardware::ShortcutConfig::load();
         for row in &mut rows {
-            row.shortcut = super::actions::action_shortcut(&shortcuts, &row.id);
+            row.shortcut = crate::shell::actions::action_shortcut(&shortcuts, &row.id);
         }
         let fields = rows
             .iter()

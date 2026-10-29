@@ -2,7 +2,7 @@
 use crate::shell::{native_workspace_owner::NativeWorkspaceOwner, state::RoomId};
 use tilo_user_identity::DeviceCert;
 
-pub(super) fn fence(
+pub(crate) fn fence(
     owner: &NativeWorkspaceOwner,
     room: RoomId,
     selected: Option<&DeviceCert>,

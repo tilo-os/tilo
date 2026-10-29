@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn choosing_an_identity_offers_names_and_avatars_never_a_fingerprint() {
-        use crate::shell::search::providers::actions::identity_select_params;
+        use crate::shell::actions::identity_select_params;
         let (alice, bob) = ("a1".repeat(32), "b2".repeat(32));
         let params =
             identity_select_params(&[(alice.clone(), "Alice".into()), (bob.clone(), "Bob".into())]);
@@ -669,7 +669,7 @@ mod tests {
 
 #[cfg(test)]
 mod icon_tests {
-    use crate::shell::search::providers::actions::action_icon;
+    use crate::shell::actions::action_icon;
     use ui::icons::Icon;
 
     #[test]

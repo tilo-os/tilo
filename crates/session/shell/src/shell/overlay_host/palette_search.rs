@@ -45,7 +45,7 @@ impl ShellOverlayHost {
         // Uninstall) gets the one question every door asks, in the shell's
         // sheet; nothing runs until the person answers it there.
         if let Some(offer) = &request.offer
-            && offer.action == crate::shell::search::providers::actions::APP_UNINSTALL_ID
+            && offer.action == crate::shell::actions::APP_UNINSTALL_ID
         {
             if let Some(app) = offer.arguments.get("app") {
                 crate::shell::app_list::ask(app);
@@ -53,8 +53,7 @@ impl ShellOverlayHost {
             return;
         }
         if let Some(offer) = &request.offer
-            && let Some(label) =
-                crate::shell::search::providers::actions::app_offerable_label(&offer.action)
+            && let Some(label) = crate::shell::actions::app_offerable_label(&offer.action)
         {
             if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
                 self.open_palette_with_scope(SearchScope::All);

@@ -24,17 +24,17 @@ use crate::shell::device_pairing::{self as engine, Answer, Pairing, Started};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam};
 use crate::shell::search::{ActionReceipt, InvocationDisposition, PendingInvocation};
 
-pub(super) const DISCOVER_ID: &str = "identity.device.pair.discover";
-pub(super) const APPROVE_ID: &str = "identity.device.pair.approve";
-pub(super) const REJECT_ID: &str = "identity.device.pair.reject";
-pub(super) const ASKING_ID: &str = "identity.device.pair.asking";
-pub(super) const ANSWER_ID: &str = "identity.device.pair.answer";
+pub(crate) const DISCOVER_ID: &str = "identity.device.pair.discover";
+pub(crate) const APPROVE_ID: &str = "identity.device.pair.approve";
+pub(crate) const REJECT_ID: &str = "identity.device.pair.reject";
+pub(crate) const ASKING_ID: &str = "identity.device.pair.asking";
+pub(crate) const ANSWER_ID: &str = "identity.device.pair.answer";
 
-pub(super) const DISCOVER_PARAMS: &[ActionParam] = engine::DISCOVER_PARAMS;
-pub(super) const APPROVE_PARAMS: &[ActionParam] = engine::APPROVE_PARAMS;
-pub(super) const REJECT_PARAMS: &[ActionParam] = engine::REJECT_PARAMS;
-pub(super) const ASKING_PARAMS: &[ActionParam] = engine::ASKING_PARAMS;
-pub(super) const ANSWER_PARAMS: &[ActionParam] = engine::ANSWER_PARAMS;
+pub(crate) const DISCOVER_PARAMS: &[ActionParam] = engine::DISCOVER_PARAMS;
+pub(crate) const APPROVE_PARAMS: &[ActionParam] = engine::APPROVE_PARAMS;
+pub(crate) const REJECT_PARAMS: &[ActionParam] = engine::REJECT_PARAMS;
+pub(crate) const ASKING_PARAMS: &[ActionParam] = engine::ASKING_PARAMS;
+pub(crate) const ANSWER_PARAMS: &[ActionParam] = engine::ANSWER_PARAMS;
 
 /// The engine's step behind shell action `id`.
 fn step(id: &str) -> Option<&'static str> {
@@ -48,18 +48,18 @@ fn step(id: &str) -> Option<&'static str> {
     }
 }
 
-pub(super) fn is_pair_action(id: &str) -> bool {
+pub(crate) fn is_pair_action(id: &str) -> bool {
     step(id).is_some()
 }
 
 /// The step's contract: the one the broker's door offers too.
-pub(super) fn contract(id: &str) -> tilo_actions::ActionContract {
+pub(crate) fn contract(id: &str) -> tilo_actions::ActionContract {
     engine::contract(step(id).unwrap_or(engine::REJECT))
 }
 
 /// Start step `id` for whoever invoked it from the active workspace: only
 /// someone who administers that workspace's identity pairs a device.
-pub(super) fn begin(
+pub(crate) fn begin(
     pairing: &Pairing,
     chrome: &Chrome,
     id: &str,
@@ -86,7 +86,7 @@ pub(super) fn begin(
 
 /// A ticket the loop polls for `answer`, which wakes the loop when it
 /// arrives from the worker.
-pub(super) fn ticket(answer: Pending<Answer>) -> PendingInvocation {
+pub(crate) fn ticket(answer: Pending<Answer>) -> PendingInvocation {
     let answer = RefCell::new(crate::shell::search::invocation_wake::watch(answer));
     Rc::new(move || {
         let waker = crate::shell::search::invocation_wake::waker();
@@ -123,7 +123,7 @@ mod tests {
                     .any(|action| action.id == id),
                 "{id} is in the catalogue"
             );
-            let contract = super::super::shell_action_contract(id);
+            let contract = super::super::declared(id).0;
             assert_eq!(
                 contract,
                 self::contract(id),
@@ -137,7 +137,7 @@ mod tests {
             assert_eq!(contract.kind, kind, "{id}");
         }
         for (id, params) in [(APPROVE_ID, APPROVE_PARAMS), (ANSWER_ID, ANSWER_PARAMS)] {
-            let approve = super::super::shell_action_contract(id);
+            let approve = super::super::declared(id).0;
             assert_eq!(approve.risk, tilo_actions::RiskLevel::Privileged);
             assert_eq!(
                 approve.confirmation,
@@ -149,7 +149,7 @@ mod tests {
             );
         }
         assert_eq!(
-            super::super::shell_action_contract(DISCOVER_ID).confirmation,
+            super::super::declared(DISCOVER_ID).0.confirmation,
             tilo_actions::ConfirmationPolicy::None,
             "looking around asks nothing"
         );

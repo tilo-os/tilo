@@ -9,7 +9,7 @@ use crate::shell::window_actions::{
     TabActionError, active_tab_id, move_tab_to_workspace, rename_tab,
 };
 
-pub(super) const TAB_RENAME_PARAMS: &[ActionParam] = &[ActionParam::optional(
+pub(crate) const TAB_RENAME_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "name",
     ParamType::Text,
     "The tab's new name; empty gives it back its window's own title. Omit to open the name \
@@ -18,7 +18,7 @@ pub(super) const TAB_RENAME_PARAMS: &[ActionParam] = &[ActionParam::optional(
 )];
 
 /// What `tab.move-to-workspace` is told: where the focused tab goes.
-pub(super) const TAB_MOVE_TO_WORKSPACE_PARAMS: &[ActionParam] = &[ActionParam::required(
+pub(crate) const TAB_MOVE_TO_WORKSPACE_PARAMS: &[ActionParam] = &[ActionParam::required(
     "workspace",
     ParamType::Integer,
     "Which of your workspaces, counting from 1 in the order the workspace menu lists them. \
@@ -28,7 +28,7 @@ pub(super) const TAB_MOVE_TO_WORKSPACE_PARAMS: &[ActionParam] = &[ActionParam::r
 /// Take the focused tab to another workspace, as the window menu's Move to
 /// workspace does: the tab the shell draws moves at once, an app's window
 /// once the person agrees on the sheet that asks what goes with it.
-pub(super) fn move_focused_tab_to_workspace(
+pub(crate) fn move_focused_tab_to_workspace(
     state: &mut ChromeState,
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
@@ -65,7 +65,7 @@ pub(super) fn move_focused_tab_to_workspace(
 
 /// Name the focused host window's tab, or open its name field when no name
 /// is given.
-pub(super) fn rename_focused_tab(
+pub(crate) fn rename_focused_tab(
     state: &mut ChromeState,
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
@@ -92,8 +92,8 @@ pub(super) fn rename_focused_tab(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{chrome_with_room, invoke_shell_action};
     use crate::shell::chrome_state::Chrome;
+    use crate::shell::search::providers::actions::tests::{chrome_with_room, invoke_shell_action};
     use crate::shell::state::{AppKind, TabId, WorkspaceId};
     use crate::shell::window_actions::{Destination, open_hosted};
 

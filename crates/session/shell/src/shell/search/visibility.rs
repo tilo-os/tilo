@@ -110,7 +110,7 @@ fn chrome_action_kind(id: &str) -> Option<ActionKind> {
     let kind = if id.contains("#ownership.") {
         ActionKind::Outside
     } else {
-        super::providers::actions::shell_action_contract(id).kind
+        crate::shell::actions::declared(id).0.kind
     };
     (kind != ActionKind::Read).then_some(kind)
 }

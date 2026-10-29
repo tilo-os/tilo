@@ -2,6 +2,7 @@
 //! invitation requests the palette queues.
 
 use super::*;
+use crate::shell::search::action_api::ActionParam;
 
 /// [`chrome_with_room`] with `member` admitted as an Editor through the
 /// production granting path, and the room document seeded from it.
@@ -373,7 +374,7 @@ fn agent_remove_action_revokes_everything_the_agent_holds() {
         assert_eq!(capabilities(&chrome), before);
     }
 
-    let contract = shell_action_contract("agent.remove");
+    let contract = declared("agent.remove").0;
     assert_eq!(contract.risk, tilo_actions::RiskLevel::Destructive);
     assert_eq!(
         contract.confirmation,
@@ -414,7 +415,7 @@ fn invitation_params_follow_the_canonical_definitions() {
             action.params.iter().any(|param| param.name == "confirm"),
             "{id} carries the confirmation its contract demands"
         );
-        let contract = shell_action_contract(id);
+        let contract = declared(id).0;
         assert_eq!(
             contract.kind,
             tilo_actions::ActionKind::Outside,
@@ -433,7 +434,7 @@ fn invitation_params_follow_the_canonical_definitions() {
             "{id}: {:?}",
             contract.validate_declaration()
         );
-        assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
+        assert_eq!(declared(id).1, tilo_actions::OperationKind::Effect);
     }
     assert!(
         !membership_actions::INVITATION_ACTION_IDS.contains(&MEMBER_ROLE_SET_ID)

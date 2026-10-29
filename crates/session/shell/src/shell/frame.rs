@@ -71,7 +71,7 @@ fn consume_record_requests(
                         }
                     });
                     actor.is_some_and(|actor| {
-                        crate::shell::search::providers::actions::shell_action_authorized_for(
+                        crate::shell::actions::shell_action_authorized_for(
                             workspace,
                             &actor,
                             "record.bring",

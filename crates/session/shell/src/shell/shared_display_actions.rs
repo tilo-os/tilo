@@ -87,8 +87,7 @@ pub(crate) fn include(
     revision: u64,
     included: bool,
 ) -> Result<(), ActionError> {
-    if !crate::shell::search::providers::actions::current_shell_action_authorized(state, INCLUDE_ID)
-    {
+    if !crate::shell::actions::current_shell_action_authorized(state, INCLUDE_ID) {
         return Err(ActionError::Explained(t("display-remote-permission")));
     }
     let view = current().ok_or_else(|| ActionError::Explained(t("display-remote-unavailable")))?;
