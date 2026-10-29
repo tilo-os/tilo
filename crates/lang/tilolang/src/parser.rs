@@ -861,6 +861,13 @@ impl<'a> Parser<'a> {
         self.expect_kw("type")?;
         let node = self.node();
         let name = self.ident("a type name")?;
+        let origin = if self.eat(&Tok::LParen) {
+            let origin = self.type_origin()?;
+            self.expect(&Tok::RParen)?;
+            Some(origin)
+        } else {
+            None
+        };
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
         let mut search: Option<SearchBlock> = None;
@@ -907,10 +914,34 @@ impl<'a> Parser<'a> {
             node,
             doc,
             name,
+            origin,
             fields,
             search,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
+    }
+
+    /// `origin: imap.message` in a type's options: the kind of an outside service's resource,
+    /// one dotted name.
+    fn type_origin(&mut self) -> PResult<Ident> {
+        let key = self.ident("`origin`")?;
+        if key.name != "origin" {
+            return self.fail(
+                key.span,
+                "a type takes one option, `origin:` (`type Message (origin: imap.message) { ... }`)",
+            );
+        }
+        self.expect(&Tok::Colon)?;
+        let first = self.ident("the origin's kind, such as `imap.message`")?;
+        let mut name = first.name.clone();
+        let mut span = first.span;
+        while self.eat(&Tok::Dot) {
+            let part = self.ident("the rest of the origin's kind")?;
+            name.push('.');
+            name.push_str(&part.name);
+            span = span.to(part.span);
+        }
+        Ok(Ident { name, span })
     }
 
     /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md, "What a type

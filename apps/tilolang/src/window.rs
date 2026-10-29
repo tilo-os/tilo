@@ -301,6 +301,13 @@ impl Window {
         self
     }
 
+    /// This window keeping its package's types with an origin in step with `origin`'s service.
+    #[must_use]
+    pub fn with_origin(mut self, origin: tilolang_tilo::origin::SharedOrigin) -> Self {
+        self.instance.add_origin(origin);
+        self
+    }
+
     /// This window sending the outside effects it settles to `sink` rather than the development
     /// log.
     #[must_use]
@@ -592,6 +599,12 @@ impl Widget for Window {
         }
         self.instance
             .set_peers(peers_of(presence, &self.app, &self.me));
+        // The room's policy names people; presence pairs each participant with theirs.
+        self.instance
+            .set_persons(presence.roster().into_iter().filter_map(|user| {
+                let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;
+                Some((user.id, person.0.clone()))
+            }));
         self.view.draw(scene, transform, text, theme, presence);
         if let Some(undrawn) = self.undrawn.take() {
             let at = std::time::SystemTime::now()

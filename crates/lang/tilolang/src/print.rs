@@ -418,7 +418,15 @@ impl Printer {
             }
             Item::Type(t) => {
                 self.docs(&t.doc);
-                self.line(&format!("type {} {{", t.name.name));
+                match &t.origin {
+                    Some(origin) => {
+                        self.line(&format!(
+                            "type {} (origin: {}) {{",
+                            t.name.name, origin.name
+                        ));
+                    }
+                    None => self.line(&format!("type {} {{", t.name.name)),
+                }
                 self.level += 1;
                 for f in &t.fields {
                     self.field(f);

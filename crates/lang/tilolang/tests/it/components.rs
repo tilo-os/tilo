@@ -320,3 +320,11 @@ fn a_collection_is_no_component_prop_and_goes_to_a_view_instead() {
         "{message}"
     );
 }
+
+#[test]
+fn an_events_value_reaches_every_step_of_a_then_chain_that_uses_it() {
+    let body = "type Note {\n    title: Text (title)\n    read: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction read(n: Note) {\n    n.read = true\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false).then(read(n))\n    }\n}";
+    assert!(errors(body).is_empty(), "{:#?}", errors(body));
+    let reads_other = "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction keep(nb: Notebook, title: Text) {\n    nb.notes.insert(Note(title: title))\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n).then(keep(nb, n.title))\n    }\n}";
+    assert_eq!(one_error(reads_other).0, "E063");
+}

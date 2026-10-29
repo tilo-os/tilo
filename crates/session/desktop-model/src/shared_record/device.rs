@@ -464,7 +464,7 @@ pub fn fold(doc: &impl ReadDoc, workspace: &mut Workspace, device: &str, kept: &
     keep_apart(&mut strips, &workspace.strips, &ids_of(&record), kept);
     // The record's arrangement, with the places of what this device keeps
     // apart from it kept where this device has them.
-    let mut arrangement = record.arrangement.clone();
+    let mut arrangement = record.arrangement;
     let shown: HashSet<u64> = strips
         .iter()
         .flat_map(|strip| &strip.window_groups)

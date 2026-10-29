@@ -23,7 +23,7 @@ default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a
 row_view   = "row" "view" ident "for" type ;
 role       = "primary" | "destructive" ;
 
-type_decl  = "type" Ident "{" { field | search } "}" ;
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ] [ "(" ( "title" | "body" ) ")" ]
              [ "=" expr ] ;
 merge_kind = "register" | "counter" | "text" ;

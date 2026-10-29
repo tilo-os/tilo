@@ -129,6 +129,10 @@ fn drawn_at_places(state: &Value) -> bool {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session driven through every gesture in order, then restarted"
+)]
 fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_restart() {
     let desktop = Desktop::start(SCREEN, &canvas_tree());
     wait(

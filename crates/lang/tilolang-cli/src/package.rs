@@ -94,6 +94,26 @@ fn toml_string(value: &str) -> String {
 #[must_use]
 pub fn manifest_text(meta: &PackageMeta, options: &BuildOptions, publisher: &str) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
+    // A package whose types hold a mail server's resources runs the mail origin: the
+    // connector reaches the account's servers and reads its credentials from custody, both in
+    // the runtime's native code, never the package's.
+    let mail = meta
+        .types
+        .iter()
+        .any(|t| t.origin.as_deref().is_some_and(|o| o.starts_with("imap.")));
+    let (capabilities, namespaces, net) = if mail {
+        (
+            "required = [\"network.http\"]\noptional = [\"secrets\"]",
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\", \"net\"]",
+            "# The mail origin speaks IMAP and SMTP to the hosts the account's settings name.\nmode = \"host\"",
+        )
+    } else {
+        (
+            "optional = []",
+            "[\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]",
+            "mode = \"off\"",
+        )
+    };
     let mut extra = if meta.icon.is_some() {
         format!("icon = {}\n", toml_string(ICON_FILE))
     } else {
@@ -123,7 +143,7 @@ x86_64 = "baseline"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = []
+{capabilities}
 
 [resources]
 kinds = [{record_kind}]
@@ -133,14 +153,14 @@ identity = "ed25519:{publisher}"
 signature = ""
 
 [sandbox]
-# No `net` namespace sharing: the app opens no socket of its own. Collaboration reaches the
+# Without the mail origin no `net` namespace: the app opens no socket of its own. Collaboration reaches the
 # broker over a service descriptor.
-namespaces = ["user", "pid", "uts", "ipc", "mount"]
+namespaces = {namespaces}
 seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
-mode = "off"
+{net}
 
 [sandbox.portals]
 
@@ -171,6 +191,9 @@ ext = []
         bin = toml_string(RUNTIME_BIN),
         shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,
+        capabilities = capabilities,
+        namespaces = namespaces,
+        net = net,
     )
 }
 

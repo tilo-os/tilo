@@ -69,6 +69,9 @@ pub struct TypeDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `(origin: mail.message)`: the outside service whose resources the type holds
+    /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
+    pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,

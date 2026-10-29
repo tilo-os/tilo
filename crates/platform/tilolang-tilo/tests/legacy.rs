@@ -35,7 +35,14 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
         (include_str!("legacy/todo.hex"), vec![app!("todo")]),
         (include_str!("legacy/notes.hex"), vec![app!("notes")]),
-        (include_str!("legacy/letters.hex"), vec![app!("letters")]),
+        // Letters as it was when it wrote its room: it became Mail since, keeping its ids.
+        (
+            include_str!("legacy/letters.hex"),
+            vec![(
+                include_str!("legacy/letters/app.tl"),
+                include_str!("legacy/letters/app.ids"),
+            )],
+        ),
         (include_str!("legacy/chat.hex"), vec![app!("chat")]),
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
