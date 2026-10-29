@@ -120,7 +120,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "title",
                 "Text",
-                "Its title: its field marked `title`; else its app's title for a root, or its type's name.",
+                "Its title: its field marked `title`; else the first line of its field marked `body`; else its app's title for a root, or its type's name.",
             ),
             (
                 "type_name",

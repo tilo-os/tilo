@@ -79,17 +79,21 @@ pub fn locate(
             .field(&step.field)
             .filter(|f| f.kind == MergeKind::Collection)
             .ok_or_else(|| not_found(format!("collection `{}`", step.field)))?;
-        let item_ty = field
-            .record
-            .as_deref()
-            .ok_or_else(|| not_found(format!("item type of `{}`", step.field)))?;
-        schema = lookup(item_ty).ok_or_else(|| not_found(format!("type {item_ty}")))?;
         let coll = obj
             .as_ref()
             .and_then(|o| map_at(doc, o, &step.field))
             .ok_or_else(|| not_found(format!("item `{}`", step.item)))?;
         obj = stored_item(doc, &coll, &step.item)
             .ok_or_else(|| not_found(format!("item `{}`", step.item)))?;
+        // A collection of a union's types: the item is of the type it was stored as.
+        let item_ty = match field.record.as_deref() {
+            Some(ty) => ty.to_owned(),
+            None => obj
+                .as_ref()
+                .and_then(|o| type_at(doc, o))
+                .ok_or_else(|| not_found(format!("item type of `{}`", step.field)))?,
+        };
+        schema = lookup(&item_ty).ok_or_else(|| not_found(format!("type {item_ty}")))?;
     }
     Ok(Located { obj, schema })
 }
@@ -316,10 +320,22 @@ pub fn changed_by(
             if let Some(own) = own.as_ref() {
                 props.push(own);
             }
-            out.patch(&props, index);
+            out.patch(doc, &props, index);
         }
     }
     out.finish()
+}
+
+/// The object at `props` from the record's root, when there is one there.
+fn object_at(doc: &Doc, props: &[&Prop]) -> Option<ObjId> {
+    let mut obj = automerge::ROOT;
+    for prop in props {
+        match doc.get(&obj, (*prop).clone()).ok()?? {
+            (AmValue::Object(_), id) => obj = id,
+            _ => return None,
+        }
+    }
+    Some(obj)
 }
 
 /// The keys from the record's root down to the object `obj` (as Automerge prints its id).
@@ -351,7 +367,7 @@ fn key_of(prop: &Prop) -> Option<&str> {
 }
 
 impl ChangedBuilder {
-    fn patch(&mut self, props: &[&Prop], index: &BTreeMap<DocId, (AppId, TypeId)>) {
+    fn patch(&mut self, record: &Doc, props: &[&Prop], index: &BTreeMap<DocId, (AppId, TypeId)>) {
         // tl / <app> / <id> / <field> ...
         let keys: Vec<Option<&str>> = props.iter().map(|p| key_of(p)).collect();
         if keys.first().copied().flatten() != Some(RECORDS_KEY) {
@@ -396,7 +412,12 @@ impl ChangedBuilder {
                 return;
             };
             let below = keys.get(at.saturating_add(1)..).unwrap_or_default();
-            let item_record = spec.record.as_deref().and_then(lookup);
+            // A collection of a union's types: the item is of the type it was stored as.
+            let item_record = spec.record.as_deref().and_then(lookup).or_else(|| {
+                let item = props.get(..at.saturating_add(3))?;
+                let obj = object_at(record, item)?;
+                type_at(record, &obj).and_then(|ty| lookup(&ty))
+            });
             match (spec.kind, below, item_record) {
                 // An item's value changed below its `v`: descend into the item.
                 (MergeKind::Collection, [Some(item), Some("v"), _, ..], Some(item_schema)) => {

@@ -304,23 +304,33 @@ impl Core {
     }
 
     /// The title of `target`: its field marked `title`, when it holds more than spaces; else,
-    /// for a root of its package, the package's title; else its type's name.
+    /// for a type without one, the first line of its field marked `body` (a message is called
+    /// by what it says, rich text as its reader reads it); else, for a root of its package, the
+    /// package's title; else its type's name.
     pub(crate) fn title_of(
         &self,
         target: &ResourceRef,
         meta: &Meta,
         ty: &TypeMeta,
     ) -> HResult<String> {
-        if let Some(field) = ty
-            .fields
-            .iter()
-            .find(|field| field.role.as_deref() == Some("title"))
-        {
+        let role = |name: &str| {
+            ty.fields
+                .iter()
+                .find(|field| field.role.as_deref() == Some(name))
+        };
+        let titled = role("title").map(|field| (field, false));
+        if let Some((field, body)) = titled.or_else(|| role("body").map(|field| (field, true))) {
             let (_, info) = self.lookup_field(target, &field.id)?;
             self.note_reads([(target.id_string(), field.id.clone())])?;
             let value = self.read_value(target, &info, None)?;
             let text = match value {
+                Value::Text(text) if body => text
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default()
+                    .to_owned(),
                 Value::Text(text) => text,
+                Value::Rich(rich) => self.read_rich(&rich, true)?,
                 _ => String::new(),
             };
             if !text.trim().is_empty() {
