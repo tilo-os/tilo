@@ -12,24 +12,28 @@
 //!
 //! A change is a device-local [`DrivesEffect`]; its buttons and the Ctrl+K
 //! entries build the same value and both reach [`DrivesModel::start`].
+//!
+//! Its part of the Storage page is view code over what the area read
+//! ([`view`]), built again whenever that changes.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ntfs_mount::protocol::{self, Mode, Placement, RememberedDrive, Request, Response};
 use ui::LocalState;
-use ui::framework::ActionControl as _;
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{ChipStyle, RowMenu, Toggle, Widget};
+use ui::widget::{ChipStyle, Element, RowMenu, Toggle};
 
 use crate::channel;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::panes::model::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -43,6 +47,9 @@ crate::area::pane_area! {
     DrivesArea;
     fn poll(&self) {
         DrivesArea::poll(self);
+    }
+    fn busy(&self) -> bool {
+        DrivesArea::busy(self)
     }
 }
 
@@ -207,7 +214,9 @@ fn request_for(operation: &DrivesEffect) -> Result<Option<(Request, String)>, St
 /// The host keeps the drives model when the Storage pane is closed.
 pub struct DrivesArea {
     cx: PaneCx,
-    model: std::cell::OnceCell<Shared<DrivesModel>>,
+    model: std::cell::OnceCell<Rc<RefCell<DrivesModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl DrivesArea {
@@ -215,10 +224,11 @@ impl DrivesArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            shown: LocalState::new(0),
         }
     }
 
-    pub fn model(&self) -> &Shared<DrivesModel> {
+    pub fn model(&self) -> &Rc<RefCell<DrivesModel>> {
         self.model.get_or_init(|| {
             let service: Arc<dyn DriveService> = if self.cx.reaches_devices() {
                 Arc::new(SocketService {
@@ -232,17 +242,32 @@ impl DrivesArea {
                         .unwrap_or_default(),
                 ))
             };
-            std::rc::Rc::new(std::cell::RefCell::new(DrivesModel::over(
-                self.cx.clone(),
-                service,
-            )))
+            Rc::new(RefCell::new(DrivesModel::over(service)))
         })
     }
 
+    /// Take in what the service answered, and move what the page is keyed
+    /// by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        model.poll();
+        if std::mem::take(&mut model.structure_dirty) {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
+    }
+
+    /// Whether a read or a change is on its way, so the window keeps
+    /// polling.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.busy())
     }
 
     /// One row per remembered drive the pane has read, offering what its
@@ -295,7 +320,6 @@ fn drive_name(drive: &RememberedDrive) -> String {
 
 /// The Drives section of Storage.
 pub struct DrivesModel {
-    cx: PaneCx,
     service: Arc<dyn DriveService>,
     /// `None` until the first read answers.
     drives: Option<Result<Vec<RememberedDrive>, Unreachable>>,
@@ -309,9 +333,8 @@ pub struct DrivesModel {
 
 impl DrivesModel {
     /// A model over `service`, reading it once.
-    pub fn over(cx: PaneCx, service: Arc<dyn DriveService>) -> Self {
+    pub fn over(service: Arc<dyn DriveService>) -> Self {
         let mut model = Self {
-            cx,
             service,
             drives: None,
             read_rx: None,
@@ -420,6 +443,11 @@ impl DrivesModel {
         }
     }
 
+    /// Whether a read or a change is on its way.
+    fn busy(&self) -> bool {
+        self.read_rx.is_some() || self.change_rx.is_some()
+    }
+
     fn shown(&self) -> &[RememberedDrive] {
         match &self.drives {
             Some(Ok(drives)) => drives,
@@ -427,7 +455,8 @@ impl DrivesModel {
         }
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The drives' part of the Storage page, as the model shows them now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
         // A machine that never remembered a drive, or has no mount service,
         // has nothing to say about drives.
         if self.shown().is_empty() && self.outcome.is_none() {
@@ -436,7 +465,7 @@ impl DrivesModel {
         let busy = self.change_rx.is_some();
         let mut body: Vec<Item> = vec![note(&t("settings-drives-intro"))];
         for drive in self.shown() {
-            body.extend(self.drive_rows(drive, busy));
+            body.extend(Self::drive_rows(cx, drive, busy));
         }
         if busy {
             body.push(note(&t("settings-drives-changing")));
@@ -453,7 +482,8 @@ impl DrivesModel {
         crate::widgets::page(sections)
     }
 
-    fn drive_rows(&self, drive: &RememberedDrive, busy: bool) -> Vec<Item> {
+    fn drive_rows(cx: &ViewCx<Settings>, drive: &RememberedDrive, busy: bool) -> Vec<Item> {
+        let dispatcher = cx.dispatcher();
         let name = drive_name(drive);
         let live = drive_live_row(drive).into_resource();
         let placement = t(match drive.placement {
@@ -471,7 +501,8 @@ impl DrivesModel {
             (Placement::Internal, Mode::Open) => "settings-drives-internal-fast-detail",
         });
         let forget = (!busy).then(|| {
-            self.cx.row_invocation(
+            crate::on_row::invocation(
+                &dispatcher,
                 &live,
                 DrivesEffect::ForgetDrive {
                     grant: drive.grant.clone(),
@@ -497,14 +528,13 @@ impl DrivesModel {
             let grant = drive.grant.clone();
             let toggle = Toggle::from_state(&LocalState::new(drive.mode == Mode::OpenSafely))
                 .with_id(&format!("settings.drives.safely.{}", drive.grant));
-            let toggle = match self.cx.row_binding(
+            let toggle = crate::on_row::bind(
+                &dispatcher,
                 &live,
+                toggle,
                 effect(DrivesEffect::SET_DRIVE_OPENS_SAFELY)
                     .map(move |safely: bool| (grant.clone(), safely)),
-            ) {
-                Some(binding) => toggle.bind_action(binding),
-                None => toggle.unavailable(),
-            };
+            );
             items.push(setting_row_described(
                 &t_args("settings-drives-open-safely", &[("drive", name.into())]),
                 &t("settings-drives-open-safely-desc"),
@@ -515,20 +545,13 @@ impl DrivesModel {
     }
 }
 
-impl PaneModel for DrivesModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-    fn poll(&mut self) -> bool {
-        DrivesModel::poll(self);
-        std::mem::take(&mut self.structure_dirty)
-    }
-    fn name(&self) -> &'static str {
-        "DrivesCard"
-    }
-    fn busy(&self) -> bool {
-        self.read_rx.is_some() || self.change_rx.is_some()
-    }
+/// The drives' part of the Storage page as view code over what the area
+/// read: built again whenever what it shows changes ([`DrivesArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &SettingsApp) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    held.poll();
+    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
 #[cfg(test)]
@@ -650,21 +673,19 @@ mod tests {
         }
     }
 
-    fn test_cx() -> PaneCx {
-        PaneCx::in_profile(std::env::temp_dir().join("tilo-drives-test-settings"))
-    }
-
-    fn texts(widget: &dyn Widget) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut stack = vec![widget];
-        while let Some(next) = stack.pop() {
-            if let Some(node) = next.accessibility() {
-                out.extend(node.name);
-                out.extend(node.value);
-            }
-            stack.extend(next.children());
-        }
-        out
+    /// What a Settings window on the Storage page says once its drives
+    /// model is `model`.
+    fn texts(model: DrivesModel) -> Vec<String> {
+        let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
+        app.with_widget::<crate::window::SettingsWindow, _>(move |app| {
+            let mut model = model;
+            model.structure_dirty = true;
+            *area(app).unwrap().model().borrow_mut() = model;
+        })
+        .unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
+        app.settle();
+        crate::widgets::announced_text(app.harness().root_widget())
     }
 
     #[test]
@@ -673,9 +694,9 @@ mod tests {
             grant("a1", "Windows", true, Mode::Open),
             grant("b2", "", false, Mode::OpenSafely),
         ]);
-        let mut model = DrivesModel::over(test_cx(), running.service());
+        let mut model = DrivesModel::over(running.service());
         model.settle();
-        let shown = texts(model.compose().as_ref()).join("\n");
+        let shown = texts(model).join("\n");
         assert!(shown.contains("Windows"), "{shown}");
         assert!(
             shown.contains(&t("settings-drives-unnamed-external")),
@@ -703,7 +724,7 @@ mod tests {
             grant("a1", "Windows", true, Mode::Open),
             grant("b2", "Stick", false, Mode::OpenSafely),
         ]);
-        let mut model = DrivesModel::over(test_cx(), running.service());
+        let mut model = DrivesModel::over(running.service());
         model.settle();
 
         model.start(
@@ -769,15 +790,19 @@ mod tests {
     #[test]
     fn no_service_means_nothing_about_drives() {
         let dir = tempfile::tempdir().unwrap();
-        let mut model = DrivesModel::over(
-            test_cx(),
-            Arc::new(SocketService {
-                socket: dir.path().join("absent.sock"),
-            }),
-        );
+        let mut model = DrivesModel::over(Arc::new(SocketService {
+            socket: dir.path().join("absent.sock"),
+        }));
         model.settle();
         assert!(matches!(model.drives, Some(Err(_))));
-        assert!(texts(model.compose().as_ref()).is_empty());
+        let shown = texts(model);
+        assert!(
+            !shown
+                .iter()
+                .any(|line| line == &t("settings-drives-title")
+                    || line == &t("settings-drives-intro")),
+            "{shown:#?}"
+        );
     }
 
     #[test]
@@ -793,7 +818,7 @@ mod tests {
                 crate::panes::drives::area(app).unwrap().rows().is_empty(),
                 "nothing read, nothing offered"
             );
-            let mut model = DrivesModel::over(app.host().clone(), Arc::clone(&service));
+            let mut model = DrivesModel::over(Arc::clone(&service));
             model.settle();
             *crate::panes::drives::area(app)
                 .unwrap()

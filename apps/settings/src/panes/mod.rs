@@ -84,6 +84,7 @@ pub(crate) fn view(
         }
         crate::categories::Category::Users => users::view(cx, app),
         crate::categories::Category::Printers => printers::view(cx, app),
+        crate::categories::Category::Storage => storage::view(cx, app),
         _ => None,
     }
 }
