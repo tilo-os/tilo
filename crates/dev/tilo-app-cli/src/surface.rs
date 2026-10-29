@@ -17,6 +17,15 @@
 //! and types. Labels, descriptions, field titles and owners stay in the
 //! code; a field type's own operation vocabulary is kept as its digest. One
 //! line per field keeps the file small and its diffs readable.
+//!
+//! Field and parameter types are the language-neutral
+//! `tilo_actions::surface::FieldType`, the records and enums they name
+//! declared once under `[[resources.types]]`. A file written before that
+//! holds each field's Rust type as text: it still parses, receivers read it
+//! as before, and `check` counts it as current, so no app's surface is
+//! rewritten for the vocabulary alone. Each app's file takes the new form the
+//! next time its surface is written (`tilo-app surface`), when the app is
+//! next built or changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -578,13 +587,45 @@ fn same_but_older(before: &Value, now: &Value) -> bool {
     upgraded == *now
 }
 
+/// Whether the committed resource `before` was written before field and
+/// parameter types had their own vocabulary: it declares no named types, and
+/// its fields hold Rust type text or its parameters no types.
+fn written_before_types(before: &Value) -> bool {
+    if before.get("types").is_some() {
+        return false;
+    }
+    let fields = before.get("fields").and_then(Value::as_array);
+    let verbs = before.get("verbs").and_then(Value::as_array);
+    let params = verbs
+        .into_iter()
+        .flatten()
+        .filter_map(|verb| verb.get("params").and_then(Value::as_array))
+        .flatten();
+    fields.is_some_and(|fields| fields.iter().any(rust_text))
+        || params.clone().next().is_some()
+            && params.clone().all(|param| param.get("type").is_none())
+}
+
+/// Whether the committed verb `before` is `now` but for the types of its
+/// parameters, which a file written before parameters had them leaves out.
+fn same_but_untyped(before: &Value, now: &Value) -> bool {
+    let mut untyped = now.clone();
+    for param in untyped
+        .get_mut("params")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        param.remove("type");
+    }
+    untyped == *before
+}
+
 /// How the committed surface `before` differs from `now`, one line each.
 fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
     let mut changes = Vec::new();
-    let older = before
-        .get("fields")
-        .and_then(Value::as_array)
-        .is_some_and(|fields| fields.iter().any(rust_text));
+    let older = written_before_types(before);
     for (what, list, key) in [("verb", "verbs", "id"), ("field", "fields", "path")] {
         let old = by(before.get(list), key);
         let new = by(now.get(list), key);
@@ -592,6 +633,7 @@ fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
             match old.get(name) {
                 None => changes.push(format!("{kind}: new {what} `{name}`")),
                 Some(previous) if older && same_but_older(previous, value) => {}
+                Some(previous) if older && same_but_untyped(previous, value) => {}
                 Some(previous) if previous != value => {
                     changes.push(format!("{kind}: {what} `{name}` changed"));
                 }

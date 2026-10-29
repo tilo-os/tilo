@@ -349,8 +349,10 @@ fn members_of_the_room(app: &mut TestApp<TlApp>) {
         &room, standing,
     ));
     let mut presence = ui::presence::PresenceCtx::default();
+    // Mia is here from her laptop, which the room's host paired with her person; Leo is named
+    // as himself.
     for (id, name) in [
-        ("u_mia", "Mia"),
+        ("mia-laptop", "Mia"),
         ("u_leo", "Leo"),
         ("u_zoe", "Zoe"),
         ("agent:planner", "Planner"),
@@ -363,6 +365,10 @@ fn members_of_the_room(app: &mut TestApp<TlApp>) {
         ui::permissions::UserId("agent:planner".to_owned()),
         ui::presence::ParticipantKind::Agent,
     );
+    presence.set_persons([(
+        ui::permissions::UserId("mia-laptop".to_owned()),
+        ui::permissions::UserId("u_mia".to_owned()),
+    )]);
     app.harness().set_presence_context(presence);
     settle(app);
 }

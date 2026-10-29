@@ -907,8 +907,13 @@ pub fn apply_command(
         }
         DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
     }
-    // A window closed or moved out of the workspace leaves its canvas place
-    // free.
+    free_closed_places(workspace);
+    Ok(())
+}
+
+/// A window closed or moved out of the workspace leaves its canvas place
+/// free.
+fn free_closed_places(workspace: &mut Workspace) {
     let live: std::collections::HashSet<u64> = workspace
         .strips
         .iter()
@@ -918,7 +923,6 @@ pub fn apply_command(
     workspace
         .arrangement
         .retain_groups(|group| live.contains(&group));
-    Ok(())
 }
 
 /// The largest side a canvas place may have, in canvas pixels: room for a

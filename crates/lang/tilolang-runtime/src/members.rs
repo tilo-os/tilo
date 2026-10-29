@@ -85,6 +85,11 @@ fn members_key() -> StateKey {
 /// How many of those who spoke last a rich input's drawer offers first (chat.md).
 const SPEAKERS: usize = 5;
 
+/// How many of a document's last changes the drawer looks back over for them: who spoke
+/// longer ago than that is a member like any other, and the cost stays the same however long
+/// the conversation's history grows.
+const RECENT: usize = 200;
+
 impl Core {
     /// Take the workspace's members now, and how its grants decide who reads what (`None`:
     /// every member reads every resource of the workspace).
@@ -146,24 +151,16 @@ impl Core {
             }
             Imp::Speakers => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let versions = self
+                let said = self
                     .store
                     .borrow()
-                    .versions(&target.target)
+                    .recent_authors(&target.target, SPEAKERS, RECENT)
                     .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
                 self.read_versions_of(&target.target)?;
-                let mut said: Vec<Principal> = Vec::new();
-                for version in versions.into_iter().rev() {
-                    let who = Principal(version.who);
-                    if !said.contains(&who) {
-                        said.push(who);
-                    }
-                    if said.len() == SPEAKERS {
-                        break;
-                    }
-                }
                 self.ret_h(Value::List(
-                    said.into_iter().map(Value::Principal).collect(),
+                    said.into_iter()
+                        .map(|who| Value::Principal(Principal(who)))
+                        .collect(),
                 ))
             }
             Imp::PrincipalKind => {

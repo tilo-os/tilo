@@ -50,6 +50,9 @@ macro_rules! date_model {
             fn json_schema() -> serde_json::Value {
                 serde_json::json!({"type": "string", "pattern": $schema})
             }
+            fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+                crate::FieldType::$field
+            }
         }
     )*};
 }

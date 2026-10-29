@@ -206,4 +206,31 @@ view room(r: Room) {
             "newest first, each once: {speakers:?}"
         );
     }
+
+    #[test]
+    fn who_spoke_last_is_read_from_a_bounded_window_of_recent_changes() {
+        use tilolang_runtime::store::Store as _;
+        let store = AmStore::new();
+        let app = App::compile(SOURCE, &[]);
+        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let room = rt.create("Room").unwrap();
+        let say = app.action("say");
+        for who in [planner(), ada(), bo()] {
+            rt.invoke_action(
+                &who,
+                (
+                    say.as_str(),
+                    vec![Value::resource(&room), Value::text("hello")],
+                ),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store.recent_authors(&room, 5, 2).unwrap(),
+            ["bo", "ada"],
+            "only the last two changes are looked at, however long the history"
+        );
+        assert_eq!(store.recent_authors(&room, 1, 10).unwrap(), ["bo"]);
+    }
 }
