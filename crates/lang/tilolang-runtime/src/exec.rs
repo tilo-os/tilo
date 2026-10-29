@@ -288,14 +288,28 @@ impl Core {
                 )));
             };
             let before = meta.params.get(..i).unwrap_or_default();
-            self.frames
-                .borrow_mut()
-                .push(pkg.hash.clone(), FrameKind::Pure);
-            let value = self.call_in_frame(&pkg, &default.export, before, &args, Some(&param.ty));
-            self.frames.borrow_mut().pop();
-            args.push(value?);
+            let value = self.call_pure(&pkg, &default.export, before, &args, &param.ty)?;
+            args.push(value);
         }
         Ok(args)
+    }
+
+    /// Call the export `export` of `pkg`, a function of the values it is given that changes
+    /// nothing (a parameter default, an argument computed at an event), in a frame of its own.
+    pub(crate) fn call_pure(
+        &self,
+        pkg: &Package,
+        export: &str,
+        params: &[ParamMeta],
+        args: &[Value],
+        result: &str,
+    ) -> Result<Value, RuntimeError> {
+        self.frames
+            .borrow_mut()
+            .push(pkg.hash.clone(), FrameKind::Pure);
+        let value = self.call_in_frame(pkg, export, params, args, Some(result));
+        self.frames.borrow_mut().pop();
+        value
     }
 
     /// `aref` with the arguments it leaves out given their defaults, now.

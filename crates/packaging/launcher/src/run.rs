@@ -29,6 +29,10 @@ use crate::services::{
 use entrypoint_runtime::preflight_entrypoint_runtime;
 
 mod entrypoint_runtime;
+mod verified_installation;
+#[cfg(test)]
+pub(crate) use verified_installation::verified_launch_installation_against;
+pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
 pub mod tilolang_host;
 
 struct SeccompFds {
@@ -380,6 +384,12 @@ pub struct RunOptions {
     pub open_uri: Option<String>,
     /// Shell instance id selecting the fixed private standard console namespace.
     pub headless_console: Option<u64>,
+    /// The app is a tilolang app whose instance a tilolang host runs: its process is its
+    /// window alone, presenting what the instance sends over the patch connection the session
+    /// hands it on its window door. It gets no collaboration connection, so it holds and
+    /// commits none of the app's data; its launch identity stays for its surface and
+    /// accessibility.
+    pub tilolang_hosted: bool,
 }
 
 impl Default for RunOptions {
@@ -414,6 +424,7 @@ impl Default for RunOptions {
             open_document: None,
             open_uri: None,
             headless_console: None,
+            tilolang_hosted: false,
         }
     }
 }
@@ -1776,68 +1787,6 @@ pub(crate) fn verified_original_manifest(
         .map_err(|_| refusal())?
         .ok_or_else(refusal)?;
     verified_launch_installation(&installed, manifest_path, payload_root, expected)
-}
-
-pub(crate) fn verified_launch_installation(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-) -> Result<ManifestView, RunError> {
-    // Re-read on every launch, as `tilo-install run` does: a publisher
-    // revoked after install must not keep launching from the shell. An
-    // unreadable list refuses rather than reading as "nothing revoked".
-    use tilo_app_package::TrustFile as _;
-    let revoked = match tilo_app_package::default_revoked_keys_path() {
-        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
-            RunError::InvalidServiceLaunch(format!(
-                "the publisher revocation list is unreadable ({error})"
-            ))
-        })?,
-        None => tilo_app_package::RevocationList::default(),
-    };
-    verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
-}
-
-pub(crate) fn verified_launch_installation_against(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-    revoked: &tilo_app_package::RevocationList,
-) -> Result<ManifestView, RunError> {
-    let refusal =
-        || RunError::InvalidServiceLaunch("original signed package launch changed".into());
-    if installed.package_id_hex != expected
-        || installed.manifest_path != manifest_path
-        || installed.payload_root != payload_root
-    {
-        return Err(refusal());
-    }
-    let report =
-        package_store::integrity::verify(installed, payload_root).map_err(|_| refusal())?;
-    if !report.is_intact() {
-        return Err(refusal());
-    }
-    let record = package_store::integrity::read_record(
-        &package_store::integrity::record_dir(installed),
-        &installed.id,
-        expected,
-    )
-    .map_err(|_| refusal())?;
-    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
-        return Err(RunError::InvalidServiceLaunch(format!(
-            "the package's publisher key is revoked ({})",
-            entry.reason
-        )));
-    }
-    let manifest: ManifestView =
-        toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
-            .map_err(|_| refusal())?;
-    if manifest.package_id != installed.id {
-        return Err(refusal());
-    }
-    Ok(manifest)
 }
 
 /// Launch mode — which of the entrypoint binaries we're targeting
@@ -3818,6 +3767,16 @@ pub(crate) fn run_with_context(
         }
         resolved
     };
+    // A window whose instance a tilolang host runs holds none of the app's data: it gets no
+    // collaboration connection (the host's instance has the app's own), and says so.
+    let resolved: Vec<_> = if opts.tilolang_hosted {
+        resolved
+            .into_iter()
+            .filter(|service| service.name != crate::services::COLLAB_SERVICE)
+            .collect()
+    } else {
+        resolved
+    };
     let binds = to_service_binds(&resolved);
     tilo_startup_metrics::handoff_mark("services-resolved");
     let mut headless_console = opts
@@ -3868,6 +3827,12 @@ pub(crate) fn run_with_context(
         splice_cli_setenv(
             &mut argv,
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
+        )?;
+    }
+    if opts.tilolang_hosted {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::tilolang_host::HOSTED_ENV.into(), "1".into())),
         )?;
     }
     if let Some((services, _)) = enrolled.as_ref() {

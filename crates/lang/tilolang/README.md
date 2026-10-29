@@ -156,11 +156,17 @@ that reads them runs again when membership or grants change. Every `rich_input`'
 offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
 members in a view of no resource), without the view declaring anything.
 
-**Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
+**Collections.** An item is its id: a reference to it names its document and id
+(`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
+everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
 many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
 `items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the
 item it then comes before, and the move is recorded beside it, so concurrent moves converge
-where each person meant.
+where each person meant. The collection a move is called on is where the item goes, from
+whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
+takes a card from its column to the foot of `done`, the same card, with its history and every
+reference to it. An item cannot go inside itself. How moves, edits and removals made at the same
+time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:
@@ -231,9 +237,11 @@ The options and their values: `gap:`/`padding:` `.tight .related .sibling .secti
 person's own in that window. The view reads them like variables; they change only through a
 control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
-too: they go to the window of `r`. An action a view applies takes view state as itself
-(`send(c, draft)`, `set(n, other)`) and reads it when the control fires, so a press right after
-a keystroke sends that keystroke; an argument that reads view state any other way is E111.
+too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
+what the invoker sees, as its parameter defaults are: an action a view applies reads the view
+state its arguments use when the control fires (`send(c, draft)`, `set(open, not open)`,
+`send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
+pressed twice before the view draws again toggles twice.
 
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.

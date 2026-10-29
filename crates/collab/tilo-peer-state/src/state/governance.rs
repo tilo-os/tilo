@@ -457,36 +457,26 @@ impl PeerGovernanceMut<'_> {
         }
     }
     /// Atomically records a verified single-use invitation redemption, its
-    /// independent root-certified device, and its room role.
+    /// independent root-certified device, and its room role, written by
+    /// `key`: the device of any member who may invite. The invitation is
+    /// checked on its own ([`crate::room::membership::invitation_admits`]),
+    /// as every receiver checks it.
     ///
     /// # Errors
     ///
-    /// Returns an error if `key` is not the governance writer, the redemption conflicts
-    /// with recorded governance, or governance cannot be updated.
+    /// Returns an error if `key` is not a member's device that may invite,
+    /// the invitation does not admit the redemption, it conflicts with
+    /// recorded governance, or governance cannot be updated.
     pub fn admit_invited_member(
         self,
         redemption: &crate::join::VerifiedRedemption,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let grant = redemption.join().grant();
-        if grant.room != self.peer.core.room || grant.authority != self.peer.core.authority {
-            return Err("invitation is not for this pinned room authority".into());
+        if redemption.join().grant().room != self.peer.core.room {
+            return Err("invitation is not for this room".into());
         }
-        if grant.issuer == self.peer.core.authority {
-            self.peer.require_governance_writer(key, now)?;
-        } else {
-            if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
-                return Err("governance writer is not invitation issuer".into());
-            }
-            if self
-                .peer
-                .certificate(&grant.issuer.device_public_key, now)?
-                != &grant.issuer
-            {
-                return Err("delegated invitation issuer certificate mismatch".into());
-            }
-        }
+        self.peer.require_inviter(key, now)?;
         let cert = redemption.certificate();
         if self
             .peer
@@ -513,13 +503,97 @@ impl PeerGovernanceMut<'_> {
             crate::governance::AdmissionOutcome::Applied { changes } => {
                 let room = self.peer.core.room.clone();
                 let outcome = self.peer.receive_from(
-                    TransportOrigin::RelayDelta(self.peer.core.authority.device_public_key),
+                    TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
                     NeighbourMsg::SyncResp { changes, room },
                     now,
                 )?;
                 Ok(outcome.changed || outcome.metadata_changed)
             }
         }
+    }
+    /// Admit `device`, a device certified by the root of someone already a
+    /// member, as that member's: it needs no invitation, and any member's
+    /// device `key` writes it in when it first asks. Whether the room changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not a current member's device, `device`
+    /// does not verify, is revoked or conflicts with the room's, its person
+    /// is not a member, or governance cannot be updated.
+    pub fn admit_member_device(
+        self,
+        device: &DeviceCert,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_member_writer(key, now)?;
+        tilo_user_identity::verify_device_cert_at(device, now_ns(now)).map_err(err)?;
+        if self
+            .peer
+            .core
+            .revocations
+            .is_revoked(&device.device_public_key)
+        {
+            return Err("device revoked".into());
+        }
+        match self.peer.core.certificates.get(&device.device_public_key) {
+            Some(old) if old.as_ref() == device => return Ok(false),
+            Some(_) => return Err("certificate conflict".into()),
+            None => {}
+        }
+        let mut doc = self
+            .peer
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let person = hex::encode(device.user_public_key);
+        let owner = self.peer.core.authority.user_public_key == device.user_public_key;
+        if !owner
+            && doc
+                .policy()
+                .room_policy(&self.peer.core.room)
+                .active_role(&person)
+                .is_none()
+        {
+            return Err("the device's person is not a member".into());
+        }
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("governed identities missing")?
+            .1;
+        let identity = GovernedIdentity {
+            device_cert: device.clone(),
+            revocations: Vec::new(),
+            admission: None,
+            admissions: Vec::new(),
+            workspace_delegations: Vec::new(),
+            delegate: None,
+        };
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        doc.put(
+            &identities,
+            hex::encode(device.device_public_key),
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&identity).map_err(err)?),
+        )
+        .map_err(err)?;
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let room = self.peer.core.room.clone();
+        let outcome = self.peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
     }
     /// Change a governed collaborator's room role.
     ///
@@ -806,5 +880,25 @@ impl PeerGovernanceMut<'_> {
         }
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)
+    }
+}
+
+impl super::StatePeer {
+    /// A current member's device whose person may invite: what an
+    /// admission through an invitation is written by.
+    fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        let device = key.verifying_key().to_bytes();
+        self.require_member_writer(key, now)?;
+        let member = self.permissions(device, now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        member
+            .policy
+            .check_action(
+                &member.authority(&bound),
+                tilo_action_policy::roles::governance::INVITE,
+                &tilo_action_policy::Context::at_time(now),
+                false,
+            )
+            .map_err(|refusal| format!("the writer may not invite: {refusal}"))
     }
 }

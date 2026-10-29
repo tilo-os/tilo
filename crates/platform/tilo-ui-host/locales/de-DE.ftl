@@ -38,3 +38,6 @@ tilolang-thread-replies = { $count ->
     [one] 1 Antwort
    *[other] { $count } Antworten
 }
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

@@ -37,12 +37,20 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
+# The Board package with cards on it: its window's bindings, actions and card menus.
+[[test]]
+name = "board"
+path = "tests/board.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-startup-metrics" }
+# Waiting on the hosted window's patch connection.
+libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }

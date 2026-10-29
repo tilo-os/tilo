@@ -151,6 +151,7 @@ imports! {
     ActOpen = "act_open" ([H, H, I32] -> [H]);
     EventValue = "event_value" ([] -> [H]);
     StateAt = "state_at" ([I32, H, I32] -> [H]);
+    ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
     WorkspaceMembers = "workspace_members" ([] -> [H]);

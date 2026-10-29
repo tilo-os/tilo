@@ -2155,8 +2155,7 @@ impl ShellDriver {
             "qs-devices" => self.scene_qs_devices(),
             "qs-clipboard" => self.scene_qs_clipboard(false),
             "qs-clipboard-paste" => self.scene_qs_clipboard(true),
-            "power-menu" => self.scene_power_menu(false),
-            "power-menu-keyboard" => self.scene_power_menu(true),
+            "power-menu" => self.scene_power_menu(),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -3040,10 +3039,8 @@ impl ShellDriver {
         });
     }
 
-    fn scene_power_menu(&mut self, select_shutdown: bool) {
-        self.fb
-            .host_mut()
-            .force_power_menu_for_visual_test(select_shutdown);
+    fn scene_power_menu(&mut self) {
+        self.fb.host_mut().force_power_menu_for_visual_test();
     }
 
     fn scene_ws_settings_general(&mut self) {

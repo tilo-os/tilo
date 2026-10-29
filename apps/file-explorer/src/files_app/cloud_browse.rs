@@ -40,7 +40,7 @@ pub(super) struct CloudView {
     pub(super) active: bool,
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     pub(super) fn browse_cloud(
         &mut self,
         account: String,
@@ -451,7 +451,7 @@ impl FileExplorerWidget {
     /// path and actions back after cloud mode. While the window's bar hosts
     /// the header, the bar names the folder ([`Self::window_toolbar`]) and
     /// the window draws no header to change.
-    pub(super) fn refresh_cloud_header(&mut self) {
+    pub(super) fn refresh_cloud_header(&mut self, chrome: &mut Chrome) {
         if self.header_in_bar {
             self.cloud.header_shown = false;
             return;
@@ -460,18 +460,21 @@ impl FileExplorerWidget {
             let title =
                 folder.map_or_else(|| account.clone(), |folder| format!("{account} / {folder}"));
             // window-bar: fallback, the bar names the folder while it hosts the window
-            self.nav
+            chrome
+                .nav
                 .set_content_header_leading(Some(ui::widget::Text::new(&title).into_widget()));
-            self.nav.set_content_header("", vec![]);
+            chrome.nav.set_content_header("", vec![]);
             self.cloud.header_shown = true;
         } else if self.cloud.header_shown {
             let (leading, actions, toolbar) = crate::toolbar::FileToolbar::new(self.cmds.clone());
             self.toolbar = toolbar;
             self.update_toolbar();
             // window-bar: fallback, the bar shows the path while it hosts the window
-            self.nav.set_content_header_leading(Some(Box::new(leading)));
+            chrome
+                .nav
+                .set_content_header_leading(Some(Box::new(leading)));
             // window-bar: fallback, the bar holds the folder's actions while it hosts the window
-            self.nav.set_content_header("", vec![Box::new(actions)]);
+            chrome.nav.set_content_header("", vec![Box::new(actions)]);
             self.cloud.header_shown = false;
         }
     }

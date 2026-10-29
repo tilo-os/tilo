@@ -421,7 +421,7 @@ fn settings_import_connection_to_files_exports_independent_copies_and_undo() {
     app.call("reveal-cloud", serde_json::json!({})).unwrap();
     assert_eq!(
         app.with_surface(
-            |files: &mut file_explorer::files_app::FileExplorerWidget| files.current_path()
+            |files: &mut file_explorer::files_app::FileExplorerWidget| files.state().current_path()
         )
         .unwrap(),
         destination

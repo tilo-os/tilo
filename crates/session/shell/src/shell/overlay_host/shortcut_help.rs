@@ -166,7 +166,7 @@ impl ShellOverlayHost {
             || self.palette_visible
             || self.palette_transition.is_visible(ui::time::now())
             || self.qs_motion.is_visible(ui::time::now())
-            || self.layers.power_menu.is_open()
+            || self.layers.power_menu.is_drawn()
             || self.workspace_settings_overlay.member_sheet_is_open()
             || self.file_picker_overlay.widget().is_some()
             || self.peer_sync_overlay.visible()

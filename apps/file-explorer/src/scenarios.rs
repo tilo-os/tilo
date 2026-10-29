@@ -7,8 +7,8 @@
 //! `user.tilo.sync`, `user.tilo.thumb` and history extended attributes — so
 //! the window reads them through the same listing, badge and preview paths
 //! it reads a person's files with. The view state a scenario shows (a
-//! selection, an open menu, a drag in flight) is staged by the surface once
-//! the window is laid out ([`crate::FileExplorerWidget::stage_scenario`]).
+//! selection, an open menu, a drag in flight) is staged by the window once
+//! the window is laid out ([`crate::files_app::FilesState::stage_scenario`]).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

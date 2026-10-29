@@ -300,6 +300,9 @@ pub(super) struct InputRuntime {
     /// thing they did: what they pressed is in the window there, which is the
     /// window that asked for whatever the press opens.
     pub(super) pressed_at: Option<vello::kurbo::Point>,
+    /// The window has the keyboard: the one a person (or a test control's
+    /// activation) addresses among the app's windows.
+    pub(super) window_focused: bool,
 }
 
 impl InputRuntime {
@@ -307,6 +310,7 @@ impl InputRuntime {
         Self {
             modifiers: winit::event::Modifiers::default(),
             keyboard_layout: None,
+            window_focused: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),

@@ -161,6 +161,9 @@ pub(crate) struct Checker<'a> {
     synth_base: usize,
     /// The view state templates declared where they expanded, by the view's id.
     states: Vec<(String, crate::resolve::StateInfo)>,
+    /// The arguments computed from view state made so far ([`ir::AtEventFn`]); their
+    /// functions follow the row views'.
+    at_event: Vec<(ir::Func, ir::AtEventFn)>,
 }
 
 /// What a checked agent block evaluates to.
@@ -187,6 +190,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         synth: Vec::new(),
         synth_base: declared,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -244,10 +248,16 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
     }
     c.check_proposals(module);
     let mut views = Vec::new();
+    let mut at_event = Vec::new();
     if funcs.len() == c.synth_base {
         for (f, v) in std::mem::take(&mut c.synth) {
             funcs.push(f);
             views.push(v);
+        }
+        for (f, mut a) in std::mem::take(&mut c.at_event) {
+            a.func = funcs.len();
+            funcs.push(f);
+            at_event.push(a);
         }
     } else if c.diags.is_empty() {
         c.err(
@@ -260,6 +270,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         funcs,
         views,
         states: c.states,
+        at_event,
     }
 }
 
@@ -272,6 +283,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -287,6 +299,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             funcs: vec![f],
             views: Vec::new(),
             states: Vec::new(),
+            at_event: Vec::new(),
         },
         ty,
     }
@@ -301,6 +314,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -310,6 +324,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             funcs: vec![f],
             views: Vec::new(),
             states: Vec::new(),
+            at_event: Vec::new(),
         },
         ty: Ty::View,
     }

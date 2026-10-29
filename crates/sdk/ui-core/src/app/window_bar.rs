@@ -18,6 +18,7 @@
 
 #[cfg(feature = "native")]
 use crate::host_core::HostCore as _;
+#[cfg(feature = "native")]
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
 #[cfg(feature = "native")]
@@ -347,3 +348,7 @@ impl App {
 #[cfg(test)]
 #[path = "window_bar_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "test_activation_tests.rs"]
+mod test_activation_tests;

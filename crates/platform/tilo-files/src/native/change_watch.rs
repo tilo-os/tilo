@@ -37,6 +37,10 @@ use crate::watch::ChangeKind;
 /// The name of a watch's thread (Linux), as it shows in a wakeup report.
 pub const THREAD_NAME: &str = "tilo-dir-watch";
 
+/// The name of the thread that reads the process's one inotify instance and
+/// hands each watch its changes (Linux).
+pub const HUB_THREAD_NAME: &str = "tilo-inotify";
+
 /// One change a [`Watcher`] reports.
 ///
 /// `kind` is read from the filesystem when the change is delivered, not from
@@ -259,15 +263,20 @@ fn is_temporary(path: &Path) -> bool {
 
 #[cfg(target_os = "linux")]
 mod inotify_watch {
-    use super::{Depth, Event, Reported, Skip, THREAD_NAME, Watcher, event_now, is_temporary};
+    use super::{
+        Depth, Event, HUB_THREAD_NAME, Reported, Skip, THREAD_NAME, Watcher, event_now,
+        is_temporary,
+    };
     use crate::watch::ChangeKind;
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
 
     use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
+    use tilo_lock::MutexRecover as _;
 
     /// Creation, removal and renames of the directory's entries.
     const ENTRIES: WatchMask = WatchMask::CREATE
@@ -282,23 +291,234 @@ mod inotify_watch {
     /// opened read-write to be read) changed nothing.
     const CHANGES: WatchMask = ENTRIES.union(WatchMask::MODIFY).union(WatchMask::ATTRIB);
 
-    /// One directory, or a tree, watched by a thread of its own, which blocks in `read` until
-    /// the kernel reports a change.
+    /// One directory, or a tree, watched by a thread of its own, which waits until the
+    /// process's one inotify instance ([`hub`]) hands it a change of its directories.
     pub(super) struct DirectoryWatch {
-        watches: Watches,
-        descriptor: WatchDescriptor,
+        hub: Arc<Hub>,
+        subscriber: u64,
         stopped: Arc<AtomicBool>,
+    }
+
+    /// One event as the kernel reported it, owned, handed from the hub's reader to the
+    /// watch it is for.
+    struct Raw {
+        wd: WatchDescriptor,
+        mask: EventMask,
+        name: Option<OsString>,
+    }
+
+    /// What the hub's reader hands a watch's thread.
+    enum Delivery {
+        Events(Vec<Raw>),
+        /// The kernel's queue overflowed: changes may have been missed.
+        Overflowed,
+        /// The instance failed: nothing more will be reported.
+        Failed,
+    }
+
+    /// Which watch wants a watched inode's events, and which of them.
+    #[derive(Default)]
+    struct Interest {
+        /// Each watch's subscriber id and the events it asked for.
+        subscribers: Vec<(u64, WatchMask)>,
+    }
+
+    #[derive(Default)]
+    struct Routes {
+        by_wd: HashMap<WatchDescriptor, Interest>,
+        senders: HashMap<u64, mpsc::Sender<Delivery>>,
+        next: u64,
+    }
+
+    /// The process's one inotify instance, shared by every watch.
+    ///
+    /// Each instance counts against the user's `fs.inotify.max_user_instances` (128 by
+    /// default), shared by every process of the user: a session whose every watch (the app
+    /// registry, the identity, each device and settings directory) opened an instance of its
+    /// own took about sixty, and a second session beside a desktop left later watches
+    /// failing with "Too many open files". The kernel gives one instance a watch descriptor
+    /// per inode, so two watches of one directory share it: the hub keeps who wants which
+    /// events of it, adds masks together, and removes the kernel's watch only once nobody
+    /// wants it.
+    pub(super) struct Hub {
+        watches: Watches,
+        routes: Mutex<Routes>,
+    }
+
+    /// Masks that matter to a subscriber whatever it asked for.
+    const ALWAYS: EventMask = EventMask::IGNORED.union(EventMask::Q_OVERFLOW);
+
+    impl Hub {
+        fn subscribe(&self, sender: mpsc::Sender<Delivery>) -> u64 {
+            let mut routes = self.routes.lock_recover();
+            routes.next = routes.next.wrapping_add(1);
+            let id = routes.next;
+            routes.senders.insert(id, sender);
+            drop(routes);
+            id
+        }
+
+        /// Watch `path` for `subscriber`'s `mask`. The routes stay locked while the kernel
+        /// adds the watch, so its first event finds the subscriber.
+        fn add(
+            &self,
+            subscriber: u64,
+            path: &Path,
+            mask: WatchMask,
+        ) -> std::io::Result<WatchDescriptor> {
+            let mut routes = self.routes.lock_recover();
+            let mut watches = self.watches.clone();
+            let wd = watches.add(path, mask | WatchMask::MASK_ADD)?;
+            let interest = routes.by_wd.entry(wd.clone()).or_default();
+            if let Some(held) = interest
+                .subscribers
+                .iter_mut()
+                .find(|(id, _)| *id == subscriber)
+            {
+                held.1 |= mask;
+            } else {
+                interest.subscribers.push((subscriber, mask));
+            }
+            Ok(wd)
+        }
+
+        /// `subscriber` no longer wants `wd`; the kernel's watch goes once nobody does.
+        fn remove(&self, subscriber: u64, wd: &WatchDescriptor) {
+            let mut routes = self.routes.lock_recover();
+            let Some(interest) = routes.by_wd.get_mut(wd) else {
+                return;
+            };
+            interest.subscribers.retain(|(id, _)| *id != subscriber);
+            if interest.subscribers.is_empty() {
+                routes.by_wd.remove(wd);
+                let _ = self.watches.clone().remove(wd.clone());
+            }
+            drop(routes);
+        }
+
+        /// `subscriber` is gone: every watch it held is let go.
+        fn unsubscribe(&self, subscriber: u64) {
+            let mut routes = self.routes.lock_recover();
+            routes.senders.remove(&subscriber);
+            let mut emptied = Vec::new();
+            for (wd, interest) in &mut routes.by_wd {
+                interest.subscribers.retain(|(id, _)| *id != subscriber);
+                if interest.subscribers.is_empty() {
+                    emptied.push(wd.clone());
+                }
+            }
+            for wd in emptied {
+                routes.by_wd.remove(&wd);
+                let _ = self.watches.clone().remove(wd);
+            }
+            drop(routes);
+        }
+
+        /// Hand one read's events to the watches they are for, each in order.
+        fn dispatch(&self, events: inotify::Events<'_>) {
+            let mut routes = self.routes.lock_recover();
+            let mut batches: HashMap<u64, Vec<Raw>> = HashMap::new();
+            let mut overflowed = false;
+            for event in events {
+                if event.mask.contains(EventMask::Q_OVERFLOW) {
+                    overflowed = true;
+                    continue;
+                }
+                let ignored = event.mask.contains(EventMask::IGNORED);
+                let Some(interest) = routes.by_wd.get(&event.wd) else {
+                    continue;
+                };
+                for (subscriber, wanted) in &interest.subscribers {
+                    let wanted = EventMask::from_bits_truncate(wanted.bits()) | ALWAYS;
+                    // ISDIR qualifies an event; it is never one by itself.
+                    if !(event.mask & !EventMask::ISDIR).intersects(wanted) {
+                        continue;
+                    }
+                    batches.entry(*subscriber).or_default().push(Raw {
+                        wd: event.wd.clone(),
+                        mask: event.mask,
+                        name: event.name.map(std::ffi::OsStr::to_os_string),
+                    });
+                }
+                if ignored {
+                    // The kernel dropped the watch (its inode went away): nobody holds it.
+                    routes.by_wd.remove(&event.wd);
+                }
+            }
+            for (subscriber, batch) in batches {
+                if let Some(sender) = routes.senders.get(&subscriber) {
+                    let _ = sender.send(Delivery::Events(batch));
+                }
+            }
+            if overflowed {
+                for sender in routes.senders.values() {
+                    let _ = sender.send(Delivery::Overflowed);
+                }
+            }
+        }
+
+        fn fail(&self) {
+            let mut routes = self.routes.lock_recover();
+            for sender in routes.senders.values() {
+                let _ = sender.send(Delivery::Failed);
+            }
+            routes.senders.clear();
+            routes.by_wd.clear();
+        }
+    }
+
+    /// The process's inotify instance, opened by the first watch and read by one thread of
+    /// its own for as long as the process runs. A failed instance is let go, so a later
+    /// watch opens a new one; failing to open one is the watch's error.
+    fn hub() -> std::io::Result<Arc<Hub>> {
+        static HUB: Mutex<Option<Arc<Hub>>> = Mutex::new(None);
+        let mut slot = HUB.lock_recover();
+        if let Some(hub) = slot.as_ref() {
+            return Ok(Arc::clone(hub));
+        }
+        let mut inotify = Inotify::init()?;
+        let hub = Arc::new(Hub {
+            watches: inotify.watches(),
+            routes: Mutex::new(Routes::default()),
+        });
+        let reader = Arc::clone(&hub);
+        std::thread::Builder::new()
+            .name(HUB_THREAD_NAME.to_owned())
+            .spawn(move || {
+                let mut buffer = [0_u8; 16 * 1024];
+                loop {
+                    match inotify.read_events_blocking(&mut buffer) {
+                        Ok(events) => reader.dispatch(events),
+                        Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                        Err(_) => {
+                            // Let go first, so a watch started from here opens a new instance.
+                            HUB.lock_recover().take();
+                            reader.fail();
+                            return;
+                        }
+                    }
+                }
+            })?;
+        *slot = Some(Arc::clone(&hub));
+        drop(slot);
+        Ok(hub)
     }
 
     /// The directories of a tree watch, by their watches.
     struct Tree {
-        watches: Watches,
+        hub: Arc<Hub>,
+        subscriber: u64,
         mask: WatchMask,
         skip: Skip,
         directories: HashMap<WatchDescriptor, PathBuf>,
     }
 
     impl Tree {
+        fn watch(&self, path: &Path) -> std::io::Result<WatchDescriptor> {
+            self.hub
+                .add(self.subscriber, path, self.mask | WatchMask::DONT_FOLLOW)
+        }
+
         /// Watch every directory below `top` (not `top` itself), not following links. A
         /// directory that goes away meanwhile is skipped; the first other failure is the
         /// error, and the rest of the tree is still watched.
@@ -322,7 +542,7 @@ mod inotify_watch {
                     if (self.skip)(&path) {
                         continue;
                     }
-                    match self.watches.add(&path, self.mask | WatchMask::DONT_FOLLOW) {
+                    match self.watch(&path) {
                         Ok(descriptor) => {
                             self.directories.insert(descriptor, path.clone());
                             pending.push(path);
@@ -344,10 +564,7 @@ mod inotify_watch {
             }
             // A directory the watch cannot reach is not reported later; the change that
             // brought it is reported now, and a reader re-reads what it can.
-            if let Ok(descriptor) = self
-                .watches
-                .add(&directory, self.mask | WatchMask::DONT_FOLLOW)
-            {
+            if let Ok(descriptor) = self.watch(&directory) {
                 let _ = self.add_below(&directory);
                 self.directories.insert(descriptor, directory);
             }
@@ -364,7 +581,7 @@ mod inotify_watch {
                 .collect();
             for descriptor in gone {
                 self.directories.remove(&descriptor);
-                let _ = self.watches.remove(descriptor);
+                self.hub.remove(self.subscriber, &descriptor);
             }
         }
     }
@@ -372,9 +589,7 @@ mod inotify_watch {
     /// What one inotify event means for a watch's thread.
     enum Step {
         Next,
-        /// Changes may have been missed.
-        Overflowed,
-        /// The watched path went away, or the watch was dropped.
+        /// The watched path went away.
         Ended,
     }
 
@@ -388,32 +603,25 @@ mod inotify_watch {
 
     impl Reader {
         /// Take in one event, adding what it reports to `batch`.
-        fn take(
-            &mut self,
-            event: &inotify::Event<&std::ffi::OsStr>,
-            batch: &mut Vec<Event>,
-        ) -> Step {
+        fn take(&mut self, event: &Raw, batch: &mut Vec<Event>) -> Step {
             if event.mask.contains(EventMask::IGNORED) {
                 if event.wd == self.top {
-                    // Dropped, or the watched path itself went away, and its entries
-                    // with it: a reader must look again.
+                    // The watched path itself went away, and its entries with it: a reader
+                    // must look again.
                     return Step::Ended;
                 }
                 self.tree.directories.remove(&event.wd);
                 return Step::Next;
             }
             if event.wd == self.top && event.mask.contains(EventMask::MOVE_SELF) {
-                // Ended like a removal: its `IN_IGNORED` reports the change.
-                let _ = self.tree.watches.remove(self.top.clone());
-                return Step::Next;
-            }
-            if event.mask.contains(EventMask::Q_OVERFLOW) {
-                return Step::Overflowed;
+                // Moved away, which ends the watch like a removal. Another watch of the same
+                // directory may keep the kernel's watch, so no `IN_IGNORED` need follow.
+                return Step::Ended;
             }
             let Some(parent) = self.tree.directories.get(&event.wd) else {
                 return Step::Next;
             };
-            let Some(name) = event.name else {
+            let Some(name) = &event.name else {
                 // The watched directory itself (or a watched file): its attributes,
                 // or a write to the file.
                 if event.mask.intersects(EventMask::ATTRIB | EventMask::MODIFY) {
@@ -468,73 +676,89 @@ mod inotify_watch {
                 reported,
                 skip,
             } = spec;
-            let mut inotify = Inotify::init()?;
-            let mut watches = inotify.watches();
+            let hub = hub()?;
+            let (sender, deliveries) = mpsc::channel();
+            let subscriber = hub.subscribe(sender);
+            let unsubscribe = |error| {
+                hub.unsubscribe(subscriber);
+                error
+            };
             let mask = match reported {
                 Reported::Changes => CHANGES,
                 Reported::Entries => ENTRIES,
             };
             // The directory itself moving away takes its entries from the path watched.
-            let descriptor = watches.add(&root, mask | WatchMask::MOVE_SELF)?;
+            let descriptor = hub
+                .add(subscriber, &root, mask | WatchMask::MOVE_SELF)
+                .map_err(unsubscribe)?;
             let mut tree = Tree {
-                watches: watches.clone(),
+                hub: Arc::clone(&hub),
+                subscriber,
                 mask,
                 skip,
                 directories: HashMap::from([(descriptor.clone(), root.clone())]),
             };
             let depth = if root.is_dir() { depth } else { Depth::Entries };
             if depth == Depth::Tree {
-                tree.add_below(&root)?;
+                tree.add_below(&root).map_err(unsubscribe)?;
             }
             let mut reader = Reader {
                 tree,
                 root,
-                top: descriptor.clone(),
+                top: descriptor,
                 depth,
             };
             let stopped = Arc::new(AtomicBool::new(false));
             let stop = Arc::clone(&stopped);
-            std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name(THREAD_NAME.to_owned())
                 .spawn(move || {
-                    let mut buffer = [0_u8; 4096];
                     let mut batch = Vec::new();
-                    while !stop.load(Ordering::Acquire) {
-                        let Ok(events) = inotify.read_events_blocking(&mut buffer) else {
-                            // The descriptor failed: nothing more will be reported.
-                            reader.rescan(&mut batch);
-                            on_events(&batch);
+                    // Ends when the watch is dropped: the hub lets go of its sender.
+                    while let Ok(delivery) = deliveries.recv() {
+                        if stop.load(Ordering::Acquire) {
                             return;
-                        };
-                        let mut overflowed = false;
-                        for event in events {
-                            match reader.take(&event, &mut batch) {
-                                Step::Next => {}
-                                Step::Overflowed => overflowed = true,
-                                Step::Ended => {
-                                    if !stop.load(Ordering::Acquire) {
-                                        batch.push(Event {
-                                            path: reader.root.clone(),
-                                            kind: ChangeKind::Removed,
-                                        });
-                                        on_events(&batch);
-                                    }
-                                    return;
-                                }
-                            }
                         }
-                        if overflowed {
-                            reader.rescan(&mut batch);
+                        let events = match delivery {
+                            Delivery::Events(events) => events,
+                            Delivery::Overflowed => {
+                                reader.rescan(&mut batch);
+                                on_events(&batch);
+                                batch.clear();
+                                continue;
+                            }
+                            Delivery::Failed => {
+                                reader.rescan(&mut batch);
+                                on_events(&batch);
+                                return;
+                            }
+                        };
+                        for event in &events {
+                            if matches!(reader.take(event, &mut batch), Step::Ended) {
+                                batch.push(Event {
+                                    path: reader.root.clone(),
+                                    kind: ChangeKind::Removed,
+                                });
+                                if !stop.load(Ordering::Acquire) {
+                                    on_events(&batch);
+                                }
+                                reader.tree.hub.unsubscribe(reader.tree.subscriber);
+                                return;
+                            }
                         }
                         if !batch.is_empty() && !stop.load(Ordering::Acquire) {
                             on_events(&batch);
                         }
                         batch.clear();
                     }
-                })?;
+                });
+            if let Err(error) = spawned {
+                hub.unsubscribe(subscriber);
+                return Err(error);
+            }
             Ok(Self {
-                watches,
-                descriptor,
+                hub,
+                subscriber,
                 stopped,
             })
         }
@@ -543,8 +767,8 @@ mod inotify_watch {
     impl Drop for DirectoryWatch {
         fn drop(&mut self) {
             self.stopped.store(true, Ordering::Release);
-            // Removing the watch queues `IN_IGNORED`, which wakes the thread to see `stopped`.
-            let _ = self.watches.remove(self.descriptor.clone());
+            // Letting go of its sender ends the watch's thread.
+            self.hub.unsubscribe(self.subscriber);
         }
     }
 }
@@ -869,6 +1093,62 @@ mod tests {
 
     fn until_seen(seen: &Mutex<Vec<Event>>, what: &str, found: impl Fn(&Event) -> bool) {
         tilo_test_env::wait_until(what, || seen.lock().expect("events").iter().any(&found));
+    }
+
+    /// Every watch of a process shares one inotify instance, so watches past
+    /// the user's instance limit (128 by default, shared by all the user's
+    /// processes) still start, and each still hears its own directory.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn more_watches_than_the_instance_limit_start_and_each_reports_its_own_changes() {
+        let dirs: Vec<_> = (0..200)
+            .map(|_| tempfile::tempdir().expect("temporary directory"))
+            .collect();
+        let counts: Vec<_> = dirs.iter().map(|_| counted()).collect();
+        let (counts, callbacks): (Vec<_>, Vec<_>) = counts.into_iter().unzip();
+        let _watches: Vec<_> = dirs
+            .iter()
+            .zip(callbacks)
+            .map(|(dir, on_change)| watch_changes(dir.path(), |_| true, on_change).expect("watch"))
+            .collect();
+        std::fs::write(dirs[0].path().join("first"), b"x").expect("write");
+        std::fs::write(dirs[199].path().join("last"), b"x").expect("write");
+        assert!(reaches(&counts[0], 1) && reaches(&counts[199], 1));
+        std::thread::sleep(QUIET);
+        assert_eq!(
+            counts[100].load(Ordering::SeqCst),
+            0,
+            "a watch hears only its own directory"
+        );
+    }
+
+    /// Two watches of one directory share the kernel's watch of it: each
+    /// hears only what it asked for, and dropping one leaves the other.
+    #[test]
+    fn two_watches_of_one_directory_are_independent() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let file = dir.path().join("value");
+        std::fs::write(&file, b"one").expect("write");
+        let (presence, on_presence) = counted();
+        let presence_watch =
+            watch_presence(dir.path(), |_| true, on_presence).expect("presence watch");
+        let (changes, on_change) = counted();
+        let _changes_watch = watch_changes(dir.path(), |_| true, on_change).expect("watch");
+        std::fs::write(&file, b"two").expect("rewrite");
+        assert!(reaches(&changes, 1), "the changes watch hears the write");
+        std::thread::sleep(QUIET);
+        assert_eq!(
+            presence.load(Ordering::SeqCst),
+            0,
+            "the presence watch does not hear a write"
+        );
+        drop(presence_watch);
+        let before = changes.load(Ordering::SeqCst);
+        std::fs::write(dir.path().join("new"), b"x").expect("create");
+        assert!(
+            reaches(&changes, before + 1),
+            "dropping the other watch leaves this one watching"
+        );
     }
 
     #[test]

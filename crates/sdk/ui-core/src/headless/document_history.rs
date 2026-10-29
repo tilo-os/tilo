@@ -506,16 +506,12 @@ impl FrameHarness {
                 super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
             )
             .unwrap_or_default();
-        if let Some(resource) = resources
-            .iter()
-            .find(|resource| resource.kind == "tilo.host.history.session")
-        {
-            let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "close");
-            if let Ok(encoded) =
+        if let Some(address) =
+            crate::standalone_history_host::session_action_address(&resources, "close")
+            && let Ok(encoded) =
                 crate::bound_dispatch::encode_resource_action(&resources, &address, None, None)
-            {
-                let _ = self.execute_history_operation(&encoded);
-            }
+        {
+            let _ = self.execute_history_operation(&encoded);
         }
     }
 
@@ -917,11 +913,7 @@ mod tests {
 
     fn session_address(driver: &mut FrameHarness, action: &str) -> tilo_actions::ActionAddress {
         let resources = driver.local_history_resources().unwrap();
-        let session = resources
-            .iter()
-            .find(|resource| resource.kind == "tilo.host.history.session")
-            .unwrap();
-        tilo_actions::ActionAddress::new(session.id.as_str(), action)
+        crate::standalone_history_host::session_action_address(&resources, action).unwrap()
     }
 
     #[test]
@@ -1032,7 +1024,9 @@ mod tests {
             let local = driver.local_history_resources().unwrap();
             let session = local
                 .iter()
-                .find(|resource| resource.kind == "tilo.host.history.session")
+                .find(|resource| {
+                    resource.kind == crate::standalone_history_host::HISTORY_SESSION_KIND
+                })
                 .unwrap();
             for action in ["select", "compare", "close"] {
                 assert!(session.actions.iter().any(|spec| spec.id == action));

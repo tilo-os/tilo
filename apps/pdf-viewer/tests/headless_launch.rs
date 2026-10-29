@@ -220,7 +220,7 @@ fn cli_note_survives_other_document_and_restart() {
     assert_eq!(entries(&edited["annotations"]).len(), 1);
     assert_eq!(entries(&edited["comments"]).len(), 1);
     assert_eq!(mark_kind(entries(&edited["annotations"])[0]), "note");
-    assert_eq!(entries(&edited["comments"])[0]["text"], marker);
+    assert_eq!(entries(&edited["comments"])[0]["v"]["text"], marker);
     assert_eq!(edited["tilo:record"]["id"], record);
     let (other, _) = run(&root, "b-open", &b, vec![]);
     assert_ne!(other["tilo:record"]["id"], record);

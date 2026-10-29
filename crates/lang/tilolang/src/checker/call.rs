@@ -298,29 +298,90 @@ impl Checker<'_> {
             .collect()
     }
 
-    /// An argument of an action a view applies, of type `want`: view state given as itself is
-    /// read when the event fires, so a press right after a keystroke sends the keystroke too.
-    /// An argument that reads view state any other way would be read when the view drew, a
-    /// value the press may have outrun, so it is refused.
+    /// An argument of an action a view applies, of type `want`. An action's arguments are
+    /// evaluated when it is invoked, on what the invoker sees, as its parameter defaults are:
+    /// view state given as itself is read when the event fires, and an argument that computes
+    /// from view state (`set(open, not open)`, `send(c, "{draft}!")`) is a function the
+    /// runtime runs then ([`Self::at_event`]), so a press right after a keystroke, or a second
+    /// press before the view drew again, sees what came before it. Any other argument is the
+    /// value the view drew with.
     pub(super) fn arg_at_press(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
         if let ExprKind::Ident(name) = &e.kind
             && let Some(state) = self.state_named(name)
+            && (state.ty == *want || want.is_error())
         {
-            if state.ty == *want || want.is_error() {
-                return Self::state_at(&state);
-            }
-            let (have, want) = (self.show(&state.ty), self.show(want));
-            self.err("E111", e.span, format!("`{name}` is {have} and the parameter is {want}: an action takes view state as it is, read when it is pressed. Declare `{name}` as {want}"));
-            return Ex::error();
+            return Self::state_at(&state);
         }
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
-        if let Some(name) = names.iter().find(|n| self.state_named(n).is_some()) {
-            self.err("E111", e.span, format!("an action applied here runs when it is pressed, and reads the view state it takes then; this argument reads `{name}` when the view draws, which a quick press outruns. Give `{name}` itself and compute from it in the action"));
-            let _ = self.expr(e, None);
-            return Ex::error();
+        // An action value computes nothing from view state itself: the applications in it
+        // take their own arguments at the press.
+        let reads_state = names.iter().any(|n| self.state_named(n).is_some());
+        if reads_state && !matches!(want, Ty::Action) {
+            return self.at_event(e, want, &names);
         }
         self.expr_as(e, want)
+    }
+
+    /// The argument `e` of type `want`, which reads view state among `names`, as a function
+    /// of its own the runtime runs when the event fires ([`ir::AtEventFn`]): it takes each view
+    /// state `e` reads, read then, and each value from around it, as the view drew it. It is
+    /// checked in the discipline of a `fn`, as a parameter default is.
+    fn at_event(
+        &mut self,
+        e: &ast::Expr,
+        want: &Ty,
+        names: &std::collections::BTreeSet<String>,
+    ) -> Ex {
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+        for name in names {
+            let (ty, arg) = if let Some(state) = self.state_named(name) {
+                (state.ty.clone(), Self::state_at(&state))
+            } else if let Some((local, ty)) = self.lookup(name) {
+                (ty.clone(), Ex::local(local, ty))
+            } else {
+                // A name of the package (a fn, a type, an enum), seen the same from anywhere.
+                continue;
+            };
+            params.push(crate::resolve::ParamInfo {
+                name: name.clone(),
+                ty,
+                default: None,
+            });
+            args.push(arg);
+        }
+        let n = self.at_event.len();
+        let id = format!("{}~arg{n}", self.st.view_id);
+        let outer = std::mem::take(&mut self.st);
+        self.begin(Ctx::Fn, &params, want.clone(), "");
+        self.st.ns.clone_from(&outer.ns);
+        self.st.types.clone_from(&outer.types);
+        let value = self.expr_as(e, want);
+        self.emit(Stmt::Return(Some(value)));
+        let name = format!("{} at the event", outer.view_id);
+        let export = ir::at_event_export(&id);
+        let mut f = self.end(ir::FuncKind::Fn, &name, &export);
+        f.nparams = params.len();
+        self.st = outer;
+        self.at_event.push((
+            f,
+            ir::AtEventFn {
+                func: 0,
+                id: id.clone(),
+                name,
+                params,
+                result: want.clone(),
+            },
+        ));
+        let list = self.arg_list(args);
+        let scalar = Ex::new(Ek::I32(i32::from(want.is_scalar())), Ty::Bool);
+        let ty = if want.is_scalar() {
+            Ty::Option(Box::new(want.clone()))
+        } else {
+            want.clone()
+        };
+        Ex::host(Imp::ArgAt, vec![Ex::str(&id), list, scalar], ty)
     }
 
     /// The view state `state` as an action's argument, read when the event fires: a handle

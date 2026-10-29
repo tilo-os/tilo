@@ -370,7 +370,7 @@ fn container_resources_open_terminal_and_log_detail() {
         .unwrap();
         drop(parts);
         assert_eq!(d.app().section(), Section::Containers);
-        assert_eq!(d.app().selected(), Some(id.as_str()));
+        assert_eq!(d.app().selected(), Some(id));
         assert_eq!(d.app().tab(), DetailTab::Logs);
     }
 }
@@ -434,7 +434,7 @@ fn assert_sidebar_and_list_assistive_activation() {
         .unwrap();
     assert_eq!(
         app(&mut d).selected(),
-        Some(postgres.id.as_str()),
+        Some(postgres.id),
         "activating a row opens that container"
     );
 }
@@ -494,7 +494,7 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.perform_a11y_action(row.0, &ui::a11y::Action::Activate)
             .expect("the real semantic row activation selects its own container");
         d.frame();
-        assert_eq!(d.app().selected(), Some(expected.as_str()));
+        assert_eq!(d.app().selected(), Some(expected.clone()));
 
         // The same container has a canonical row operation whose target is
         // bound by its published owner, rather than a caller-supplied id.
@@ -515,7 +515,7 @@ fn keyboard_pointer_and_semantic_navigation() {
             .expect("the canonical published row action is admitted");
         hosted
             .with_widget::<ContainersApp, _>(|app| {
-                assert_eq!(app.selected(), Some(expected.as_str()));
+                assert_eq!(app.selected(), Some(expected.clone()));
             })
             .unwrap();
         assert_eq!(

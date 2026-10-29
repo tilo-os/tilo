@@ -1,0 +1,152 @@
+//! `tilolang repl` against a session's agent door.
+//!
+//! The first test needs nothing running: a door that serves the agent tools but no `tilo` (a
+//! session from before programs on the door), which the REPL refuses cleanly. The second drives
+//! a running nested session with Notes, Todo, Chat and Board (`TILOLANG_REPL_SESSION`: its
+//! --ready file), doing real work there: queries, a bulk change shown as a preview and applied
+//! on confirm, and undo of it.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test assertions"
+)]
+
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::UnixListener;
+use std::process::{Command, Stdio};
+
+use serde_json::{Value, json};
+
+/// Answer one door connection as a session that serves the agent tools but runs no programs.
+fn old_door(listener: &UnixListener) {
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    for line in BufReader::new(stream).lines() {
+        let Ok(line) = line else { return };
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let Some(id) = request.get("id").cloned() else {
+            continue;
+        };
+        let result = match request["method"].as_str() {
+            Some("initialize") => json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                "serverInfo": {"name": "tilo-runtime", "version": "0"}}),
+            Some("tools/list") => {
+                let tools: Vec<Value> = [
+                    "tilo_ls",
+                    "tilo_read",
+                    "tilo_do",
+                    "tilo_find",
+                    "tilo_status",
+                ]
+                .map(|name| json!({"name": name}))
+                .into();
+                json!({ "tools": tools })
+            }
+            _ => json!({"content": [{"type": "text", "text": "apps"}]}),
+        };
+        let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
+        writeln!(writer, "{reply}").unwrap();
+    }
+}
+
+fn repl(args: &[&str], input: &str) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("repl")
+        .args(args)
+        .args(["--color", "never"])
+        .env(
+            "XDG_STATE_HOME",
+            std::env::temp_dir().join("tilolang-repl-test"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn a_session_whose_door_runs_no_programs_is_refused_with_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("agent.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let door = std::thread::spawn(move || old_door(&listener));
+    let output = repl(&["--door", socket.to_str().unwrap()], "notes.notes\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("has no `tilo` tool") && stderr.contains("tilo_ls"),
+        "says what the door lacks and what it serves: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "nothing was evaluated");
+    door.join().unwrap();
+}
+
+/// The lines of `out` that a run printed after the entry `entry` and before the next prompt.
+fn after<'a>(out: &'a str, entry: &str) -> Vec<&'a str> {
+    out.lines()
+        .skip_while(|line| !line.ends_with(entry))
+        .skip(1)
+        .take_while(|line| !line.contains("> "))
+        .collect()
+}
+
+#[test]
+#[ignore = "drives a running nested session: TILOLANG_REPL_SESSION names its --ready file"]
+fn the_repl_queries_changes_in_bulk_with_a_preview_and_undoes_on_a_nested_session() {
+    let session = std::env::var("TILOLANG_REPL_SESSION").expect("TILOLANG_REPL_SESSION");
+    let script = "\
+todo.todos.items.len()
+for t in [\"Take the bins out\", \"Buy oat milk and eggs\", \"Water the plants\", \"Return the library books\", \"Book a haircut\"] { todo.add(todo.todos, t) }
+confirm
+todo.todos.items.len()
+todo.todos.items.filter(t -> not t.done).len()
+undo
+todo.todos.items.len()
+history task
+";
+    let output = repl(&["--session", &session], script);
+    let out = String::from_utf8_lossy(&output.stdout);
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{out}\n{err}");
+    let before: usize = after(&out, "todo.todos.items.len()")[0]
+        .trim()
+        .parse()
+        .unwrap();
+    let previewed = after(&out, "todo.add(todo.todos, t) }").join("\n");
+    assert!(previewed.contains("preview: 5 actions"), "{out}");
+    assert!(previewed.contains("add ×5"), "{out}");
+    let applied = after(&out, "confirm").join("\n");
+    assert!(applied.contains("step 1: 5 changes in todo"), "{out}");
+    let counts: Vec<usize> = out
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    assert_eq!(counts.first(), Some(&before), "{out}");
+    assert!(counts.contains(&(before + 5)), "the five were added: {out}");
+    assert!(
+        after(&out, "undo")
+            .join("\n")
+            .contains("undone: step 1 in todo"),
+        "{out}"
+    );
+    assert_eq!(
+        counts.last(),
+        Some(&before),
+        "undo took all five back: {out}"
+    );
+    assert!(
+        after(&out, "history task").join("\n").contains("(undone)"),
+        "{out}"
+    );
+}
