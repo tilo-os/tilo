@@ -393,8 +393,15 @@ fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
     Ok(root)
 }
 
-/// Commit `action` on `doc` through the executor, as a window's host does.
+/// Commit `action` on `doc` through the executor, as a window's host does: recorded at
+/// [`BENCH_TIME`] unless it says when it was made, so what the windows show of when things
+/// changed is the same in every run.
 fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
+    let mut action = action.clone();
+    if action.authorship.at.is_none() {
+        action.authorship.at = Some(BENCH_TIME.to_owned());
+    }
+    let action = &action;
     let context = ActionContext::for_resource(
         action.resources().first().copied().unwrap_or("room"),
         &action.kind,
