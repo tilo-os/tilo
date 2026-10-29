@@ -7305,6 +7305,46 @@ mod tests {
         external_scene_append_is_an_unversioned_retained_boundary();
     }
 
+    /// The compositor's test control and the capture driver reach a control
+    /// of a surface the shell hosts as an app by the name the app gives it:
+    /// the registry lists it where it is drawn, and activating the name
+    /// presses it.
+    #[test]
+    fn a_hosted_surface_control_is_listed_and_activated_by_name() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        fb.pump_apps(&mut doc, &root);
+        fb.relayout();
+        let _ = fb.paint();
+        let control = *fb
+            .widget_registry()
+            .get("topbar:workspace-settings")
+            .expect("the bar's workspace control is listed by its name");
+        assert!(control.area() > 0.0, "{control:?} is on screen");
+        let mut focus = None;
+        assert!(!fb.perform_semantic_named(
+            "no-such-control",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        ));
+        assert!(fb.perform_semantic_named(
+            "topbar:workspace-settings",
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &mut focus,
+        ));
+        fb.pump_apps(&mut doc, &root);
+        fb.relayout();
+        assert!(
+            fb.host().workspace_menu_labels().is_some(),
+            "activating the bar's control by name opens the workspace menu"
+        );
+    }
+
     fn native_click_named_control(
         frame: &mut FrameBuilder,
         doc: &mut AutoCommit,

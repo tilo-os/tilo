@@ -127,6 +127,8 @@ mod hdr_output_pipeline;
 mod hdr_tonemap_shader;
 #[path = "headless_examples_smoke.rs"]
 mod headless_examples_smoke;
+#[path = "hosted_surface_targets.rs"]
+mod hosted_surface_targets;
 #[path = "identity_startup.rs"]
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
