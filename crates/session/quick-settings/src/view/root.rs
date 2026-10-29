@@ -1,6 +1,6 @@
 //! The controls page: the sliders, the tiles two to a row, the rows under
-//! them and the footer, each tile's or row's section opening in place
-//! under it.
+//! them and the footer, each tile's or row's section opening and closing in
+//! place under it on the disclosure motion.
 
 use ui::LocalState;
 use ui::TextRole;
@@ -31,7 +31,7 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
     });
     column = column.push(sliders);
     if sound {
-        column = column.push(super::sections::section(cx, QsSection::Sound, parts));
+        column = column.push(super::sections::in_place(cx, QsSection::Sound, parts));
     }
     let tile_parts = parts.clone();
     column = column.push(cx.switch(&parts.tiles, move |cx, tiles| {
@@ -46,7 +46,7 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, open: Option<QsSection>, parts: &
         for row in rows {
             list = list.push(root_row(cx, row, open));
             if let Some(section) = row.section().filter(|section| open == Some(*section)) {
-                list = list.push(super::sections::section(cx, section, &row_parts));
+                list = list.push(super::sections::in_place(cx, section, &row_parts));
             }
         }
         Box::new(list)
@@ -199,7 +199,7 @@ fn tile_grid(
             .filter_map(|face| face.section)
             .find(|section| open == Some(*section))
         {
-            grid = grid.push(super::sections::section(cx, section, parts));
+            grid = grid.push(super::sections::in_place(cx, section, parts));
         }
     }
     grid.into_widget()

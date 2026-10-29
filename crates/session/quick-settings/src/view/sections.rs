@@ -9,8 +9,8 @@ use ui::framework::ViewCx;
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Scrollable, Section,
-    Segment, SignalLevel, Text, TextInput, Toggle, ToggleGroup,
+    Button, ButtonRole, Column, Container, DisclosureBand, Element, ListRow, ProgressBar, Row,
+    Scrollable, Section, Segment, SignalLevel, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
@@ -21,8 +21,18 @@ use crate::hosted::{HostedActions, HostedRow};
 use crate::i18n::t;
 use crate::resource::QuickSettings;
 
+/// `section` open in place under the control that opens it: it opens and
+/// closes on the disclosure motion, known by its section, so switching
+/// from one section to another closes the one as the other opens.
+pub(super) fn in_place(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
+    Box::new(DisclosureBand::new(
+        format!("qs-section-{}", section_id(section)),
+        self::section(cx, section, parts),
+    ))
+}
+
 /// `section`, built again whenever what it lists changes.
-pub(super) fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
+fn section(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
     if section == QsSection::Clipboard {
         return clipboard(cx, parts, false);
     }

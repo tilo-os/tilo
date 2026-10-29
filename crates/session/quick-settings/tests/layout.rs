@@ -95,6 +95,8 @@ fn the_controls_page_has_the_sliders_then_the_tiles_two_to_a_row_then_the_rows_a
 
 #[test]
 fn a_tiles_chevron_opens_its_section_under_its_row_and_the_page_tells_the_host() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("controls");
     open_details(&mut app, "qs-tile-wifi");
     let wifi = target(&mut app, "qs-tile-wifi");
@@ -114,6 +116,34 @@ fn a_tiles_chevron_opens_its_section_under_its_row_and_the_page_tells_the_host()
     assert!(
         !has(&mut app, "qs-section-wifi"),
         "the chevron closes it again"
+    );
+}
+
+#[test]
+fn a_section_opens_in_place_on_the_disclosure_motion() {
+    let (mut app, _host) = hosted("controls");
+    let shut = target(&mut app, "qs-tile-vpn");
+    // The clock stands still where the section starts to open.
+    let frozen = ui::motion::testing::frozen();
+    open_details(&mut app, "qs-tile-wifi");
+    let wifi = target(&mut app, "qs-tile-wifi");
+    let section = target(&mut app, "qs-section-wifi");
+    let vpn = target(&mut app, "qs-tile-vpn");
+    assert!(
+        section.y0 >= wifi.y1,
+        "it unrolls from under its row: {section:?}"
+    );
+    assert!(
+        (vpn.y0 - shut.y0).abs() < 0.5,
+        "what follows moves with its edge, not to its end at once: {vpn:?}"
+    );
+    drop(frozen);
+    let _settled = ui::motion::testing::settled();
+    app.settle();
+    let section = target(&mut app, "qs-section-wifi");
+    assert!(
+        target(&mut app, "qs-tile-vpn").y0 >= section.y1,
+        "open, it takes its place in the page"
     );
 }
 
@@ -160,6 +190,8 @@ fn the_effects_are_published_for_the_palette_scripts_and_agents() {
 
 #[test]
 fn a_protected_network_never_joined_asks_for_its_password_under_it() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("wifi");
     click(&mut app, "qs-network-Cafe guest");
     assert_eq!(
@@ -184,6 +216,8 @@ fn a_protected_network_never_joined_asks_for_its_password_under_it() {
 
 #[test]
 fn typing_the_password_and_pressing_connect_joins_with_it() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("wifi-password");
     let field = app
         .harness()
@@ -222,6 +256,8 @@ fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
 
 #[test]
 fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("clipboard");
     click(&mut app, "qs-copy-b2-pin");
     click(&mut app, "qs-copy-a1-remove");
@@ -239,6 +275,8 @@ fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
 
 #[test]
 fn a_devices_row_says_which_of_its_buttons_was_pressed() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("devices");
     click(&mut app, "qs-device-speaker-request-allow");
     click(&mut app, "qs-device-phone-control");
@@ -281,6 +319,8 @@ fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list(
 
 #[test]
 fn an_accessory_moves_only_to_a_device_that_is_online_and_not_this_one() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("accessory");
     // Offline, and this one: nothing to move to.
     let _ = app.harness().click_named("qs-accessory-to-tablet");
@@ -466,6 +506,8 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
 
 #[test]
 fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let mut app = HeadlessApp::<QuickSettingsApp>::capture_at(Some("battery"), (360, 420)).unwrap();
     assert!(has(&mut app, "qs-power"), "the footer is still on the page");
     let power = target(&mut app, "qs-power");
