@@ -143,9 +143,11 @@ fn emacs_keys_edit_the_line_before_it_runs() {
         ran.err
     );
     assert!(ran.printed().contains("hi there"), "{:?}", ran.printed());
+    // Switched on and off once to see there is a terminal, then for each
+    // of the eight lines and the end of the input.
     assert_eq!(
         host.editing(),
-        (false, 18),
+        (false, 20),
         "the terminal goes back after each line"
     );
 }
@@ -493,7 +495,14 @@ impl Host for Guest {
                 Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) | Err(_) => {
                     return Program::Exited(143);
                 }
-                Ok(Signal::Stop) => job.stopped(),
+                // A stop the shell took back before it was seen is no stop.
+                Ok(Signal::Stop) => match rx.try_recv() {
+                    Ok(Signal::Continue) => {}
+                    Ok(Signal::Terminate | Signal::Kill | Signal::Interrupt) => {
+                        return Program::Exited(143);
+                    }
+                    _ => job.stopped(),
+                },
                 Ok(Signal::Continue) => {}
             }
         }

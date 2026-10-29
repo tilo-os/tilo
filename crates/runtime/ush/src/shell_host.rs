@@ -636,8 +636,22 @@ fn in_job(
             }
             if libc::WIFSTOPPED(status) {
                 // Ctrl-Z reached it: the job stops, and the prompt has the
-                // terminal again.
-                job.stopped();
+                // terminal again. A stop the shell already took back
+                // (`fg` before this thread saw it) is no stop.
+                let mut again: libc::c_int = 0;
+                // SAFETY: as above; WNOHANG returns at once.
+                let changed =
+                    unsafe { libc::waitpid(pid, &raw mut again, libc::WCONTINUED | libc::WNOHANG) }
+                        == pid;
+                if changed && libc::WIFEXITED(again) {
+                    break libc::WEXITSTATUS(again);
+                }
+                if changed && libc::WIFSIGNALED(again) {
+                    break libc::WTERMSIG(again).saturating_add(128);
+                }
+                if !(changed && libc::WIFCONTINUED(again)) {
+                    job.stopped();
+                }
                 continue;
             }
             if libc::WIFEXITED(status) {
