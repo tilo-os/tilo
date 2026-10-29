@@ -14,6 +14,6 @@ small-hit-target chat › (window) › nav-shell-back [Button]
 small-hit-target chat › (window) › nav-shell-sidebar [Button]
 
 # The apps' own views.
-small-hit-target tasks › home › std.rows [SwipeRow]
+small-hit-target tasks › task_row › row [SwipeRow]
 overflow mail › conversation › std.page [Stack]
 small-hit-target chat › message › std.thread_chip [Chip]

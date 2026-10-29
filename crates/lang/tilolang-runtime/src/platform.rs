@@ -226,6 +226,7 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::EventValue => self.ret_h(Value::Event),
+            Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::Actions => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let offered = self.actions_on(&target)?;

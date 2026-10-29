@@ -257,6 +257,26 @@ impl Staged {
         out
     }
 
+    /// The trees of the rows the window's lists show, by row key: a list draws each row as one
+    /// widget keyed by the row, from the row view's nodes.
+    pub fn rows(&mut self) -> std::collections::HashMap<String, tilo_ui_host::UiNode> {
+        let mut out = std::collections::HashMap::new();
+        let Some(window) = self.window() else {
+            return out;
+        };
+        for list in window.lists() {
+            if let Some(rows) = window.rows_of(&list) {
+                let rows = rows.borrow();
+                for key in rows.rendered() {
+                    if let Some(row) = rows.row(&key) {
+                        out.insert(key, row.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Open `resource` in the window, as a person opening it from a list does.
     pub fn open(&mut self, resource: ResourceRef) {
         if let Some(window) = self.window() {

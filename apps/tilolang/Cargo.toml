@@ -47,6 +47,11 @@ path = "tests/board.rs"
 name = "forms"
 path = "tests/forms.rs"
 
+# The Tasks package on a project's board: cards dragged within and between its lanes.
+[[test]]
+name = "tasks_board"
+path = "tests/tasks_board.rs"
+
 # A hosted app's window, as a person uses it, against the tilolang host running its instance.
 [[test]]
 name = "hosted"
