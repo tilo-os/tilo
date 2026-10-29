@@ -88,6 +88,9 @@ enum Page {
 /// The window bar's action that chooses a folder to analyze.
 pub(crate) const CHOOSE_FOLDER: &str = "disk-usage.choose";
 
+/// The window bar's action that opens Disks.
+pub(crate) const OPEN_DISKS: &str = "disk-usage.disks";
+
 /// The window bar's action that opens what wants a person.
 pub(crate) const NEEDS_YOU: &str = "disk-usage.needs";
 
@@ -360,6 +363,13 @@ impl Nav {
         )
     }
 
+    fn open_disks(cx: &mut EffectCx<DiskUsage>) -> Effected {
+        cx.thread(
+            move |_| ui::portal::open_uri(crate::resource::DISKS_LINK).map_err(|e| e.to_string()),
+            move |(): &mut (), opened: Result<(), String>, _| opened.map(|()| Effected::done()),
+        )
+    }
+
     fn go_back(&self, cx: &mut EffectCx<DiskUsage>) -> Effected {
         let previous = self.history.borrow_mut().pop();
         if let Some(path) = previous {
@@ -496,6 +506,7 @@ fn answer_effects(cx: &ViewCx<DiskUsage>, nav: &Nav) {
         }
         DiskUsageEffect::Choose => Ok(nav.choose_folder(cx)),
         DiskUsageEffect::Back => Ok(nav.go_back(cx)),
+        DiskUsageEffect::OpenDisks => Ok(Nav::open_disks(cx)),
         DiskUsageEffect::Home => {
             nav.go_home();
             Ok(Effected::done())
@@ -671,6 +682,9 @@ impl Window {
                 if id == CHOOSE_FOLDER && self.live {
                     self.nav.dispatcher.effect(&DiskUsageEffect::Choose);
                 }
+                if id == OPEN_DISKS && self.live {
+                    self.nav.dispatcher.effect(&DiskUsageEffect::OpenDisks);
+                }
                 if id == NEEDS_YOU {
                     self.nav.show(Page::Needs);
                 }
@@ -684,6 +698,9 @@ impl Window {
         let mut actions = vec![
             ToolbarAction::new(CHOOSE_FOLDER, Icon::FolderOpen.name(), "Choose folder")
                 .enabled(self.live),
+            ToolbarAction::new(OPEN_DISKS, Icon::HardDrive.name(), "Disks")
+                .enabled(self.live)
+                .in_menu(),
         ];
         if let Some(label) = ui::attention::pill() {
             actions.push(ToolbarAction::new(NEEDS_YOU, Icon::Bell.name(), label).labelled());

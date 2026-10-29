@@ -69,7 +69,18 @@ pub enum DiskUsageEffect {
     /// Show locations.
     #[effect(view)]
     Home,
+    /// Open Disks.
+    ///
+    /// Partitioning, mounting and adding a drive are Disks' job, in its own
+    /// window: a full disk is sometimes a disk to partition or add.
+    #[effect(job)]
+    OpenDisks,
 }
+
+/// The session link that opens Disks in the workspace the window is in: the
+/// way back from what takes up the room to the drives it sits on, as Disks
+/// links here the other way.
+pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 
 /// The disk-usage analyzer: the door its effects and live rows are
 /// published on. It keeps no document state: what it scans is this device's
@@ -300,6 +311,23 @@ mod tests {
         app.settle();
         assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Disks is a way on from the bar's menu, by a link the session's own
+    /// grammar takes: the drive a full folder sits on is Disks' job.
+    #[test]
+    fn the_window_bar_leads_to_disks() {
+        assert!(ui::tilo_reference::link::Link::parse_native(DISKS_LINK).is_ok());
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        let disks = bar
+            .actions
+            .iter()
+            .find(|action| action.name == "Disks")
+            .expect("Disks is one of the bar's actions");
+        assert!(disks.menu, "an occasional way on sits in the menu");
     }
 
     /// The window's bar names the place on screen and holds Choose folder
