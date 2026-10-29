@@ -277,8 +277,27 @@ step 1: 2 changes in notes; `undo` takes it back
 - **Undo.** `undo` takes back the last step, `undo task` every step of this
   session, newest first, through each app's own undo (the agent's run's
   steps); `history task` lists the steps.
-- **For now** a program runs in one app; one that names two is refused and
-  says so. The apps it may name are the running ones.
+- **Reading across apps.** `grep`, `find`, `read` and `describe` read every
+  running app the task may use, not only the one the program runs in. The
+  program runs in the app it changes (the one it names as `notes.`), else
+  where the last one ran, else in any running app. What it asks of another
+  app is answered by that app's host (`read-for-program`, a read, through
+  the same gate as every other action, as the task), and the program runs
+  again with the answers: one step, changing nothing until it has all of
+  them. The other apps are `host.Resource`s and `host.Match`es there: they
+  print, count, group, read and describe, but their fields are read through
+  `read`, not by name.
+- **Changes stay in one app for now.** A program changes resources only of
+  the app it runs in; one that names the actions of two apps is refused and
+  says so. Changing another app's resources waits for the task's own
+  tilolang host and invocation across apps.
+
+```text
+> tilo {program: "grep(/\\bChen\\b/, in: notes + chat).count_by(.doc)"}
+grep /\bChen\b/: 3 matches in 3 of 26 resources searched (notes 14, chat 12)
+n1 "Standup, Monday"  1
+…
+```
 
 `tilolang repl` is a terminal for the same tool: it connects to a session's
 door (a nested session by default, `--real` for the person's own) and sends

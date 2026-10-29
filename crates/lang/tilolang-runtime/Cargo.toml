@@ -20,6 +20,8 @@ tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-reference = { path = "../../collab/reference" }
 serde.workspace = true
 serde_json.workspace = true
+# `grep` and `read(matching:)` in agents' programs.
+regex.workspace = true
 thiserror.workspace = true
 # The interpreter. `engine.rs` is the only module that names it.
 wasmi = { version = "1.1", default-features = false, features = ["std"] }

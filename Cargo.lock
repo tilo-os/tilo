@@ -22171,6 +22171,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "foldhash 0.1.5",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
