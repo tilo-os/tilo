@@ -180,7 +180,8 @@ rm -rf "$out"
 mkdir -p "$out/bin/examples" "$out/thin-app"
 for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
-cp -rp "$timings" "$out/timings"
+# Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
+[[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" "$out/thin-app/"
 while IFS= read -r file; do
     cp -p "$target/thin-app/$file" "$out/thin-app/"
