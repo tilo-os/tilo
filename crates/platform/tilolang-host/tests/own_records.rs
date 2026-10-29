@@ -13,6 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -137,7 +138,7 @@ impl Window {
     fn take(&mut self) {
         while let Some(batch) = self.transport.recv().unwrap() {
             for message in patch::decode_batch::<ToUi>(&batch).unwrap() {
-                self.sent.push_str(&format!("{message:?}\n"));
+                let _ = writeln!(self.sent, "{message:?}");
                 match message {
                     ToUi::Open {
                         lane: Lane::Root,
@@ -238,14 +239,14 @@ impl Member {
 
     /// Frames until nothing changes for a while.
     fn settle(&mut self) {
-        let mut quiet = 0;
+        let mut quiet: u32 = 0;
         while quiet < 20 {
             let changed = self.host.turn();
             self.window.take();
             if changed {
                 quiet = 0;
             } else {
-                quiet += 1;
+                quiet = quiet.saturating_add(1);
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
@@ -277,6 +278,49 @@ impl Member {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("invocation {id} was answered"))
+    }
+}
+
+/// None of `ada`'s mail reaches `bo`: not his record, his window, his search or his door.
+fn nothing_of_reaches(ada: &Member, bo: &Member) {
+    assert!(
+        bo.inbox.borrow().is_empty(),
+        "nothing of Ada's record was delivered to Bo"
+    );
+    let theirs: std::collections::HashSet<_> = ada
+        .hosted()
+        .record()
+        .doc()
+        .clone()
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    assert!(
+        bo.hosted()
+            .record()
+            .doc()
+            .clone()
+            .get_changes(&[])
+            .iter()
+            .all(|change| !theirs.contains(&change.hash())),
+        "Bo's record holds none of Ada's changes"
+    );
+    for what in ADAS {
+        assert!(
+            !bo.window.shows().contains(what),
+            "Bo's Mail does not show {what}"
+        );
+        assert!(
+            !bo.found().contains(what),
+            "Bo's search does not find {what}"
+        );
+    }
+    for what in ADAS.iter().chain(&ON_HER_DOOR) {
+        assert!(
+            !bo.published().contains(what),
+            "Bo's door does not offer {what}"
+        );
     }
 }
 
@@ -335,45 +379,7 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     }
 
     // None of it reaches Bo: not his record, his window, his search or his door.
-    assert!(
-        bo.inbox.borrow().is_empty(),
-        "nothing of Ada's record was delivered to Bo"
-    );
-    let theirs: std::collections::HashSet<_> = ada
-        .hosted()
-        .record()
-        .doc()
-        .clone()
-        .get_changes(&[])
-        .iter()
-        .map(|change| change.hash())
-        .collect();
-    assert!(
-        bo.hosted()
-            .record()
-            .doc()
-            .clone()
-            .get_changes(&[])
-            .iter()
-            .all(|change| !theirs.contains(&change.hash())),
-        "Bo's record holds none of Ada's changes"
-    );
-    for what in ADAS {
-        assert!(
-            !bo.window.shows().contains(what),
-            "Bo's Mail does not show {what}"
-        );
-        assert!(
-            !bo.found().contains(what),
-            "Bo's search does not find {what}"
-        );
-    }
-    for what in ADAS.iter().chain(&ON_HER_DOOR) {
-        assert!(
-            !bo.published().contains(what),
-            "Bo's door does not offer {what}"
-        );
-    }
+    nothing_of_reaches(&ada, &bo);
 
     // Through the door, Bo asks Ada's instance to archive her conversation: refused, and her
     // mail is as it was. Ada may.

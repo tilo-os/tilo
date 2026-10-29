@@ -78,6 +78,10 @@ pub struct Spec {
     pub person: String,
 }
 
+/// What a [`Surface`]'s resources are built from: the published records' revision and the
+/// loaded packages.
+type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>);
+
 /// What the instance publishes on its connection: the room's records with their actions, kept up
 /// to date change by change.
 struct Surface {
@@ -120,7 +124,7 @@ impl Surface {
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
     /// published records' revision and the loaded packages.
-    fn inputs(&self) -> (u64, Vec<tilolang_tilo::runtime::PackageId>) {
+    fn inputs(&self) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
             self.host
@@ -256,7 +260,7 @@ pub struct Hosted {
     directory: PublishedDirectory,
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
-    published_from: Option<(Rc<Surface>, (u64, Vec<tilolang_tilo::runtime::PackageId>))>,
+    published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     registry: ActionRegistry,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
