@@ -1,10 +1,12 @@
-//! Root widget — orchestrates the diff and merge modes, the top toolbar
+//! The window — orchestrates the diff and merge modes, the top toolbar
 //! (mode switch, change navigation, open), and the host-portal file open.
 //!
 //! Data flow:
 //! * The document holds what is open — the comparison, the merge and its
-//!   merged result — and the app is presented it (`DiffMergeApp::present_state`);
+//!   merged result — and the window follows it (`DiffMergeApp::present_state`);
 //!   the two views ([`DiffView`], [`MergeView`]) draw from that.
+//! * The view's effect handler answers the app's effects ([`effects`]) and
+//!   asks the window for what they change in it on its next frame.
 //! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
 //! * Opening files is the [`DiffmergeEffect::OpenFiles`] effect, whatever
 //!   asks for it: it goes through the **host** file chooser (the XDG Desktop
@@ -12,8 +14,11 @@
 //!   or reads the two paths it was given, and opens what it read as a
 //!   comparison through an action.
 
+mod effects;
 mod folders;
 mod save;
+
+pub(crate) use effects::{Asked, answer};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,11 +31,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected};
+use ui::framework::{Dispatcher, EffectReply, Live};
 use ui::paint::PaintCtx;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
-    SaveDestination,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -138,8 +142,6 @@ pub struct DiffMergeApp {
     portal_contents_rx: Option<ContentsChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
-    /// The caller of the open-files effect a chooser is answering.
-    open_reply: Option<EffectReply>,
     /// A human-readable reason the last open failed, surfaced in the status
     /// bubble. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
@@ -148,23 +150,21 @@ pub struct DiffMergeApp {
     /// Paint changes and one-shot layout rebuilds when the active view changes.
     invalidation: ViewInvalidation,
     /// Where edits and effects go; `None` until the framework attaches the
-    /// surface, when every edit is dropped.
+    /// window, when every edit is dropped.
     dispatcher: Option<Dispatcher<Session>>,
+    /// What the window shares with the view's effect handler.
+    store: effects::Shared,
+    /// Whether this participant may only view, as it follows role changes;
+    /// `None` until the framework attaches the window.
+    read_only: Option<ui::LocalState<bool>>,
+    /// The document as last followed (see [`Live::changed_since`]).
+    followed: Option<(u64, u64)>,
     /// What was open when the app was last presented the document, so a
     /// newly opened comparison or merge is shown in its mode.
     presented: Option<(Option<Comparison>, Option<MergeInputs>)>,
     /// Capture requests a visible comparison status.
     shots_status: bool,
-    /// Where the merged result was last written, so Save writes there again
-    /// without asking. Kept on this device: a place is a fact about here,
-    /// not about the document.
-    saved_place: Option<SaveDestination>,
-    /// The merged text as it was when it was last written: equal to the
-    /// document's text means nothing is waiting to be saved.
-    saved_text: Option<String>,
-    /// The merged text while a merge is open, as last presented. The save
-    /// flow writes what the document holds without reading the record
-    /// through the effect (it has no typed access to it).
+    /// The merged text while a merge is open, as last presented.
     merged: Option<String>,
     /// A folder comparison that was opened: its two roots and what differs.
     /// A listing is a way into comparisons, like the file chooser, so it is
@@ -328,7 +328,7 @@ impl DiffMergeApp {
     fn saved(&self) -> bool {
         self.merged
             .as_deref()
-            .is_some_and(|merged| self.saved_text.as_deref() == Some(merged))
+            .is_some_and(|merged| self.store.borrow().saved_text.as_deref() == Some(merged))
     }
 
     pub(crate) fn attach_chrome(&mut self, chrome: Chrome) {
@@ -352,7 +352,6 @@ impl DiffMergeApp {
             portal_rx: None,
             portal_contents_rx: None,
             pending_left: None,
-            open_reply: None,
             load_error: None,
             error_state: None,
             invalidation: ViewInvalidation {
@@ -360,10 +359,11 @@ impl DiffMergeApp {
                 structure: false,
             },
             dispatcher: None,
+            store: effects::Store::shared(),
+            read_only: None,
+            followed: None,
             presented: None,
             shots_status: false,
-            saved_place: None,
-            saved_text: None,
             merged: None,
             folders: None,
             showing_folders: false,
@@ -420,8 +420,9 @@ impl DiffMergeApp {
         if merge_changed {
             // A different merge has its own result, and no place of its own
             // yet: saving asks where, rather than writing over the last one.
-            self.saved_text = None;
-            self.saved_place = None;
+            let mut store = self.store.borrow_mut();
+            store.saved_text = None;
+            store.saved_place = None;
             if state.merge.is_some() {
                 self.showing_folders = false;
             }
@@ -435,19 +436,80 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
     }
 
-    pub(crate) fn attach_waker(&mut self, wake: ui::WakeHandle) {
-        self.diff.set_waker(wake);
-    }
-
-    /// Submit edits and effects through `dispatcher`.
-    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Session>) {
+    /// Follow the document `live` holds, submitting edits and effects
+    /// through `dispatcher`, waking with `wake`, and taking sides only while
+    /// `read_only` says this participant may.
+    pub(crate) fn attach(
+        &mut self,
+        live: Live<Session>,
+        dispatcher: Dispatcher<Session>,
+        wake: ui::WakeHandle,
+        read_only: ui::LocalState<bool>,
+    ) {
+        self.diff.set_waker(wake.clone());
+        {
+            let mut store = self.store.borrow_mut();
+            store.live = Some(live);
+            store.wake = Some(wake);
+        }
         self.merge.attach(dispatcher.clone());
-        self.merge.set_read_only(dispatcher.read_only());
         self.dispatcher = Some(dispatcher);
+        self.read_only = Some(read_only);
+        self.follow_document();
     }
 
-    pub(crate) fn set_read_only(&mut self, read_only: bool) {
-        self.merge.set_read_only(read_only);
+    /// What the window shares with the view's effect handler.
+    pub(crate) fn shared(&self) -> effects::Shared {
+        std::rc::Rc::clone(&self.store)
+    }
+
+    /// Show the document when it changed since it was last shown, and
+    /// whether sides can be taken.
+    fn follow_document(&mut self) {
+        if let Some(read_only) = &self.read_only {
+            self.merge.set_read_only(read_only.get());
+        }
+        let state = {
+            let store = self.store.borrow();
+            let Some(live) = &store.live else {
+                return;
+            };
+            live.changed_since(&mut self.followed)
+        };
+        if let Some(state) = state {
+            self.present_state(&state);
+        }
+    }
+
+    /// Do what effects asked of the window since its last frame.
+    fn do_asked(&mut self) {
+        let asked = self.store.borrow_mut().take_asked();
+        for asked in asked {
+            match asked {
+                // The effect was answered when it was asked, against the
+                // comparison the document holds, which this window shows.
+                effects::Asked::View(effect) => drop(self.answer_view(effect)),
+                // A chooser already open answers the effect waiting on one.
+                effects::Asked::Choose => {
+                    if self.portal_rx.is_none() && self.portal_contents_rx.is_none() {
+                        self.request_open_via_portal();
+                    }
+                }
+                effects::Asked::Sample => {
+                    self.pending_left = None;
+                    self.load_error = None;
+                }
+                effects::Asked::Opened(Ok(())) => {
+                    self.load_error = None;
+                    self.show(Mode::Diff);
+                }
+                effects::Asked::Opened(Err(reason)) => self.load_error = Some(reason),
+                effects::Asked::Notice(notice) => self.notice = Some(notice),
+                effects::Asked::Folders(comparison) => self.show_folders(comparison),
+                effects::Asked::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
+            }
+            self.invalidation.paint = true;
+        }
     }
 
     /// Stage a screenshot scenario's view state.
@@ -483,103 +545,11 @@ impl DiffMergeApp {
         self.publish_header();
     }
 
-    /// Answer one of the app's effects, from a toolbar button, the palette,
-    /// an agent or a script.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: DiffmergeEffect,
-        cx: &mut EffectCx<Session, Self>,
-    ) -> EffectAnswer {
-        match effect {
-            DiffmergeEffect::ShowDiff
-            | DiffmergeEffect::ShowMerge
-            | DiffmergeEffect::PreviousChange
-            | DiffmergeEffect::NextChange
-            | DiffmergeEffect::Show { .. } => {
-                self.answer_view(effect)?;
-                Ok(Effected::done())
-            }
-            DiffmergeEffect::LoadSample => {
-                let dispatcher = cx.dispatcher();
-                dispatcher.group(|| {
-                    for invoke in crate::resource::sample_invocations() {
-                        dispatcher.submit(invoke);
-                    }
-                });
-                self.pending_left = None;
-                self.load_error = None;
-                self.invalidation.paint = true;
-                Ok(Effected::done())
-            }
-            DiffmergeEffect::OpenFiles {
-                left: Some(left),
-                right: Some(right),
-            } => Ok(cx.thread(
-                move |_| -> Result<session::OpenComparison, String> {
-                    let (left_label, left) = label_and_text(&left)?;
-                    let (right_label, right) = label_and_text(&right)?;
-                    Ok(session::OpenComparison {
-                        left_label,
-                        left,
-                        right_label,
-                        right,
-                    })
-                },
-                |app: &mut Self, opened, cx| app.show_opened(opened, cx),
-            )),
-            DiffmergeEffect::OpenFiles {
-                left: None,
-                right: None,
-            } => {
-                if self.choosing() {
-                    return Err("another file operation is already running".into());
-                }
-                self.request_open_via_portal();
-                self.open_reply = Some(cx.reply());
-                Ok(Effected::Pending)
-            }
-            DiffmergeEffect::OpenFiles { .. } => {
-                Err("left and right paths must be supplied together".into())
-            }
-            DiffmergeEffect::OpenOne { path, side } => Ok(cx.thread(
-                move |_progress| label_and_text(&path),
-                move |app: &mut Self, opened, cx| {
-                    let opened = opened.map(|(label, text)| one_sided(&side, label, text));
-                    app.show_opened(opened, cx)
-                },
-            )),
-            DiffmergeEffect::SaveMerged { path } => self.answer_save(cx, path, false),
-            DiffmergeEffect::SaveMergedAs => self.answer_save(cx, None, true),
-            DiffmergeEffect::CompareFolders { left, right } => {
-                Self::answer_compare_folders(cx, left, right)
-            }
-        }
-    }
-
-    /// Show a comparison whose files were read, or say why they could not be.
-    fn show_opened(
-        &mut self,
-        opened: Result<session::OpenComparison, String>,
-        cx: &EffectCx<Session, Self>,
-    ) -> EffectAnswer {
-        match opened {
-            Ok(opened) => {
-                self.load_error = None;
-                cx.submit(Session::OPEN_COMPARISON.with(opened));
-                self.show(Mode::Diff);
-                Ok(Effected::done())
-            }
-            Err(reason) => {
-                self.load_error = Some(reason.clone());
-                self.invalidation.paint = true;
-                Err(reason)
-            }
-        }
-    }
-
     /// Whether a file chooser is open.
     fn choosing(&self) -> bool {
-        self.portal_rx.is_some() || self.portal_contents_rx.is_some() || self.open_reply.is_some()
+        self.portal_rx.is_some()
+            || self.portal_contents_rx.is_some()
+            || self.store.borrow().open_reply.is_some()
     }
 
     /// `--shots`: force the floating status bubble fully visible so a single
@@ -709,15 +679,17 @@ impl DiffMergeApp {
     /// status bubble, and clears the in-flight channel. Never blocks — a
     /// still pending picker leaves the channel installed for the next frame.
     fn drain_portal(&mut self) {
-        if self
+        let cancelled = self
+            .store
+            .borrow()
             .open_reply
             .as_ref()
-            .is_some_and(EffectReply::is_cancelled)
-        {
+            .is_some_and(EffectReply::is_cancelled);
+        if cancelled {
             self.portal_rx = None;
             self.portal_contents_rx = None;
             self.pending_left = None;
-            self.open_reply = None;
+            self.store.borrow_mut().open_reply = None;
             self.invalidation.paint = true;
             return;
         }
@@ -798,8 +770,9 @@ impl DiffMergeApp {
     }
 
     /// Answer the open-files effect a chooser was answering.
-    fn finish_open(&mut self, result: Result<(), String>) {
-        if let Some(reply) = self.open_reply.take() {
+    fn finish_open(&self, result: Result<(), String>) {
+        let reply = self.store.borrow_mut().open_reply.take();
+        if let Some(reply) = reply {
             reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
     }
@@ -1027,6 +1000,8 @@ impl Default for DiffMergeApp {
 
 impl Widget for DiffMergeApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.do_asked();
         if self.diff.collect_highlights() {
             self.invalidation.paint = true;
         }
@@ -1458,6 +1433,14 @@ impl Widget for DiffMergeApp {
         self.invalidation.paint = false;
         self.diff.mark_drawn();
         self.merge.mark_drawn();
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
