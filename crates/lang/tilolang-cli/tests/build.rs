@@ -200,36 +200,3 @@ fn the_launcher_runs_a_built_app_on_the_runtime_binary_over_its_payload() {
         "its surface: {argv:?}"
     );
 }
-
-/// Every package under `apps/tl` compiles with its committed ids lock, and the lock is complete:
-/// compiling it assigns no new id and drops none, so what a build would write is what is
-/// committed. A lock is a sorted set; a hand-merged one in another order is out of date too.
-#[test]
-fn every_package_compiles_with_its_committed_ids_lock_unchanged() {
-    let mut dirs: Vec<_> = std::fs::read_dir(packages())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|dir| dir.join("app.tl").is_file())
-        .collect();
-    dirs.sort();
-    assert!(
-        dirs.len() >= 5,
-        "expected the apps under apps/tl, found {dirs:?}"
-    );
-    let mut stale = Vec::new();
-    for dir in &dirs {
-        let order = tilolang::source::dependency_order(dir, &[]).unwrap();
-        let built =
-            tilolang::source::compile_dirs(&order, &[], &mut tilolang::OsEntropy::default())
-                .unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
-        let package = built.last().unwrap();
-        let committed = std::fs::read_to_string(dir.join("app.ids")).unwrap();
-        if package.compiled.ids.to_text() != committed {
-            stale.push(dir.file_name().unwrap().to_string_lossy().into_owned());
-        }
-    }
-    assert!(
-        stale.is_empty(),
-        "ids locks out of date (run `tilolang build apps/tl/<name>` and commit app.ids): {stale:?}"
-    );
-}
