@@ -19,16 +19,12 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use shell::compositor::accessibility::NativeAccessibility;
-use shell::shell::mpris;
 use smithay_client_toolkit::reexports::calloop::ping::make_ping;
-
-#[path = "dbus_runtime_context/shared.rs"]
-mod shared;
 
 const CHILD_ENV: &str = "TILO_DBUS_RUNTIME_CONTEXT_BUS";
 const PROBE_ENV: &str = "TILO_DBUS_RUNTIME_CONTEXT_PROBE";
 const TEST_NAME: &str = "dbus_runtime_context::dbus_clients_work_from_threads_without_a_runtime";
-const PROBES: [&str; 4] = ["dispatch", "pause", "discovery", "accessibility"];
+const PROBES: [&str; 1] = ["accessibility"];
 
 enum Event {
     /// A client connected and got as far as sending its first auth line.
@@ -62,21 +58,6 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
     std::thread::spawn(move || accept_and_hang_up(&listener, &events_tx));
 
     match std::env::var(PROBE_ENV).unwrap().as_str() {
-        "dispatch" => {
-            assert!(
-                mpris::send(mpris::Command::PlayPause, |_| {}),
-                "media-key dispatch reaches the session runtime"
-            );
-            expect_connection(&events, "MPRIS media-key dispatch");
-        }
-        "pause" => {
-            assert!(mpris::pause_named("org.mpris.MediaPlayer2.probe"));
-            expect_connection(&events, "MPRIS pause of a named player");
-        }
-        "discovery" => {
-            mpris::refresh_handoff_reports();
-            expect_connection(&events, "MPRIS handoff discovery");
-        }
         "accessibility" => {
             let (ping, _source) = make_ping().unwrap();
             let _accessibility = NativeAccessibility::new((1280, 720), ping);
@@ -87,9 +68,7 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
 }
 
 /// Each entry point gets a fresh process and therefore a fresh session-bus
-/// cache and observer. Media-key dispatch already starts the shared observer;
-/// asking for discovery before its rejected handshake finishes does not start
-/// a second observer. Connection counts cannot distinguish the two callers.
+/// connection.
 fn run_probe(socket: &std::path::Path, log: &std::path::Path, probe: &str) {
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", TEST_NAME, "--nocapture"])

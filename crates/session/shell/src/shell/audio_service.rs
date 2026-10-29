@@ -1,23 +1,25 @@
-//! The session's audio policy helper (`tilo-audio`, crate
+//! The session's audio and media helper (`tilo-audio`, crate
 //! `tilo-audio-service`), started with the session.
 //!
-//! The helper owns the persistent audio transforms and hotplug policy; the
-//! compositor only reads the devices it reports arriving and leaving, and
-//! sounds them under its own quiet rules. Dropping [`AudioService`] closes
-//! the helper's standard input, which stops it, and reaps it.
+//! The helper owns the persistent audio transforms, the hotplug policy and
+//! the session's one MPRIS client. The compositor sounds the devices it
+//! reports arriving and leaving under its own quiet rules, and hands
+//! everything about media players to [`crate::shell::mpris`]. Dropping
+//! [`AudioService`] closes the helper's standard input, which stops it, and
+//! reaps it.
 
-use std::io::BufRead as _;
+use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
 
 use settings_store::system_sounds::SystemSoundEvent;
-use tilo_audio_service::DeviceEvent;
+use tilo_audio_service::{Event, Request};
 
 pub struct AudioService {
     child: Child,
-    devices: Mutex<Receiver<DeviceEvent>>,
+    devices: Mutex<Receiver<SystemSoundEvent>>,
 }
 
 impl AudioService {
@@ -39,21 +41,48 @@ impl AudioService {
             })
             .ok()?;
         let stdout = child.stdout.take()?;
+        let mut stdin = child.stdin.take()?;
         let (sender, devices) = mpsc::channel();
         let reader = std::thread::Builder::new()
             .name("tilo-audio-events".into())
             .spawn(move || {
                 for line in std::io::BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
-                    if let Some(event) = DeviceEvent::parse(&line)
-                        && sender.send(event).is_err()
-                    {
+                    match Event::parse(&line) {
+                        Some(Event::Device { connected }) => {
+                            let _ = sender.send(if connected {
+                                SystemSoundEvent::DeviceConnected
+                            } else {
+                                SystemSoundEvent::DeviceDisconnected
+                            });
+                        }
+                        Some(event) => crate::shell::mpris::on_event(event),
+                        None => {}
+                    }
+                }
+                crate::shell::mpris::detach();
+            });
+        if let Err(error) = reader {
+            tracing::warn!(target: "tilo::audio_policy", %error, "the audio helper's events go unread");
+        }
+        // Requests are written on a thread of their own, so a helper that
+        // stops reading never holds up the compositor. The helper's standard
+        // input closes when the last sender goes ([`Drop`]).
+        let (requests, pending) = mpsc::channel::<Request>();
+        let writer = std::thread::Builder::new()
+            .name("tilo-audio-requests".into())
+            .spawn(move || {
+                for request in pending {
+                    if writeln!(stdin, "{}", request.line()).is_err() {
                         break;
                     }
                 }
             });
-        if let Err(error) = reader {
-            tracing::warn!(target: "tilo::audio_policy", %error, "the audio helper's events go unread");
+        match writer {
+            Ok(_) => crate::shell::mpris::attach(requests),
+            Err(error) => {
+                tracing::warn!(target: "tilo::audio_policy", %error, "media players cannot be driven");
+            }
         }
         Some(Self {
             child,
@@ -66,15 +95,7 @@ impl AudioService {
     pub fn drain_device_sounds(&self) -> Vec<SystemSoundEvent> {
         self.devices
             .lock()
-            .map(|events| {
-                events
-                    .try_iter()
-                    .map(|event| match event {
-                        DeviceEvent::Connected => SystemSoundEvent::DeviceConnected,
-                        DeviceEvent::Disconnected => SystemSoundEvent::DeviceDisconnected,
-                    })
-                    .collect()
-            })
+            .map(|events| events.try_iter().collect())
             .unwrap_or_default()
     }
 }
@@ -82,8 +103,9 @@ impl AudioService {
 impl Drop for AudioService {
     fn drop(&mut self) {
         // Closing its standard input is the helper's signal to restore what
-        // it changed and stop.
-        drop(self.child.stdin.take());
+        // it changed and stop: dropping the last request sender ends the
+        // writer, which closes it.
+        crate::shell::mpris::detach();
         let _ = self.child.wait();
     }
 }
