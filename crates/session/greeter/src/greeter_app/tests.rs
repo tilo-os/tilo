@@ -1084,6 +1084,7 @@ fn a_personal_device_greets_the_person_and_asks_only_for_the_passcode() {
             vec![
                 "greeter.password",
                 "greeter.login",
+                "greeter.cant-sign-in",
                 "greeter.fingerprint",
                 "greeter.larger-text",
                 "greeter.high-contrast",
@@ -1956,6 +1957,269 @@ fn the_on_screen_keyboard_is_a_number_pad_for_a_pin_and_letters_for_a_password()
         several: true,
     });
     assert!(!shown_keyboard(&mut app).shows_pad());
+}
+
+#[test]
+fn the_boot_sign_in_shows_the_card_where_the_greeter_does() {
+    let (_supervisor, link) = boot::Link::pair().unwrap();
+    let mut boot_app = GreeterApp::for_boot(BootLink::new(link), false);
+    boot_app.boot_message(ToGreeter::People {
+        people: vec![boot::Person {
+            uid: 1000,
+            name: "ada".into(),
+            display_name: "Ada".into(),
+            secret: boot::SecretKind::Password,
+        }],
+        highlighted: 0,
+    });
+    let mut greeter = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+    boot_app.clock = greeter.clock.clone();
+    boot_app.clock_pinned = true;
+    boot_app.device = greeter.device;
+    for viewport in [(1280.0, 800.0), (800.0, 1280.0), (1920.0, 1080.0)] {
+        layout_at_with_theme(&mut boot_app, viewport, &Theme::dark());
+        layout_at_with_theme(&mut greeter, viewport, &Theme::dark());
+        let at_boot = boot_app.composed.element().expect("composed");
+        let after = greeter.composed.element().expect("composed");
+        assert!(
+            rect_of(at_boot, "greeter.cant-sign-in").is_some(),
+            "the boot offers the other ways in"
+        );
+        assert_eq!(
+            passcode_field_rect(at_boot),
+            passcode_field_rect(after),
+            "at {viewport:?}"
+        );
+    }
+}
+
+#[test]
+fn after_boot_cant_sign_in_sits_under_the_field_for_a_known_account() {
+    let mut app = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+    layout_at_with_theme(&mut app, (1280.0, 800.0), &Theme::dark());
+    let card = app.composed.element().expect("composed");
+    let field = passcode_field_rect(card).expect("the passcode field");
+    let button = rect_of(card, "greeter.cant-sign-in").expect("offered after boot");
+    assert!(button.y0 >= field.y1, "{button:?} is under {field:?}");
+    assert_eq!(
+        focusables(&app)[..3],
+        ["greeter.password", "greeter.login", "greeter.cant-sign-in"],
+        "the next stop after signing in"
+    );
+    // Without a known account there is nobody to recover.
+    let app = GreeterApp::with_sessions(one_session());
+    assert!(!focusables(&app).contains(&"greeter.cant-sign-in".to_owned()));
+}
+
+fn recovering() -> (GreeterApp, AutoCommit) {
+    let mut app = pinned(GreeterApp::with_sessions_and_login_user(
+        one_session(),
+        Some(quick_user()),
+    ));
+    let mut doc = AutoCommit::new();
+    press(&mut app, &mut doc, "greeter.cant-sign-in");
+    (app, doc)
+}
+
+fn fill_recovery(app: &GreeterApp, key: &str, new: &str, confirm: &str) {
+    let recovery = app.recovery.as_ref().expect("the recovery form is open");
+    for (buffer, value) in [
+        (&recovery.key, key),
+        (&recovery.new, new),
+        (&recovery.confirm, confirm),
+    ] {
+        *buffer.lock().unwrap() = value.to_owned();
+    }
+}
+
+fn recovery_buffers(app: &GreeterApp) -> [String; 3] {
+    let recovery = app.recovery.as_ref().expect("the recovery form is open");
+    [&recovery.key, &recovery.new, &recovery.confirm].map(|b| b.lock().unwrap().clone())
+}
+
+#[test]
+fn cant_sign_in_after_boot_opens_the_recovery_form_and_cancel_returns() {
+    let mut app = pinned(GreeterApp::with_sessions_and_login_user(
+        one_session(),
+        Some(quick_user()),
+    ));
+    let mut doc = AutoCommit::new();
+    seed_password(&app, "half typed");
+    press(&mut app, &mut doc, "greeter.cant-sign-in");
+    assert!(app.recovery.is_some());
+    assert!(app.password_buffer.lock().unwrap().is_empty());
+    assert!(app.take_focus_reset(), "focus moves into the form");
+    assert_eq!(
+        focusables(&app)[..5],
+        [
+            "greeter.recovery-key",
+            "greeter.new-secret",
+            "greeter.confirm-secret",
+            "greeter.recovery-cancel",
+            "greeter.recovery-save",
+        ],
+        "the recovery key takes focus"
+    );
+    let card = card_of(&app);
+    assert!(find_test_id(card.as_ref(), "greeter.password").is_none());
+    assert!(find_test_id(card.as_ref(), "greeter.cant-sign-in").is_none());
+    assert_eq!(
+        accessible_name_for(card.as_ref(), "greeter.recovery-key").as_deref(),
+        Some("Recovery key")
+    );
+    assert!(
+        !shown_keyboard(&mut app).shows_pad(),
+        "a recovery key is typed on the letters"
+    );
+
+    press(&mut app, &mut doc, "greeter.recovery-cancel");
+    assert!(app.recovery.is_none());
+    assert_eq!(
+        focusables(&app).first().map(String::as_str),
+        Some("greeter.password")
+    );
+
+    press(&mut app, &mut doc, "greeter.cant-sign-in");
+    assert!(dispatch(
+        &mut app,
+        &mut doc,
+        "greeter.recovery-key",
+        &named_key_event(NamedKey::Escape)
+    ));
+    app.sync(&doc, &automerge::ROOT);
+    assert!(app.recovery.is_none(), "Esc leaves the form too");
+    assert!(untouched(&doc));
+}
+
+#[test]
+fn mismatched_entries_are_refused_without_asking_tilo_authd() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (mut app, mut doc) = recovering();
+    app.auth_socket = dir.path().join("socket");
+
+    press(&mut app, &mut doc, "greeter.recovery-save");
+    assert_eq!(
+        app.recovery.as_ref().unwrap().notice,
+        Notice::Hint("greeter-recovery-hint-key")
+    );
+    fill_recovery(&app, "cccc-dddd", "", "");
+    press(&mut app, &mut doc, "greeter.recovery-save");
+    assert_eq!(
+        app.recovery.as_ref().unwrap().notice,
+        Notice::Hint("greeter-recovery-hint-new")
+    );
+    assert_eq!(recovery_buffers(&app), ["cccc-dddd", "", ""]);
+
+    fill_recovery(&app, "cccc-dddd", "2468", "1357");
+    press(&mut app, &mut doc, "greeter.recovery-save");
+    let recovery = app.recovery.as_ref().unwrap();
+    assert_eq!(recovery.notice, Notice::Error("greeter-recovery-mismatch"));
+    assert!(!recovery.is_pending());
+    assert_eq!(
+        recovery_buffers(&app),
+        ["cccc-dddd", "", ""],
+        "the two entries are typed again"
+    );
+    assert!(
+        spoken(card_of(&app).as_ref())
+            .contains(&"The two entries don't match. Type them again.".to_owned())
+    );
+    assert!(
+        listener
+            .accept()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock),
+        "tilo-authd was not asked"
+    );
+    assert!(untouched(&doc));
+}
+
+/// Sync until tilo-authd's answer has been taken.
+fn answered(app: &mut GreeterApp, doc: &AutoCommit) {
+    let started = Instant::now();
+    while app
+        .recovery
+        .as_ref()
+        .is_some_and(recovery::Recovery::is_pending)
+    {
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "tilo-authd's answer was taken"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        app.sync(doc, &automerge::ROOT);
+    }
+}
+
+#[test]
+fn the_recovery_key_sets_a_new_secret_and_a_wrong_one_says_so() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(dir.path().join("socket")).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for reply in [
+            "{\"ok\":false,\"error\":\"wrong\"}\n",
+            "{\"ok\":false,\"error\":\"weak-secret\"}\n",
+            "{\"ok\":true}\n",
+        ] {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            (&stream).write_all(reply.as_bytes()).unwrap();
+            requests.push(serde_json::from_str::<serde_json::Value>(&request).unwrap());
+        }
+        requests
+    });
+    let (mut app, mut doc) = recovering();
+    app.auth_socket = dir.path().join("socket");
+
+    for (refusal, said) in [
+        (
+            "greeter-recovery-wrong",
+            "That recovery key isn't right. Check it and try again.",
+        ),
+        (
+            "greeter-recovery-weak",
+            "This computer has no security chip, so it needs a longer password. Choose a longer one.",
+        ),
+    ] {
+        fill_recovery(&app, "cccc-dddd", "2468", "2468");
+        press(&mut app, &mut doc, "greeter.recovery-save");
+        assert!(app.recovery.as_ref().unwrap().is_pending());
+        assert_eq!(recovery_buffers(&app), ["", "", ""]);
+        answered(&mut app, &doc);
+        assert_eq!(
+            app.recovery.as_ref().unwrap().notice,
+            Notice::Error(refusal)
+        );
+        assert_eq!(recovery_buffers(&app), ["", "", ""]);
+        assert!(spoken(card_of(&app).as_ref()).contains(&said.to_owned()));
+    }
+
+    fill_recovery(&app, "cccc-dddd", "2468", "2468");
+    press(&mut app, &mut doc, "greeter.recovery-save");
+    answered(&mut app, &doc);
+    assert!(app.recovery.is_none(), "back to the sign-in form");
+    assert_eq!(app.notice, Notice::Hint("greeter-recovery-done-pin"));
+    assert_eq!(app.status_text(), "Sign in with your new PIN.");
+    assert_eq!(
+        accessible_name_for(card_of(&app).as_ref(), "greeter.password").as_deref(),
+        Some("PIN")
+    );
+
+    let requests = daemon.join().unwrap();
+    assert_eq!(
+        requests.last(),
+        Some(&serde_json::json!({
+            "op": "set-secret",
+            "user": "tester",
+            "recovery": "cccc-dddd",
+            "new": "2468",
+        }))
+    );
+    assert!(untouched(&doc), "no secret reaches the document");
 }
 
 #[test]

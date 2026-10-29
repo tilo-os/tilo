@@ -825,7 +825,13 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    if !awaits_examination(&tab.tile) {
+                    // A document another of the person's devices has open
+                    // opens as that document when the person goes to it
+                    // ([`crate::shell::doc_open::activate_continuity_file_tab`]),
+                    // never as an empty viewer.
+                    if !awaits_examination(&tab.tile)
+                        || tree.continuation_file_references.contains_key(&tab.id)
+                    {
                         continue;
                     }
                     if let TileContent::PeerWindow { app_id, .. }
@@ -982,11 +988,11 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
     // Before the launch, or a note written after races the window's toplevel.
     launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
     launcher::clear_staged_continuation(ws.room(), item.tab);
-    let shared = crate::shell::personal_continuity_registry::global_registry();
+    let shared = crate::shell::continuation_registry::global_registry();
     let Ok(mut registry) = shared.lock() else {
         return;
     };
-    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
+    let tab = crate::shell::continuation::AppInstanceId(item.tab);
     // The process cache is tab-keyed. Never let a stale local association
     // shadow an exact remote offer after a tab changes kind/room/app.
     registry.forget_local_binding(tab);
@@ -994,13 +1000,9 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
         let Some(record) = tree.local_app_record(item.tab, ws.room(), &item.app_id) else {
             return;
         };
-        registry.bind_tab(
-            tab,
-            crate::shell::personal_continuity::AppInstanceId(record),
-        );
+        registry.bind_tab(tab, crate::shell::continuation::AppInstanceId(record));
     }
-    let Ok(launch) = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
-    else {
+    let Ok(launch) = crate::shell::continuation::LaunchIntent::app(item.app_id.clone()) else {
         return;
     };
     let Some(record_instance) = registry.record_instance_for_tab(ws.room(), tab, &launch) else {
@@ -1025,9 +1027,9 @@ fn continued_record(
     item: &Pending,
     room: crate::shell::state::RoomId,
 ) -> Option<(crate::shell::record_hydration::RecordAddress, u64)> {
-    let launch = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone()).ok()?;
-    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
-    let continuation = crate::shell::personal_continuity_registry::global_registry()
+    let launch = crate::shell::continuation::LaunchIntent::app(item.app_id.clone()).ok()?;
+    let tab = crate::shell::continuation::AppInstanceId(item.tab);
+    let continuation = crate::shell::continuation_registry::global_registry()
         .lock()
         .ok()?
         .continuation_for_tab(room, tab, &launch)?;

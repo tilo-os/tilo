@@ -2196,7 +2196,6 @@ downloaded-app-move = Move to Applications
 downloaded-app-move-detail = Keeps it in the Applications folder in your files
 downloaded-app-add-row = Add { $name } to apps
 search-provider-downloaded-programs = Downloaded programs
-new-document-unavailable = New document unavailable: { $error }
 collab-unavailable-title = Collaboration unavailable
 collab-unavailable-body = Apps in this session cannot share edits. { $reason }
 identity-clock-wrong-title = This device's clock is wrong

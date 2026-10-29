@@ -11,7 +11,6 @@ use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
 };
-use ui::record::RecordStore;
 use ui::time::testing::with_monotonic_time;
 
 /// One host frame of a 60 Hz display, on the clock the frames are drawn at.
@@ -75,7 +74,6 @@ fn navigation_first_layout_reveals_and_marks_canonical_focus() {
     tree.active_group.insert(StripId(2), 4);
     let mut surface = Box::new(DesktopSurface::build(
         &tree,
-        &RecordStore::in_memory(),
         &mut Unavailable,
         SurfaceChrome::default(),
     ));
@@ -107,7 +105,6 @@ fn navigation_clicking_selected_tab_emits_group_focus_without_tab_mutation() {
     let tree = navigation_tree();
     let mut surface = Box::new(DesktopSurface::build(
         &tree,
-        &RecordStore::in_memory(),
         &mut Unavailable,
         SurfaceChrome::default(),
     ));
@@ -147,27 +144,19 @@ struct NavigationFrame {
     frame: ui::headless::FrameHarness,
     surface: *mut DesktopSurface,
     tree: DesktopTree,
-    records: RecordStore,
 }
 impl NavigationFrame {
     fn new(tree: DesktopTree, width: u32) -> Self {
         Self::with_chrome(tree, width, SurfaceChrome::default())
     }
     fn with_chrome(tree: DesktopTree, width: u32, chrome: SurfaceChrome) -> Self {
-        let records = RecordStore::in_memory();
-        let mut surface = Box::new(DesktopSurface::build(
-            &tree,
-            &records,
-            &mut Unavailable,
-            chrome,
-        ));
+        let mut surface = Box::new(DesktopSurface::build(&tree, &mut Unavailable, chrome));
         let ptr = std::ptr::from_mut(surface.as_mut());
         let frame = ui::headless::FrameHarness::new(ui::state::State::new(), surface, (width, 720));
         Self {
             frame,
             surface: ptr,
             tree,
-            records,
         }
     }
     fn surface(&self) -> &DesktopSurface {
@@ -180,7 +169,7 @@ impl NavigationFrame {
     }
     fn reconcile(&mut self) {
         unsafe {
-            (&mut *self.surface).reconcile(&self.tree, &self.records, &mut Unavailable);
+            (&mut *self.surface).reconcile(&self.tree, &mut Unavailable);
         }
         self.frame.relayout();
     }
@@ -669,7 +658,6 @@ fn navigation_moved_group_and_workspace_rebuild_resolve_current_identity() {
     unsafe {
         (&mut *test.surface).rebuild_retaining(
             &test.tree,
-            &test.records,
             &mut Unavailable,
             SurfaceChrome::default(),
         );
@@ -751,7 +739,6 @@ fn navigation_remote_strip_rebuild_preserves_existing_viewport() {
     unsafe {
         (&mut *test.surface).rebuild_retaining(
             &test.tree,
-            &test.records,
             &mut Unavailable,
             SurfaceChrome::default(),
         );
@@ -766,45 +753,6 @@ fn navigation_remote_strip_rebuild_preserves_existing_viewport() {
 }
 
 #[test]
-fn navigation_newly_mounted_real_writer_focus_is_not_an_admitted_focus_intent() {
-    struct Writer;
-    impl TileResolver for Writer {
-        fn resolve(&mut self, _: TileRequest<'_>) -> TileResolution {
-            TileResolution::Hosted(Box::new(word_processor::WordProcessorWidget::new()))
-        }
-    }
-    let mut test = NavigationFrame::new(navigation_tree(), 740);
-    assert!(test.surface_mut().take_group_focus_intent().is_none());
-    let mut added = test.tree.workspaces[0].strips[0].window_groups[0].clone();
-    added.id = 5;
-    added.tabs[0].id = 23;
-    added.active_tab = 23;
-    test.tree.workspaces[0].strips[0]
-        .window_groups
-        .insert(0, added);
-    let record = tilo_desktop::records::scratch_tab_record(23);
-    test.records.create_record(&record).unwrap();
-    test.records.with(&record.id, |doc| {
-        word_processor::initialize_empty_document(doc).unwrap();
-    });
-    unsafe {
-        (&mut *test.surface).reconcile(&test.tree, &test.records, &mut Writer);
-    }
-    test.frame.relayout();
-    assert!(
-        test.frame
-            .inspection_json()
-            .unwrap()
-            .contains("word_processor")
-    );
-    assert!(
-        test.surface_mut().take_group_focus_intent().is_none(),
-        "a newly mounted Writer's default focus is not user input"
-    );
-    assert_eq!(test.tree.active_group[&StripId(2)], 3);
-}
-
-#[test]
 fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent() {
     use tilo_desktop::composition::{NavigationChrome, WorkArea};
     use tilo_desktop::intents::{DesktopIntent, LocalViewIntent, apply_local_view};
@@ -813,10 +761,8 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     let mut tree = tree();
     tree.active_strip.insert(tree.active, StripId(2));
     tree.active_group.insert(StripId(2), 3);
-    let records = RecordStore::in_memory();
     let mut surface = Box::new(DesktopSurface::build(
         &tree,
-        &records,
         &mut Unavailable,
         SurfaceChrome {
             navigation: NavigationChrome::External,
@@ -874,7 +820,7 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     assert_eq!(tree.workspaces[0].strips[0].window_groups[0].width, width);
     assert_eq!(tree.workspaces[0].strips[0].window_groups.len(), 1);
     unsafe {
-        (&mut *ptr).reconcile(&tree, &records, &mut Unavailable);
+        (&mut *ptr).reconcile(&tree, &mut Unavailable);
     }
     frame.poll_frame().unwrap();
     assert_eq!(

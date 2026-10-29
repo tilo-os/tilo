@@ -35,7 +35,6 @@ fn main() -> Result<(), String> {
     let tree = notes_desktop()?;
     shell::shell::persist::save_tree_to(&tree, &state_path)
         .map_err(|error| format!("save the session: {error}"))?;
-    seed_tab_records(&profile.join("data"), &tree)?;
     seed_identity(&profile.join("config"))?;
     let environment = serde_json::json!({
         "TILO_STATE_PATH": state_path,
@@ -89,35 +88,6 @@ fn notes_desktop() -> Result<shell::shell::state::WorkspaceTree, String> {
         .ok_or("the demo workspace has no Notes tab")?
         .id;
     Ok(tree)
-}
-
-/// Create the saved tabs' documents, then release them so the compositor
-/// can open them.
-fn seed_tab_records(
-    data_home: &Path,
-    tree: &shell::shell::state::WorkspaceTree,
-) -> Result<(), String> {
-    let mut owners = ui::record::RecordOwners::new(data_home.to_path_buf());
-    let records = owners
-        .open(shell::shell::SHELL_RECORDS_PACKAGE, RECORD_SCOPE)
-        .map_err(|error| format!("open the Shell record namespace: {error}"))?;
-    for tab in tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-    {
-        shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
-            .map_err(|error| format!("create the tab's document: {error}"))?;
-    }
-    records
-        .try_flush()
-        .map_err(|error| format!("persist the tabs' documents: {error}"))?;
-    drop(records);
-    drop(owners);
-    Ok(())
 }
 
 /// A completed identity ceremony: without one the desktop is in first-run

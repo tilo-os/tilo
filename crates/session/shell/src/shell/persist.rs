@@ -466,11 +466,6 @@ pub(crate) struct DurableRest {
     room_outbox: Vec<crate::shell::state::Outgoing>,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
-    continuation_tabs: std::collections::BTreeSet<TabId>,
-    continuation_owned_tabs: std::collections::HashMap<TabId, RoomId>,
-    continuation_closed_tabs: std::collections::HashMap<TabId, RoomId>,
-    continuation_file_references:
-        std::collections::HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
     native_document_tabs:
         std::collections::HashMap<TabId, crate::shell::state::NativeDocumentReference>,
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -531,10 +526,6 @@ impl DurableTree {
             rest: DurableRest {
                 desktop,
                 strips_to_retain: tree.strips_to_retain.clone(),
-                continuation_tabs: tree.continuation_tabs.clone(),
-                continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
-                continuation_closed_tabs: tree.continuation_closed_tabs.clone(),
-                continuation_file_references: tree.continuation_file_references.clone(),
                 native_document_tabs: tree.native_document_tabs.clone(),
                 local_app_records,
                 package_launches,
@@ -2543,9 +2534,6 @@ mod tests {
         );
         tree.strips_to_retain
             .insert(crate::shell::state::StripId(93_010));
-        tree.continuation_tabs.insert(93_003);
-        tree.continuation_owned_tabs.insert(93_003, room);
-        tree.continuation_closed_tabs.insert(93_004, room);
         tree.native_document_tabs.insert(
             93_003,
             NativeDocumentReference {

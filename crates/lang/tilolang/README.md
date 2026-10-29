@@ -154,6 +154,15 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
+**Members.** Who is in the workspace is the platform's membership, read and never copied:
+`workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
+those of them the workspace's grants let read `r`. A principal says what it is: `p.name()`,
+`p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
+workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
+that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
+offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
+members in a view of no resource), without the view declaring anything.
+
 **Collections.** An item is its id: a reference to it names its document and id
 (`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
 everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how

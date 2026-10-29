@@ -305,7 +305,6 @@ fn a_kept_workspace_does_its_apps_woken_work_while_another_is_shown() {
     shown_home.active = home;
     let surface = tilo_desktop::composition::DesktopSurface::build(
         &shown_home,
-        &ui::record::RecordStore::in_memory(),
         &mut resolver,
         tilo_desktop::composition::SurfaceChrome::default(),
     );

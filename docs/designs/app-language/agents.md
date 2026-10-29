@@ -24,6 +24,27 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
   undo one step or the whole task.
 - The existing tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) stay as one-call forms.
 
+### How a program runs
+
+1. **Who:** the task. The program's code author is the agent task, acting for its person; what
+   it may do is the lesser of both (authority.md). It never runs as an app or borrows an app's
+   authorship.
+2. **Where:** one tilolang host per task, with the task as author (ui-host.md). The door starts
+   it on the task's first `tilo` call; it lives as long as the task, holds the session's `let`s,
+   opens no windows and owns no records.
+3. **What it names:** every installed app's published types and actions, from the one schema
+   (action-system.md step 4), as far as the task may use them.
+4. **How it reads:** as any reader outside an app: `find` and `grep` through the system index,
+   fields through the platform's read path, results as catalogue references. Sources from
+   different apps combine (`docs + notes`).
+5. **How it changes:** only by invoking actions. An assignment compiles to the resource's field
+   edit, a method to its type's declared action; each is a broker invocation, a child of the
+   task, decided at the action's own node (action-system.md step 3). A program never writes a
+   record directly.
+6. **Steps:** one call is one run group for undo; atomic within one origin, flow steps across
+   origins (convergence.md). A preview is a provisional run of those invocations; `confirm`
+   sends the same program again.
+
 ## 2. What the agent knows from the start
 
 The session's first message says where it is: the workspace, who it acts for, the task's limits,

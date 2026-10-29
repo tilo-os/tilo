@@ -58,7 +58,7 @@ class CaptureBuildEvidenceTests(unittest.TestCase):
 
     def test_native_custody_helpers_require_actual_compiler_roles(self):
         for role, package, name in (
-                ('home_seeds', 'crates/session/installer', 'tilo-firstboot-home-seeds'),
+                ('home_seeds', 'crates/system/install-helpers', 'tilo-firstboot-home-seeds'),
                 ('prepared_extract', 'apps/imager', 'tilo-installer-prepared-setup-extract'),
                 ('staging_handoff', 'crates/system/install-helpers', 'tilo-staging-handoff'),
                 ('handoff_copy', 'crates/system/install-helpers', 'tilo-install-handoff-copy'),

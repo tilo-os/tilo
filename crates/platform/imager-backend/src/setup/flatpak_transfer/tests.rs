@@ -31,7 +31,7 @@ impl Runner for Fake {
 }
 
 #[test]
-fn inventory_and_restoration_use_named_installations_and_target_user() {
+fn inventory_uses_named_installations() {
     let runner = Fake::new(vec![
         Ok(
             "org.example.Chat/x86_64/stable\tflathub\tuser\tChat\norg.example.Paint/x86_64/stable\tcompany\tsystem (work)\tPaint\n",
@@ -52,66 +52,10 @@ fn inventory_and_restoration_use_named_installations_and_target_user() {
             .iter()
             .any(|(_, arguments)| arguments.contains(&"--installation=work".into()))
     );
-    let runner = Fake::new(vec![Ok(""), Ok(""), Ok(""), Err("offline")]);
-    let approved = vec![
-        ApprovedRemote {
-            source_installation: Installation::System("default".into()),
-            source_name: "flathub".into(),
-            target_name: "migrated-flathub".into(),
-            definition: "/approved/flathub.flatpakrepo".into(),
-        },
-        ApprovedRemote {
-            source_installation: Installation::System("work".into()),
-            source_name: "company".into(),
-            target_name: "migrated-work".into(),
-            definition: "/approved/company.flatpakrepo".into(),
-        },
-    ];
-    let selected = inventory
-        .refs
-        .iter()
-        .filter(|item| item.installation != Installation::User)
-        .cloned()
-        .collect::<Vec<_>>();
-    let report = restore_system_refs(
-        &runner,
-        Path::new("/target/home"),
-        &selected,
-        &approved,
-        Some(Path::new("/export/.ostree/repo")),
-    )
-    .unwrap();
-    assert_eq!(
-        report.restored,
-        ["runtime/org.example.Platform/x86_64/24.08"]
-    );
-    assert_eq!(
-        report.failed,
-        [(
-            "app/org.example.Paint/x86_64/stable".into(),
-            "offline".into()
-        )]
-    );
-    let calls = runner.calls.borrow();
-    assert!(
-        calls.iter().all(
-            |(home, args)| home == Path::new("/target/home") && args.contains(&"--user".into())
-        )
-    );
-    assert!(
-        calls[1]
-            .1
-            .contains(&"--sideload-repo=/export/.ostree/repo".into())
-    );
-    assert!(calls.iter().all(|(_, args)| {
-        !args
-            .iter()
-            .any(|arg| arg.contains("no-gpg-verify") || arg == "run")
-    }));
 }
 
 #[test]
-fn malformed_inventory_and_unapproved_or_ambiguous_restores_do_not_run() {
+fn malformed_inventory_is_refused() {
     for line in [
         "app/../../evil\tflathub\tuser\tBad",
         "app/org.example.App/x86_64/stable\t--evil\tuser\tBad",
@@ -121,49 +65,6 @@ fn malformed_inventory_and_unapproved_or_ambiguous_restores_do_not_run() {
         assert!(discover(&runner, Path::new("/source")).is_err());
         assert_eq!(runner.calls.borrow().len(), 1);
     }
-    let item = InstalledRef {
-        reference: "app/org.example.App/x86_64/stable".into(),
-        origin: "flathub".into(),
-        installation: Installation::System("default".into()),
-        name: "App".into(),
-    };
-    let runner = Fake::new(vec![]);
-    let report =
-        restore_system_refs(&runner, Path::new("/target"), &[item.clone()], &[], None).unwrap();
-    assert_eq!(report.failed.len(), 1);
-    assert!(runner.calls.borrow().is_empty());
-    let other = InstalledRef {
-        installation: Installation::System("work".into()),
-        ..item.clone()
-    };
-    assert!(
-        restore_system_refs(
-            &runner,
-            Path::new("/target"),
-            &[item.clone(), other],
-            &[],
-            None
-        )
-        .is_err()
-    );
-    assert!(runner.calls.borrow().is_empty());
-    let remote = ApprovedRemote {
-        source_installation: item.installation.clone(),
-        source_name: "flathub".into(),
-        target_name: "flathub".into(),
-        definition: "/approved/flathub.flatpakrepo".into(),
-    };
-    assert!(
-        restore_system_refs(
-            &runner,
-            Path::new("/target"),
-            &[item],
-            &[remote.clone(), remote],
-            None
-        )
-        .is_err()
-    );
-    assert!(runner.calls.borrow().is_empty());
 }
 
 #[test]

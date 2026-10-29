@@ -1091,6 +1091,12 @@ on-screen keyboard. The toolkit's own screen reader speaks through `tilo-tts`. A
 Super + Enter or both volume keys turn speech on. The initramfs size and the time
 to first frame are gated.
 
+**Status in source:** the Plymouth sign-in layout this describes is removed. The
+sign-in screen in the initramfs is the greeter in boot mode
+(`crates/system/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
+When it can't start, `crates/system/boot-signin/src/screen.rs` ends Plymouth and
+asks through systemd's console password agent.
+
 ---
 
 ## P2-10 — Plymouth keeps every secret it relays until it quits
@@ -1106,6 +1112,11 @@ can read the secret instead of only guessing it against the TPM. No client optio
 turns the caching off. Closing it means asking the secret without Plymouth's password
 request: the greeter in the initramfs of P1-13 does, as would reading the keyboard
 in `tilo-boot-signin` while Plymouth only draws.
+
+**Status in source:** the boot sign-in secret no longer reaches Plymouth. The greeter
+takes it over its socket, and the console fallback ends Plymouth before it asks. The
+rollback PIN, the disk passphrase and the questions `tilo-boot-signin other-ways`
+carries after "Can't sign in" still go through Plymouth's password request.
 
 ---
 

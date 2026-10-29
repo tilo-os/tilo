@@ -96,6 +96,8 @@ imports! {
     (PrincipalNamed, "principal_named", "i", "i"),
     (InvokerPush, "invoker_push", "ii", ""),
     (InvokerPop, "invoker_pop", "", ""),
+    (PrincipalKind, "principal_kind", "i", "l"),
+    (PrincipalRole, "principal_role", "i", "i"),
 
     (EnumNew, "enum_new", "ii", "i"),
     (EnumSetI, "enum_set_i", "iil", ""),
@@ -150,6 +152,9 @@ imports! {
     (ArgAt, "arg_at", "iii", "i"),
     (Actions, "actions", "i", "i"),
     (Lenses, "lenses", "i", "i"),
+    (WorkspaceMembers, "workspace_members", "", "i"),
+    (Members, "members", "i", "i"),
+    (Speakers, "speakers", "i", "i"),
     (MetaOf, "meta_of", "i", "i"),
     (Versions, "versions", "i", "i"),
     (VersionEnd, "version_end", "ii", "i"),

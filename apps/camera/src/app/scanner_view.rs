@@ -413,7 +413,7 @@ impl CameraApp {
         theme: &Theme,
         area: Rect,
     ) {
-        let waiting = self.scan_import_pending.get();
+        let waiting = self.scan_import_pending();
         // The same reason the viewfinder gives: Photo and Codes never
         // disagree about why there is no picture.
         let message = format!(

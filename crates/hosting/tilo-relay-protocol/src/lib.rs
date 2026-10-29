@@ -93,7 +93,8 @@ pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 
-/// Stable private relay shard for same-identity continuation checkpoints.
+/// Stable private relay workspace of one person: their devices reach their
+/// hosts' verbs and each other's sessions on it before they hold any room.
 /// This is not a user-visible workspace and is derived only from the root
 /// identity so every enrolled device/home peer agrees after restart.
 pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {

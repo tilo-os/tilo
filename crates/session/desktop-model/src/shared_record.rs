@@ -796,6 +796,7 @@ pub fn change_author(message: Option<&str>) -> Option<String> {
         .filter(|actor| !actor.is_empty())
 }
 
+pub mod continuation;
 pub mod device;
 pub mod guard;
 

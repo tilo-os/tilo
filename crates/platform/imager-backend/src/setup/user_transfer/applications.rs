@@ -1,5 +1,6 @@
 //! Signed transaction continuity backed by actual tree bytes and original fidelity.
 use super::{TransferRequest, durable, flatpak};
+use crate::setup::flatpak_transfer::portable::Deployment;
 use crate::setup::{
     migration::{self, PinnedDirectory},
     migration_durability as durability,
@@ -203,10 +204,13 @@ pub fn parse_config(text: &str) -> Result<BTreeMap<(String, String), String>, St
     }
     Ok(result)
 }
+/// The target holds exactly its original refs plus every sealed deployment
+/// from its sealed repository. An original user ref may only already have the
+/// sealed commit; it is never replaced.
 fn verify_refs(
     request: &TransferRequest,
     runner: &impl flatpak::Runner,
-    approved: &[flatpak::ApprovedRemote],
+    sealed: &[Deployment],
 ) -> Result<Vec<RefState>, String> {
     let original: Vec<RefState> = serde_json::from_value(
         durable::read_artifact(request, ORIGINAL)?
@@ -217,28 +221,35 @@ fn verify_refs(
     if original.iter().any(|item| !actual.contains(item)) {
         return Err("An original user application changed or disappeared".into());
     }
-    let mut expected: BTreeMap<String, String> = original
+    let mut expected: BTreeMap<String, (String, String)> = original
         .iter()
-        .map(|item| (item.reference.clone(), item.origin.clone()))
+        .map(|item| {
+            (
+                item.reference.clone(),
+                (item.origin.clone(), item.commit.clone()),
+            )
+        })
         .collect();
-    for item in &request.system_refs {
-        let remote = approved
-            .iter()
-            .find(|remote| {
-                remote.source_installation == item.installation && remote.source_name == item.origin
-            })
-            .ok_or("Reviewed repository is unavailable")?;
-        if expected
-            .insert(item.reference.clone(), remote.target_name.clone())
-            .is_some()
-        {
-            return Err("Application restoration would replace an original user version".into());
+    for item in sealed {
+        match expected.get(&item.installed.reference) {
+            Some((_, commit)) if *commit == item.commit => {}
+            Some(_) => {
+                return Err(
+                    "Application restoration would replace an original user version".into(),
+                );
+            }
+            None => {
+                expected.insert(
+                    item.installed.reference.clone(),
+                    (item.remote.clone(), item.commit.clone()),
+                );
+            }
         }
     }
     if actual.len() != expected.len()
-        || actual
-            .iter()
-            .any(|item| expected.get(&item.reference) != Some(&item.origin))
+        || actual.iter().any(|item| {
+            expected.get(&item.reference) != Some(&(item.origin.clone(), item.commit.clone()))
+        })
     {
         return Err(
             "Restored application set or repository differs from the reviewed selection".into(),
@@ -249,13 +260,13 @@ fn verify_refs(
 pub(super) fn checkpoint(
     request: &TransferRequest,
     runner: &impl flatpak::Runner,
-    approved: &[flatpak::ApprovedRemote],
+    sealed: &[Deployment],
 ) -> Result<(), String> {
     verify_original_config(request)?;
     runner.verify_repository(&request.target_home)?;
     let receipt = Receipt {
         schema: 1,
-        refs: verify_refs(request, runner, approved)?,
+        refs: verify_refs(request, runner, sealed)?,
         digest: tree_digest(request)?,
         relocation: Some(relocation_digest(request)?),
     };
@@ -275,10 +286,11 @@ pub(super) fn verify_checkpoint(request: &TransferRequest) -> Result<(), String>
     }
     Ok(())
 }
+/// The checkpoint verified the refs against the sealed unit; afterwards the
+/// exact verified refs, bytes and repository objects must still be there.
 pub(super) fn verify_output(
     request: &TransferRequest,
     runner: &impl flatpak::Runner,
-    approved: &[flatpak::ApprovedRemote],
 ) -> Result<bool, String> {
     let Some(value) = durable::read_artifact(request, OUTPUT)? else {
         return Ok(false);
@@ -288,7 +300,7 @@ pub(super) fn verify_output(
     runner.verify_repository(&request.target_home)?;
     if receipt.schema != 1
         || receipt.digest != tree_digest(request)?
-        || receipt.refs != verify_refs(request, runner, approved)?
+        || receipt.refs != states(runner, &request.target_home)?
     {
         return Err("Application output changed after its verified transaction".into());
     }
@@ -300,7 +312,6 @@ pub(super) fn verify_adopted_output(
     request: &TransferRequest,
     target_home: &Path,
     runner: &impl flatpak::Runner,
-    approved: &[flatpak::ApprovedRemote],
 ) -> Result<(), String> {
     let value = durable::read_artifact(request, OUTPUT)?
         .ok_or("Completed application output receipt is missing")?;
@@ -313,7 +324,7 @@ pub(super) fn verify_adopted_output(
     }
     verify_original_config(&mapped)?;
     runner.verify_repository(&mapped.target_home)?;
-    if receipt.refs != verify_refs(&mapped, runner, approved)?
+    if receipt.refs != states(runner, &mapped.target_home)?
         || receipt.relocation != Some(relocation_digest(&mapped)?)
     {
         return Err(refusal.into());

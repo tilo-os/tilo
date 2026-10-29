@@ -2,7 +2,7 @@
 //! answers, the live rows it publishes beside the project's files, and the
 //! view state a screenshot scenario stages.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
@@ -419,7 +419,7 @@ impl CodeApp {
 
     /// Open the sample project a capture's fixture wrote, on its main file.
     #[cfg(feature = "samples")]
-    pub(crate) fn open_sample(&mut self, root: &Path) {
+    pub(crate) fn open_sample(&mut self, root: &std::path::Path) {
         if matches!(self.open_project_dir(root), Some(Ok(()))) {
             let main = crate::disk::canonical(&root.join("src").join("main.rs"));
             if let Some(node) = self.session.project.reveal_path(&main) {

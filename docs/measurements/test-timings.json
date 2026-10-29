@@ -82,33 +82,6 @@
       "tests": 697,
       "wall_seconds": 174.34683794100005
     },
-    "installer": {
-      "slowest": [
-        {
-          "seconds": 0.590079484,
-          "test": "installer$installer_app::tests::pinned_actions_fit_large_text_and_focus_reveals_only_step_content"
-        },
-        {
-          "seconds": 0.536623332,
-          "test": "installer$installer_app::surface_tests::prepared_media_unlock_is_private_review_and_skip_preserves_medium"
-        },
-        {
-          "seconds": 0.486754462,
-          "test": "installer$windows_hint_source::tests::boot_reader_requires_explicit_unlock_and_current_private_operation"
-        },
-        {
-          "seconds": 0.485575104,
-          "test": "installer$online_accounts::tests::local_pkce_callback_saves_only_private_canonical_custody_and_stages_selection"
-        },
-        {
-          "seconds": 0.459614036,
-          "test": "installer$online_accounts::hints::tests::offline_artifact_binding_never_substitutes_for_a_fresh_selection_generation"
-        }
-      ],
-      "test_seconds": 7.974544348000002,
-      "tests": 180,
-      "wall_seconds": 7.974544348000002
-    },
     "mail": {
       "slowest": [
         {

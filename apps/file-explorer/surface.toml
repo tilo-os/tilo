@@ -149,3 +149,38 @@ params = [
   { name = "op", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "files.recent"
+label = "Recent files"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, RecentFiles>" },
+]
+
+[[resources.verbs]]
+id = "note"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "last_use", required = true, schema = { type = "string", enum = ["opened", "changed"] } },
+  { name = "at_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "moved"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "to", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+]
+
