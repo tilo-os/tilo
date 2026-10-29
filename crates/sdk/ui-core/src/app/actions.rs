@@ -2387,23 +2387,14 @@ impl App {
         if self.hand_search_to_session(&request) {
             return;
         }
-        // On one of the app's actions: the palette asks for its arguments.
-        if let Some(address) = request.asked()
-            && self.open_action_palette_at(&address)
-        {
-            return;
-        }
         self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-            palette.set_scope(request.resource_scope().cloned());
-            if let Some(query) = &request.query {
-                palette.set_query(query);
-                palette.select_query();
-            }
-            if let Some(anchor) = request.anchored() {
-                palette.set_query(&anchor.query);
-                palette.select_resource(&anchor.resource);
-            }
+        if self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| palette.open_on(&request))
+        {
+            self.capture_ordinary_palette_request();
         }
     }
 
