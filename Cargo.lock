@@ -21342,9 +21342,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-lock",
  "tilo-resource",
+ "tokio",
  "tracing",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -21385,19 +21388,6 @@ dependencies = [
  "tempfile",
  "tilo-test-env",
  "workspace-hack",
-]
-
-[[package]]
-name = "tilo-session-service"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-lock",
- "tokio",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -27384,8 +27374,6 @@ dependencies = [
  "pipewire-sys",
  "piston-float",
  "pixglyph",
- "pixman",
- "pixman-sys",
  "pkcs1 0.7.5",
  "pkcs1 0.8.0-rc.4",
  "pkcs5",
@@ -27781,7 +27769,6 @@ dependencies = [
  "tilo-clock",
  "tilo-cloud-files",
  "tilo-color-pipeline",
- "tilo-compositor",
  "tilo-connector",
  "tilo-contact-directory",
  "tilo-content",
@@ -27874,7 +27861,6 @@ dependencies = [
  "tilo-oauth",
  "tilo-oci-images",
  "tilo-ocr",
- "tilo-onboarding",
  "tilo-os-search",
  "tilo-output-passes",
  "tilo-overview",
@@ -27920,9 +27906,7 @@ dependencies = [
  "tilo-secrets",
  "tilo-segment",
  "tilo-selector",
- "tilo-session",
  "tilo-session-record",
- "tilo-session-service",
  "tilo-settings-records",
  "tilo-sheets",
  "tilo-sibling-unlock",
@@ -27932,7 +27916,6 @@ dependencies = [
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
  "tilo-subject",
- "tilo-surface-host",
  "tilo-system-info",
  "tilo-system-stats",
  "tilo-test-env",
