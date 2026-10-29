@@ -363,6 +363,11 @@ impl Instance {
         &self.app
     }
 
+    /// Ask the window to come forward ("Show this window"), with the next frame it is sent.
+    pub fn activate_window(&mut self) {
+        self.out.push(ToUi::Activate);
+    }
+
     /// The anchors search hits and agents asked the window to show, until it shows them.
     #[must_use]
     pub fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {

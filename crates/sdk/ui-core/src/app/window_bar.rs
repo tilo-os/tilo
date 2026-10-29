@@ -348,3 +348,7 @@ impl App {
 #[cfg(test)]
 #[path = "window_bar_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "test_activation_tests.rs"]
+mod test_activation_tests;

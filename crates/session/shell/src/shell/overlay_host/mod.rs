@@ -1101,6 +1101,9 @@ pub struct ShellOverlayHost {
     bar_popovers: Box<bar_popovers::BarPopovers>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Controls a development session's test control asked to activate in
+    /// the focused window, by their test ids, not yet sent to its app.
+    test_activations: Vec<String>,
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
