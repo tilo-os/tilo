@@ -96,8 +96,7 @@ class ShellVm:
     def targets(self):
         out = [{"name": n, "rect": list(r)} for n, r in CARDS.items()]
         if self.palette:
-            out.append({"name": "command_palette_input", "rect": [640, 180, 640, 460]})
-            out.append({"name": "command-palette:query", "rect": list(SEARCH_FIELD)})
+            out.append({"name": "launcher-field", "rect": list(SEARCH_FIELD)})
         return out
 
     def actions(self, query=""):
@@ -568,11 +567,11 @@ class W20Test(GuardTest):
     def test_w20_fails_and_closes_search_without_its_query_target(self):
         vm = self.vm()
         targets = vm.targets
-        vm.targets = lambda: [t for t in targets() if t["name"] != "command-palette:query"]
+        vm.targets = lambda: [t for t in targets() if t["name"] != "launcher-field"]
         res = self.run_w20(vm)
         self.assertEqual(res.status, "fail")
         self.assertTrue(res.unobservable)
-        self.assertIn("no command-palette:query target", res.detail)
+        self.assertIn("no launcher-field target", res.detail)
         self.assertEqual(len(self.touches(vm)), 1, "never guess the field's coordinates")
         self.assertFalse(vm.palette)
         self.assertNotIn(core.LEFT_OPEN, res.detail)
