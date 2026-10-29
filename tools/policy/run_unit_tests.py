@@ -55,7 +55,6 @@ SHARDS = {
     "test_stage_sdk_services.py": 2,
     "test_workflow_package_paths.py": 2,
     "test_font_artifacts.py": 3,
-    "test_native_envelope.py": 3,
     "test_font_catalog.py": 2,
     "test_chrome_process_cleanup.py": 2,
     "test_copy_language.py": 2,
