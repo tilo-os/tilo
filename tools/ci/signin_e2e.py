@@ -1470,8 +1470,13 @@ cryptsetup close e2e-target
         crops = []
         for source in (boot, greeter):
             crop = self.private / f"card-{source.stem}.png"
-            subprocess.run(["convert", str(source), "-gravity", "center", "-crop", "40%x55%+0+0",
-                            "+repage", str(crop)], check=True)
+            # Below the clock and its date, which tell the two minutes apart: from the avatar
+            # down past the field and what sits under it.
+            height = int(subprocess.run(["identify", "-format", "%h", str(source)],
+                                        capture_output=True, text=True, check=True).stdout)
+            subprocess.run(["convert", str(source), "-gravity", "north", "-crop",
+                            f"40%x40%+0+{round(height * 0.44)}", "+repage", str(crop)],
+                           check=True)
             crops.append(crop)
         diff = self.out / "card-difference.png"
         result = subprocess.run(["compare", "-metric", "RMSE", str(crops[0]), str(crops[1]),
