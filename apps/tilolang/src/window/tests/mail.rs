@@ -95,6 +95,15 @@ fn account(servers: &Servers) -> AccountConfig {
 
 /// The Mail window kept in step with `config`'s servers.
 fn room_with(config: AccountConfig) -> Room {
+    room_over(Box::new(move || vec![config.clone()]), Arc::default())
+}
+
+/// A room whose accounts are what `accounts` says each time it is asked, which comes online
+/// again when `reconnected` is set.
+fn room_over(
+    accounts: crate::mail::connector::AccountSource,
+    reconnected: Arc<AtomicBool>,
+) -> Room {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
     let engine = mail::engine::live::LiveEngine::trusting(
@@ -107,11 +116,10 @@ fn room_with(config: AccountConfig) -> Room {
         Box::new(engine),
         Arc::new(move || flag.store(true, Ordering::Release)),
     );
-    let connector = EngineConnector::new(Box::new(move || vec![config.clone()]), requests, events);
-    let origin = std::rc::Rc::new(std::cell::RefCell::new(ImapOrigin::new(
-        Box::new(connector),
-        woken,
-    )));
+    let connector = EngineConnector::new(accounts, requests, events);
+    let origin = std::rc::Rc::new(std::cell::RefCell::new(
+        ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
+    ));
     crate::app::builtin::choose("mail");
     let meta = crate::app::builtin::package_named("mail").expect("the mail package");
     let sink = tilolang_tilo::runtime::MemorySink::new();
@@ -377,4 +385,71 @@ fn an_unreachable_server_is_said_on_the_account() {
     let account = room.accounts().remove(0);
     assert!(!room.flag(&account, "online"));
     assert!(room.threads().is_empty());
+}
+
+/// What the draft's window shows, as text.
+fn editor_of(room: &Room, draft: &ResourceRef) -> String {
+    let view = room
+        .host()
+        .open_resource(draft, None)
+        .expect("the draft's window opens");
+    format!("{:?}", view.tree())
+}
+
+/// How the draft `draft` stands on its way out, as `delivery(d)` reads it.
+fn delivery_of(room: &Room, draft: &ResourceRef) -> Option<(String, String)> {
+    use tilolang_tilo::runtime::store::Store as _;
+    room.host()
+        .store()
+        .outbox_states()
+        .into_iter()
+        .find(|(doc, _)| *doc == draft.doc)
+        .map(|(_, state)| (state.state, state.reason))
+}
+
+#[test]
+fn a_message_waits_to_go_online_and_goes_when_the_network_is_back() {
+    let servers = servers();
+    let reachable = account(&servers);
+    // The SMTP server cannot be reached yet: nothing listens there.
+    let config = Arc::new(std::sync::Mutex::new(AccountConfig {
+        smtp_port: 1,
+        ..reachable.clone()
+    }));
+    let accounts = Arc::clone(&config);
+    let reconnected = Arc::new(AtomicBool::new(false));
+    let mut room = room_over(
+        Box::new(move || vec![accounts.lock().unwrap().clone()]),
+        Arc::clone(&reconnected),
+    );
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let draft = (*draft.target).clone();
+    room.press("send", vec![RtValue::resource(&draft)]);
+    room.until("the message to wait to go online", |room| {
+        delivery_of(room, &draft)
+            .is_some_and(|(state, reason)| state == "waiting" && !reason.is_empty())
+    });
+    // The draft says so where it is written.
+    let shown = editor_of(&room, &draft);
+    assert!(shown.contains("Waiting to go online"), "{shown}");
+    // It is not tried again on its own.
+    for _ in 0..20 {
+        room.settle();
+    }
+    assert!(servers.smtp.sent().is_empty());
+    assert_eq!(delivery_of(&room, &draft).unwrap().0, "waiting");
+
+    // The network comes back, and with it the server: the message goes, once.
+    *config.lock().unwrap() = reachable;
+    reconnected.store(true, Ordering::Release);
+    room.until("the message to be sent", |room| {
+        delivery_of(room, &draft).is_some_and(|(state, _)| state == "sent")
+    });
+    assert_eq!(servers.smtp.sent().len(), 1);
+    let shown = editor_of(&room, &draft);
+    assert!(shown.contains("Sent"), "{shown}");
 }

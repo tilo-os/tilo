@@ -157,6 +157,17 @@ inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/breakpoint_bas
 pre_push = true
 
 [[step]]
+name = "swallowed-decodes"
+label = "Session and app-hosting code hears its decode and parse errors"
+run = "python3 tools/policy/check_swallowed_decodes.py"
+inputs = ["crates/session/shell/**/*.rs", "crates/collab/tilo-action-broker/**/*.rs",
+          "crates/collab/collaboration/**/*.rs", "crates/platform/tilolang-host/**/*.rs",
+          "crates/platform/tilolang-tilo/**/*.rs", "crates/platform/tilo-ui-host/**/*.rs",
+          "crates/hosting/tilo-room-host/**/*.rs", "crates/runtime/runtime-portal/**/*.rs",
+          "apps/tilolang/**/*.rs", "tools/policy/swallowed_decodes_baseline.toml"]
+pre_push = true
+
+[[step]]
 name = "app-toolbars"
 label = "Apps put their controls, search included, in the window bar's slots"
 run = "python3 tools/policy/check_app_toolbars.py"

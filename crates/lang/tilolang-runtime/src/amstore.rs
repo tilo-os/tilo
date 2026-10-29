@@ -35,7 +35,7 @@ use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
-    NewRecord, OutboxEntry, Scalar, Splice, Store, StoreError, SubId, Txn,
+    NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -901,7 +901,7 @@ impl Store for AmStore {
                 continue;
             };
             for id in doc.keys(&outbox) {
-                if let Some(entry) = read_outbox_entry(doc, &outbox, doc_id, &id) {
+                if let Some((entry, None)) = read_outbox_entry(doc, &outbox, doc_id, &id) {
                     out.push(entry);
                 }
             }
@@ -909,7 +909,35 @@ impl Store for AmStore {
         out
     }
 
-    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError> {
+    fn outbox_mark(
+        &mut self,
+        entry: &OutboxEntry,
+        state: &OutboxState,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.inner.borrow_mut();
+        let doc = inner
+            .docs
+            .get_mut(&entry.doc)
+            .ok_or_else(|| not_found(format!("document {}", entry.doc)))?;
+        let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
+        let obj = require_child(doc, &outbox, &entry.id)?;
+        let (word, detail) = match state {
+            OutboxState::Queued => ("queued", ""),
+            OutboxState::Sending { by } => ("sending", by.as_str()),
+            OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+        };
+        doc.put(&obj, "state", word).map_err(backend)?;
+        doc.put(&obj, "detail", detail).map_err(backend)?;
+        commit_with_note(doc, note)
+    }
+
+    fn outbox_settle(
+        &mut self,
+        entry: &OutboxEntry,
+        outcome: &Settled,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
         let mut inner = self.inner.borrow_mut();
         let doc = inner
             .docs
@@ -918,7 +946,38 @@ impl Store for AmStore {
         let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
         let obj = require_child(doc, &outbox, &entry.id)?;
         doc.put(&obj, "settled", true).map_err(backend)?;
+        doc.put(&obj, "outcome", outcome.word()).map_err(backend)?;
+        doc.put(&obj, "reason", outcome.reason()).map_err(backend)?;
         commit_with_note(doc, note)
+    }
+
+    fn outbox_states(&self) -> Vec<(String, crate::store::DeliveryState)> {
+        let inner = self.inner.borrow();
+        let mut out = Vec::new();
+        for (doc_id, doc) in &inner.docs {
+            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+                continue;
+            };
+            let mut keys: Vec<String> = doc.keys(&outbox).collect();
+            keys.sort();
+            // The one not settled when there is one, else the last.
+            let entries: Vec<_> = keys
+                .iter()
+                .filter_map(|id| read_outbox_entry(doc, &outbox, doc_id, id))
+                .collect();
+            let last = entries
+                .iter()
+                .find(|(_, settled)| settled.is_none())
+                .or_else(|| entries.last());
+            if let Some((entry, settled)) = last {
+                let settled = settled.as_ref().map(|(w, r)| (w.as_str(), r.as_str()));
+                out.push((
+                    doc_id.clone(),
+                    crate::store::DeliveryState::of(&entry.state, settled),
+                ));
+            }
+        }
+        out
     }
 
     fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {
@@ -937,28 +996,42 @@ impl Store for AmStore {
     }
 }
 
+/// The entry `id`, and how it was settled (its outcome and reason) once it was.
 fn read_outbox_entry(
     doc: &AutoCommit,
     outbox: &ObjId,
     doc_id: &str,
     id: &str,
-) -> Option<OutboxEntry> {
+) -> Option<(OutboxEntry, Option<(String, String)>)> {
     let obj = child_obj(doc, outbox, id).ok()??;
     let settled = matches!(
         doc.get(&obj, "settled"),
         Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true))
     );
-    if settled {
-        return None;
-    }
+    let settled = settled.then(|| {
+        (
+            str_at(doc, &obj, "outcome").unwrap_or_else(|| "done".to_owned()),
+            str_at(doc, &obj, "reason").unwrap_or_default(),
+        )
+    });
     let capability = str_at(doc, &obj, "capability")?;
     let Scalar::Json(payload) = scalar_at(doc, &obj, "payload").ok()?? else {
         return None;
     };
-    Some(OutboxEntry {
-        doc: doc_id.to_owned(),
-        id: id.to_owned(),
-        capability,
-        payload,
-    })
+    let detail = str_at(doc, &obj, "detail").unwrap_or_default();
+    let state = match str_at(doc, &obj, "state").as_deref() {
+        Some("sending") => OutboxState::Sending { by: detail },
+        Some("waiting") => OutboxState::Waiting { reason: detail },
+        _ => OutboxState::Queued,
+    };
+    Some((
+        OutboxEntry {
+            doc: doc_id.to_owned(),
+            id: id.to_owned(),
+            capability,
+            payload,
+            state,
+        },
+        settled,
+    ))
 }

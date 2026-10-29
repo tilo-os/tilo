@@ -328,7 +328,13 @@ view thread_row(t: Thread) {
 
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
-    row(d.subject, secondary: d.to, mark: if d.sent { .send })
+    row(d.subject, secondary: if let s = delivery(d) { delivery_says(s.state, s.reason) } else { d.to }, mark: if d.sent { .send })
+}
+
+/// How a message on its way out stands, in a sentence: waiting to go online, sending, sent,
+/// not sent and why, or not known.
+fn delivery_says(state: Text, reason: Text) -> Text {
+    if state == "sent" { "Sent" } else if state == "sending" { "Sending" } else if state == "rejected" { "Not sent: {reason}" } else if state == "unknown" { "Not known whether it was sent" } else if reason == "" { "Waiting to send" } else { "Waiting to go online: {reason}" }
 }
 
 /// A conversation's window: its messages in order, each with who wrote it, to whom and when.
@@ -346,6 +352,11 @@ view conversation(t: Thread) {
 /// A message being written: its window.
 view editor(d: Draft) {
     std.document(d) {
+        if let s = delivery(d) {
+            field("Status") {
+                text(delivery_says(s.state, s.reason))
+            }
+        }
         field("To") {
             input(bind: d.to, placeholder: "name@example.org")
         }
