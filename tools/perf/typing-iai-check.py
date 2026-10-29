@@ -9,7 +9,7 @@ EVENTS = "Ir Dr Dw I1mr D1mr D1mw ILmr DLmr DLmw".split()
 CASES = {
     (function, size)
     for function in ("single_character_to_scene", "single_key_to_scene")
-    for size in ("small", "large")
+    for size in ("small", "large", "large_at_end")
 }
 
 

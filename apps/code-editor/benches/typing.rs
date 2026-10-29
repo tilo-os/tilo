@@ -35,15 +35,31 @@ struct TypingFixture {
     _home: tilo_test_env::TestHome,
 }
 
+/// Where in the file the measured key lands: the end of its first line, or the
+/// end of the file, where every walk from the start of the text is longest.
+#[derive(Clone, Copy)]
+enum Caret {
+    FirstLine,
+    End,
+}
+
 fn setup(functions: usize) -> Box<TypingFixture> {
+    setup_with(functions, Caret::FirstLine)
+}
+
+fn setup_at_end(functions: usize) -> Box<TypingFixture> {
+    setup_with(functions, Caret::End)
+}
+
+fn setup_with(functions: usize, caret: Caret) -> Box<TypingFixture> {
     let opened_at = ui::time::now();
     let input_at = opened_at
         .checked_add(ui::time::Duration::from_secs(2))
         .expect("input instant");
-    ui::time::testing::with_monotonic_time(opened_at, || setup_at(functions, input_at))
+    ui::time::testing::with_monotonic_time(opened_at, || setup_at(functions, input_at, caret))
 }
 
-fn setup_at(functions: usize, input_at: ui::time::Instant) -> Box<TypingFixture> {
+fn setup_at(functions: usize, input_at: ui::time::Instant, caret: Caret) -> Box<TypingFixture> {
     let home = tilo_test_env::TestHome::new().expect("private benchmark environment");
     ui::i18n::I18nManager::init("en-US");
     let directory = tempfile::tempdir().expect("input directory");
@@ -70,7 +86,11 @@ fn setup_at(functions: usize, input_at: ui::time::Instant) -> Box<TypingFixture>
     app.harness()
         .perform_named("editor_view", &ui::a11y::Action::Focus)
         .expect("focus actual editor");
+    if matches!(caret, Caret::End) {
+        app.harness().set_modifiers(&["ctrl".to_owned()]);
+    }
     app.harness().key("End");
+    app.harness().set_modifiers(&[]);
     app.settle();
     // Finish opening/focus transitions before the measured interaction.
     ui::time::testing::with_monotonic_time(input_at, || {
@@ -87,10 +107,13 @@ fn setup_at(functions: usize, input_at: ui::time::Instant) -> Box<TypingFixture>
             app.read_document(|doc| benchmark_buffer_text(doc, &file)),
             Some(original.clone()),
         );
-        let expected = format!(
-            "{FIRST_LINE}x{}",
-            original.strip_prefix(FIRST_LINE).expect("fixture prefix")
-        );
+        let expected = match caret {
+            Caret::FirstLine => format!(
+                "{FIRST_LINE}x{}",
+                original.strip_prefix(FIRST_LINE).expect("fixture prefix")
+            ),
+            Caret::End => format!("{original}x"),
+        };
         let history_len = app.history().len();
         let before_scene = app.harness().frame_output().scene.clone();
         Box::new(TypingFixture {
@@ -164,6 +187,7 @@ fn verify_state(mut fixture: Box<TypingFixture>) {
 #[library_benchmark(setup = setup, teardown = verify)]
 #[bench::small(10)]
 #[bench::large(900)]
+#[bench::large_at_end(args = (900), setup = setup_at_end)]
 fn single_character_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixture> {
     ui::time::testing::with_monotonic_time(fixture.input_at, || {
         fixture.app.harness().key("x");
@@ -185,6 +209,7 @@ fn single_character_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixtu
 #[library_benchmark(setup = setup, teardown = verify_key)]
 #[bench::small(10)]
 #[bench::large(900)]
+#[bench::large_at_end(args = (900), setup = setup_at_end)]
 fn single_key_to_scene(mut fixture: Box<TypingFixture>) -> Box<TypingFixture> {
     ui::time::testing::with_monotonic_time(fixture.input_at, || {
         fixture.app.harness().key("x");

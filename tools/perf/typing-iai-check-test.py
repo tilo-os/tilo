@@ -36,7 +36,7 @@ class ProfileAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
-            self.assertEqual(audit.check_profiles(root), 4)
+            self.assertEqual(audit.check_profiles(root), len(audit.CASES))
 
     def test_wrapper_only_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as directory:

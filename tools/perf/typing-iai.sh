@@ -98,7 +98,7 @@ if [ "$mode" != --build-only ]; then
     # These are correctness checks, not latency measurements.
     for spec in '0 single_character_to_scene' '1 single_key_to_scene'; do
         read -r benchmark function_name <<< "$spec"
-        for case in 0 1; do
+        for case in 0 1 2; do
             tools/cargo-runner.sh "$executable" --iai-run typing "$benchmark" "$case" \
                 "typing::typing::$function_name"
         done
