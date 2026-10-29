@@ -69,9 +69,8 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
         ..Options::default()
     })
     .expect("the apps lay out");
-    let new: Vec<_> = report.new_findings().collect();
     assert!(
-        new.is_empty() && report.stale.is_empty(),
+        report.new_findings().next().is_none() && report.stale.is_empty(),
         "new layout problems, or allowed ones gone (take them out of the allow-list):\n{}",
         layout_check::render(&report)
     );
