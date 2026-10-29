@@ -402,3 +402,53 @@ fn an_agent_is_answered_through_the_door_too() {
     app.settle();
     assert_eq!(seat.take_asked().len(), 1);
 }
+
+#[test]
+fn the_permissions_tab_groups_what_is_given_by_who_holds_it() {
+    let mut app = staged("permissions");
+    for text in [
+        "Give a permission",
+        "Apps",
+        "Notes",
+        "People",
+        "Create roles, given by you",
+    ] {
+        assert!(says(&mut app, text), "{text:?} is shown");
+    }
+    assert!(enabled(&mut app, "Grant"));
+}
+
+#[test]
+fn granting_names_who_what_and_for_how_long() {
+    let (mut app, seat) = seated("permissions");
+    press(&mut app, "ws-grant");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::Grant {
+            subject: "member:ada".to_owned(),
+            permission: "camera".to_owned(),
+            expiry: "session".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn revoking_asks_first() {
+    let (mut app, seat) = seated("permissions");
+    press(&mut app, "ws-permission-revoke-grant-2");
+    assert!(says(&mut app, "Revoke this permission?"));
+    assert!(seat.take_asked().is_empty());
+    press(&mut app, "ws-settings-decision.primary");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::Revoke {
+            grant: "grant-2".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn the_revoke_question_renders_for_captures() {
+    let mut app = staged("permissions-revoking");
+    assert!(says(&mut app, "Keep permission"));
+}

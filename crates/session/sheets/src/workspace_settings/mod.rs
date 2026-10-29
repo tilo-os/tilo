@@ -21,12 +21,14 @@ use crate::presentation::Presentation;
 mod agents;
 mod general;
 mod people;
+mod permissions;
 
 pub use agents::{
     AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, ModelChoice, Models,
 };
 pub use general::{Archived, Device, General, Group, Public, PublicControls};
 pub use people::{Decision, Offers, People, Person, RoleChoice};
+pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.workspace-settings";
@@ -179,6 +181,25 @@ pub enum WorkspaceSettingsEffect {
         #[param("The bot, by its directory entry")]
         bot: String,
     },
+    /// Give someone in the workspace a permission beyond their role
+    #[effect(privileged, attended)]
+    Grant {
+        #[param("Who: member:…, agent:… or app:…, by its key in the composer")]
+        subject: String,
+        #[param("What it allows, by its key in the composer")]
+        permission: String,
+        #[param("never, session or once")]
+        expiry: String,
+    },
+    /// Revoke a permission the workspace gives
+    #[effect(destructive, attended)]
+    Revoke {
+        #[param("The permission, by its key in the list")]
+        grant: String,
+    },
+    /// Open the workspace's saved roles
+    #[effect(own_device, kind = "read")]
+    SavedRoles,
 }
 
 /// A tab of the sheet.
@@ -188,11 +209,12 @@ pub enum Tab {
     General,
     People,
     Agents,
+    Permissions,
 }
 
 impl Tab {
     /// Every tab, in the order the strip shows them.
-    pub const ALL: [Self; 3] = [Self::General, Self::People, Self::Agents];
+    pub const ALL: [Self; 4] = [Self::General, Self::People, Self::Agents, Self::Permissions];
 
     /// What the tab is asked for by.
     pub fn key(self) -> &'static str {
@@ -200,6 +222,7 @@ impl Tab {
             Self::General => "general",
             Self::People => "people",
             Self::Agents => "agents",
+            Self::Permissions => "permissions",
         }
     }
 
@@ -234,6 +257,7 @@ pub struct Settings {
     pub general: General,
     pub people: People,
     pub agents: Agents,
+    pub permissions: Permissions,
 }
 
 /// A change the sheet asks about before asking the shell for it.
@@ -241,6 +265,8 @@ pub struct Settings {
 pub enum Confirm {
     /// Remove the member `member`, called `name`.
     RemoveMember { member: String, name: String },
+    /// Revoke the permission `grant`, which `holder` holds.
+    Revoke { grant: String, holder: String },
 }
 
 /// What the sheet keeps to itself while it is up: the question it is
@@ -251,6 +277,8 @@ struct Local {
     /// The app whose answers are open in an agent's review.
     open_app: Option<String>,
     models_open: bool,
+    /// What the permission composer has chosen.
+    draft: permissions::Draft,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -408,6 +436,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             "agents",
             "agents-empty",
             "agent-review",
+            "permissions",
+            "permissions-revoking",
         ]
     }
 
@@ -417,6 +447,15 @@ impl ResourceApp for WorkspaceSettingsApp {
             fixture.provide(Local {
                 open_app: Some("so.tilo.notes".to_owned()),
                 models_open: true,
+                ..Local::default()
+            });
+        }
+        if fixture.scenario() == Some("permissions-revoking") {
+            fixture.provide(Local {
+                confirming: Some(Confirm::Revoke {
+                    grant: "grant-2".to_owned(),
+                    holder: "Ada Lovelace-Byron".to_owned(),
+                }),
                 ..Local::default()
             });
         }
@@ -470,6 +509,10 @@ pub fn scenario(name: Option<&str>) -> Settings {
             },
             ..sample()
         },
+        Some("permissions" | "permissions-revoking") => Settings {
+            tab: Tab::Permissions,
+            ..sample()
+        },
         Some("people-member") => Settings {
             tab: Tab::People,
             role: "Editor".to_owned(),
@@ -496,11 +539,13 @@ fn sample() -> Settings {
             tab(Tab::General, "General"),
             tab(Tab::People, "People"),
             tab(Tab::Agents, "Agents"),
+            tab(Tab::Permissions, "Privacy & Security"),
         ],
         tab: Tab::General,
         general: general::sample(),
         people: people::sample(),
         agents: agents::sample(),
+        permissions: permissions::sample(),
     }
 }
 
@@ -638,6 +683,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         Tab::General => general::pane(settings, parts),
         Tab::People => people::pane(settings, parts),
         Tab::Agents => agents::pane(settings, parts),
+        Tab::Permissions => permissions::pane(settings, parts),
     };
     let body = Column::new()
         .with_no_padding()
@@ -664,6 +710,9 @@ impl Confirm {
             Self::RemoveMember { member, .. } => WorkspaceSettingsEffect::RemoveMember {
                 member: member.clone(),
             },
+            Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
+                grant: grant.clone(),
+            },
         }
     }
 
@@ -671,6 +720,7 @@ impl Confirm {
     fn question<'a>(&self, settings: &'a Settings) -> (&'a Decision, String) {
         match self {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
+            Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
         }
     }
 }
