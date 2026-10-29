@@ -22,8 +22,9 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPhase, WindowInfo, WindowPolicy,
+    Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig, PadAction,
+    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowInfo,
+    WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -31,10 +32,22 @@ use wayland_client::protocol::{
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
     wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+};
 use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
     ext_session_lock_v1::ExtSessionLockV1,
+};
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
+    zwp_tablet_pad_ring_v2::{self, ZwpTabletPadRingV2},
+    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+    zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
+    zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
+    zwp_tablet_tool_v2::ZwpTabletToolV2,
+    zwp_tablet_v2::ZwpTabletV2,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
@@ -70,6 +83,13 @@ struct Seen {
     keys: Vec<(u32, bool)>,
     frames_done: u32,
     closed: bool,
+    tablet_manager: Option<ZwpTabletManagerV2>,
+    /// Tablet pad events as `added`, `group`, `buttons 4`, `done`,
+    /// `enter`, `mode 1`, `button 2 pressed`, `ring 90`, `ring stop`,
+    /// `removed`.
+    pad: Vec<String>,
+    /// The surface the pad entered.
+    pad_surface: Option<WlSurface>,
 }
 
 /// One client with one toplevel of a solid colour.
@@ -950,6 +970,92 @@ fn a_pen_is_a_pointer_to_apps_without_tablet_support() {
     );
 }
 
+#[test]
+fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
+    use smithay::wayland::tablet_manager::{
+        TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
+    };
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), [255, 0, 0, 255]);
+    let seat = client.seen.seat.clone().unwrap();
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+
+    let pad = |action| {
+        InputEvent::TabletPad(TabletPadEvent {
+            pad: TabletPadDescriptor {
+                name: "Pen tablet Pad".into(),
+                syspath: None,
+                buttons: 4,
+                groups: vec![TabletPadGroupDescriptor {
+                    buttons: vec![0, 1, 2, 3],
+                    rings: vec![0],
+                    strips: Vec::new(),
+                    modes: 2,
+                }],
+            },
+            tablet: TabletDescriptor {
+                name: "Pen tablet".into(),
+                usb_id: Some((0x056a, 0x0374)),
+                syspath: None,
+            },
+            action,
+        })
+    };
+    for action in [
+        PadAction::Added,
+        PadAction::Mode { group: 0, mode: 1 },
+        PadAction::Button {
+            button: 2,
+            pressed: true,
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: Some(90.0),
+        },
+        PadAction::Ring {
+            ring: 0,
+            degrees: None,
+        },
+    ] {
+        compositor.input(pad(action)).unwrap();
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("ring stop")
+    });
+    assert_eq!(
+        client.seen.pad,
+        [
+            "added",
+            "group",
+            "buttons 4",
+            "done",
+            "enter",
+            "mode 0",
+            "mode 1",
+            "button 2 pressed",
+            "ring 90",
+            "ring stop",
+        ],
+        "the pad is announced, enters the focused window and its events follow"
+    );
+    assert_eq!(
+        client.seen.pad_surface, client.surface,
+        "the pad entered the window with the keyboard focus"
+    );
+
+    compositor.input(pad(PadAction::Removed)).unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("removed")
+    });
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -976,6 +1082,9 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
+                "zwp_tablet_manager_v2" => {
+                    seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
+                }
                 _ => {}
             }
         }
@@ -1150,6 +1259,106 @@ impl Dispatch<ExtSessionLockV1, ()> for Seen {
     }
 }
 
+impl Dispatch<ZwpTabletSeatV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletSeatV2,
+        event: zwp_tablet_seat_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_tablet_seat_v2::Event::PadAdded { .. } = event {
+            seen.pad.push("added".into());
+        }
+    }
+
+    event_created_child!(Seen, ZwpTabletSeatV2, [
+        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
+        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, ()),
+        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadV2,
+        event: zwp_tablet_pad_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let line = match event {
+            zwp_tablet_pad_v2::Event::Group { .. } => "group".into(),
+            zwp_tablet_pad_v2::Event::Buttons { buttons } => format!("buttons {buttons}"),
+            zwp_tablet_pad_v2::Event::Done => "done".into(),
+            zwp_tablet_pad_v2::Event::Enter { surface, .. } => {
+                seen.pad_surface = Some(surface);
+                "enter".into()
+            }
+            zwp_tablet_pad_v2::Event::Leave { .. } => "leave".into(),
+            zwp_tablet_pad_v2::Event::Button { button, state, .. } => {
+                let pressed = state == WEnum::Value(zwp_tablet_pad_v2::ButtonState::Pressed);
+                format!(
+                    "button {button} {}",
+                    if pressed { "pressed" } else { "released" }
+                )
+            }
+            zwp_tablet_pad_v2::Event::Removed => "removed".into(),
+            _ => return,
+        };
+        seen.pad.push(line);
+    }
+
+    event_created_child!(Seen, ZwpTabletPadV2, [
+        zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (ZwpTabletPadGroupV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadGroupV2,
+        event: zwp_tablet_pad_group_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, .. } = event {
+            seen.pad.push(format!("mode {mode}"));
+        }
+    }
+
+    event_created_child!(Seen, ZwpTabletPadGroupV2, [
+        zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (ZwpTabletPadRingV2, ()),
+        zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (ZwpTabletPadStripV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadRingV2, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ZwpTabletPadRingV2,
+        event: zwp_tablet_pad_ring_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_pad_ring_v2::Event::Angle { degrees } => {
+                seen.pad.push(format!("ring {degrees}"));
+            }
+            zwp_tablet_pad_ring_v2::Event::Stop => seen.pad.push("ring stop".into()),
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ZwpTabletManagerV2);
+delegate_noop!(Seen: ignore ZwpTabletV2);
+delegate_noop!(Seen: ignore ZwpTabletToolV2);
+delegate_noop!(Seen: ignore ZwpTabletPadStripV2);
 delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore WlShm);

@@ -75,7 +75,8 @@ pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
+    GestureEvent, HostKey, InputEvent, KeyModifiers, PadAction, Switch, TabletEvent,
+    TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig};

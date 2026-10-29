@@ -1366,7 +1366,7 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
-# The compositor's Wayland library with small additions upstream lacks.
+# Tablet pads (zwp_tablet_pad_v2) for clients, which smithay 0.7 lacks.
 # See vendor/smithay/TILO-PATCH.md.
 smithay = { path = "vendor/smithay" }
 # The HTML5 entity table as offsets into two string literals instead of 2125
