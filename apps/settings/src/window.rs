@@ -179,17 +179,8 @@ fn pane_body(app: &Rc<SettingsApp>, category: Category, cx: Option<&ViewCx<Setti
             crate::widgets::note(&crate::i18n::t("settings-pane-reading")),
         ]))]);
     }
-    if let Some(pane) = cx.and_then(|cx| crate::panes::view(cx, app, category)) {
-        return pane;
-    }
-    crate::area::registry()
-        .panes
-        .iter()
-        .find(|pane| pane.categories.contains(&category))
-        .map_or_else(
-            || crate::widgets::page(Vec::new()),
-            |pane| (pane.build)(app, category),
-        )
+    cx.and_then(|cx| crate::panes::view(cx, app, category))
+        .unwrap_or_else(|| crate::widgets::page(Vec::new()))
 }
 
 /// The person's appearance, followed while the view lives: the look the

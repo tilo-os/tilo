@@ -33,7 +33,7 @@ use crate::channel;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::Replies;
+use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{

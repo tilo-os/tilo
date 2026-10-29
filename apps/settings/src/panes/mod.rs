@@ -1,7 +1,7 @@
 //! One module per settings category content pane.
 //!
-//! A pane bound to its settings sections is view code over them
-//! ([`view`]); the others are built by their area ([`PART`]). The pane's
+//! Every pane is view code over the settings sections it binds and the
+//! area it shows ([`view`]); [`PART`] brings the areas. The pane's
 //! title is the window's ([`crate::window`]), so the modules here focus on
 //! the category-specific content.
 //!
@@ -44,9 +44,6 @@ pub mod storage;
 pub mod time_date;
 pub mod updates;
 pub mod users;
-
-pub use crate::pane_model as model;
-pub(crate) use crate::pane_model::installed_programs_unreadable;
 
 mod part;
 pub use part::PART;
@@ -94,5 +91,52 @@ pub(crate) fn view(
         crate::categories::Category::About => about::view(cx, app),
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
+    }
+}
+
+/// Why this process cannot tell which programs the device has installed,
+/// when it cannot: no directory on `PATH` is visible to it. A lookup would
+/// then report every program as missing, which says nothing about the device.
+pub(crate) fn installed_programs_unreadable() -> Option<String> {
+    programs_unreadable_on(std::env::var_os("PATH").as_deref())
+}
+
+fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
+    let Some(path) = path else {
+        return Some("PATH is not set".to_string());
+    };
+    if std::env::split_paths(path).any(|dir| dir.is_dir()) {
+        None
+    } else {
+        Some(format!(
+            "none of {} is visible to Settings",
+            path.to_string_lossy()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `PATH` none of whose directories is visible cannot say a program is
+    /// missing; one visible directory can.
+    #[test]
+    fn programs_are_unreadable_only_when_no_path_directory_is_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("usr-bin");
+        let unreadable = programs_unreadable_on(Some(hidden.as_os_str()));
+        assert!(
+            unreadable
+                .as_deref()
+                .is_some_and(|error| error.ends_with("is visible to Settings")),
+            "{unreadable:?}"
+        );
+        let mixed = std::env::join_paths([hidden.as_path(), dir.path()]).unwrap();
+        assert_eq!(programs_unreadable_on(Some(&mixed)), None);
+        assert_eq!(
+            programs_unreadable_on(None).as_deref(),
+            Some("PATH is not set")
+        );
     }
 }

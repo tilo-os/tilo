@@ -272,7 +272,6 @@ effect_family!(NavigationEffect => answer_navigation);
 /// Settings' own part: moving between the panes.
 pub const PART: crate::area::Part = crate::area::Part {
     areas: &[],
-    panes: &[],
     families: &[(10, NavigationEffect::FAMILY)],
     live_areas: &[],
     settings: &[],

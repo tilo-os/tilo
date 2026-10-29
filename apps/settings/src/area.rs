@@ -2,19 +2,16 @@
 //!
 //! An area is what one pane reads of the device and keeps between visits:
 //! the printers and their queue, the accounts, the audio graph. The window
-//! ([`SettingsApp`]) holds every area in [`Areas`] and reaches each through
-//! [`PaneArea`] alone: it polls them, starts their reads, offers their live
-//! rows and builds the pane that shows one. Which areas and panes there are
-//! is the panes' business (their [`Part`]s, brought together in
-//! [`registry`]), so the window's code names none of them.
+//! ([`crate::settings_app::SettingsApp`]) holds every area in [`Areas`] and reaches each through
+//! [`PaneArea`] alone: it polls them, starts their reads and offers their
+//! live rows; each pane's view reads its area. Which areas there are is the
+//! panes' business (their [`Part`]s, brought together in [`registry`]), so
+//! the window's code names none of them.
 
 use std::any::Any;
 
-use ui::widget::Widget;
-
 use crate::categories::Category;
 use crate::host::PaneCx;
-use crate::settings_app::SettingsApp;
 
 /// One area of Settings: what its pane reads and keeps.
 pub trait PaneArea: Any {
@@ -209,12 +206,6 @@ pub struct AreaContext<'a> {
 /// What makes one area in a window's context, given the areas made before.
 pub type MakeArea = fn(&AreaContext<'_>, &Areas) -> Box<dyn PaneArea>;
 
-/// One pane: the categories it shows and how it is built for the window.
-pub struct PaneEntry {
-    pub categories: &'static [Category],
-    pub build: fn(&SettingsApp, Category) -> Box<dyn Widget>,
-}
-
 /// Why an effect could not reach its area: the window holds every area from
 /// when it is made, so this says only that the window was not.
 #[must_use]
@@ -230,7 +221,6 @@ pub fn missing() -> String {
 pub struct Part {
     /// What makes each area, by place.
     pub areas: &'static [(u16, MakeArea)],
-    pub panes: &'static [PaneEntry],
     pub families: &'static [(u16, &'static crate::effects::EffectFamily)],
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
     /// The rows of the settings its panes show, as search shows them too.
@@ -242,7 +232,6 @@ pub struct Part {
 pub struct Registry {
     /// What makes each area.
     pub areas: Vec<MakeArea>,
-    pub panes: Vec<&'static PaneEntry>,
     pub families: Vec<&'static crate::effects::EffectFamily>,
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
     /// Every setting's row.
@@ -264,7 +253,6 @@ impl Registry {
         areas.sort_by_key(|(place, _)| *place);
         Self {
             areas: areas.into_iter().map(|(_, make)| make).collect(),
-            panes: parts.iter().flat_map(|part| part.panes.iter()).collect(),
             families: ordered(
                 parts
                     .iter()

@@ -501,7 +501,28 @@ impl Widget for Found {
         self.composed.sync(state, root);
     }
 
-    crate::pane_model::composed_pane!(kept);
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::theme::Theme,
+        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        let mut composed = std::mem::take(&mut self.composed);
+        let child = composed.build_layout_kept(|| self.build_composition(), taffy, theme, node_map);
+        self.composed = composed;
+        let style = ui::taffy::Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        ui::widget::TaffyTreeExt::widget_node(taffy, style, &[child], node_map, self)
+    }
+
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SettingsFound"

@@ -1,4 +1,4 @@
-//! The panes' part of Settings: the areas, panes, effect families, live
+//! The panes' part of Settings: the areas, effect families, live
 //! areas and settings rows they bring ([`crate::area::Part`]).
 
 use crate::categories::Category;
@@ -425,9 +425,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
     ),
 ];
 
-/// Every pane, by the categories it shows.
-pub(crate) const PANES: &[crate::area::PaneEntry] = &[];
-
 /// The settings these panes show, as Settings' search shows them: a row
 /// built by the function its pane builds it with, or what it is set to.
 const SETTINGS: &[crate::setting::SettingEntry] = &[
@@ -536,7 +533,6 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
 
 pub const PART: crate::area::Part = crate::area::Part {
     areas: AREAS,
-    panes: PANES,
     families: FAMILIES,
     live_areas: LIVE_AREAS,
     settings: SETTINGS,

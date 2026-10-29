@@ -917,7 +917,7 @@ pub struct UpdatesModel {
     /// door the pane's controls go through.
     cx: PaneCx,
     /// The callers waiting for a request to finish.
-    replies: crate::panes::model::Replies,
+    replies: crate::replies::Replies,
     /// What the pane shows changed since it last looked.
     changed: bool,
 }
@@ -993,7 +993,7 @@ impl UpdatesModel {
             notice: None,
             dispatched_restart: false,
             cx,
-            replies: crate::panes::model::Replies::default(),
+            replies: crate::replies::Replies::default(),
             changed: false,
         }
     }
