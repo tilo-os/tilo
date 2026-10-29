@@ -135,3 +135,8 @@ Jobs that need more than an unprivileged container:
 | Job                  | Needs      |
 | -------------------- | ---------- |
 | `release-imager.yml` | `/dev/kvm` |
+
+The test packages `tools/ci/nested-sandboxes.toml` lists start sandboxes of their own
+(bubblewrap): their tests need a runner that lets an unprivileged process create user
+namespaces. `python3 tools/ci/nested_sandboxes.py` prints them, one per line; a test shard
+warns when its runner refuses user namespaces.
