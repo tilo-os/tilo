@@ -124,8 +124,6 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
 /// outside it, only the panes the areas build show.
 fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) -> Element {
     app.content_built().set(key.generation);
-    app.content_language()
-        .set(ui::i18n::I18nManager::revision());
     let (body, offset): (Element, ScrollOffset) = if key.found.is_empty() {
         (
             pane_body(app, key.category, cx),
@@ -145,6 +143,11 @@ fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) 
             ScrollOffset::default(),
         )
     };
+    // The language the column was built in is read once it is built: the
+    // first words a page writes load their catalogues, which moves the
+    // revision without any change of language.
+    app.content_language()
+        .set(ui::i18n::I18nManager::revision());
     let content: Element = Box::new(
         Container::new()
             .readable()
