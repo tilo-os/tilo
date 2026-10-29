@@ -22,6 +22,10 @@
 //! window gets is asked for before the button reaches the grab: the
 //! request goes out first, and sources answer requests in order.
 //!
+//! A drag follows the pointer or, when it started with a touch, that
+//! finger; its icon (the client's icon surface, or the image a hosted app
+//! gave) is drawn under it, in front of everything but the idle dim.
+//!
 //! [`SurfaceHost::drop_offered`]: crate::SurfaceHost::drop_offered
 
 use std::collections::BTreeMap;
@@ -29,8 +33,18 @@ use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
 
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::memory::{
+    MemoryRenderBuffer, MemoryRenderBufferRenderElement,
+};
+use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::input::Seat;
 use smithay::input::pointer::{ButtonEvent, GrabStartData, MotionEvent};
+use smithay::input::touch::{
+    GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, UpEvent,
+};
+use smithay::output::Output;
 use smithay::reexports::calloop::channel::{self, Sender};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, Mode, PostAction};
@@ -38,12 +52,13 @@ use smithay::reexports::wayland_server::Resource as _;
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
+use smithay::utils::{Logical, Physical, Point, SERIAL_COUNTER, Scale, Serial};
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, ServerDndGrabHandler, SourceMetadata, start_dnd, with_source_metadata,
 };
 use smithay::xwayland::X11Surface;
 
+use crate::render::OutputRenderElement;
 use crate::selection::{MAX_SELECTION_BYTES, host_offer, normalized_mimes, serve, value_for};
 use crate::state::State;
 use crate::xdnd::{self, Action};
@@ -73,6 +88,25 @@ pub(crate) struct Dnd {
     /// The drag grab of an X11 client's drag ended: Xwayland must see the
     /// button come up (done once the pointer call returns).
     release_x11_source: bool,
+    /// What the drag shows under the pointer or finger.
+    icon: Option<DragIcon>,
+    /// Where the drag is, in the logical layout.
+    at: Point<f64, Logical>,
+}
+
+/// A drag's icon.
+pub(crate) enum DragIcon {
+    /// A client's icon surface, offset from the drag's point by what its
+    /// commits moved it (`wl_surface.offset`).
+    Surface {
+        surface: WlSurface,
+        offset: Point<i32, Logical>,
+    },
+    /// A hosted app's image, its hotspot (logical) on the drag's point.
+    Image {
+        buffer: MemoryRenderBuffer,
+        hotspot: Point<i32, Logical>,
+    },
 }
 
 /// A drag the pointer carries under a grab.
@@ -181,22 +215,34 @@ enum Delivery {
 }
 
 impl State {
-    /// Start a hosted surface app's drag of `offer` (bytes per format)
-    /// while the pointer is pressed on it; false when there is nothing to
-    /// drag or no hosted surface under the pointer.
-    pub(crate) fn start_host_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> bool {
+    /// Start a hosted surface app's drag of `offer` (bytes per format),
+    /// showing `icon` under it, while a finger holds the app (the drag
+    /// follows that finger) or else while the pointer is pressed on it;
+    /// false when there is nothing to drag or no hosted surface there.
+    pub(crate) fn start_host_drag(
+        &mut self,
+        offer: Vec<(String, Vec<u8>)>,
+        icon: Option<(MemoryRenderBuffer, Point<i32, Logical>)>,
+    ) -> bool {
         let Some(values) = host_offer(offer) else {
             return false;
         };
-        let Some(origin) = self.host_under(self.pointer) else {
-            return false;
+        let touch = self.touch.take_host_finger();
+        let origin = if let Some((_, index, _)) = touch {
+            index
+        } else {
+            let Some(origin) = self.host_under(self.pointer) else {
+                return false;
+            };
+            if self
+                .seat
+                .get_pointer()
+                .is_none_or(|pointer| pointer.is_grabbed())
+            {
+                return false;
+            }
+            origin
         };
-        let Some(pointer) = self.seat.get_pointer() else {
-            return false;
-        };
-        if pointer.is_grabbed() {
-            return false;
-        }
         let values = Arc::new(values);
         let mimes = normalized_mimes(values.keys().cloned());
         self.dnd.served = Some(Served::Host(Arc::clone(&values)));
@@ -207,11 +253,7 @@ impl State {
             target: Target::Nothing,
             outcome: None,
         });
-        let start = GrabStartData {
-            focus: None,
-            button: BTN_LEFT,
-            location: self.pointer,
-        };
+        self.dnd.icon = icon.map(|(buffer, hotspot)| DragIcon::Image { buffer, hotspot });
         let metadata = SourceMetadata {
             mime_types: mimes,
             dnd_action: DndAction::Copy,
@@ -219,10 +261,184 @@ impl State {
         let display = self.display.clone();
         let seat = self.seat.clone();
         let serial = SERIAL_COUNTER.next_serial();
-        start_dnd(&display, &seat, self, serial, Some(start), None, metadata);
         let time = self.now_ms();
-        self.drag_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
+        if let Some((slot, _, at)) = touch {
+            let start = TouchGrabStartData {
+                focus: None,
+                slot: Some(slot).into(),
+                location: at,
+            };
+            start_dnd(&display, &seat, self, serial, None, Some(start), metadata);
+            self.drag_touch_motion(slot, at, time);
+        } else {
+            let start = GrabStartData {
+                focus: None,
+                button: BTN_LEFT,
+                location: self.pointer,
+            };
+            start_dnd(&display, &seat, self, serial, Some(start), None, metadata);
+            self.drag_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
+        }
         true
+    }
+
+    /// The finger that carries the drag, when a touch carries it.
+    pub(crate) fn drag_finger(&self) -> Option<u32> {
+        self.dnd.drag.as_ref()?;
+        let touch = self.seat.get_touch()?;
+        let start = touch.grab_start_data()?;
+        u32::try_from(i32::from(start.slot)).ok()
+    }
+
+    /// The finger carrying a drag moved: find the target and move the
+    /// grab.
+    pub(crate) fn drag_touch_motion(&mut self, slot: u32, at: Point<f64, Logical>, time: u32) {
+        let Some(drag) = &self.dnd.drag else {
+            return;
+        };
+        self.dnd.at = at;
+        let under = self.drag_under(at, matches!(drag.source, Source::X11));
+        self.retarget(&under, at);
+        let focus = match under {
+            Under::Client(surface, origin) => Some((surface, origin)),
+            _ => None,
+        };
+        if let Some(touch) = self.seat.get_touch() {
+            touch.motion(
+                self,
+                focus,
+                &TouchMotionEvent {
+                    slot: Some(slot).into(),
+                    location: at,
+                    time,
+                },
+            );
+            touch.frame(self);
+        }
+        self.x11_dnd_events();
+    }
+
+    /// The finger carrying a drag lifted: drop on the target.
+    pub(crate) fn drag_touch_up(&mut self, slot: u32, serial: Serial, time: u32) {
+        self.drop_on_target();
+        if let Some(touch) = self.seat.get_touch() {
+            touch.up(
+                self,
+                &UpEvent {
+                    slot: Some(slot).into(),
+                    serial,
+                    time,
+                },
+            );
+        }
+        let ended = self
+            .seat
+            .get_touch()
+            .is_none_or(|touch| !touch.is_grabbed());
+        if ended && let Some(drag) = self.dnd.drag.take() {
+            self.drag_ended(&drag, BTN_LEFT);
+        }
+        self.x11_dnd_events();
+    }
+
+    /// The touch carrying a drag was taken back: the drag ends unaccepted.
+    pub(crate) fn drag_cancelled(&mut self) {
+        if let Some(mut drag) = self.dnd.drag.take() {
+            if let Target::Host { index, .. } = drag.target
+                && let Some(host) = self.hosts.get_mut(index)
+            {
+                host.drop_left();
+            }
+            drag.outcome = Some(false);
+            self.drag_ended(&drag, BTN_LEFT);
+        }
+    }
+
+    /// The drag icon's elements on `output`, front first; none without a
+    /// drag or an icon.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "smithay geometry: logical and physical positions on outputs, far from i32 limits"
+    )]
+    pub(crate) fn drag_icon_elements<R>(
+        &self,
+        renderer: &mut R,
+        output: &Output,
+    ) -> Vec<OutputRenderElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        let (Some(_), Some(icon)) = (&self.dnd.drag, &self.dnd.icon) else {
+            return Vec::new();
+        };
+        let Some(geometry) = self.space.output_geometry(output) else {
+            return Vec::new();
+        };
+        let scale = output.current_scale().fractional_scale();
+        let at = self.dnd.at - geometry.loc.to_f64();
+        match icon {
+            DragIcon::Surface { surface, offset } => {
+                let origin: Point<i32, Physical> =
+                    (at + offset.to_f64()).to_physical_precise_round(scale);
+                render_elements_from_surface_tree(
+                    renderer,
+                    surface,
+                    origin,
+                    Scale::from(scale),
+                    1.0,
+                    Kind::Unspecified,
+                )
+            }
+            DragIcon::Image { buffer, hotspot } => {
+                let origin: Point<f64, Physical> = (at - hotspot.to_f64()).to_physical(scale);
+                match MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    origin,
+                    buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ) {
+                    Ok(element) => vec![OutputRenderElement::Hosted(element)],
+                    Err(error) => {
+                        tracing::warn!(?error, "drag icon not imported");
+                        Vec::new()
+                    }
+                }
+            }
+        }
+    }
+
+    /// A client committed `surface`: when it is the drag icon, follow what
+    /// the commit moved it by.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "smithay geometry: logical and physical positions on outputs, far from i32 limits"
+    )]
+    pub(crate) fn drag_icon_commit(&mut self, surface: &WlSurface) {
+        let Some(DragIcon::Surface {
+            surface: icon,
+            offset,
+        }) = self.dnd.icon.as_mut()
+        else {
+            return;
+        };
+        if icon != surface {
+            return;
+        }
+        let delta = smithay::wayland::compositor::with_states(surface, |states| {
+            states
+                .cached_state
+                .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                .current()
+                .buffer_delta
+                .take()
+        });
+        if let Some(delta) = delta {
+            *offset += delta;
+        }
     }
 
     /// What is under `at` for a drag; X11 windows are no target of an X11
@@ -255,6 +471,7 @@ impl State {
         let Some(drag) = &self.dnd.drag else {
             return false;
         };
+        self.dnd.at = location;
         let under = self.drag_under(location, matches!(drag.source, Source::X11));
         self.retarget(&under, location);
         let focus = match under {
@@ -397,6 +614,7 @@ impl State {
     /// The grab ended: tell the hosted app that started the drag, let an
     /// X11 source see its button come up, and route the pointer anew.
     fn drag_ended(&mut self, drag: &Drag, button: u32) {
+        self.dnd.icon = None;
         if let Source::Host { origin, .. } = drag.source
             && let Some(host) = self.hosts.get_mut(origin)
         {
@@ -960,9 +1178,14 @@ impl ClientDndGrabHandler for State {
     fn started(
         &mut self,
         source: Option<WlDataSource>,
-        _icon: Option<WlSurface>,
+        icon: Option<WlSurface>,
         _seat: Seat<Self>,
     ) {
+        self.dnd.icon = icon.map(|surface| DragIcon::Surface {
+            surface,
+            offset: Point::default(),
+        });
+        self.dnd.at = self.pointer;
         // A drag without a source stays within its client.
         self.dnd.drag = source.map(|source| {
             let (mimes, actions) =

@@ -116,6 +116,7 @@ where
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
+    elements.extend(state.drag_icon_elements(renderer, output));
     elements.extend(state.input_popup_elements(renderer, output));
     let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
         for host in state
