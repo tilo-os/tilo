@@ -324,7 +324,7 @@ impl Core {
                 return Ok(text);
             }
         }
-        if target.path.is_empty() && meta.roots.contains(&ty.id) {
+        if target.item.is_none() && meta.roots.contains(&ty.id) {
             return Ok(meta.title.clone());
         }
         Ok(sentence(&ty.name))
@@ -402,16 +402,9 @@ impl Core {
         Ok(out)
     }
 
-    /// The resource holding the item `target`, with its type: the reference without its last
-    /// step.
+    /// The resource holding the item `target`, with its type: where the store has it now.
     fn holder_of(&self, target: &ResourceRef) -> Option<ResourceRef> {
-        let (_, path) = target.path.split_last()?;
-        let mut holder = ResourceRef {
-            doc: target.doc.clone(),
-            path: path.to_vec(),
-            ty: String::new(),
-        };
-        holder.ty = self.store.borrow().type_of(&holder).ok()?;
+        let (holder, _) = self.store.borrow().container(target).ok()??;
         Some(holder)
     }
 

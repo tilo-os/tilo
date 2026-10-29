@@ -97,11 +97,12 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
 }
 
 /// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
-/// in: its parent resource and the collection's field.
-fn item_of(resource: &str) -> Option<(&str, &str)> {
-    let (parent, step) = resource.rsplit_once('/')?;
-    let (field, _) = step.split_once(':')?;
-    Some((parent, field))
+/// in, as the store has it: its holder (written the same way) and the collection's field.
+fn item_of(core: &Core, resource: &str) -> Option<(String, String)> {
+    let at = crate::value::ResourceRef::parse_id(resource, String::new())?;
+    at.item.as_ref()?;
+    let (holder, field) = core.store.borrow().container(&at).ok()??;
+    Some((holder.id_string(), field))
 }
 
 /// Which boundaries read what.
@@ -449,7 +450,8 @@ impl Live {
             }
             // A field of an item of a collection decides whether the item is in a filtered
             // view of it: the readers of filtered views of the item's collection look again.
-            if let Some((parent, coll)) = item_of(&key.resource) {
+            if let Some((parent, coll)) = item_of(core, &key.resource) {
+                let (parent, coll) = (parent.as_str(), coll.as_str());
                 self.reach_colls(core, parent, coll, true, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);

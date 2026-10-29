@@ -95,7 +95,7 @@ fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
                 collect(
                     meta,
                     item,
-                    &format!("{path}/{}:{}", field.id, item_id.as_str()),
+                    &crate::index::derive::item_path(path, item_id.as_str()),
                     out,
                 );
             }

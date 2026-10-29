@@ -39,11 +39,11 @@ use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_runtime::Journal;
-use tilolang_runtime::ids::{AppId, DocId, RunId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
-    SubId, Txn, Version,
+    SubId, Txn, Version, doc_of,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -55,9 +55,11 @@ use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::overlay::{Overlay, OverlaySink};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads, Opened};
+use crate::items::{Items, Nested};
 use crate::reads::{Changed, changed_by, default_value, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{MergeKind, TYPE_KEY, lookup};
+use tilolang_runtime::place::{Place, Placement};
 
 type Doc = tilo_resource::Doc;
 
@@ -138,8 +140,11 @@ struct LocalWrite {
     edit: DynEdit,
     seed: Vec<u8>,
     touched: Vec<FieldKey>,
-    /// The collection items it added, removed or moved.
+    /// The collection items it added, removed or moved, by each collection they joined or
+    /// left.
     items: Vec<(FieldKey, String)>,
+    /// The items whose placement it wrote, each with whether it made them.
+    placed: Vec<(DocId, String, bool)>,
 }
 
 impl LocalWrite {
@@ -150,15 +155,41 @@ impl LocalWrite {
             let fields = reached.docs.entry(key.doc().to_owned()).or_default();
             fields.push(key.clone());
         }
-        for (key, id) in &self.items {
-            reached
-                .items
-                .entry(key.clone())
+        for (doc, id, made) in &self.placed {
+            let held = reached
+                .placed
+                .entry(doc.clone())
                 .or_default()
-                .insert(id.clone());
+                .entry(id.clone())
+                .or_default();
+            *held = *held || *made;
         }
         reached
     }
+}
+
+/// The collection items a write adds, removes or moves, by each collection they join or leave,
+/// and the items whose placement it writes, each with whether it makes them.
+type Moves = (Vec<(FieldKey, String)>, Vec<(DocId, String, bool)>);
+
+/// What a mutation writes, planned against the store as it is: the edit, the item it makes,
+/// what it changes, and the items it places.
+struct Planned {
+    edit: DynEdit,
+    item: Option<String>,
+    touched: Vec<FieldKey>,
+    items: Vec<(FieldKey, String)>,
+    placed: Vec<(DocId, String, bool)>,
+}
+
+/// Where an item is: the resource holding its collection, the field, the order key; where an
+/// item of a record written before items were flat is nested; and its type.
+struct ItemAt {
+    holder: String,
+    field: String,
+    key: String,
+    nesting: Vec<(String, String)>,
+    ty: TypeId,
 }
 
 /// What the store did, for tests and the benchmark.
@@ -226,25 +257,11 @@ struct ListedOnce {
 
 impl ListedOnce {
     /// Whether a change of `key` may change this listing: its collection, the resource holding
-    /// it as a whole or one holding that, an item of it as a whole, or the field of an item a
-    /// filter reads. An item's other fields leave which items it lists, and their order, as
-    /// they were.
+    /// it as a whole, or, for a filtered or sorted listing, the field of an item of its record
+    /// that the filter or order reads (any item: one in another collection may move into this
+    /// one). An item's other fields leave which items it lists, and their order, as they were.
     fn reached_by(&self, key: &FieldKey) -> bool {
-        let holder = |resource: &str, field: &str| {
-            self.resource
-                .strip_prefix(resource)
-                .and_then(|rest| rest.strip_prefix('/'))
-                .and_then(|rest| rest.strip_prefix(field))
-                .is_some_and(|rest| rest.starts_with(':'))
-        };
-        // An item of the collection, not a resource inside one.
-        let item = key
-            .resource
-            .strip_prefix(self.resource.as_str())
-            .and_then(|rest| rest.strip_prefix('/'))
-            .and_then(|rest| rest.strip_prefix(self.field.as_str()))
-            .and_then(|rest| rest.strip_prefix(':'))
-            .is_some_and(|id| !id.contains('/'));
+        let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);
         let filtered_on = |field: &str| {
             field == ANY_FIELD
                 || self
@@ -257,13 +274,7 @@ impl ListedOnce {
                 })
         };
         (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
-            || (item && filtered_on(&key.field))
-            || (key.field == ANY_FIELD
-                && self
-                    .resource
-                    .strip_prefix(key.resource.as_str())
-                    .is_some_and(|rest| rest.starts_with('/')))
-            || holder(&key.resource, &key.field)
+            || (item && (self.pred.is_some() || self.order.is_some()) && filtered_on(&key.field))
     }
 }
 
@@ -325,6 +336,8 @@ struct Inner {
     /// The last snapshot taken, while the store has not changed since: what search and
     /// publication starting in one frame share.
     snapshot: std::sync::Weak<Snapshot>,
+    /// Where the items of records written before items were flat are.
+    nested: Nested,
 }
 
 /// The store as it was when taken, to read on another thread: each package's index as its last
@@ -499,13 +512,10 @@ fn json_of_scalar(scalar: &Scalar) -> Json {
     }
 }
 
-/// The path from a resource's root to the item `at` names, then `field`.
-fn path_to(at: &ResourceRef, field: &str) -> Vec<Segment> {
-    let mut path = Vec::new();
-    for step in &at.path {
-        path.push(Segment::Field(step.field.clone()));
-        path.push(Segment::Item(Id::from_raw(step.item.clone())));
-    }
+/// The path from a record's map to the field `field` of a resource of it, whose own map the
+/// path `prefix` reaches ([`Inner::prefix_of`]).
+fn path_to(prefix: &[Segment], field: &str) -> Vec<Segment> {
+    let mut path = prefix.to_vec();
     path.push(Segment::Field(field.to_owned()));
     path
 }
@@ -569,8 +579,9 @@ fn build(
     heads: &[ChangeHash],
 ) -> Result<DocReads, IndexError> {
     let ends = idx::reflect::ends_of(&doc.committed_document().get_changes(&[]));
+    let nested = Nested::default();
     index.write(|writer| {
-        let mut derive = Derive::new(doc, docs);
+        let mut derive = Derive::new(doc, docs, &nested);
         derive.all_with_versions(writer, app, &ends)?;
         writer.set_heads(heads)?;
         Ok(derive.reads)
@@ -646,6 +657,7 @@ impl TiloStore {
                 instance,
                 counter: 0,
                 snapshot: std::sync::Weak::new(),
+                nested: Nested::default(),
             })),
         }
     }
@@ -865,9 +877,10 @@ impl TiloStore {
         let from = inner.seen.clone();
         let (changed, ends) = inner.apply_new_changes(record, &before);
         inner.seen = heads;
-        let Some(mut changed) = changed else {
+        let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.versions = None;
+            inner.nested.clear();
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.mirror = Some(Arc::new(mirror_of(record)));
             inner.index = scan_of(inner.mirror.as_deref());
@@ -878,42 +891,53 @@ impl TiloStore {
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+        for doc in &changed.nested {
+            inner.nested.forget(doc);
+        }
         if changed.structure || changed.unplaced {
             inner.index = scan_of(inner.mirror.as_deref());
-        }
-        for (key, ids) in std::mem::take(&mut changed.items) {
-            items
-                .entry(key.clone())
-                .or_default()
-                .extend(ids.iter().cloned());
-            changed.items.insert(key, ids);
         }
         let reached = if changed.unplaced || changed.layout {
             everything(&before, &inner.index)
         } else {
             Reached {
                 docs: changed.docs.clone(),
-                items: changed.items.clone(),
+                placed: changed.placed.clone(),
             }
         };
-        inner.derive_all(&reached, Some((&from, &ends)));
+        let (moved, wholes) = inner.derive_all(&reached, Some((&from, &ends)));
+        for (key, ids) in moved {
+            items.entry(key).or_default().extend(ids);
+        }
+        // What changed, per document: the fields named, the collections items joined or left,
+        // and the records derived anew whole.
+        let mut docs = changed.docs;
+        for key in items.keys() {
+            match docs.get_mut(key.doc()) {
+                Some(fields) if fields.is_empty() => {}
+                Some(fields) => fields.push(key.clone()),
+                None => {
+                    docs.insert(key.doc().to_owned(), vec![key.clone()]);
+                }
+            }
+        }
+        for doc in wholes {
+            docs.insert(doc, Vec::new());
+        }
+        for fields in docs.values_mut() {
+            fields.sort();
+            fields.dedup();
+        }
         if changed.unplaced || changed.layout {
             inner.changed();
         } else {
-            let mut reached = changed.docs.clone();
-            for key in changed.items.keys() {
-                reached
-                    .entry(key.doc().to_owned())
-                    .or_default()
-                    .push(key.clone());
-            }
-            inner.changed_within(&reached);
+            inner.changed_within(&docs);
         }
         let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
         if changed.unplaced {
             inner.notify_all();
         } else {
-            for (doc, fields) in changed.docs {
+            for (doc, fields) in docs {
                 let listings = listings.remove(&doc).unwrap_or_default();
                 inner.notify(&ChangeSummary {
                     doc,
@@ -1209,11 +1233,13 @@ impl TiloStore {
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.mirror()?;
-        let located = locate_ref(mirror, (&app, &ty), at)?;
-        let obj = located
-            .obj
-            .ok_or_else(|| not_found(format!("resource {}", at.id_string())))?;
-        <DynRecord as tilo_resource::Fields>::read_fields(mirror, &obj).map_err(backend)
+        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested)?;
+        match located.obj {
+            Some(obj) => <DynRecord as tilo_resource::Fields>::read_fields(mirror, &obj),
+            // An item stored as its order key alone: every field reads as its default.
+            None => DynRecord::empty(located.schema),
+        }
+        .map_err(backend)
     }
 
     /// The first text of the resource at `at`, in the order of [`DynRecord`]'s text collection,
@@ -1227,8 +1253,19 @@ impl TiloStore {
             return view.first_text(&at.id_string(), schema).ok().flatten();
         }
         let mirror = inner.mirror.as_deref()?;
-        let located = locate_ref(mirror, (&app, &ty), at).ok()?;
-        crate::reads::first_text(mirror, &located.obj?, located.schema, &at.id_string())
+        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested).ok()?;
+        let (items, resolved) = inner.resolved(at).ok()?;
+        let record = crate::reads::RecordItems {
+            doc: &at.doc,
+            items: &items,
+            resolved: &resolved,
+        };
+        crate::reads::first_text(
+            mirror,
+            &located.obj?,
+            located.schema,
+            (&at.id_string(), &record),
+        )
     }
 
     /// How many items of the collection `field` of `at` hold each value of their column
@@ -1300,7 +1337,7 @@ impl TiloStore {
             edit.clone(),
             id.as_bytes().to_vec(),
             touched,
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         );
         if let Err(error) = written {
             inner.index.remove(id);
@@ -1404,6 +1441,7 @@ impl Inner {
     /// Take the room record: the mirror is a copy of it, and each index catches up with it.
     fn attach(&mut self, record: &Doc) {
         self.versions = None;
+        self.nested.clear();
         let mirror = mirror_of(record);
         self.seen = record.committed_document().get_heads();
         self.index = scan(&mirror);
@@ -1559,18 +1597,22 @@ impl Inner {
         let since = mirror.committed_document().get_changes(&held.heads);
         let ends = idx::reflect::ends_of(&since);
         let changed = changed_by(&since, &mirror, &before);
+        for doc in &changed.nested {
+            self.nested.forget(doc);
+        }
         let reached = if changed.unplaced || changed.layout {
             everything(&before, &self.index)
         } else {
             Reached {
                 docs: changed.docs,
-                items: changed.items,
+                placed: changed.placed,
             }
         };
         let index = Arc::clone(&held.index);
         let docs = self.index.clone();
+        let nested = &self.nested;
         let written = index.write(|writer| {
-            let mut derive = Derive::new(&mirror, &docs);
+            let mut derive = Derive::new(&mirror, &docs, nested);
             derive.changes(writer, app, &reached)?;
             derive.versions(writer, app, &ends)?;
             writer.set_heads(&now)?;
@@ -1629,9 +1671,18 @@ impl Inner {
     /// `since` is, when known, the heads the record moved on from and the versions its new
     /// changes made ([`idx::reflect::ends_of`]): what an index stamped with those heads takes
     /// in. Another one reads its versions from the changes since its own heads.
-    fn derive_all(&mut self, reached: &Reached, since: Since<'_>) {
+    ///
+    /// Returns the collections items joined or left, with those items, and the records
+    /// derived anew whole.
+    fn derive_all(
+        &mut self,
+        reached: &Reached,
+        since: Since<'_>,
+    ) -> (ItemTouches, BTreeSet<DocId>) {
+        let mut moved = ItemTouches::new();
+        let mut wholes = BTreeSet::new();
         let Some(mirror) = self.mirror.clone() else {
-            return;
+            return (moved, wholes);
         };
         let apps: Vec<AppId> = self
             .apps
@@ -1660,15 +1711,21 @@ impl Inner {
                     &own
                 }
             };
+            let nested = &self.nested;
+            let docs = &self.index;
             let written = index.write(|writer| {
-                let mut derive = Derive::new(&mirror, &self.index);
+                let mut derive = Derive::new(&mirror, docs, nested);
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
-                Ok(derive.reads)
+                Ok((derive.reads, derive.moved, derive.wholes))
             });
             match written {
-                Ok(reads) => {
+                Ok((reads, app_moved, app_wholes)) => {
+                    for (key, ids) in app_moved {
+                        moved.entry(key).or_default().extend(ids);
+                    }
+                    wholes.extend(app_wholes);
                     self.count(reads);
                     if let Some(held) = self.apps.get_mut(&app) {
                         held.heads = seen;
@@ -1683,6 +1740,7 @@ impl Inner {
                 Err(_) => self.rebuild(&app),
             }
         }
+        (moved, wholes)
     }
 
     /// The steps each listed collection took from the indexes `before` (with the overlay
@@ -1725,7 +1783,7 @@ impl Inner {
                     overlay: &mut overlay,
                     snapshot: Some(&held.snapshot),
                 };
-                let mut derive = Derive::new(&mirror, &self.index);
+                let mut derive = Derive::new(&mirror, &self.index, &self.nested);
                 let _ = derive.changes(&mut sink, &write.app, &write.reached());
             }
         }
@@ -1741,7 +1799,7 @@ impl Inner {
         edit: DynEdit,
         seed: Vec<u8>,
         touched: Vec<FieldKey>,
-        items: Vec<(FieldKey, String)>,
+        (items, placed): Moves,
     ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
         let applied = {
             let mirror = self
@@ -1755,6 +1813,7 @@ impl Inner {
             seed,
             touched,
             items,
+            placed,
         };
         let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
         // Derived either way: a failed edit may have written part of itself.
@@ -1814,7 +1873,7 @@ impl Inner {
             overlay,
             snapshot: Some(&snapshot),
         };
-        let mut derive = Derive::new(&mirror, &self.index);
+        let mut derive = Derive::new(&mirror, &self.index, &self.nested);
         let _ = derive.changes(&mut sink, &write.app, &write.reached());
     }
 
@@ -1890,11 +1949,15 @@ impl Inner {
         field: &str,
     ) -> Result<FieldValue, StoreError> {
         let mirror = self.mirror()?;
-        let located = locate_ref(mirror, (app, ty), at)?;
+        let located = locate_ref(mirror, (app, ty), at, &self.nested)?;
         let spec = located
             .schema
             .field(field)
             .ok_or_else(|| not_found(format!("field {field}")))?;
+        if spec.kind == MergeKind::Collection {
+            let (_, resolved) = self.resolved(at)?;
+            return Ok(FieldValue::Items(resolved.items(at.item.as_deref(), field)));
+        }
         self.count(DocReads {
             located: 1,
             fields: 1,
@@ -2000,7 +2063,7 @@ impl Inner {
                 // The package's index is being built: its lists show nothing until it is,
                 // as the platform's loading state; the record says the resource is there.
                 let mirror = self.mirror()?;
-                locate_ref(mirror, (&app, &ty), at)?;
+                locate_ref(mirror, (&app, &ty), at, &self.nested)?;
                 Listing::default()
             }
             None => Listing::default(),
@@ -2014,6 +2077,350 @@ impl Inner {
             listing: Rc::clone(&listing),
         });
         Ok(listing)
+    }
+}
+
+impl Inner {
+    /// What the mutation `m` of `at` writes, planned against the store as it is now.
+    fn plan(&mut self, at: &ResourceRef, m: &Mutation) -> Result<Planned, StoreError> {
+        let doc = at.doc.clone();
+        match m {
+            Mutation::OutboxPush {
+                capability,
+                payload,
+                key,
+            } => {
+                let entry = key.as_deref().map_or_else(|| self.fresh("o"), sanitize_key);
+                Ok(Planned {
+                    edit: DynEdit::OutboxPush {
+                        id: doc,
+                        entry,
+                        capability: capability.clone(),
+                        payload: payload.clone(),
+                        owner: self.device.clone(),
+                    },
+                    item: None,
+                    touched: Vec::new(),
+                    items: Vec::new(),
+                    placed: Vec::new(),
+                })
+            }
+            // A new item, stored by its id, placed before the item the program saw at the
+            // place it named (else at the end), so a concurrent insert, removal or move
+            // elsewhere does not shift where it lands.
+            Mutation::CollInsert { field, item, index } => {
+                let key = self.key_for(at, field, *index, None)?;
+                let schema = lookup(&item.ty)
+                    .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;
+                let record = DynRecord::empty(schema).map_err(backend)?.to_json();
+                let id = self.fresh("i");
+                let placement = Placement::At {
+                    place: Place {
+                        parent: at.item.clone(),
+                        field: field.clone(),
+                        key,
+                    },
+                    was: None,
+                };
+                let coll = FieldKey::new(at, field.clone());
+                Ok(Planned {
+                    edit: DynEdit::Insert {
+                        id: doc.clone(),
+                        item: id.clone(),
+                        record,
+                        at: placement.encode(),
+                    },
+                    item: Some(id.clone()),
+                    touched: vec![coll.clone()],
+                    items: vec![(coll, id.clone())],
+                    placed: vec![(doc, id, true)],
+                })
+            }
+            Mutation::CollMove { field, item, index } => self.plan_move(at, field, (item, *index)),
+            Mutation::CollRemove { item, .. } => self.plan_remove(&doc, item),
+            _ => {
+                let prefix = self.prefix_of(at)?;
+                Ok(Planned {
+                    edit: DynEdit::Edit {
+                        id: doc,
+                        edit: edit_of(&prefix, m)?,
+                    },
+                    item: None,
+                    touched: vec![FieldKey::new(at, field_of(m))],
+                    items: Vec::new(),
+                    placed: Vec::new(),
+                })
+            }
+        }
+    }
+
+    /// An item, from wherever it is in the document, to the place `index` of the collection
+    /// `field` of `at`: its placement written, its id kept.
+    fn plan_move(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        (item, index): (&str, usize),
+    ) -> Result<Planned, StoreError> {
+        let from = self.item_at(&at.doc, item)?;
+        let mut holder = Some(at.clone());
+        while let Some(held) = holder {
+            if held.item.as_deref() == Some(item) {
+                return Err(invalid("an item cannot go inside itself"));
+            }
+            holder = self.container(&held)?.map(|(parent, _)| parent);
+        }
+        let key = self.key_for(at, field, Some(index), Some(item))?;
+        let was = Place {
+            parent: crate::index::derive::id_of(&from.holder).map(str::to_owned),
+            field: from.field.clone(),
+            key: from.key.clone(),
+        };
+        let placement = Placement::At {
+            place: Place {
+                parent: at.item.clone(),
+                field: field.to_owned(),
+                key,
+            },
+            was: Some(was),
+        };
+        let to = FieldKey::new(at, field.to_owned());
+        let left = FieldKey {
+            resource: from.holder.clone(),
+            field: from.field.clone(),
+        };
+        let mut holders = vec![from.holder.clone()];
+        if to.resource != from.holder {
+            holders.push(to.resource.clone());
+        }
+        Ok(Planned {
+            edit: DynEdit::Place {
+                id: at.doc.clone(),
+                item: item.to_owned(),
+                at: placement.encode(),
+                nested: from.nesting,
+                ty: from.ty,
+                holders,
+            },
+            item: None,
+            touched: vec![to.clone(), left.clone()],
+            items: vec![(to, item.to_owned()), (left, item.to_owned())],
+            placed: vec![(at.doc.clone(), item.to_owned(), false)],
+        })
+    }
+
+    /// An item removed, with every item in it: its placement written as removed.
+    fn plan_remove(&self, doc: &str, item: &str) -> Result<Planned, StoreError> {
+        let from = self.item_at(doc, item)?;
+        let left = FieldKey {
+            resource: from.holder.clone(),
+            field: from.field.clone(),
+        };
+        Ok(Planned {
+            edit: DynEdit::Place {
+                id: doc.to_owned(),
+                item: item.to_owned(),
+                at: Placement::Removed.encode(),
+                nested: from.nesting,
+                ty: from.ty,
+                holders: vec![from.holder],
+            },
+            item: None,
+            touched: vec![
+                left.clone(),
+                // The item is gone: whatever was read of it.
+                FieldKey {
+                    resource: format!("{doc}/{item}"),
+                    field: ANY_FIELD.to_owned(),
+                },
+            ],
+            items: vec![(left, item.to_owned())],
+            placed: vec![(doc.to_owned(), item.to_owned(), false)],
+        })
+    }
+
+    /// The map of the record of `at`, and the record's type.
+    fn record_root(
+        &self,
+        at: &ResourceRef,
+    ) -> Result<(AppId, automerge::ObjId, &'static crate::schema::TypeSchema), StoreError> {
+        let (app, ty) = self.locate(at)?;
+        let mirror = self.mirror()?;
+        let root = crate::reads::resource_obj(mirror, &app, &at.doc)
+            .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
+        let schema = lookup(&ty).ok_or_else(|| not_found(format!("type {ty}")))?;
+        Ok((app, root, schema))
+    }
+
+    /// The path from the record's map to the map of `at`: none for the record, the item's id
+    /// for an item stored by it, the steps it is nested at for one of a record written before
+    /// items were flat.
+    fn prefix_of(&self, at: &ResourceRef) -> Result<Vec<Segment>, StoreError> {
+        let Some(item) = &at.item else {
+            return Ok(Vec::new());
+        };
+        let (_, root, schema) = self.record_root(at)?;
+        let found =
+            crate::items::find(self.mirror()?, (&at.doc, &root, schema), &self.nested, item)
+                .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        if found.nesting.is_empty() {
+            return Ok(vec![Segment::Item(Id::from_raw(item.clone()))]);
+        }
+        Ok(found
+            .nesting
+            .iter()
+            .flat_map(|(field, id)| {
+                [
+                    Segment::Field(field.clone()),
+                    Segment::Item(Id::from_raw(id.clone())),
+                ]
+            })
+            .collect())
+    }
+
+    /// Where the item `item` of the record `doc` is now, and how it is stored.
+    fn item_at(&self, doc: &str, item: &str) -> Result<ItemAt, StoreError> {
+        let at = ResourceRef::root(doc, String::new()).item(item, String::new());
+        let (_, root, schema) = self.record_root(&at)?;
+        let found = crate::items::find(self.mirror()?, (doc, &root, schema), &self.nested, item)
+            .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let (holder, field) = self
+            .container(&at)?
+            .map(|(holder, field)| (holder.id_string(), field))
+            .ok_or_else(|| not_found(format!("item `{item}` is in no collection")))?;
+        let key = self.key_of(doc, item)?.unwrap_or_default();
+        Ok(ItemAt {
+            holder,
+            field,
+            key,
+            nesting: found.nesting,
+            ty: found.ty.unwrap_or_default(),
+        })
+    }
+
+    /// The order key of the item `item` of `doc` in the collection it is in.
+    fn key_of(&self, doc: &str, item: &str) -> Result<Option<String>, StoreError> {
+        let path = crate::index::derive::item_path(doc, item);
+        if let Some((app, _)) = self.index.get(doc)
+            && let Some(view) = self.view(app)
+        {
+            return view.text(&path, idx::KEY).map_err(backend);
+        }
+        let at = ResourceRef::root(doc, String::new()).item(item, String::new());
+        Ok(self
+            .resolved(&at)?
+            .1
+            .places
+            .get(item)
+            .map(|place| place.key.clone()))
+    }
+
+    /// The items of the record of `at`, read and resolved from the record: for a package whose
+    /// index is not read from yet.
+    fn resolved(
+        &self,
+        at: &ResourceRef,
+    ) -> Result<(Items, tilolang_runtime::place::Resolved), StoreError> {
+        let (_, root, schema) = self.record_root(at)?;
+        let items = Items::scan(self.mirror()?, &root, schema);
+        self.count(DocReads {
+            located: 1,
+            fields: 0,
+            listings: 1,
+            entries: u64::try_from(items.found.len()).unwrap_or(u64::MAX),
+        });
+        let resolved = items.resolve(schema);
+        Ok((items, resolved))
+    }
+
+    /// The order key for the place `index` (the end for `None`) of the collection `field` of
+    /// `at`, among its items but `moving`: before the item at that place, after the one before.
+    fn key_for(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        index: Option<usize>,
+        moving: Option<&str>,
+    ) -> Result<String, StoreError> {
+        let resource = at.id_string();
+        let (app, _) = self.locate(at)?;
+        let Some(view) = self.view(&app) else {
+            let (_, resolved) = self.resolved(at)?;
+            let others: Vec<(String, String)> = resolved
+                .children
+                .get(&(at.item.clone(), field.to_owned()))
+                .into_iter()
+                .flatten()
+                .filter(|(_, id)| Some(id.as_str()) != moving)
+                .cloned()
+                .collect();
+            return Ok(tilolang_runtime::place::key_at(
+                &others,
+                index.unwrap_or(others.len()),
+            ));
+        };
+        let list = view.list(&resource, field).map_err(backend)?;
+        let skipped = match moving {
+            Some(item) => view.position(&resource, field, item).map_err(backend)?,
+            None => None,
+        };
+        let count = list.len().saturating_sub(usize::from(skipped.is_some()));
+        let index = index.unwrap_or(count).min(count);
+        let key_at = |k: usize| -> Result<Option<String>, StoreError> {
+            let at = if skipped.is_some_and(|p| k >= p) {
+                k.saturating_add(1)
+            } else {
+                k
+            };
+            let Some(id) = list.get(at) else {
+                return Ok(None);
+            };
+            view.text(&crate::index::view::child(&resource, &id), idx::KEY)
+                .map_err(backend)
+        };
+        let low = match index.checked_sub(1) {
+            Some(before) => key_at(before)?,
+            None => None,
+        };
+        let high = if index < count { key_at(index)? } else { None };
+        Ok(tilolang_runtime::place::key_between(
+            low.as_deref(),
+            high.as_deref(),
+        ))
+    }
+
+    /// Where the item `at` is: the resource holding its collection, and the field. `None` for a
+    /// record.
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, String)>, StoreError> {
+        let (app, _) = self.locate(at)?;
+        let Some(item) = &at.item else {
+            return Ok(None);
+        };
+        let missing = || not_found(format!("item `{item}` is in no collection"));
+        if let Some(view) = self.view(&app) {
+            let held = view
+                .text(&at.id_string(), idx::IN)
+                .map_err(backend)?
+                .ok_or_else(missing)?;
+            let (holder, field) = crate::index::derive::split_in(&held).ok_or_else(missing)?;
+            let ty = view.type_of(holder).map_err(backend)?.unwrap_or_default();
+            let holder = ResourceRef::parse_id(holder, ty).ok_or_else(missing)?;
+            return Ok(Some((holder, field.to_owned())));
+        }
+        let (items, resolved) = self.resolved(at)?;
+        let place = resolved.places.get(item).ok_or_else(missing)?;
+        let holder = if let Some(parent) = &place.parent {
+            let ty = items
+                .found
+                .get(parent)
+                .and_then(|found| found.ty.clone())
+                .unwrap_or_default();
+            at.item(parent, ty)
+        } else {
+            let (_, ty) = self.locate(at)?;
+            ResourceRef::root(at.doc.clone(), ty)
+        };
+        Ok(Some((holder, place.field.clone())))
     }
 }
 
@@ -2048,36 +2455,17 @@ fn field_of(m: &Mutation) -> String {
     }
 }
 
-/// The place an item goes when the program named position `index`: before the item it saw
-/// there, the one being moved left out, else the end. Read as the runtime reads a position.
-fn beside(listing: &Listing, index: usize, moving: Option<&str>) -> tilo_resource::At {
-    listing
-        .iter()
-        .filter(|id| Some(&**id) != moving)
-        .nth(index)
-        .map_or(tilo_resource::At::End, |id| {
-            tilo_resource::At::Before(Id::from_raw(id.to_string()))
-        })
-}
-
-/// The edit a mutation makes below the resource `at`, placing an inserted or moved item at
-/// `place`, and the id of the item it inserts.
-fn edit_of(
-    at: &ResourceRef,
-    m: &Mutation,
-    new_id: &str,
-    place: tilo_resource::At,
-) -> Result<(Edit<DynRecord>, Option<String>), StoreError> {
-    let (field, op, item) = match m {
+/// The edit a mutation of a field makes below the resource whose map `prefix` reaches.
+fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreError> {
+    let (field, op) = match m {
         Mutation::SetRegister { field, value } => (
             field,
             EditOp::Set {
                 value: json_of_scalar(value),
             },
-            None,
         ),
-        Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }, None),
-        Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }, None),
+        Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }),
+        Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }),
         // A rich text is brought to read as the value by splices and marks of the paragraphs
         // that differ, the edit native rich text takes.
         Mutation::SetRich { field, value } => {
@@ -2089,67 +2477,39 @@ fn edit_of(
                     .collect(),
             };
             let rich = serde_json::to_value(&action).map_err(backend)?;
-            (field, EditOp::Rich { rich }, None)
+            (field, EditOp::Rich { rich })
         }
-        Mutation::CollInsert { field, item, .. } => {
-            let schema = lookup(&item.ty)
-                .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;
-            let empty = DynRecord::empty(schema).map_err(backend)?;
-            (
-                field,
-                EditOp::InsertItem {
-                    id: Some(Id::from_raw(new_id)),
-                    at: place,
-                    value: empty.to_json(),
-                },
-                Some(new_id.to_owned()),
-            )
-        }
-        Mutation::CollRemove { field, item } => (
-            field,
-            EditOp::RemoveItem {
-                id: Id::from_raw(item.clone()),
-            },
-            None,
-        ),
-        Mutation::CollMove { field, item, .. } => (
-            field,
-            EditOp::MoveTo {
-                id: Id::from_raw(item.clone()),
-                at: place,
-            },
-            None,
-        ),
         Mutation::SetAdd { field, key } => (
             field,
             EditOp::Insert {
                 value: Json::String(key.clone()),
             },
-            None,
         ),
         Mutation::SetRemove { field, key } => (
             field,
             EditOp::Remove {
                 value: Json::String(key.clone()),
             },
-            None,
         ),
         Mutation::MapPut { field, key, value } => {
-            let mut path = path_to(at, field);
+            let mut path = path_to(prefix, field);
             path.push(Segment::Key(key.clone()));
             let op = EditOp::Set {
                 value: json_of_scalar(value),
             };
-            return Ok((Edit::new(path, op), None));
+            return Ok(Edit::new(path, op));
         }
-        Mutation::MapRemove { field, key } => (field, EditOp::RemoveKey { key: key.clone() }, None),
+        Mutation::MapRemove { field, key } => (field, EditOp::RemoveKey { key: key.clone() }),
+        Mutation::CollInsert { .. } | Mutation::CollRemove { .. } | Mutation::CollMove { .. } => {
+            return Err(invalid("a collection's items are placed, not edited"));
+        }
         Mutation::OutboxPush { .. } => {
             return Err(invalid(
                 "outside effects are not stored in the room record yet",
             ));
         }
     };
-    Ok((Edit::new(path_to(at, field), op), item))
+    Ok(Edit::new(path_to(prefix, field), op))
 }
 
 impl Store for TiloStore {
@@ -2176,7 +2536,7 @@ impl Store for TiloStore {
                 .ok_or_else(|| not_found(format!("resource {}", at.id_string())));
         }
         let mirror = inner.mirror()?;
-        let located = locate_ref(mirror, (&app, &ty), at)?;
+        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested)?;
         Ok(located
             .obj
             .as_ref()
@@ -2201,82 +2561,21 @@ impl Store for TiloStore {
     }
 
     fn apply(&mut self, txn: Txn, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
-        // A position the program counted is named by the item it saw there, so a concurrent
-        // insert, removal or sort elsewhere does not shift where the item lands. An append is the
-        // end, which reads nothing.
-        let place = match m {
-            Mutation::CollInsert {
-                field,
-                index: Some(index),
-                ..
-            } => Some((field, *index, None)),
-            Mutation::CollMove { field, item, index } => Some((field, *index, Some(item))),
-            _ => None,
-        };
-        let place = match place {
-            None => tilo_resource::At::End,
-            Some((field, index, moving)) => {
-                let listing = self.inner.borrow().listed(at, field, None)?;
-                beside(&listing, index, moving.map(String::as_str))
-            }
-        };
         let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
         }
         let (app, ty) = inner.locate(at)?;
-        let (dyn_edit, item, field) = if let Mutation::OutboxPush {
-            capability,
-            payload,
-            key,
-        } = m
-        {
-            let entry = key
-                .as_deref()
-                .map_or_else(|| inner.fresh("o"), sanitize_key);
-            let edit = DynEdit::OutboxPush {
-                id: at.doc.clone(),
-                entry,
-                capability: capability.clone(),
-                payload: payload.clone(),
-                owner: inner.device.clone(),
-            };
-            (edit, None, None)
-        } else {
-            let new_id = inner.fresh("i");
-            let (edit, item) = edit_of(at, m, &new_id, place)?;
-            let edit = DynEdit::Edit {
-                id: at.doc.clone(),
-                edit,
-            };
-            (edit, item, Some(field_of(m)))
-        };
+        let Planned {
+            edit: dyn_edit,
+            item,
+            touched,
+            items,
+            placed,
+        } = inner.plan(at, m)?;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
-        // A collection's items are moved in its listing; any other field is derived again.
-        let moved = match m {
-            Mutation::CollInsert { field, .. } => item.clone().map(|id| (field, id)),
-            Mutation::CollRemove { field, item } | Mutation::CollMove { field, item, .. } => {
-                Some((field, item.clone()))
-            }
-            _ => None,
-        };
-        let items: Vec<(FieldKey, String)> = moved
-            .iter()
-            .map(|(field, id)| (FieldKey::new(at, (*field).clone()), id.clone()))
-            .collect();
-        let mut touched: Vec<FieldKey> = field
-            .iter()
-            .filter(|_| items.is_empty())
-            .map(|field| FieldKey::new(at, field.clone()))
-            .collect();
-        if let Mutation::CollRemove { field, item } = m {
-            // The item is gone: whatever was read of it.
-            touched.push(FieldKey::new(
-                &at.item(field, item, String::new()),
-                ANY_FIELD,
-            ));
-        }
-        let listings = inner.write(&app, dyn_edit.clone(), seed, touched, items)?;
+        let summary = touched.clone();
+        let listings = inner.write(&app, dyn_edit.clone(), seed, touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
             .txns
@@ -2294,10 +2593,12 @@ impl Store for TiloStore {
             record_splices(&mut state.listings, &change.key, change.splices);
         }
         let touched = state.touched.entry(at.doc.clone()).or_default();
-        if let Some(field) = field {
-            touched.insert(FieldKey::new(at, field));
-        }
+        touched.extend(summary);
         Ok(item.map_or(Applied::Done, Applied::Item))
+    }
+
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, FieldId)>, StoreError> {
+        self.inner.borrow().container(at)
     }
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
@@ -2549,7 +2850,13 @@ impl Store for TiloStore {
             outcome: "done".to_owned(),
         };
         let seed = format!("settle:{}:{}", entry.doc, entry.id).into_bytes();
-        inner.write(&app, edit.clone(), seed, Vec::new(), Vec::new())?;
+        inner.write(
+            &app,
+            edit.clone(),
+            seed,
+            Vec::new(),
+            (Vec::new(), Vec::new()),
+        )?;
         let kind =
             lookup(&ty).map_or_else(String::new, |schema| format!("tl.{app}.{}", schema.name));
         inner.enqueue(DynAction {

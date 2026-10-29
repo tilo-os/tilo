@@ -166,7 +166,8 @@ fn two_writers_edits_with_references_merge_in_a_room() {
             tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
         })
         .collect();
-    assert_eq!(referred, [Some(task.clone())]);
+    // The task was named by its older path; it is referred to by its id.
+    assert_eq!(referred, [Some(tilolang_runtime::value::flat_id(&task))]);
 }
 
 #[test]

@@ -147,6 +147,40 @@ payment shows finality.
   loads a checkpoint and the log after it. History is the log; undo is a new action that
   restores the old values if nobody changed them since.
 
+### Items
+
+- **An item is stored by its id.** A document stores its items flat, each under its id, and an
+  item's place is a field of the item, its *placement*: the item holding its collection (or the
+  document), the collection's field, and an order key placed beside its neighbours. A
+  collection is the items placed in it, by order key, ties by id; the index keeps each
+  collection's list, so `for`, `count`, lanes and sorted queries read it as before.
+- **A reference is the id** (`doc/item`). It stays valid when the item moves to another
+  collection, and history follows the one item through its moves. Moves stay within the
+  document, the unit an origin orders.
+- **Concurrent changes merge:**
+  - The placement is one register. Of two concurrent moves of an item, the last in the record's
+    order wins: parent, field and place together, never a mix of both.
+  - A field edit writes the item, not its placement, so an edit made while someone moves the
+    item is kept, wherever the item ends up.
+  - Removing an item writes its placement as removed; everything placed in it goes with it.
+    Nothing is deleted from the record, so undoing the removal brings it back with all it held.
+  - An item moved out of a container before it is removed, or at the same time, is no longer in
+    it and stays where it was moved. An item moved or inserted into a container while it is
+    removed goes with it, as an edit inside it does. A removal and a move of the same item: the
+    last wins.
+  - Concurrent moves can put two items inside each other. In such a cycle the move that is last
+    in the record's order does not take effect, and its item stays where that move took it from
+    (the placement records it). Should that place be in a cycle too, the item is in no
+    collection until someone moves it. A single action that would move an item into itself is
+    refused.
+- **Records written before items were flat** held each item inside the collection it was
+  inserted into. They are read where they are: each nested item by its id, placed in the
+  collection and at the order key it has, until a move or removal writes its placement into its
+  map. Nothing is copied or rewritten, so no edit is lost to the migration and every id stays.
+  An entry that does not read (an id held twice, an entry without an order key) is set aside:
+  left where it is, in no collection. A reference written as a path (`doc/field:item/...`)
+  names the item of its last step.
+
 ## 9. Scale
 
 - A device holds what it opened, pinned or searched, and pages in the rest.
@@ -166,3 +200,7 @@ payment shows finality.
 - Open: the design of the three exceptional states per app; checkpoint cadence; services that
   can't write conditionally (IMAP replaces a draft by uploading a new copy), where either the
   last write wins and the person is told, or both versions are kept.
+- Open: a package changing where its items live. The store maps the older layout to the flat
+  one, but which collection an item belongs in under a new schema is the package's to say: Board
+  keeps each card's column as a field until its existing cards can be placed in their columns'
+  collections by a migration of its own records, which the language does not have yet.

@@ -1689,11 +1689,8 @@ fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, Stri
         && has_default_view(sized.packages, &list.item_ty)
     {
         let target = sized.target(main);
-        let item = ResourceRef::root(root_id(root), root.root_ty.clone()).item(
-            &list.field,
-            &item_id(target),
-            list.item_ty.clone(),
-        );
+        let item = ResourceRef::root(root_id(root), root.root_ty.clone())
+            .item(&item_id(target), list.item_ty.clone());
         let editor = host.open_resource(&item, None).map_err(|e| e.to_string())?;
         // A person types into the item's title where its window edits it (a note), else into
         // the window's first text input (a conversation's draft).
@@ -1799,7 +1796,6 @@ fn peer_change<'a>(
         let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
             vec![
-                Segment::Field(list.field.clone()),
                 Segment::Item(Id::from_raw(item_id(sized.target(room.list.tree())))),
                 Segment::Field(title),
             ],

@@ -271,24 +271,32 @@ impl Host {
     /// The anchor names nothing in this room.
     pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
         use tilolang_runtime::store::Store as _;
-        let doc = anchor.split('/').next().unwrap_or_default();
+        let probe = ResourceRef::parse_id(anchor, String::new())
+            .ok_or_else(|| format!("`{anchor}` is not a resource id"))?;
         let (package, _, _) = self
             .records()
             .into_iter()
-            .find(|(_, _, id)| id == doc)
+            .find(|(_, _, id)| *id == probe.doc)
             .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+        // The items from the record down to the anchor, as they are held now.
+        let mut chain = Vec::new();
+        let mut at = Some(probe);
+        while let Some(item) = at.filter(|at| at.item.is_some()) {
+            at = self
+                .store()
+                .container(&item)
+                .map_err(|error| error.to_string())?
+                .map(|(holder, _)| holder);
+            chain.push(item);
+        }
         let mut target = None;
-        let mut path = doc.to_owned();
-        for part in anchor.split('/').skip(1) {
-            path = format!("{path}/{part}");
-            let probe = ResourceRef::parse_id(&path, String::new())
-                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+        for item in chain.into_iter().rev() {
             let ty = self
                 .store()
-                .type_of(&probe)
+                .type_of(&item)
                 .map_err(|error| error.to_string())?;
             if package.meta.default_view(&ty).is_some() {
-                target = ResourceRef::parse_id(&path, ty);
+                target = Some(ResourceRef { ty, ..item });
             }
         }
         Ok(OpenPlan {
