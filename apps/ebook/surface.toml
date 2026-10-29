@@ -200,3 +200,19 @@ fields = [
   { path = "keep_catalogues", type = "bool" },
 ]
 
+[[resources]]
+kind = "ebook.files"
+label = "Book files"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, Stored>" },
+]
+
+[[resources.verbs]]
+id = "keep"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "kept", required = true, schema = {} },
+]
+
