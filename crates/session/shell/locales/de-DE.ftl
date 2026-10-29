@@ -3195,9 +3195,12 @@ desk-widget-team = Menschen hier
 desk-widget-calendar = Kalender
 desk-widget-system-monitor = Systemmonitor
 desk-widget-open = { $widget } öffnen
-desk-widget-close = { $widget } schließen
 desk-widget-pin = Dieses Widget immer in diesem Arbeitsbereich anzeigen
 desk-widget-unpin = Dieses Widget nicht mehr immer anzeigen
+desk-widget-collapse = { $widget } einklappen
+desk-widget-remove = { $widget } vom Schreibtisch entfernen
+desk-widget-removed = { $widget } vom Schreibtisch entfernt
+desk-widget-undo = Rückgängig
 
 desk-team-title = In diesem Arbeitsbereich
 # Where a person is: their strip, then the window they are on.

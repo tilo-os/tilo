@@ -4,35 +4,44 @@
 //!
 //! A widget is in one of three forms:
 //!
-//! - **Away** while the person types into a window, and whenever it has
-//!   nothing to show. Typing is the one signal of "working in something
-//!   else": a key delivered to the focused window.
-//! - **Glance**: a tiny, static form at its edge. A widget comes back to it
-//!   when the person pauses typing for [`GLANCE_AFTER_PAUSE`], or reaches for
-//!   its edge: the pointer heading there and coming to rest
-//!   ([`ui::widget::EdgeAim`]). Passing over an edge on the way elsewhere is
-//!   transit, and brings nothing.
-//! - **Open**: the full card, only on purpose: resting on the glance form
-//!   for [`OPEN_DWELL`], clicking it, or the Super surface.
+//! - **Away**: hidden, holding nothing (no press lands on it).
+//! - **Glance**: its small resting form, wherever the person put it.
+//! - **Open**: its card, expanded in place from the glance.
 //!
-//! Each widget's [`ShowMode`] narrows this: "only when I ask" never comes
-//! back on a pause, "always show on this strip" stays in its glance form
-//! there even while the person types.
+//! # When a widget expands, and when it goes
 //!
-//! Two rules hold over all of it: a widget never covers the text caret (it
-//! stays away rather than move), and a widget never appears over a pointer
-//! that has settled where it would appear: the person is aiming at
-//! whatever is under it.
+//! One rule, with nothing hidden:
+//!
+//! - **Open only on purpose.** A tap on a glance opens that widget's card in
+//!   place (Enter on it does the same, and so does Super, which opens them
+//!   all). Hovering, resting or reaching never opens anything.
+//! - **Closed only on purpose.** A tap anywhere outside the open card,
+//!   Escape, or its collapse control folds it back to its glance. Nothing
+//!   folds it on a timer.
+//! - **Hidden only by what the person is visibly doing.** Typing into a
+//!   window fades every widget away (an open card the pointer is not on
+//!   folds too); they come back after a pause ([`GLANCE_AFTER_PAUSE`]), or
+//!   at once when the person reaches for one. Another surface over the desk
+//!   (Quick Settings, the overview, search) hides them while it is up. A
+//!   widget that would appear under a pointer resting there waits for it to
+//!   leave, so it never takes a click aimed at what is beneath.
+//! - **Never under the hand.** While the pointer is on a widget, or a press
+//!   on it is held (a tap, a drag, a resize), that widget keeps its form:
+//!   nothing above flips it until the hand leaves or lets go.
+//!
+//! Each widget's [`ShowMode`] narrows when it comes back: "only when I
+//! ask" never comes back on a pause, "always show on this strip" stays in
+//! its glance form there even while the person types.
 //!
 //! [`DeskBoard`] is pure: every method takes the instant it reasons about,
 //! so typing, pauses and pointer paths are tested against a synthetic
 //! timeline. The overlay host feeds it and paints its decisions
-//! (`overlay_host::desk`).
+//! (`overlay_host::desk`); where each widget rests is [`placement`], how
+//! its card reflows with its width [`sizing`].
 
 pub mod calendar;
-/// Where the widgets wait: the edge layout they share with the people
-/// overlay.
-pub use tilo_desktop::desk_edges as layout;
+pub mod placement;
+pub mod sizing;
 pub mod system_monitor;
 pub mod team;
 
@@ -41,9 +50,7 @@ use std::time::{Duration, Instant};
 
 use vello::kurbo::{Point, Rect};
 
-pub use settings_store::desk_widgets::{
-    DeskWidgetPrefs, DockEdge, ShowMode, WidgetId, WidgetPrefs,
-};
+pub use settings_store::desk_widgets::{DeskWidgetPrefs, ShowMode, WidgetId, WidgetPrefs};
 
 /// How long the person must stop typing before widgets come back to their
 /// glance form.
@@ -55,26 +62,17 @@ pub use settings_store::desk_widgets::{
 /// sitting back to read what you wrote brings the widgets.
 pub const GLANCE_AFTER_PAUSE: Duration = Duration::from_secs(3);
 
-/// How long the pointer rests on a glance form before it opens: a
-/// deliberate rest, longer than a pointer crossing the form spends on it.
-pub const OPEN_DWELL: Duration = Duration::from_millis(350);
-
-/// How long a widget brought by reaching for its edge stays once the
-/// pointer has left its reach zone without coming back.
+/// How long a widget brought by reaching for it stays once the pointer has
+/// left its reach zone without coming back.
 pub const REACH_HOLD: Duration = Duration::from_millis(600);
-
-/// How long an open card waits after the pointer leaves it before it folds
-/// back, so a hand that overshoots its edge by a few pixels does not lose it.
-pub const LEAVE_GRACE: Duration = Duration::from_millis(300);
 
 // How a widget comes and goes is the standard ambient motion
 // (`ui::motion::Ambient`): it leaves at once (the person started typing,
 // covered the desk or let go of Super, and something leaving has nothing to
 // say), arrives unasked slowly and opacity only, and arrives asked for
-// (reaching for its edge, Super, a click) quickly.
+// (reaching for it, Super, a tap) quickly.
 
-/// The space kept clear around the text caret, so a widget near it never
-/// sits on the line being typed.
+/// The space kept clear around the text caret by transient readouts.
 pub const CARET_CLEARANCE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -86,7 +84,19 @@ pub enum Form {
 }
 
 /// One widget as laid out this frame, in desktop coordinates.
-pub type Slot = layout::Slot<WidgetId>;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slot {
+    pub id: WidgetId,
+    /// Its resting form.
+    pub glance: Rect,
+    /// Its open card.
+    pub open: Rect,
+    /// Where a pointer reaching for it comes to rest
+    /// ([`placement::reach_zone`]).
+    pub reach: Rect,
+    /// Whether it has anything to show (a player, someone else here).
+    pub has_content: bool,
+}
 
 /// Everything besides the board's own history that decides the forms.
 #[derive(Clone, Copy, Debug)]
@@ -95,8 +105,6 @@ pub struct Context<'a> {
     pub prefs: &'a DeskWidgetPrefs,
     /// The active strip, for [`ShowMode::Always`].
     pub strip: Option<u64>,
-    /// The focused field's caret, in desktop coordinates.
-    pub caret: Option<Rect>,
     /// The whole Super surface is up: every widget with content is open.
     pub super_surface: bool,
     /// The Super surface's quiet first stage (Super held, not yet grown):
@@ -106,6 +114,9 @@ pub struct Context<'a> {
     /// Another surface owns the desk (Quick Settings, the overview, plain
     /// search, a sheet): widgets stay away under it.
     pub covered: bool,
+    /// The widget under the hand: the pointer is on it, or a press on it is
+    /// held. It keeps its form.
+    pub engaged: Option<WidgetId>,
     pub slots: &'a [Slot],
 }
 
@@ -121,9 +132,6 @@ pub struct DeskBoard {
     /// the reach holds without a timer until it moves.
     in_reach: bool,
     opened: Option<WidgetId>,
-    left_open: Option<Instant>,
-    /// The glance form the pointer is resting on, since when.
-    rest: Option<(WidgetId, Instant)>,
     forms: BTreeMap<WidgetId, Form>,
     /// Widgets that would have appeared under a settled pointer and wait
     /// for it to leave.
@@ -158,7 +166,7 @@ impl DeskBoard {
     }
 
     /// A key reached the focused window at `at`. Widgets go away (an open
-    /// card the pointer is not on folds too); reaching for an edge is
+    /// card the pointer is not on folds too); reaching for one is
     /// forgotten.
     pub fn note_typed(&mut self, at: Instant, slots: &[Slot]) {
         if self.last_typed.is_some_and(|last| last >= at) {
@@ -166,7 +174,6 @@ impl DeskBoard {
         }
         self.last_typed = Some(at);
         self.reached = None;
-        self.rest = None;
         let on_open = self.opened.is_some_and(|id| {
             self.pointer.is_some_and(|p| {
                 slots
@@ -176,7 +183,6 @@ impl DeskBoard {
         });
         if !on_open {
             self.opened = None;
-            self.left_open = None;
         }
     }
 
@@ -191,27 +197,6 @@ impl DeskBoard {
         }
         // Staying in reach (or on the form it brought) keeps it.
         self.hold_reach(slots, now);
-        // Resting on a glance form opens it after the dwell.
-        let resting = slots
-            .iter()
-            .find(|slot| self.form(slot.id) == Form::Glance && slot.glance.contains(p))
-            .map(|slot| slot.id);
-        self.rest = match (resting, self.rest) {
-            (Some(id), Some((was, since))) if id == was => Some((id, since)),
-            (Some(id), _) => Some((id, now)),
-            (None, _) => None,
-        };
-        // An open card stays while the pointer is on it or on its glance.
-        if let Some(id) = self.opened
-            && let Some(slot) = slots.iter().find(|slot| slot.id == id)
-        {
-            let on = slot.open.inflate(8.0, 8.0).contains(p) || slot.glance.contains(p);
-            if on {
-                self.left_open = None;
-            } else if self.left_open.is_none() {
-                self.left_open = Some(now);
-            }
-        }
     }
 
     /// Refresh the reach while the pointer stays in the reached widget's
@@ -231,27 +216,20 @@ impl DeskBoard {
         }
     }
 
-    pub fn pointer_left(&mut self, now: Instant) {
+    pub fn pointer_left(&mut self) {
         self.pointer = None;
         self.in_reach = false;
         self.aim.clear();
-        self.rest = None;
-        if self.opened.is_some() && self.left_open.is_none() {
-            self.left_open = Some(now);
-        }
     }
 
-    /// Open `id` on purpose (a click on its glance form, an action).
+    /// Open `id` on purpose (a tap on its glance form, Enter, an action).
     pub fn open(&mut self, id: WidgetId) {
         self.opened = Some(id);
-        self.left_open = None;
-        self.rest = None;
     }
 
     /// Fold whatever is open back to its glance form.
     pub fn close(&mut self) {
         self.opened = None;
-        self.left_open = None;
     }
 
     #[must_use]
@@ -289,24 +267,26 @@ impl DeskBoard {
         {
             self.reached = None;
         }
-        if self
-            .left_open
-            .is_some_and(|at| now.saturating_duration_since(at) >= LEAVE_GRACE)
-        {
-            self.opened = None;
-            self.left_open = None;
-        }
-        if let Some((id, since)) = self.rest
-            && now.saturating_duration_since(since) >= OPEN_DWELL
-            && self.aim.settled(now)
-            && !self.typing(now)
-        {
-            self.open(id);
-        }
         let mut changed = false;
         for slot in ctx.slots {
             let before = self.form(slot.id);
             let mut form = self.decide(slot, ctx);
+            // Under the hand a widget keeps its form, whatever else
+            // changed: it never flips between a press and its release, or
+            // while the pointer is on it. Only a widget that was showing
+            // holds; one that is away holds nothing to keep. Asking for it
+            // (opening, closing, Super, removing it) still goes through.
+            let asked = ctx.super_surface || ctx.super_glance || self.opened == Some(slot.id);
+            let removed = !ctx.prefs.get(slot.id).enabled || !slot.has_content;
+            if ctx.engaged == Some(slot.id)
+                && !removed
+                && before != Form::Away
+                && form != before
+                && !(asked && form == Form::Open)
+                && !(before == Form::Open && self.opened != Some(slot.id) && form == Form::Glance)
+            {
+                form = before;
+            }
             // Never appear under a pointer resting there: it is aiming at
             // what the widget would cover. Reaching for the widget itself
             // is the exception, and the Super surface is asked for.
@@ -359,13 +339,6 @@ impl DeskBoard {
         if self.opened == Some(slot.id) {
             return Form::Open;
         }
-        if ctx.caret.is_some_and(|caret| {
-            caret
-                .inflate(CARET_CLEARANCE, CARET_CLEARANCE)
-                .overlaps(slot.glance)
-        }) {
-            return Form::Away;
-        }
         if self.reached.is_some_and(|(id, _)| id == slot.id) {
             return Form::Glance;
         }
@@ -391,14 +364,12 @@ impl DeskBoard {
             .reached
             .filter(|_| !self.in_reach)
             .and_then(|(_, at)| at.checked_add(REACH_HOLD));
-        let dwell = self.rest.and_then(|(_, at)| at.checked_add(OPEN_DWELL));
-        let leave = self.left_open.and_then(|at| at.checked_add(LEAVE_GRACE));
-        // Settling only matters while something waits on it: a dwell, a
-        // held widget, or a pointer that may be resting in a reach zone.
-        let settle = (self.rest.is_some() || !self.held.is_empty() || self.pointer.is_some())
+        // Settling only matters while something waits on it: a held widget
+        // or a pointer that may be resting in a reach zone.
+        let settle = (!self.held.is_empty() || self.pointer.is_some())
             .then(|| self.aim.deadline(now))
             .flatten();
-        [pause, reach, dwell, leave, settle]
+        [pause, reach, settle]
             .into_iter()
             .flatten()
             .filter(|at| *at > now)
@@ -442,7 +413,7 @@ mod tests {
         board: DeskBoard,
         prefs: DeskWidgetPrefs,
         slots: Vec<Slot>,
-        caret: Option<Rect>,
+        engaged: Option<WidgetId>,
         super_surface: bool,
         super_glance: bool,
         strip: Option<u64>,
@@ -454,7 +425,7 @@ mod tests {
                 board: DeskBoard::default(),
                 prefs: DeskWidgetPrefs::default(),
                 slots: slots(),
-                caret: None,
+                engaged: None,
                 super_surface: false,
                 super_glance: false,
                 strip: Some(1),
@@ -466,10 +437,10 @@ mod tests {
                 now,
                 prefs: &self.prefs,
                 strip: self.strip,
-                caret: self.caret,
                 super_surface: self.super_surface,
                 super_glance: self.super_glance,
                 covered: false,
+                engaged: self.engaged,
                 slots: &self.slots,
             };
             self.board.update(&ctx);
@@ -581,26 +552,31 @@ mod tests {
         );
     }
 
+    /// Resting on a glance, however long, is not a request; a tap is, and
+    /// only a tap (or Escape, or typing away from it) folds it again.
     #[test]
-    fn resting_on_a_glance_opens_it_and_leaving_folds_it() {
+    fn only_a_tap_opens_a_glance_and_nothing_folds_it_on_a_timer() {
         let t0 = Instant::now();
         let mut rig = Rig::new();
         assert_eq!(rig.at(t0).0, Form::Glance);
-        // Into the music pill and still.
         rig.pointer((1300.0, 860.0), t0);
         rig.pointer((1400.0, 868.0), ms(t0, 8));
         rig.pointer((1401.0, 868.0), ms(t0, 40));
         assert_eq!(
-            rig.at(ms(t0, 200)).0,
+            rig.at(ms(t0, 5_000)).0,
             Form::Glance,
-            "a short rest is not a request"
+            "a long rest opens nothing"
         );
-        assert_eq!(rig.at(ms(t0, 8) + OPEN_DWELL).0, Form::Open);
-        // Off the card toward the middle: folds after the grace.
-        let away = ms(t0, 800);
-        rig.pointer((700.0, 300.0), away);
-        assert_eq!(rig.at(away + Duration::from_millis(100)).0, Form::Open);
-        assert_eq!(rig.at(away + LEAVE_GRACE).0, Form::Glance);
+        rig.board.open(WidgetId::Music);
+        assert_eq!(rig.at(ms(t0, 5_010)).0, Form::Open);
+        rig.pointer((700.0, 300.0), ms(t0, 5_100));
+        assert_eq!(
+            rig.at(ms(t0, 60_000)).0,
+            Form::Open,
+            "leaving the card folds nothing: only a tap away does"
+        );
+        rig.board.close();
+        assert_eq!(rig.at(ms(t0, 60_010)).0, Form::Glance);
     }
 
     #[test]
@@ -664,21 +640,29 @@ mod tests {
         );
     }
 
+    /// Under the hand a widget never flips: typing while the pointer is on
+    /// a glance keeps it, and it goes once the hand leaves.
     #[test]
-    fn a_widget_stays_away_rather_than_cover_the_caret() {
+    fn a_widget_under_the_hand_keeps_its_form() {
         let t0 = Instant::now();
         let mut rig = Rig::new();
-        // A field near the bottom-right corner, caret right under the pill.
-        rig.caret = Some(Rect::new(1400.0, 840.0, 1402.0, 858.0));
-        assert_eq!(rig.at(t0), (Form::Away, Form::Glance));
-        rig.prefs.music.show = ShowMode::Always;
+        assert_eq!(rig.at(t0), (Form::Glance, Form::Glance));
+        rig.engaged = Some(WidgetId::Music);
+        rig.typed(ms(t0, 10));
         assert_eq!(
-            rig.at(ms(t0, 10)).0,
-            Form::Away,
-            "not even when always shown"
+            rig.at(ms(t0, 10)),
+            (Form::Glance, Form::Away),
+            "the one under the hand stays; the rest fade"
         );
-        rig.caret = Some(Rect::new(400.0, 300.0, 402.0, 318.0));
-        assert_eq!(rig.at(ms(t0, 20)).0, Form::Glance);
+        rig.board.open(WidgetId::Music);
+        assert_eq!(rig.at(ms(t0, 20)).0, Form::Open, "a tap still opens it");
+        rig.engaged = None;
+        rig.typed(ms(t0, 30));
+        assert_eq!(
+            rig.at(ms(t0, 30)).0,
+            Form::Away,
+            "hand gone: typing hides it"
+        );
     }
 
     #[test]

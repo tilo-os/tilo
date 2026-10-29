@@ -56,6 +56,7 @@ use ui::TextRole;
 
 mod controller;
 mod desk;
+mod desk_paint;
 mod desktop_control_chips;
 mod fullscreen_hint;
 pub use desk::SuperSurface;

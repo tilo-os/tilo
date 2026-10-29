@@ -673,6 +673,11 @@ pub struct ChromeState {
     pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// A close window's Undo toast, mapped to the remembered close it restores.
     group_undo_toasts: BTreeMap<u64, u64>,
+    /// A removed desk widget's Undo toast, mapped to the widget it brings
+    /// back, and the widgets an Undo asked back that the desk has yet to
+    /// restore.
+    desk_undo_toasts: BTreeMap<u64, settings_store::desk_widgets::WidgetId>,
+    desk_restores: Vec<settings_store::desk_widgets::WidgetId>,
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
@@ -874,6 +879,8 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             group_undo_toasts: BTreeMap::new(),
+            desk_undo_toasts: BTreeMap::new(),
+            desk_restores: Vec::new(),
             memory_reopen_toasts: BTreeMap::new(),
             refused_agent_admissions: Vec::new(),
             device_asking_toasts: BTreeMap::new(),
@@ -3167,7 +3174,9 @@ impl ChromeState {
     /// Every path that removes a toast (and the DND-suppression path)
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
-        if self.group_undo_toasts.remove(&n.id).is_some() {
+        if self.group_undo_toasts.remove(&n.id).is_some()
+            || self.desk_undo_toasts.remove(&n.id).is_some()
+        {
             return;
         }
         self.device_asking_toasts.remove(&n.id);
@@ -3251,6 +3260,11 @@ impl ChromeState {
             if let Some(entry) = self.closed_tabs.take(serial) {
                 self.restore_closed_tab(entry);
             }
+            self.bump();
+            return true;
+        }
+        if let Some(widget) = self.desk_undo_toasts.remove(&id) {
+            self.desk_restores.push(widget);
             self.bump();
             return true;
         }
@@ -4215,6 +4229,9 @@ pub use window_requests::{WindowOutcome, WindowRequest};
 
 #[path = "chrome_state_remote_continuity.rs"]
 mod remote_continuity;
+
+#[path = "chrome_state_desk_undo.rs"]
+mod desk_undo;
 
 #[cfg(test)]
 mod panel_exclusion_tests {

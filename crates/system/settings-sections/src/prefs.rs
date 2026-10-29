@@ -601,9 +601,9 @@ pub struct PowerPrefs {
 }
 
 /// The person's desk widgets: which they keep, when each shows itself and
-/// at which edge. The compositor reads the same leaves
-/// ([`settings_store::desk_widgets`]), and the desk writes a pin or a
-/// widget dragged to another edge back here.
+/// where each rests. The compositor reads the same leaves
+/// ([`settings_store::desk_widgets`]), and the desk writes back a pin,
+/// where a widget was dropped, its card's width and its removal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(defaults)]
 pub struct DeskWidgetsPrefs {

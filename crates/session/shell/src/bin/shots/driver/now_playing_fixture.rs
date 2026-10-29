@@ -21,6 +21,7 @@ pub(super) fn shots_player() -> shell::shell::now_playing::PlayerSnapshot {
     PlayerSnapshot {
         bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
         identity: "Spotify".to_string(),
+        app: Some("spotify".to_string()),
         status: PlaybackStatus::Playing,
         title: Some("Teardrop".to_string()),
         artist: Some("Massive Attack".to_string()),
