@@ -170,8 +170,8 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Allow-list entries nothing showed for any more.
     pub stale: Vec<String>,
-    /// Views no layout showed a node of (`app › view`): no scenario reaches them, or the
-    /// toolkit draws them without widgets of their own (a list's rows).
+    /// Views no layout showed a node of (`app › view`), a list's rows included: no scenario
+    /// reaches them.
     pub unreached: Vec<String>,
     /// Layouts run, over every scenario of every app.
     pub layouts: usize,
@@ -350,6 +350,10 @@ impl AppCheck<'_> {
                 eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
             }
             self.note_shown(&inspection.root);
+            let rows = staged.rows();
+            for row in rows.values() {
+                self.note_shown_row(row);
+            }
             let mut problems = audit::inspect(
                 &inspection.root,
                 viewport,
@@ -360,7 +364,17 @@ impl AppCheck<'_> {
                 &mut self.text,
                 viewport,
             ));
-            for problem in problems {
+            for mut problem in problems {
+                // A list draws a row as one widget keyed by the row: what it is about is the
+                // row view's node, the deepest the row's tree holds.
+                if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
+                    let mut inner = Vec::new();
+                    row_keys(row, &mut inner);
+                    inner.reverse();
+                    inner.append(&mut problem.keys);
+                    problem.keys = inner;
+                    problem.id = None;
+                }
                 self.gather(&problem, layout, label);
             }
         }
@@ -379,6 +393,18 @@ impl AppCheck<'_> {
         }
         for child in &node.children {
             self.note_shown(child);
+        }
+    }
+
+    /// Remember the views a row's tree is of.
+    fn note_shown_row(&mut self, node: &tilo_ui_host::UiNode) {
+        if let Some(origin) = self.sources.origin(&node.key)
+            && origin.app == self.meta.app
+        {
+            self.shown.insert(origin.view);
+        }
+        for child in &node.children {
+            self.note_shown_row(child);
         }
     }
 
@@ -428,6 +454,17 @@ impl AppCheck<'_> {
     }
 }
 
+/// The keys of a row's tree, outermost first, leaving out its slots (a menu, a swipe).
+fn row_keys(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    if node.kind == "slot" {
+        return;
+    }
+    out.push(node.key.clone());
+    for child in &node.children {
+        row_keys(child, out);
+    }
+}
+
 /// The report as people read it: one line per finding, at its place in the source.
 #[must_use]
 pub fn render(report: &Report) -> String {
@@ -462,8 +499,7 @@ pub fn render(report: &Report) -> String {
     if !report.unreached.is_empty() {
         let _ = writeln!(
             out,
-            "note: no layout showed {}: no scenario reaches them, or their nodes are drawn by \
-             a widget that keeps no children (a list's rows)",
+            "note: no layout showed {}: no scenario reaches them",
             report.unreached.join(", ")
         );
     }
