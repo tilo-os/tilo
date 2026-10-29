@@ -1,8 +1,8 @@
 //! The commands the bar, the menus and the palette run: sheets and tabs, document settings, the command palette, row and column verbs, navigation, and the effects an answer comes back as.
 
 use super::{
-    CellFormat, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind,
-    SettingsPanel, SheetsApp, Workbook, a1_to_addr, actions, date_label, time_label, verbs,
+    CellFormat, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind, SettingsPanel, SheetsApp,
+    Workbook, a1_to_addr, actions, date_label, time_label, verbs,
 };
 
 impl SheetsApp {

@@ -1795,7 +1795,10 @@ fn formula_bar_shows_the_cells_composition() {
 fn commands_open_the_hosts_search_and_go_to_cells() {
     let (mut app, _doc) = seeded_app();
     app.open_command_palette();
-    assert_eq!(asked_search(&mut app), ui::search::SearchRequest::this_app());
+    assert_eq!(
+        asked_search(&mut app),
+        ui::search::SearchRequest::this_app()
+    );
 
     assert_ne!(app.grid.active(), (1, 11));
     let resources = app.published();
@@ -1804,8 +1807,7 @@ fn commands_open_the_hosts_search_and_go_to_cells() {
         .find(|flat| flat.action.id == "go-to-cell")
         .expect("the workbook publishes Go to cell")
         .resource_id
-        .0
-        .clone();
+        .0;
     let spec =
         tilo_actions::door::spec_of(&resources, &resource, "go-to-cell").expect("it resolves");
     assert_eq!(spec.kind, tilo_actions::OperationKind::View);

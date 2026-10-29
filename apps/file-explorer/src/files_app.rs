@@ -9890,7 +9890,7 @@ impl FilesState {
                 .with_children(children);
         }
 
-        let root = AccessNode::new(Role::Group)
+        AccessNode::new(Role::Group)
             .with_name(t("files-a11y-activity"))
             .with_description(t_args(
                 "files-a11y-current-folder",
@@ -9902,8 +9902,7 @@ impl FilesState {
             } else {
                 Politeness::Polite
             })
-            .with_state(AccessState::new().busy(self.is_loading));
-        root
+            .with_state(AccessState::new().busy(self.is_loading))
     }
 
     fn perform_window_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {

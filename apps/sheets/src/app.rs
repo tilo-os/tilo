@@ -984,8 +984,7 @@ impl Widget for SheetsApp {
     /// control. An open settings sheet or name-box edit leaves Tab to the
     /// host's focus order.
     fn wants_tab_input(&self) -> bool {
-        self.settings_panel == SettingsPanel::None
-            && self.name_box_edit.is_none()
+        self.settings_panel == SettingsPanel::None && self.name_box_edit.is_none()
     }
 
     /// A cell being edited takes input-method composition.

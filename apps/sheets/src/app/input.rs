@@ -1,9 +1,9 @@
 //! What a press, a wheel or a key does: the targets the last paint recorded, the cell menu and its rows, the annotation cards, the palette and chrome clicks, and the clipboard chords a keyboard sends.
 
 use super::{
-    Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, ContextMenu, Edits,
-    ElementState, Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, PaletteRouteCtx,
-    Point, Rect, Row, SettingsPanel, SheetsApp, Widget, WindowEvent, Workbook, span, verbs,
+    Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, ContextMenu, Edits, ElementState,
+    Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, PaletteRouteCtx, Point, Rect, Row,
+    SettingsPanel, SheetsApp, Widget, WindowEvent, Workbook, span, verbs,
 };
 
 impl SheetsApp {
@@ -177,7 +177,7 @@ impl SheetsApp {
         };
         self.search.open(
             ui::search::SearchRequest::asking(
-                ui::search::ScopeDecl::new(flat.resource_id.0.clone(), flat.resource_label.clone()),
+                ui::search::ScopeDecl::new(flat.resource_id.0.clone(), flat.resource_label),
                 action,
             )
             .with_query(prefill),
