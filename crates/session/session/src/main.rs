@@ -1,16 +1,20 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none] [-- command
-//! args...]`. Listens on a fresh `wayland-N` socket, prints its name and
-//! starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
-//! session lasts as long as it does. The desktop services serve on the
-//! buses the environment names unless a flag names another (or none).
+//! [--host-desktop] [--session-bus ADDRESS|none] [--system-bus
+//! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
+//! socket, prints its name and starts `command` with `WAYLAND_DISPLAY` set
+//! to it; with a command, the session lasts as long as it does. The desktop
+//! services serve on the buses the environment names unless a flag names
+//! another (or none).
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use tilo_compositor::{DisplayConfig, OutputConfig};
+    use tilo_quick_settings::device::PlayerLink;
     use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-    use tilo_session::{Options, Session, SessionConfig, SessionEnvironment};
+    use tilo_session::{
+        DeviceHost, Options, QuickSettings, Session, SessionConfig, SessionEnvironment,
+    };
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -55,6 +59,16 @@ fn main() -> std::process::ExitCode {
         config: SessionConfig::load(),
         services,
         search: search_options(),
+        setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
+        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
+            let device = DeviceHost::os(wake);
+            match PlayerLink::helper() {
+                Ok(players) => device.follow_players(players),
+                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
+            }
+            device
+        }))),
+        session_actions: os_actions::perform_session_action,
         ..Options::default()
     };
     let started = match backend {
@@ -226,6 +240,34 @@ fn search_options() -> tilo_session::SearchOptions {
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
     }
+
+/// The setup this device needs before its desktop is used: the first use
+/// when it has no identity yet, the recovery of its identity when startup
+/// found it unusable; `None` when the identity is ready.
+#[cfg(target_os = "linux")]
+fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
+    use tilo_onboarding_host::identity_provisioning::{
+        DiskIdentityStore, IDENTITY_RECOVERY_ENV, needs_first_run_flow,
+    };
+    use tilo_session::OnboardingView;
+    let store = match DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("tilo-session: no identity store: {error}");
+            return None;
+        }
+    };
+    let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
+    if !recovery && !needs_first_run_flow(&store) {
+        return None;
+    }
+    let identity_dir = store.path().parent()?.to_path_buf();
+    Some(match (host_desktop, recovery) {
+        (false, false) => OnboardingView::new(identity_dir),
+        (false, true) => OnboardingView::new_for_recovery(identity_dir),
+        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
+        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
+    })
 }
 
 #[cfg(not(target_os = "linux"))]

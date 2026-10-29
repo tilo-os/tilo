@@ -23,10 +23,18 @@ use std::time::Duration;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND};
+use tilo_onboarding::OnboardingEffect;
 use tilo_quick_settings::QsEffect;
 use tilo_quick_settings::QuickSettingsState;
+use tilo_quick_settings::device::Device;
+use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
-use tilo_session::{Options, Session};
+use tilo_quick_settings::scenarios;
+use tilo_session::{DeviceHost, Options, QuickSettings, Session};
+use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
+use tilo_sheets::portal::{Body, Dialog, PortalEffect};
+use tilo_sheets::power::PowerEffect;
+use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
 use tilo_surface_host::Published;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -347,7 +355,9 @@ fn session_with_quick_settings() -> (Session, Rc<FixtureHost>) {
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>),
+            quick_settings: Some(QuickSettings::Lent(
+                Rc::clone(&host) as Rc<dyn tilo_session::PanelHost>
+            )),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -703,6 +713,320 @@ fn touchpad_gestures_the_desktop_takes_switch_workspaces_and_open_the_overview()
         before,
         "a pinch in opened the overview"
     );
+}
+
+/// The resource publishing `action` among everything the session
+/// publishes.
+fn publisher(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.actions.iter().any(|offered| offered.id == action) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
+/// The resource publishing `action`, once the action is available.
+fn offering(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            let offered = resource.actions.iter().any(|offered| {
+                offered.id == action
+                    && offered.contract.availability == tilo_actions::Availability::Available
+            });
+            if offered {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
+fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        other => panic!("not an object: {other}"),
+    }
+}
+
+#[test]
+fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
+    let _settled = ui::motion::testing::settled();
+    let host = std::rc::Rc::new(FixtureHost::new(scenarios::readings(Some("controls"))));
+    let lent: std::rc::Rc<dyn tilo_session::PanelHost> = host.clone();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Lent(lent)),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    let closed = session.compositor().screenshot("HEADLESS-1").unwrap();
+
+    // Its actions are there whether or not the panel is open: an agent sets
+    // the volume without opening anything.
+    let volume = QsEffect::SET_VOLUME.id;
+    let panel = publisher(&session, volume).expect("quick settings publishes its volume");
+    session
+        .invoke(
+            &panel,
+            volume,
+            &arguments(serde_json::json!({ "level": 0.25 })),
+        )
+        .expect("set the volume");
+    assert_eq!(host.ran(), [QsEffect::SetVolume { level: 0.25 }]);
+
+    invoke(&mut session, CHROME_RESOURCE, "toggle-quick-settings");
+    assert!(session.quick_settings_open());
+    session.step(Duration::from_millis(1)).unwrap();
+    let open = session.compositor().screenshot("HEADLESS-1").unwrap();
+    assert_ne!(open.rgba, closed.rgba, "the panel shows under the bar");
+}
+
+#[test]
+fn quick_settings_reads_the_device_and_its_power_menu_opens_the_sheet() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let reads = machine.clone();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The device's readings land on the session's loop: the panel then
+    // offers turning Bluetooth off, which the machine has.
+    let bluetooth = QsEffect::SET_BLUETOOTH.id;
+    pump(&mut session, &mut [], |session, _| {
+        offering(session, bluetooth).is_some()
+    });
+    let panel = offering(&session, bluetooth).unwrap();
+    session
+        .invoke(
+            &panel,
+            bluetooth,
+            &arguments(serde_json::json!({ "on": false })),
+        )
+        .expect("turn Bluetooth off");
+    pump(&mut session, &mut [], |_, _| {
+        machine.calls().contains(&"bluetooth:false".to_owned())
+    });
+
+    // What only the desktop does comes back to the session: the power menu.
+    let menu = QsEffect::POWER_MENU.id;
+    session
+        .invoke(&panel, menu, &serde_json::Map::new())
+        .expect("power menu");
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .power_menu()
+            .is_some_and(|seat| seat.presentation().is_open())
+    });
+}
+
+#[test]
+fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            setup: Some(tilo_session::OnboardingView::new_tour()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(session.setup_up());
+    assert!(
+        publisher(&session, "toggle-overview").is_none(),
+        "setup withholds the desktop's actions"
+    );
+    assert!(
+        session
+            .invoke(CHROME_RESOURCE, "toggle-overview", &serde_json::Map::new())
+            .is_err(),
+        "and refuses them"
+    );
+    assert!(
+        !session.accessible_labels().is_empty(),
+        "setup names what it shows"
+    );
+
+    let skip = OnboardingEffect::SKIP.id;
+    let setup = publisher(&session, skip).expect("setup publishes its steps");
+    session
+        .invoke(&setup, skip, &serde_json::Map::new())
+        .expect("skip the tour");
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(!session.setup_up(), "skipping the tour finishes setup");
+    assert!(
+        publisher(&session, "toggle-overview").is_some(),
+        "the desktop's actions are back"
+    );
+    assert!(publisher(&session, skip).is_none());
+}
+
+#[test]
+fn the_power_menu_is_a_sheet_whose_lock_locks_the_screen() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let lock = PowerEffect::LOCK.id;
+    assert!(
+        publisher(&session, lock).is_none(),
+        "a sheet that is down offers nothing"
+    );
+    session
+        .power_menu()
+        .expect("power menu")
+        .presentation()
+        .open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let menu = publisher(&session, lock).expect("the open menu publishes its choices");
+    session
+        .invoke(&menu, lock, &serde_json::Map::new())
+        .expect("lock");
+    assert!(session.compositor().locked(), "the screen is locked");
+}
+
+#[test]
+fn workspace_settings_renames_the_workspace_through_its_action() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    let seat = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .clone();
+    seat.presentation().open(false);
+    session.step(Duration::from_millis(1)).unwrap();
+    let rename = WorkspaceSettingsEffect::RENAME.id;
+    let sheet = publisher(&session, rename).expect("the open sheet publishes renaming");
+    session
+        .invoke(
+            &sheet,
+            rename,
+            &arguments(serde_json::json!({ "name": "Garden" })),
+        )
+        .expect("rename");
+    session.step(Duration::from_millis(1)).unwrap();
+    let name = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.name.clone())
+    });
+    assert_eq!(name.as_deref(), Some("Garden"));
+}
+
+#[test]
+fn a_portal_question_is_answered_through_the_sheets_actions() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    let seat = session.portal().expect("portal sheet").clone();
+    seat.presentation().open(false);
+    seat.show(Some(Dialog {
+        handle: "request-1".to_owned(),
+        title: "Share your screen?".to_owned(),
+        heading: "Meet".to_owned(),
+        detail: "Meet asks to record your screen".to_owned(),
+        body: Body::Choices(vec!["Whole screen".to_owned(), "One window".to_owned()]),
+        confirm_label: "Allow".to_owned(),
+        cancel_label: "Cancel".to_owned(),
+        ..Dialog::default()
+    }));
+    session.step(Duration::from_millis(1)).unwrap();
+    let select = PortalEffect::SELECT.id;
+    let sheet = publisher(&session, select).expect("the question publishes its answers");
+    session
+        .invoke(
+            &sheet,
+            select,
+            &arguments(serde_json::json!({ "index": 1 })),
+        )
+        .expect("select");
+    session
+        .invoke(&sheet, PortalEffect::CONFIRM.id, &serde_json::Map::new())
+        .expect("confirm");
+    let asked = seat.take_asked();
+    assert!(
+        asked.contains(&PortalEffect::Select { index: 1 }),
+        "the service reads what was chosen: {asked:?}"
+    );
+}
+
+#[test]
+fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("beach.png"), b"bytes").unwrap();
+    let mut session = session();
+    let seat = session.file_picker().expect("file chooser").clone();
+    seat.presentation().open(true);
+    seat.ask(Some(FileRequest {
+        handle: "request-1".to_owned(),
+        title: "Choose a picture".to_owned(),
+        mode: FileMode::Open,
+        initial_dir: home.path().to_path_buf(),
+        roots: vec![home.path().to_path_buf()],
+        ..FileRequest::default()
+    }));
+    pump(&mut session, &mut [], |_, _| {
+        seat.listing()
+            .entries
+            .iter()
+            .any(|entry| entry.name == "beach.png")
+    });
+    let beach = home.path().join("beach.png");
+    let select = FilePickerEffect::SELECT.id;
+    let sheet = publisher(&session, select).expect("the chooser publishes choosing");
+    session
+        .invoke(
+            &sheet,
+            select,
+            &arguments(serde_json::json!({ "path": beach.to_string_lossy() })),
+        )
+        .expect("select");
+    pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
+    session
+        .invoke(
+            &sheet,
+            FilePickerEffect::CONFIRM.id,
+            &serde_json::Map::new(),
+        )
+        .expect("confirm");
+    let mut answer = None;
+    pump(&mut session, &mut [], |_, _| {
+        answer = answer.take().or_else(|| seat.take_answer());
+        answer.is_some()
+    });
+    assert_eq!(answer, Some(FileAnswer::Chosen(vec![beach])));
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {

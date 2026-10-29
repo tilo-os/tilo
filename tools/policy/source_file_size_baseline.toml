@@ -119,7 +119,7 @@
 "crates/session/shell/src/compositor/native.rs" = 21500
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10500
-"crates/session/shell/src/onboarding_view.rs" = 7500
+"crates/session/onboarding-host/src/view.rs" = 7000
 "crates/session/shell/src/shell/chrome_state.rs" = 4500
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000

@@ -368,6 +368,34 @@ pub enum QsEffect {
     /// Show the power menu: sleep, restart, shut down.
     #[effect(own_device, audience = "people")]
     PowerMenu,
+    /// Play or pause what plays.
+    #[effect(own_device, keywords = "music, media, resume, pause music")]
+    PlayPause,
+    /// Go back to the previous track.
+    #[effect(own_device, keywords = "music, media, back, rewind")]
+    PreviousTrack,
+    /// Skip to the next track.
+    #[effect(own_device, keywords = "music, media, skip")]
+    NextTrack,
+    /// Go to a point in what plays.
+    #[effect(own_device, idempotent)]
+    Seek {
+        #[param("How far into the song, from 0 to 1")]
+        fraction: f64,
+    },
+    /// Steer another of the running players.
+    #[effect(own_device, idempotent)]
+    ChoosePlayer {
+        #[param("The player, as the now-playing card lists it")]
+        player: String,
+    },
+    /// Play the sound somewhere else: this computer, one of the person's
+    /// devices or speaker groups.
+    #[effect(own_device, keywords = "cast, speaker, airplay, output")]
+    ChooseOutput {
+        #[param("The destination, as the now-playing card lists it")]
+        output: String,
+    },
 }
 
 /// What callers are told when the device lacks the control an effect
@@ -375,6 +403,8 @@ pub enum QsEffect {
 const LACKS_CONTROL: &str = "quick_settings_unavailable";
 /// What callers are told while a radio change is under way.
 const RADIO_PENDING: &str = "quick_settings_radio_pending";
+/// What callers are told while nothing plays that offers the control.
+const NOTHING_PLAYS: &str = "quick_settings_nothing_plays";
 
 /// The effects as callers see them now, from the device's readings: one
 /// whose control the device lacks, by the desktop's probe and by what it
@@ -395,7 +425,35 @@ pub(crate) fn statuses(state: &crate::QuickSettingsState) -> Vec<EffectStatus> {
     };
     let mut statuses = radio_statuses(can, state.radio_change_pending);
     statuses.extend(level_statuses(can));
+    statuses.extend(media_statuses(state.now_playing.as_ref()));
     statuses
+}
+
+/// What plays: each control is there while the player in front offers it.
+fn media_statuses(playing: Option<&crate::NowPlaying>) -> Vec<EffectStatus> {
+    let idle = || (NOTHING_PLAYS, t("qs-nothing-plays"));
+    let offered = |present: bool| (!present).then(idle);
+    let np = playing.cloned().unwrap_or_default();
+    let some = playing.is_some();
+    [
+        shown(QsEffect::PLAY_PAUSE, None, offered(some && np.can_toggle)),
+        shown(
+            QsEffect::PREVIOUS_TRACK,
+            None,
+            offered(some && np.can_previous),
+        ),
+        shown(QsEffect::NEXT_TRACK, None, offered(some && np.can_next)),
+        shown(QsEffect::SEEK, None, offered(some && np.seekable())),
+        shown(QsEffect::CHOOSE_PLAYER, None, offered(np.players.len() > 1)),
+        shown(
+            QsEffect::CHOOSE_OUTPUT,
+            None,
+            offered(!np.outputs.is_empty()),
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Why an effect cannot be used, when the device lacks its control.

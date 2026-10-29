@@ -126,3 +126,25 @@ display-remote-offline-excluded = Offline, not in the layout
 display-remote-switched-off = Switched off on its device
 display-remote-in-layout = In layout
 display-remote-out-of-layout = Not in layout
+
+## The system sheets the shell asks with on an app's or a service's behalf
+portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.
+portal-back = Back
+portal-continue = Continue
+portal-shortcut-not-set = Not set
+portal-usb-row-read-write = Read and write
+portal-usb-row-read-only = Read only
+portal-a11y-name = Name
+portal-no-such-field = The question has no such field to type into.
+portal-secret-incomplete = Fill in what the question asks first.
+portal-a11y-answer = Answer
+
+## File chooser
+
+file-chooser-nothing-asked = The file chooser is not asking anything.
+file-chooser-answered = The file chooser has already answered.
+file-chooser-not-listed = That is not in the file chooser's list.
+file-chooser-not-a-folder = That is a file, not a folder.
+file-chooser-outside = That is outside the folders the file chooser may open.
+file-chooser-changed = The file chooser changed. Look at it again.
+file-chooser-unavailable = The file chooser can't do that now.

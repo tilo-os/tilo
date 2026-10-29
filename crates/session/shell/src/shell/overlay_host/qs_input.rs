@@ -220,7 +220,10 @@ impl ShellOverlayHost {
                                 focused.as_deref(),
                                 &display.connector,
                             );
-                            (display.connector.clone(), named.then(|| display.name.clone()))
+                            (
+                                display.connector.clone(),
+                                named.then(|| display.name.clone()),
+                            )
                         })
                 });
                 let result = target.map_or_else(

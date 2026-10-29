@@ -39,6 +39,8 @@ tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
 tilo-bluetooth-agent = { path = "../bluetooth-agent" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
+tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-sheets = { path = "../sheets" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 os-actions = { path = "../../system/os-actions" }
 serde.workspace = true
@@ -55,6 +57,8 @@ url.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
+tilo-onboarding = { path = "../onboarding" }
+tilo-quick-settings = { path = "../quick-settings", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client"] }

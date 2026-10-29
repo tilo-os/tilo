@@ -15673,6 +15673,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-documents",
+ "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
@@ -15699,6 +15700,7 @@ dependencies = [
  "tilo-notification-banners",
  "tilo-ntfs-mount",
  "tilo-onboarding",
+ "tilo-onboarding-host",
  "tilo-output-passes",
  "tilo-overview",
  "tilo-owner-commit",
@@ -17748,6 +17750,10 @@ dependencies = [
 name = "tilo-audio-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "futures-util",
+ "image",
  "libc",
  "serde",
  "serde_json",
@@ -17757,8 +17763,10 @@ dependencies = [
  "tilo-resource",
  "tilo-service",
  "tilo-test-env",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "workspace-hack",
  "zbus",
 ]
@@ -18773,6 +18781,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-durable-writer"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "tilo-test-env",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -19991,7 +20009,6 @@ dependencies = [
 name = "tilo-notification-banners"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-vello",
@@ -20147,6 +20164,58 @@ name = "tilo-onboarding"
 version = "0.1.0"
 dependencies = [
  "tilo-app",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-onboarding-host"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "browser-continuity",
+ "collab-types",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "launcher",
+ "libc",
+ "os-actions",
+ "postcard",
+ "rand_core 0.10.0",
+ "rcgen",
+ "runtime-identity",
+ "rustix 1.1.4",
+ "rustls",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "sha2 0.11.0",
+ "taffy",
+ "tempfile",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-desktop",
+ "tilo-durable-writer",
+ "tilo-files",
+ "tilo-handoff",
+ "tilo-identity-ceremony",
+ "tilo-identity-host",
+ "tilo-onboarding",
+ "tilo-paths",
+ "tilo-relay-protocol",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]
@@ -20510,14 +20579,16 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "os-actions",
  "parking_lot",
  "serde",
  "settings-store",
  "tilo-app",
+ "tilo-audio-service",
  "tilo-media",
  "tilo-power-mgmt",
+ "tilo-quick-settings",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]
@@ -21391,8 +21462,12 @@ dependencies = [
 name = "tilo-sheets"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "tempfile",
  "tilo-app",
+ "tilo-test-env",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -21555,6 +21630,7 @@ name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "serde_json",
  "tempfile",
  "tilo-automerge",
@@ -21599,7 +21675,6 @@ dependencies = [
 name = "tilo-topbar"
 version = "0.1.0"
 dependencies = [
- "durable-store",
  "tilo-app",
  "tilo-desktop",
  "tilo-desktop-model",

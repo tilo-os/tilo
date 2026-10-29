@@ -36,8 +36,8 @@ use ui::widget::{
     TaffyTreeExt as _, TileContent, TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use wheel::{sideways, vertical};
 use ui::{TextRenderer, Theme};
+use wheel::{sideways, vertical};
 
 use crate::navigation::{
     self, ActivityView, Admitted, Application, Command, DesktopPan, HistoryDirection, HistoryState,

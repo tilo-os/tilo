@@ -1643,59 +1643,19 @@ search-continuity-call-consent-subtitle = Diese Freigabe zur Anrufübergabe bean
 # Identitätseinrichtung: Fortschrittsanzeige
 
 # Identitätseinrichtung: Fortsetzen nach einem Neustart
-onboarding-progress-unreadable = Die gespeicherte Einrichtungsposition konnte nicht gelesen werden ({ $error }). Deine Identität ist sicher; die Einrichtung wurde beim Abschlussschritt fortgesetzt.
-onboarding-progress-invalid-identity = Die Einrichtung hat unvollständigen Fortschritt gefunden, konnte die vorhandene Identität aber nicht prüfen: { $error }
-onboarding-progress-save-failed = Die Einrichtung konnte ihre Neustartposition nicht speichern: { $error }. Es wurde keine Identitätsaktion wiederholt.
-onboarding-progress-clear-failed = Die Einrichtung ist abgeschlossen, aber ihre Neustartmarkierung konnte nicht entfernt werden: { $error }. Wähle erneut „Fertigstellen“, damit dieser Bildschirm bei der nächsten Anmeldung nicht wieder erscheint.
 
 # Identitätseinrichtung: gemeinsame Schaltflächen
-onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
-onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
-onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
-onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
-onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
 
 # Identitätseinrichtung: vorhandene Identität verbinden
-onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht geprüft werden. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Bis dahin bleibt deine Identität, wie sie ist.
-onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
-onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
 
-# Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
-onboarding-nearby-ended = Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
-onboarding-nearby-unknown = Wähle „Erneut versuchen“.
-onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Zugriff verweigert: Dieser Computer durfte die Kopplung nicht speichern
-onboarding-nearby-permission = Die Geräteidentität dieses Computers konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald das behoben ist.
-onboarding-nearby-storage-full-title = Der Speicher dieses Computers ist voll
-onboarding-nearby-storage-full = Die Kopplung konnte nicht gespeichert werden. Gib etwas Speicherplatz frei und wähle dann „Erneut versuchen“.
-onboarding-nearby-read-only-title = Der Speicher dieses Computers ist schreibgeschützt
-onboarding-nearby-read-only = Die Kopplung konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald der Speicher beschreibbar ist.
-onboarding-nearby-unreachable-title = Dein anderes Gerät war nicht erreichbar
-onboarding-nearby-unreachable = Prüfe, ob beide Geräte im selben Netzwerk sind, und wähle dann „Erneut versuchen“.
-onboarding-nearby-timed-out-title = Kein vertrauenswürdiges Gerät hat diesen Computer rechtzeitig freigegeben
-onboarding-nearby-timed-out = Wähle „Erneut versuchen“ und gib ihn dann auf deinem anderen Gerät frei.
-onboarding-nearby-invalid-identity-title = Dein anderes Gerät hat eine ungültige Identität geliefert
-onboarding-nearby-invalid-identity = Wähle „Erneut versuchen“.
-onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der Nähe konnte nicht starten
-onboarding-nearby-not-started = Wähle „Erneut versuchen“.
-onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
-onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
-onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
-onboarding-passphrase-too-short = Verwende mindestens 12 Zeichen. Mach sie lang und einzigartig; Länge allein macht eine gängige Passphrase nicht sicher.
-onboarding-passphrase-mismatch = Die beiden Passphrasen stimmen nicht überein.
-onboarding-passphrase-unavailable = Die Passphrasefelder sind vorübergehend nicht verfügbar.
 
 # Identitätseinrichtung: Beispielzustände für die Vorschau
-onboarding-snapshot-restore-error = Diese Sicherung konnte nicht geöffnet werden. Prüfe Datei und Passphrase und versuche es dann erneut.
-onboarding-snapshot-create-error = Die Identität konnte nicht gespeichert werden. Es wurde nichts erstellt; prüfe den verfügbaren Speicherplatz und versuche es erneut.
 
 # Identitätseinrichtung: Identität bereit
 
 # Einrichtung: mehr Video- und Audioformate
-onboarding-codecs-installer-failed = Der Download konnte nicht gestartet werden: { $error }
 
 # Desktop-Tour
 
@@ -2444,8 +2404,6 @@ activity-morning-source = { $source }, letzte Aktivität { $time } · möglicher
 activity-morning-open = Morgenquelle öffnen
 
 # Kanonische Zulassung von Einrichtungsaktionen; keine privaten Identitätsdaten.
-onboarding-semantic-unavailable = Diese Einrichtungsaktion ist in diesem Schritt nicht mehr verfügbar.
-onboarding-semantic-failed = Die Einrichtung konnte diese Aktion nicht abschließen. Der Desktop bleibt geschützt.
 activity-morning-payload-unavailable = Anbieter-Zusammenfassung nicht verfügbar. Quelle öffnen, um sie zu prüfen oder zu aktualisieren.
 
 activity-morning-refresh = Quelle aktualisieren
@@ -2472,12 +2430,6 @@ palette-open-containing-folder = Enthaltenden Ordner öffnen
 palette-copy-path = Pfad kopieren
 
 # Vorbereitete Einrichtung auf dem installierten System und Übernahme der Originaldateien.
-onboarding-prepared-other-person = Auf diesem Computer ist bereits die Identität einer anderen Person, deshalb wurde die vorbereitete Einrichtung nicht angetastet. Stelle die eigene Sicherung dieser Person wieder her oder verbinde stattdessen ihr Konto.
-onboarding-portable-home-unavailable = Deine Übertragung ist auf diesem Computer noch nicht verfügbar. Versuche es erneut oder mach weiter, ohne deine Dateien herüberzuholen.
-onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es keine aufgeschobene Dateiübernahme.
-onboarding-portable-applications-unavailable = Deine Apps konnten nicht wiederhergestellt werden. Du kannst es erneut versuchen, ohne deine vorhandenen Dateien zu ersetzen.
-onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
-onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 
 # Warum die erste Kopie angehalten hat, mit ihrem Status gemeldet.
 onboarding-copy-cleanup-unavailable = Das Aufräumen temporärer Dateien ist nicht verfügbar.

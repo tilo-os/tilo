@@ -7,9 +7,16 @@
 //! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
 //! the window policy of the desk's strips ([`tilo_surface_host::desktop`]),
 //! so each window is a tab of a strip; and the desktop's surface apps, each
-//! an ordinary app hosted on a layer of its own: the notification banners
-//! and quick settings. What the chrome asks of its host comes back as
-//! [`DesktopAsk`]s, carried out here.
+//! an ordinary app hosted on a layer of its own: the notification banners,
+//! quick settings, and setup over everything while a person first uses the
+//! device. What the chrome asks of its host comes back as [`DesktopAsk`]s,
+//! carried out here.
+//!
+//! Everything a person can do here is a published action: the desk's and
+//! the chrome's, and each surface app's through its door
+//! ([`ui::device_local_door::SharedDoor`]). [`Session::resources`] lists
+//! them and [`Session::invoke`] runs one, as any caller of the action
+//! protocol on this device does.
 //!
 //! The session also hosts the system services it was started with
 //! ([`Options::services`]): connectivity, audio and the rest publish their
@@ -26,9 +33,12 @@ mod env;
 mod keys;
 mod panels;
 mod search;
+mod setup;
+mod sheets;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
@@ -40,6 +50,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_quick_settings::QsEffect;
 use tilo_service::Started;
 use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
@@ -51,6 +62,7 @@ pub use controls::{INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
 pub use search::{AppActions, SearchOptions};
+pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};
 
@@ -58,6 +70,19 @@ use controls::SessionControls;
 use keys::{Invocations, SessionKeys};
 use panels::{Banners, Held, Popover, Readout};
 use search::SessionSearch;
+use setup::Setup;
+use sheets::Sheet;
+use tilo_sheets::Seat as _;
+use tilo_sheets::file_picker::FilePickerSeat;
+use tilo_sheets::portal::PortalSeat;
+use tilo_sheets::power::{PowerEffect, PowerSeat};
+use tilo_sheets::workspace_settings::{
+    Settings as WorkspaceSettings, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
+};
+
+pub use os_actions::SessionAction;
+
+pub use tilo_onboarding_host::view::OnboardingView;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
@@ -65,6 +90,9 @@ const GENERATION: &str = "session";
 /// How soon after a press outside quick settings closed it the bar's own
 /// toggle of it is that same press, not a new ask to open it.
 const DISMISS_GRACE: Duration = Duration::from_millis(300);
+
+/// The workspace menu's action that opens workspace settings.
+const WORKSPACE_SETTINGS: &str = "workspace-settings";
 
 /// What a session starts with.
 pub struct Options {
@@ -79,8 +107,8 @@ pub struct Options {
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
     /// What quick settings reads of the device and carries out on it;
-    /// without one, the bar's status cluster opens nothing.
-    pub quick_settings: Option<Rc<dyn PanelHost>>,
+    /// without it, the bar's status cluster opens nothing.
+    pub quick_settings: Option<QuickSettings>,
     /// The person's settings: shortcuts, input, gestures.
     pub config: SessionConfig,
     /// The system services the session hosts: what they publish is the
@@ -92,6 +120,37 @@ pub struct Options {
     /// chosen in search runs by address. Without one, search finds the
     /// desktop's own and starts nothing.
     pub apps: Option<Rc<dyn AppActions>>,
+    /// Setup to run over everything before the desktop is used: the first
+    /// use of this device, or the recovery of its identity.
+    pub setup: Option<OnboardingView>,
+    /// Carries out what the person chose in the power menu (log out,
+    /// suspend, restart, shut down, switch user); the session locks the
+    /// screen itself. Without one, the choice is only logged.
+    pub session_actions: fn(SessionAction) -> Result<(), String>,
+}
+
+/// Where quick settings reads the device from.
+pub enum QuickSettings {
+    /// The device host of this machine (or of a stand-in one), made with
+    /// the session loop's wake: its readings land on the loop, what the
+    /// panel asks of the desktop comes back to the session.
+    Device(Box<dyn FnOnce(Wake) -> DeviceHost>),
+    /// A host lent as it is: a screenshot's stand-in readings.
+    Lent(Rc<dyn PanelHost>),
+}
+
+/// The settings app, which quick settings opens.
+const SETTINGS_APP: &str = "so.tilo.settings";
+
+/// The default for [`Options::session_actions`]: a session that owns no
+/// machine (a test, a screenshot) carries out nothing.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the shape every session action runner has"
+)]
+fn no_session_actions(action: SessionAction) -> Result<(), String> {
+    tracing::info!(?action, "this session carries out no session actions");
+    Ok(())
 }
 
 impl Default for Options {
@@ -107,12 +166,14 @@ impl Default for Options {
             services: Vec::new(),
             search: SearchOptions::default(),
             apps: None,
+            setup: None,
+            session_actions: no_session_actions,
         }
     }
 }
 
 /// Quick settings as the session shows it.
-struct QuickSettings {
+struct QuickSettingsPanel {
     open: Rc<Cell<bool>>,
     /// When a press outside last closed it.
     dismissed: Rc<Cell<Option<Instant>>>,
@@ -127,7 +188,7 @@ struct Shared {
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    quick_settings: Option<QuickSettings>,
+    quick_settings: Option<QuickSettingsPanel>,
     /// Every hosted surface's and service's published side: the session's
     /// action host.
     doors: Doors,
@@ -140,6 +201,15 @@ struct Shared {
     /// The system services, reached for their readings; their actions go
     /// through the door like every other.
     services: Rc<RefCell<Services>>,
+    /// The device behind quick settings, when the session reads one.
+    device: Option<DeviceHost>,
+    /// The power menu, workspace settings, and the questions the session
+    /// asks for apps and services, by their seats.
+    power: Option<PowerSeat>,
+    workspace_settings: Option<WorkspaceSettingsSeat>,
+    portal: Option<PortalSeat>,
+    file_picker: Option<FilePickerSeat>,
+    session_actions: fn(SessionAction) -> Result<(), String>,
 }
 
 impl Shared {
@@ -162,9 +232,14 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
+                DesktopAsk::HostAction(action) if action == WORKSPACE_SETTINGS => {
+                    self.open_workspace_settings();
+                }
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
+        self.follow_device();
+        self.follow_sheets();
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
             return;
@@ -195,6 +270,112 @@ impl Shared {
                 .collect()
         });
         self.search.observe(&self.doors.resources(), open_tabs);
+    }
+
+    fn close_quick_settings(&self) {
+        if let Some(panel) = &self.quick_settings {
+            panel.open.set(false);
+        }
+    }
+
+    /// Land what the device host read and carry out what the panel asked
+    /// of the desktop.
+    fn follow_device(&self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        device.set_open(
+            self.quick_settings
+                .as_ref()
+                .is_some_and(|panel| panel.open.get()),
+        );
+        device.pump();
+        for request in device.take_requests() {
+            match request {
+                SessionRequest::Effect(QsEffect::PowerMenu) => {
+                    self.close_quick_settings();
+                    if let Some(power) = &self.power {
+                        power.presentation().open(false);
+                    }
+                }
+                SessionRequest::Effect(QsEffect::LockScreen) => {
+                    self.close_quick_settings();
+                    self.commands.borrow_mut().push(SessionCommand::Lock);
+                }
+                SessionRequest::Effect(QsEffect::OpenSettings { .. }) => {
+                    self.close_quick_settings();
+                    let launch = Command::Launch {
+                        generation: GENERATION.into(),
+                        app: SETTINGS_APP.into(),
+                    };
+                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+                        tracing::warn!(%error, "open settings");
+                    }
+                }
+                other => {
+                    tracing::debug!(?other, "quick settings asks what the session cannot do yet");
+                }
+            }
+        }
+    }
+
+    /// Show workspace settings for the workspace in front.
+    fn open_workspace_settings(&self) {
+        let Some(seat) = &self.workspace_settings else {
+            return;
+        };
+        let name = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default()
+        });
+        seat.show(WorkspaceSettings {
+            name,
+            ..seat.settings()
+        });
+        seat.reset();
+        seat.presentation().open(false);
+    }
+
+    /// Carry out what the person chose in the sheets.
+    fn follow_sheets(&self) {
+        if let Some(power) = &self.power {
+            for effect in power.take_asked() {
+                power.presentation().close();
+                let action = match effect {
+                    PowerEffect::Lock => {
+                        self.commands.borrow_mut().push(SessionCommand::Lock);
+                        continue;
+                    }
+                    PowerEffect::LogOut => {
+                        self.commands.borrow_mut().push(SessionCommand::LogOut);
+                        continue;
+                    }
+                    PowerEffect::SwitchUser => SessionAction::SwitchUser,
+                    PowerEffect::Suspend => SessionAction::Suspend,
+                    PowerEffect::Restart => SessionAction::Restart,
+                    PowerEffect::ShutDown => SessionAction::ShutDown,
+                };
+                if let Err(error) = (self.session_actions)(action) {
+                    tracing::warn!(%error, ?action, "power menu");
+                }
+            }
+        }
+        if let Some(settings) = &self.workspace_settings {
+            for effect in settings.take_asked() {
+                match effect {
+                    WorkspaceSettingsEffect::Rename { name } => self
+                        .intents
+                        .borrow_mut()
+                        .push(ChromeIntent::RenameWorkspace { name }),
+                    WorkspaceSettingsEffect::Close => {}
+                    other => tracing::debug!(
+                        ?other,
+                        "workspace settings asks what the session cannot do yet"
+                    ),
+                }
+            }
+        }
     }
 
     fn show_quick_settings(&self) {
@@ -356,6 +537,8 @@ pub struct Session {
     ended: bool,
     /// The magnifier's zoom level and the one its toggle turns on at.
     magnifier: (u8, u8),
+    /// Setup, while it runs: it withholds the desktop's actions.
+    setup: Option<Rc<RefCell<Setup>>>,
 }
 
 impl Session {
@@ -365,7 +548,7 @@ impl Session {
     /// # Errors
     /// The compositor did not start.
     pub fn new(
-        options: Options,
+        mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
         let mut doors = Doors::default();
@@ -418,9 +601,54 @@ impl Session {
         }
 
         let readings = Rc::new(RefCell::new(None));
-        let quick_settings = options.quick_settings.clone().and_then(|panel| {
+        let (device, panel) = match options.quick_settings.take() {
+            Some(QuickSettings::Device(make)) => {
+                let waker = compositor.waker();
+                let device = make(Arc::new(move || waker.wake_by_ref()));
+                let panel = device.panel();
+                (Some(device), Some(panel))
+            }
+            Some(QuickSettings::Lent(panel)) => (None, Some(panel)),
+            None => (None, None),
+        };
+        let quick_settings = panel.and_then(|panel| {
             mount_quick_settings(&mut compositor, &mut doors, panel, &options, &readings)
         });
+
+        // The sheets, over the desktop and its panels.
+        let who = (options.device.as_str(), options.person.as_str());
+        let power = mount_sheet(
+            &mut compositor,
+            &mut doors,
+            tilo_sheets::power::definition(),
+            PowerSeat::default(),
+            who,
+            &options,
+        );
+        let workspace_settings = mount_sheet(
+            &mut compositor,
+            &mut doors,
+            tilo_sheets::workspace_settings::definition(),
+            WorkspaceSettingsSeat::default(),
+            who,
+            &options,
+        );
+        let portal = mount_sheet(
+            &mut compositor,
+            &mut doors,
+            tilo_sheets::portal::definition(),
+            PortalSeat::default(),
+            who,
+            &options,
+        );
+        let file_picker = mount_sheet(
+            &mut compositor,
+            &mut doors,
+            tilo_sheets::file_picker::definition(),
+            FilePickerSeat::default(),
+            who,
+            &options,
+        );
 
         // The hardware keys' readout, above the apps.
         let readout = Rc::new(RefCell::new(Readout::new(options.scale)));
@@ -439,6 +667,16 @@ impl Session {
             options.config.shortcuts,
             Rc::clone(&invocations),
         )));
+
+        // Setup last: above everything, first to the keyboard, and while
+        // it is up the only surface offering actions.
+        setup::lend(compositor.waker(), &options.person);
+        let setup = options.setup.take().map(|view| {
+            let setup = Rc::new(RefCell::new(Setup::new(view, options.scale)));
+            compositor.add_host(Box::new(Held(Rc::clone(&setup))));
+            doors.add(Rc::clone(&setup) as tilo_surface_host::Shared);
+            setup
+        });
 
         let mut services = Services::default();
         for service in options.services {
@@ -461,6 +699,12 @@ impl Session {
             commands,
             readings,
             services,
+            device,
+            power,
+            workspace_settings,
+            portal,
+            file_picker,
+            session_actions: options.session_actions,
         };
         shared.observe();
         Ok(Self {
@@ -468,6 +712,7 @@ impl Session {
             shared,
             banners,
             input: options.config.input,
+            setup,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -585,6 +830,46 @@ impl Session {
     #[must_use]
     pub const fn ended(&self) -> bool {
         self.ended
+    }
+
+    /// The power menu's seat: the session puts it up.
+    #[must_use]
+    pub fn power_menu(&self) -> Option<&PowerSeat> {
+        self.shared.power.as_ref()
+    }
+
+    /// Workspace settings' seat: what it shows, kept current by whoever
+    /// knows the workspace.
+    #[must_use]
+    pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsSeat> {
+        self.shared.workspace_settings.as_ref()
+    }
+
+    /// The portal sheet's seat: the portal, authentication and
+    /// network-secret services ask through it and read the answers.
+    #[must_use]
+    pub fn portal(&self) -> Option<&PortalSeat> {
+        self.shared.portal.as_ref()
+    }
+
+    /// The file chooser's seat: the portal service asks it for files and
+    /// reads the answer.
+    #[must_use]
+    pub fn file_picker(&self) -> Option<&FilePickerSeat> {
+        self.shared.file_picker.as_ref()
+    }
+
+    /// Whether setup is up: it withholds the desktop until it is done.
+    #[must_use]
+    pub fn setup_up(&self) -> bool {
+        self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
+    }
+
+    /// The verified browser projection a carried-over setup brought: the
+    /// browser starts with it.
+    #[must_use]
+    pub fn browser_continuity(&self) -> Option<std::path::PathBuf> {
+        setup::browser_continuity()
     }
 
     /// Whether quick settings is open.
@@ -752,5 +1037,36 @@ impl Published for ServiceDoor {
 
     fn accessible_labels(&mut self) -> Vec<String> {
         Vec::new()
+    }
+}
+
+/// A sheet lent `seat`, hosted over the desktop and its panels with its
+/// actions behind the door while it is up; the seat, when it mounted.
+fn mount_sheet<S: tilo_sheets::Seat + 'static>(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    definition: &'static ui::application::ApplicationDefinition,
+    seat: S,
+    who: (&str, &str),
+    options: &Options,
+) -> Option<S> {
+    match Sheet::mount(
+        definition,
+        seat,
+        who,
+        (options.presentation)(),
+        options.scale,
+    ) {
+        Ok(sheet) => {
+            let seat = sheet.seat().clone();
+            let sheet = Rc::new(RefCell::new(sheet));
+            compositor.add_host(Box::new(Held(Rc::clone(&sheet))));
+            doors.add(sheet);
+            Some(seat)
+        }
+        Err(error) => {
+            tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
+            None
+        }
     }
 }

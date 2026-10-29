@@ -126,3 +126,25 @@ display-remote-offline-excluded = Offline, nicht in der Anordnung
 display-remote-switched-off = Auf dem Gerät ausgeschaltet
 display-remote-in-layout = Im Layout
 display-remote-out-of-layout = Nicht im Layout
+
+## The system sheets the shell asks with on an app's or a service's behalf
+portal-sheet-description = Gefragt von Tilo, nicht von der App. Eingabe antwortet, Escape lehnt ab.
+portal-back = Zurück
+portal-continue = Weiter
+portal-shortcut-not-set = Nicht festgelegt
+portal-usb-row-read-write = Lesen und Schreiben
+portal-usb-row-read-only = Nur lesen
+portal-a11y-name = Name
+portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
+portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
+portal-a11y-answer = Antwort
+
+## File chooser
+
+file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
+file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
+file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
+file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
+file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.
+file-chooser-changed = Die Dateiauswahl hat sich geändert. Sieh sie dir noch einmal an.
+file-chooser-unavailable = Das kann die Dateiauswahl gerade nicht.

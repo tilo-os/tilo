@@ -624,7 +624,8 @@ impl ShellOverlayHost {
 
     pub(super) fn register_onboarding_actions(&mut self) {
         if let Some(view) = self.onboarding.as_deref() {
-            self.search_registry.register(view.semantic_provider());
+            self.search_registry
+                .register(crate::onboarding_host::setup_actions(view));
         }
         self.register_authentication_actions();
     }
