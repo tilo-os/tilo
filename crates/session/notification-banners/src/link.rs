@@ -85,6 +85,10 @@ pub enum Command {
 
 /// What the banners show, for the desktop.
 #[derive(Clone, Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the last paint the desktop reads on its own"
+)]
 pub struct Shown {
     /// What the stack covers; zero when it shows nothing.
     pub stack: Rect,

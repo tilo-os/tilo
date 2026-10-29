@@ -2147,7 +2147,7 @@ pub(super) mod tests {
         let theme = Theme::dark().with_reduce_motion(true);
         draw(&mut stack, &host, &theme);
         assert!(!stack.owns_key(&Key::Named(NamedKey::Enter)));
-        assert!(act(&mut stack, &host, |s| s.focus_newest()));
+        assert!(act(&mut stack, &host, NotificationStack::focus_newest));
         assert!(host.log().held(), "a focused banner does not age");
         assert_eq!(
             stack.focus,
@@ -2181,7 +2181,7 @@ pub(super) mod tests {
         assert!(!host.log().held());
 
         draw(&mut stack, &host, &theme);
-        assert!(act(&mut stack, &host, |s| s.focus_newest()));
+        assert!(act(&mut stack, &host, NotificationStack::focus_newest));
         assert!(act(&mut stack, &host, |s| s
             .handle_key(&Key::Named(NamedKey::Escape), false)));
         assert!(!stack.has_keyboard_focus());

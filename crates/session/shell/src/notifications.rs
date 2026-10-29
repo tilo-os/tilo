@@ -353,6 +353,7 @@ impl std::fmt::Debug for BridgeInner {
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
+            .field("reply_events", &self.reply_events.len())
             .field("action_tokens", &self.action_tokens.len())
             .field("scheduled_targets", &self.scheduled_targets.len())
             .field("scheduled_actions", &self.scheduled_actions.len())

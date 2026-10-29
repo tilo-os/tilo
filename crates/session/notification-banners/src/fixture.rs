@@ -104,10 +104,10 @@ pub fn feed(scenario: Option<&str>) -> BannerFeed {
         Some("choices") => vec![alarm()],
         Some("call") => vec![build(), call()],
         Some("machine") => vec![build(), battery(), call()],
-        Some("more") => (0..6)
+        Some("more") => (1..=6)
             .map(|at| {
                 banner(
-                    Notification::new(format!("Upload {} finished", at + 1), "photos.zip")
+                    Notification::new(format!("Upload {at} finished"), "photos.zip")
                         .with_app_name("Files"),
                 )
             })

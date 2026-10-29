@@ -90,7 +90,16 @@ impl FeedKey {
 }
 
 fn moved(rect: Rect, by: Vec2) -> Rect {
-    if rect.is_zero_area() { rect } else { rect + by }
+    if rect.is_zero_area() {
+        rect
+    } else {
+        Rect::new(
+            rect.x0 + by.x,
+            rect.y0 + by.y,
+            rect.x1 + by.x,
+            rect.y1 + by.y,
+        )
+    }
 }
 
 /// `node` and everything in it moved by `by`.
@@ -209,7 +218,14 @@ impl ShellOverlayHost {
         }
         let origin = self.rect.origin();
         self.banners.origin = origin;
-        let local = |rect: Rect| rect - origin.to_vec2();
+        let local = |rect: Rect| {
+            Rect::new(
+                rect.x0 - origin.x,
+                rect.y0 - origin.y,
+                rect.x1 - origin.x,
+                rect.y1 - origin.y,
+            )
+        };
         let area = self.overlay_area();
         let top = f64::from(self.chrome_top_y);
         // Banners share the transients' zone with the follow bar: below it
@@ -288,6 +304,10 @@ impl ShellOverlayHost {
     /// operations, and take what they show now.
     fn answer_banners(&mut self) {
         self.banners.refresh_shown();
+        if self.banners.shown.keyboard {
+            // Focus landed: from here what the banners show says where it is.
+            self.banners.focus_sent = false;
+        }
         let asks = self.banners.link.take_asks();
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -370,7 +390,8 @@ impl ShellOverlayHost {
         if self.banners.shown.stack.is_zero_area() && !self.banners.shown.animating {
             return;
         }
-        let local = p.map(|p| p - self.banners.origin.to_vec2());
+        let origin = self.banners.origin;
+        let local = p.map(|p| Point::new(p.x - origin.x, p.y - origin.y));
         self.command_banners(Command::Pointer(local));
     }
 
@@ -413,11 +434,13 @@ impl ShellOverlayHost {
 
     /// The machine-wide banners the last paint repeated on the other
     /// displays.
+    #[cfg(test)]
     pub(super) fn machine_banners(&self) -> &[Rect] {
         &self.banners.shown.machine
     }
 
     /// The displays the last paint edged for a ringing call.
+    #[cfg(test)]
     pub(super) fn call_edges(&self) -> &[Rect] {
         &self.banners.shown.call_edges
     }
@@ -439,8 +462,8 @@ impl ShellOverlayHost {
         let chord = action == Some(ShortcutAction::Notifications);
         if !self.banners.has_keyboard() {
             if chord && !repeat && self.banners.shown.focusable {
-                self.command_banners(Command::FocusNewest);
                 self.banners.focus_sent = true;
+                self.command_banners(Command::FocusNewest);
                 *handled = true;
                 return true;
             }
