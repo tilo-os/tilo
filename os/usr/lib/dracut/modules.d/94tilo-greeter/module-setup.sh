@@ -4,8 +4,9 @@
 # opens for it; without it, the sign-in asks on the console through systemd's
 # password agents. This module carries the greeter's boot build and what it needs
 # to draw, read keyboards and touch, and speak: its faces, the keymaps,
-# libinput's device quirks, espeak-ng with the voices the screen reader
-# offers, and ALSA with the sound drivers that need no large firmware.
+# libinput's device quirks, the touch screen drivers, espeak-ng with the
+# voices the screen reader offers, and ALSA with the sound drivers that need
+# no large firmware.
 
 GREETER=/usr/libexec/tilo/tilo-greeter-boot
 FONTS=/usr/share/fonts/tilo
@@ -78,10 +79,17 @@ install() {
     fi
 
     inst_libdir_file "libasound.so*"
-    inst_multiple -o $(find /usr/share/alsa -type f)
+    # Not alsa.conf.d: the image's drop-ins there send ALSA's default device
+    # to PipeWire, which never runs here, and every sound would fail to open.
+    # Without them the default is the first card, through dmix or plug.
+    inst_multiple -o $(find /usr/share/alsa -type f -not -path '/usr/share/alsa/alsa.conf.d/*')
     # HDA, USB and virtio sound; a machine whose sound needs firmware too
     # large for the initramfs signs in without speech.
     hostonly='' instmods =sound/pci/hda =sound/usb =sound/virtio snd-hda-intel || :
+    # Touch screens: HID ones come with the kernel-modules module's
+    # drivers/hid, the rest are input drivers of their own, and a virtual
+    # machine's is a virtio input device.
+    hostonly='' instmods =drivers/input/touchscreen virtio_input || :
     # The greeter runs as nobody in the audio group (tilo-boot-signin reads
     # the group's id here), so it may open the sound devices and nothing else.
     grep -q '^audio:' "${initdir:?}/etc/group" 2>/dev/null \

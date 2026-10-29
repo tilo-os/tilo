@@ -82,7 +82,9 @@ done
 # build's thin LTO and parallel codegen adds 76.7 MB, so os/image/compile.sh links it
 # as its profile says. One linked without LTO (TILO_GREETER_BUDGET=report,
 # os/Containerfile) adds about 80.8 MB: its size is reported, not held to the budget.
-greeter_budget=65000000
+# The touch screen drivers with input drivers of their own and virtio input added
+# 0.56 MB; with them the x86_64 greeter added 65,013,902 bytes.
+greeter_budget=65600000
 greeter_bytes="$(sed -n 's/.*tilo-greeter: the greeter adds \([0-9]*\) bytes.*/\1/p' "$log")"
 [ -n "$greeter_bytes" ] || {
   echo "dracut did not report what the greeter adds to the initramfs" >&2; exit 1; }
