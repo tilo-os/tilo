@@ -103,25 +103,66 @@ impl Desk {
     }
 }
 
-#[test]
-fn every_chrome_surface_lets_the_desktop_idle() {
-    // Phase `an_empty_desktop_idles`.
-    Desk::new(WorkspaceTree::bootstrap_default()).settle("empty desktop");
-
-    // Phase `a_populated_desktop_idles`.
+/// The demo desktop, settled.
+fn populated() -> Desk {
     let mut desk = Desk::new(WorkspaceTree::bootstrap_demo());
     desk.settle("populated desktop");
+    desk
+}
 
-    // Phase `quick_settings_idles_open_and_closed`. It animates open, so
-    // this also proves the gate sees animation demand when there is some.
-    let opening = desk.open_and_close(
-        "Quick Settings",
-        |d| d.fb.with_chrome(ChromeState::open_quick_settings),
-        |d| d.fb.with_chrome(|c| c.overlays.quick_settings = false),
-    );
-    assert!(opening, "Quick Settings' opening animation went unobserved");
+#[test]
+fn an_empty_desktop_idles() {
+    Desk::new(WorkspaceTree::bootstrap_default()).settle("empty desktop");
+}
 
-    // Phase `search_idles_open_and_closed`.
+/// Quick Settings animates open, so it also proves the gate sees animation
+/// demand when there is some.
+#[test]
+fn every_chrome_overlay_idles_open_and_closed() {
+    type Toggle = fn(&mut ChromeState);
+    let cases: [(&str, Toggle, Toggle, bool); 4] = [
+        (
+            "Quick Settings",
+            ChromeState::open_quick_settings,
+            |c| c.overlays.quick_settings = false,
+            true,
+        ),
+        (
+            "Overview",
+            |c| c.overlays.overview = true,
+            |c| c.overlays.overview = false,
+            false,
+        ),
+        (
+            "workspace settings",
+            |c| c.open_workspace_settings(WsTab::default()),
+            |c| c.overlays.ws_settings = false,
+            false,
+        ),
+        (
+            "the keyboard guide",
+            |c| c.overlays.shortcut_help = true,
+            |c| c.overlays.shortcut_help = false,
+            false,
+        ),
+    ];
+    let mut desk = populated();
+    for (what, open, close, must_animate) in cases {
+        let opening = desk.open_and_close(
+            what,
+            |d| d.fb.with_chrome(open),
+            |d| d.fb.with_chrome(close),
+        );
+        assert!(
+            opening || !must_animate,
+            "{what}'s opening animation went unobserved"
+        );
+    }
+}
+
+#[test]
+fn search_idles_open_and_closed() {
+    let mut desk = populated();
     let opening = desk.open_and_close(
         "Search",
         |d| {
@@ -131,32 +172,12 @@ fn every_chrome_surface_lets_the_desktop_idle() {
         |d| d.fb.host_mut().set_palette_visible(false),
     );
     assert!(opening, "Search's opening animation went unobserved");
+}
 
-    // Phase `overview_idles_open_and_closed`.
-    desk.open_and_close(
-        "Overview",
-        |d| d.fb.with_chrome(|c| c.overlays.overview = true),
-        |d| d.fb.with_chrome(|c| c.overlays.overview = false),
-    );
-
-    // Phase `workspace_settings_idles_open_and_closed`.
-    desk.open_and_close(
-        "workspace settings",
-        |d| {
-            d.fb.with_chrome(|c| c.open_workspace_settings(WsTab::default()));
-        },
-        |d| d.fb.with_chrome(|c| c.overlays.ws_settings = false),
-    );
-
-    // Phase `shortcut_guide_idles_open_and_closed`.
-    desk.open_and_close(
-        "the keyboard guide",
-        |d| d.fb.with_chrome(|c| c.overlays.shortcut_help = true),
-        |d| d.fb.with_chrome(|c| c.overlays.shortcut_help = false),
-    );
-
-    // Phase `an_osd_fades_and_stops`. It holds without animating, fades,
-    // then must leave nothing behind.
+/// An OSD holds without animating, fades, then must leave nothing behind.
+#[test]
+fn an_osd_fades_and_stops() {
+    let mut desk = populated();
     desk.fb.with_chrome(|c| c.show_osd(Osd::brightness(0.4)));
     let fade_done = Instant::now()
         + shell::shell::osd::OSD_HOLD

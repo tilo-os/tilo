@@ -1286,107 +1286,116 @@ mod tests {
     }
 
     #[test]
-    fn bridge_messages_round_trip_and_hints_are_bounded() {
-        // Phase `alloc_id_is_monotonic_and_never_zero`.
-        {
-            let b = NotificationBridge::new();
-            let a = b.alloc_id();
-            let c = b.alloc_id();
-            assert_ne!(a, 0);
-            assert_ne!(c, 0);
-            assert!(c > a, "ids must be monotonic: {a} then {c}");
-        }
-        {
-            let b = NotificationBridge::new();
-            assert_eq!(b.pending_incoming_len(), 0);
-            b.push_incoming(IncomingNotification {
-                dbus_id: 1,
-                app_name: "App".into(),
-                app_icon: None,
-                desktop_entry: None,
-                image_data: None,
-                summary: "Hi".into(),
-                body: "There".into(),
-                actions: vec![],
-                expire_timeout: -1,
-                urgency: 1,
-                caller: None,
-                badge_count: None,
-                contact_endpoint: None,
-                sender_name: None,
-                sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
-                incoming_call: false,
-                machine_wide: false,
-            });
-            assert_eq!(b.pending_incoming_len(), 1);
-            let drained = b.drain_incoming();
-            assert_eq!(drained.len(), 1);
-            assert_eq!(drained[0].summary, "Hi");
-            assert_eq!(b.pending_incoming_len(), 0);
-            assert!(b.drain_incoming().is_empty());
-        }
-        {
-            let b = NotificationBridge::new();
-            b.request_close(42);
-            assert_eq!(b.drain_close_requests(), vec![42]);
-            assert!(b.drain_close_requests().is_empty());
-        }
-        {
-            let b = NotificationBridge::new();
-            b.note_closed(7, CloseReason::Expired);
-            b.note_action(7, "default");
-            assert_eq!(b.drain_closed_events(), vec![(7, CloseReason::Expired)]);
-            assert_eq!(b.drain_action_events(), vec![(7, "default".to_string())]);
-        }
-        {
-            assert_eq!(CloseReason::Expired.code(), 1);
-            assert_eq!(CloseReason::Dismissed.code(), 2);
-            assert_eq!(CloseReason::Closed.code(), 3);
-        }
-        {
-            let actions = vec![
-                "default".to_string(),
-                "Open".to_string(),
-                "snooze".to_string(),
-                "Snooze".to_string(),
-                "dangling".to_string(),
-            ];
-            let pairs = pair_actions(&actions);
-            assert_eq!(
-                pairs,
-                vec![
-                    ("default".to_string(), "Open".to_string()),
-                    ("snooze".to_string(), "Snooze".to_string()),
-                ]
-            );
-        }
-        {
-            let hints: HashMap<String, OwnedValue> = HashMap::new();
-            assert_eq!(parse_urgency(&hints), 1);
-        }
-        {
-            let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-            hints.insert("urgency".to_string(), OwnedValue::from(2u8));
-            assert_eq!(parse_urgency(&hints), 2);
-        }
-        {
-            let mut hints = HashMap::new();
-            hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
-            hints.insert(
-                "x-tilo-contact-handle".into(),
-                OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
-            );
-            assert_eq!(parse_badge_count(&hints), Some(9_999));
-            assert_eq!(
-                parse_contact_endpoint(&hints).as_deref(),
-                Some("ada@example.test")
-            );
-            hints.insert(
-                "x-tilo-contact-handle".into(),
-                OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
-            );
-            assert_eq!(parse_contact_endpoint(&hints), None);
-        }
+    fn alloc_id_is_monotonic_and_never_zero() {
+        let b = NotificationBridge::new();
+        let a = b.alloc_id();
+        let c = b.alloc_id();
+        assert_ne!(a, 0);
+        assert_ne!(c, 0);
+        assert!(c > a, "ids must be monotonic: {a} then {c}");
+    }
+
+    #[test]
+    fn incoming_notifications_drain_once() {
+        let b = NotificationBridge::new();
+        assert_eq!(b.pending_incoming_len(), 0);
+        b.push_incoming(IncomingNotification {
+            dbus_id: 1,
+            app_name: "App".into(),
+            app_icon: None,
+            desktop_entry: None,
+            image_data: None,
+            summary: "Hi".into(),
+            body: "There".into(),
+            actions: vec![],
+            expire_timeout: -1,
+            urgency: 1,
+            caller: None,
+            badge_count: None,
+            contact_endpoint: None,
+            sender_name: None,
+            sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
+            incoming_call: false,
+            machine_wide: false,
+        });
+        assert_eq!(b.pending_incoming_len(), 1);
+        let drained = b.drain_incoming();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].summary, "Hi");
+        assert_eq!(b.pending_incoming_len(), 0);
+        assert!(b.drain_incoming().is_empty());
+    }
+
+    #[test]
+    fn close_requests_drain_once() {
+        let b = NotificationBridge::new();
+        b.request_close(42);
+        assert_eq!(b.drain_close_requests(), vec![42]);
+        assert!(b.drain_close_requests().is_empty());
+    }
+
+    #[test]
+    fn closed_and_action_events_drain_once() {
+        let b = NotificationBridge::new();
+        b.note_closed(7, CloseReason::Expired);
+        b.note_action(7, "default");
+        assert_eq!(b.drain_closed_events(), vec![(7, CloseReason::Expired)]);
+        assert_eq!(b.drain_action_events(), vec![(7, "default".to_string())]);
+    }
+
+    #[test]
+    fn close_reasons_use_the_spec_codes() {
+        assert_eq!(CloseReason::Expired.code(), 1);
+        assert_eq!(CloseReason::Dismissed.code(), 2);
+        assert_eq!(CloseReason::Closed.code(), 3);
+    }
+
+    #[test]
+    fn actions_pair_up_and_drop_a_dangling_key() {
+        let actions = vec![
+            "default".to_string(),
+            "Open".to_string(),
+            "snooze".to_string(),
+            "Snooze".to_string(),
+            "dangling".to_string(),
+        ];
+        let pairs = pair_actions(&actions);
+        assert_eq!(
+            pairs,
+            vec![
+                ("default".to_string(), "Open".to_string()),
+                ("snooze".to_string(), "Snooze".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn urgency_hint_defaults_to_normal() {
+        let hints: HashMap<String, OwnedValue> = HashMap::new();
+        assert_eq!(parse_urgency(&hints), 1);
+        let mut hints: HashMap<String, OwnedValue> = HashMap::new();
+        hints.insert("urgency".to_string(), OwnedValue::from(2u8));
+        assert_eq!(parse_urgency(&hints), 2);
+    }
+
+    #[test]
+    fn badge_and_contact_hints_are_bounded() {
+        let mut hints = HashMap::new();
+        hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
+        hints.insert(
+            "x-tilo-contact-handle".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
+        );
+        assert_eq!(parse_badge_count(&hints), Some(9_999));
+        assert_eq!(
+            parse_contact_endpoint(&hints).as_deref(),
+            Some("ada@example.test")
+        );
+        hints.insert(
+            "x-tilo-contact-handle".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
+        );
+        assert_eq!(parse_contact_endpoint(&hints), None);
     }
 
     #[test]
@@ -1943,125 +1952,128 @@ mod tests {
 
     #[tokio::test]
     #[cfg(target_os = "linux")]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
-    )]
-    async fn dbus_server_round_trips_notifications_with_attribution() {
-        {
-            let bridge = NotificationBridge::new();
-            let callers = CallerMap::new();
-            // The p2p transport doesn't surface a unique-name, so force the caller the same way the portal tests do — the production attribution shape.
-            callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(7), "org.example.app"));
+    async fn dbus_notify_round_trips_with_attribution() {
+        let bridge = NotificationBridge::new();
+        let callers = CallerMap::new();
+        // The p2p transport doesn't surface a unique-name, so force the caller the same way the portal tests do — the production attribution shape.
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(7), "org.example.app"));
 
-            let (_server, client) = bring_up_pair(bridge.clone(), callers).await;
-            let proxy = notifications_proxy(&client).await;
+        let (_server, client) = bring_up_pair(bridge.clone(), callers).await;
+        let proxy = notifications_proxy(&client).await;
 
-            let app_name = "Example";
-            let replaces_id: u32 = 0;
-            let app_icon = "";
-            let summary = "Build finished";
-            let body = "All 524 tests passed";
-            let actions: Vec<String> = vec!["default".into(), "Open".into()];
-            let mut hints: HashMap<String, OwnedValue> = HashMap::new();
-            hints.insert("urgency".into(), OwnedValue::from(2u8));
-            let expire_timeout: i32 = -1;
+        let app_name = "Example";
+        let replaces_id: u32 = 0;
+        let app_icon = "";
+        let summary = "Build finished";
+        let body = "All 524 tests passed";
+        let actions: Vec<String> = vec!["default".into(), "Open".into()];
+        let mut hints: HashMap<String, OwnedValue> = HashMap::new();
+        hints.insert("urgency".into(), OwnedValue::from(2u8));
+        let expire_timeout: i32 = -1;
 
-            let id: u32 = proxy
-                .call_method(
-                    "Notify",
-                    &(
-                        app_name,
-                        replaces_id,
-                        app_icon,
-                        summary,
-                        body,
-                        &actions,
-                        &hints,
-                        expire_timeout,
-                    ),
-                )
-                .await
-                .expect("call Notify")
-                .body()
-                .deserialize()
-                .expect("deserialize id");
+        let id: u32 = proxy
+            .call_method(
+                "Notify",
+                &(
+                    app_name,
+                    replaces_id,
+                    app_icon,
+                    summary,
+                    body,
+                    &actions,
+                    &hints,
+                    expire_timeout,
+                ),
+            )
+            .await
+            .expect("call Notify")
+            .body()
+            .deserialize()
+            .expect("deserialize id");
 
-            assert_eq!(id, 1, "first allocated id must be 1");
+        assert_eq!(id, 1, "first allocated id must be 1");
 
-            let drained = bridge.drain_incoming();
-            assert_eq!(drained.len(), 1, "Notify must enqueue exactly one toast");
-            let inc = &drained[0];
-            assert_eq!(inc.dbus_id, 1);
-            assert_eq!(inc.summary, "Build finished");
-            assert_eq!(inc.urgency, 2, "critical urgency hint must round-trip");
-            assert_eq!(
-                inc.actions,
-                vec![("default".to_string(), "Open".to_string())]
-            );
-            let caller = inc.caller.as_ref().expect("caller attributed");
-            assert_eq!(caller.workspace_id, WorkspaceId(7));
-            assert_eq!(caller.app_id.as_str(), "org.example.app");
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
-            let proxy = notifications_proxy(&client).await;
+        let drained = bridge.drain_incoming();
+        assert_eq!(drained.len(), 1, "Notify must enqueue exactly one toast");
+        let inc = &drained[0];
+        assert_eq!(inc.dbus_id, 1);
+        assert_eq!(inc.summary, "Build finished");
+        assert_eq!(inc.urgency, 2, "critical urgency hint must round-trip");
+        assert_eq!(
+            inc.actions,
+            vec![("default".to_string(), "Open".to_string())]
+        );
+        let caller = inc.caller.as_ref().expect("caller attributed");
+        assert_eq!(caller.workspace_id, WorkspaceId(7));
+        assert_eq!(caller.app_id.as_str(), "org.example.app");
+    }
 
-            let hints: HashMap<String, OwnedValue> = HashMap::new();
-            let actions: Vec<String> = vec![];
-            let id: u32 = proxy
-                .call_method(
-                    "Notify",
-                    &("App", 99u32, "", "Sum", "Body", &actions, &hints, 0i32),
-                )
-                .await
-                .expect("call Notify")
-                .body()
-                .deserialize()
-                .expect("deserialize id");
-            assert_eq!(id, 99, "a non-zero replaces_id must be returned verbatim");
-            let inc = bridge.drain_incoming();
-            assert_eq!(inc[0].dbus_id, 99);
-            assert_eq!(inc[0].expire_timeout, 0, "never-expire timeout preserved");
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
-            let proxy = notifications_proxy(&client).await;
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn dbus_notify_returns_a_nonzero_replaces_id_verbatim() {
+        let bridge = NotificationBridge::new();
+        let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
+        let proxy = notifications_proxy(&client).await;
 
-            proxy
-                .call_method("CloseNotification", &(5u32))
-                .await
-                .expect("call CloseNotification");
-            assert_eq!(bridge.drain_close_requests(), vec![5]);
-        }
-        {
-            let bridge = NotificationBridge::new();
-            let (_server, client) = bring_up_pair(bridge, CallerMap::new()).await;
-            let proxy = notifications_proxy(&client).await;
+        let hints: HashMap<String, OwnedValue> = HashMap::new();
+        let actions: Vec<String> = vec![];
+        let id: u32 = proxy
+            .call_method(
+                "Notify",
+                &("App", 99u32, "", "Sum", "Body", &actions, &hints, 0i32),
+            )
+            .await
+            .expect("call Notify")
+            .body()
+            .deserialize()
+            .expect("deserialize id");
+        assert_eq!(id, 99, "a non-zero replaces_id must be returned verbatim");
+        let inc = bridge.drain_incoming();
+        assert_eq!(inc[0].dbus_id, 99);
+        assert_eq!(inc[0].expire_timeout, 0, "never-expire timeout preserved");
+    }
 
-            let caps: Vec<String> = proxy
-                .call_method("GetCapabilities", &())
-                .await
-                .expect("call GetCapabilities")
-                .body()
-                .deserialize()
-                .expect("deserialize caps");
-            assert!(caps.contains(&"body".to_string()));
-            assert!(caps.contains(&"actions".to_string()));
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn dbus_close_notification_reaches_the_bridge() {
+        let bridge = NotificationBridge::new();
+        let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
+        let proxy = notifications_proxy(&client).await;
 
-            let (name, vendor, _ver, spec): (String, String, String, String) = proxy
-                .call_method("GetServerInformation", &())
-                .await
-                .expect("call GetServerInformation")
-                .body()
-                .deserialize()
-                .expect("deserialize server info");
-            assert_eq!(name, "Tilo Notifications");
-            assert_eq!(vendor, "Tilo");
-            assert_eq!(spec, "1.2");
-        }
+        proxy
+            .call_method("CloseNotification", &(5u32))
+            .await
+            .expect("call CloseNotification");
+        assert_eq!(bridge.drain_close_requests(), vec![5]);
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn dbus_reports_capabilities_and_server_information() {
+        let bridge = NotificationBridge::new();
+        let (_server, client) = bring_up_pair(bridge, CallerMap::new()).await;
+        let proxy = notifications_proxy(&client).await;
+
+        let caps: Vec<String> = proxy
+            .call_method("GetCapabilities", &())
+            .await
+            .expect("call GetCapabilities")
+            .body()
+            .deserialize()
+            .expect("deserialize caps");
+        assert!(caps.contains(&"body".to_string()));
+        assert!(caps.contains(&"actions".to_string()));
+
+        let (name, vendor, _ver, spec): (String, String, String, String) = proxy
+            .call_method("GetServerInformation", &())
+            .await
+            .expect("call GetServerInformation")
+            .body()
+            .deserialize()
+            .expect("deserialize server info");
+        assert_eq!(name, "Tilo Notifications");
+        assert_eq!(vendor, "Tilo");
+        assert_eq!(spec, "1.2");
     }
 
     #[test]

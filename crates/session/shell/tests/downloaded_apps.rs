@@ -201,7 +201,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     let (surface_id, window) = open_window(&mut h);
     assert!(downloaded_apps::settle(WAIT));
 
-    // Phase `the_window_alone_names_the_program`.
+    // The window alone names the program.
     let candidate = downloaded_apps::candidate(surface_id)
         .expect("a program from Downloads with no entry is noticed");
     assert_eq!(candidate.program.path, first_file);
@@ -213,7 +213,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
         "running it adds nothing to the person's apps by itself"
     );
 
-    // Phase `the_first_run_asks_once_with_no_move_for_a_loose_binary`.
+    // The first run asks once with no move for a loose binary.
     let ask = downloaded_apps::take_ask().expect("the first run asks");
     assert_eq!(ask.surface_id, surface_id);
     assert_eq!(ask.name, "MyTool");
@@ -222,7 +222,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     assert!(ask.icon.is_some(), "the question shows the window's icon");
     assert!(downloaded_apps::take_ask().is_none(), "asked once");
 
-    // Phase `adding_it_puts_it_in_the_applications_model_with_its_window_icon`.
+    // Adding it puts it in the applications model with its window icon.
     downloaded_apps::answer(&Answer::Add {
         surface_id,
         move_to_applications: true,
@@ -243,7 +243,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     drop(h);
     drop(first);
 
-    // Phase `the_same_app_from_a_new_file_updates_its_entry`.
+    // The same app from a new file updates its entry.
     let second_file = home.home().join("Downloads/mytool-2/mytool");
     let second = Running::start(&second_file);
     let mut h = harness_for(&second);
@@ -268,7 +268,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     drop(h);
     drop(second);
 
-    // Phase `a_gone_copy_falls_back_to_the_other_copy`.
+    // A gone copy falls back to the other copy.
     std::fs::remove_file(&second_file).unwrap();
     wait_for("the entry starts the copy still there", || {
         entry(desktop_id)
@@ -276,7 +276,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
             .is_some_and(|downloaded| downloaded.present && downloaded.program == first_file)
     });
 
-    // Phase `a_deleted_file_shows_as_missing_without_trying_to_start_it`.
+    // A deleted file shows as missing without trying to start it.
     let kept = home.home().join("kept-mytool");
     std::fs::rename(&first_file, &kept).unwrap();
     wait_for("the entry says its file is gone", || {
@@ -287,7 +287,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
             .is_some_and(|downloaded| !downloaded.present)
     });
 
-    // Phase `locate_points_it_at_the_file_where_it_is_now`.
+    // Locate points it at the file where it is now.
     std::fs::rename(&kept, &first_file).unwrap();
     downloaded_apps::locate(desktop_id, &first_file);
     assert!(downloaded_apps::settle(WAIT));
@@ -353,7 +353,7 @@ fn an_entry_follows_its_file_when_it_moves_inside_the_persons_files() {
     let written = entry(&desktop_id).unwrap().downloaded.unwrap();
     assert_eq!(written.record(), Some(record));
 
-    // Phase `a_moved_and_renamed_file_is_found_by_its_record`.
+    // A moved and renamed file is found by its record.
     let after = files.join("Apps/Foo-renamed.AppImage");
     std::fs::create_dir_all(after.parent().unwrap()).unwrap();
     std::fs::rename(&before, &after).unwrap();

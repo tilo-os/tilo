@@ -763,181 +763,190 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one phase per way a pairing attempt can end"
-    )]
-    fn nearby_pairing_always_ends_with_the_join_or_a_reason() {
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [7; 32]);
-            let status = serde_json::json!({
-                "state": "complete",
-                "verification_code": "123456",
-                "identity": hex::encode([7; 32]),
-                "record_path": record,
-            });
-            // The helper keeps running after reporting: completion must not
-            // wait for its exit or parse anything it prints.
-            let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Joined(MintedIdentity {
-                    fingerprint: hex::encode([7; 32]),
-                    path: record,
-                })
-            );
-        }
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [7; 32]);
-            let status = serde_json::json!({
-                "state": "complete",
-                "identity": hex::encode([8; 32]),
-                "record_path": record,
-            });
-            let script = format!("printf '%s' '{status}' > \"$1\"");
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-            );
-        }
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [9; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("select joined identity");
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Joined(MintedIdentity {
-                    fingerprint: hex::encode([9; 32]),
-                    path: record,
-                })
-            );
-        }
-        // Phase `a_selected_identity_lets_the_helper_finish_its_commit`.
-        // The selection lands while the helper is still committing: the
-        // attempt must not end, and stop the helper, before it has finished
-        // and recorded its status.
-        {
-            let fixture = fixture();
-            let record = joined_record(&fixture, [10; 32]);
-            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
-                .expect("select joined identity");
-            let finished = fixture.identity_dir.join("helper-finished");
-            let status = serde_json::json!({
-                "state": "complete",
-                "verification_code": "123456",
-                "identity": hex::encode([10; 32]),
-                "record_path": record,
-            });
-            let script = format!(
-                "sleep 1; : > '{}'; printf '%s' '{status}' > \"$1\"",
-                finished.display()
-            );
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(pairing.poll(Instant::now()), NearbyEvent::Idle);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Joined(MintedIdentity {
-                    fingerprint: hex::encode([10; 32]),
-                    path: record,
-                })
-            );
-            assert!(
-                finished.exists(),
-                "the helper was stopped before it finished"
-            );
-        }
-        {
-            let fixture = fixture();
-            let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
-                panic!("the refused commit is a failure");
-            };
-            assert_eq!(
-                failure,
-                NearbyFailure {
-                    cause: NearbyCause::PermissionDenied,
-                    detail: Some("Permission denied (os error 13)".into()),
+    fn a_complete_status_joins_without_waiting_for_the_helper_to_exit() {
+        let fixture = fixture();
+        let record = joined_record(&fixture, [7; 32]);
+        let status = serde_json::json!({
+            "state": "complete",
+            "verification_code": "123456",
+            "identity": hex::encode([7; 32]),
+            "record_path": record,
+        });
+        // The helper keeps running after reporting: completion must not
+        // wait for its exit or parse anything it prints.
+        let script = format!("printf '%s' '{status}' > \"$1\"; exec sleep infinity");
+        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Joined(MintedIdentity {
+                fingerprint: hex::encode([7; 32]),
+                path: record,
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_naming_another_identity_is_invalid() {
+        let fixture = fixture();
+        let record = joined_record(&fixture, [7; 32]);
+        let status = serde_json::json!({
+            "state": "complete",
+            "identity": hex::encode([8; 32]),
+            "record_path": record,
+        });
+        let script = format!("printf '%s' '{status}' > \"$1\"");
+        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+        );
+    }
+
+    #[test]
+    fn a_selected_identity_joins_without_a_status() {
+        let fixture = fixture();
+        let record = joined_record(&fixture, [9; 32]);
+        runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+            .expect("select joined identity");
+        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Joined(MintedIdentity {
+                fingerprint: hex::encode([9; 32]),
+                path: record,
+            })
+        );
+    }
+
+    /// The selection lands while the helper is still committing: the
+    /// attempt must not end, and stop the helper, before it has finished
+    /// and recorded its status.
+    #[test]
+    fn a_selected_identity_lets_the_helper_finish_its_commit() {
+        let fixture = fixture();
+        let record = joined_record(&fixture, [10; 32]);
+        runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+            .expect("select joined identity");
+        let finished = fixture.identity_dir.join("helper-finished");
+        let status = serde_json::json!({
+            "state": "complete",
+            "verification_code": "123456",
+            "identity": hex::encode([10; 32]),
+            "record_path": record,
+        });
+        let script = format!(
+            "sleep 1; : > '{}'; printf '%s' '{status}' > \"$1\"",
+            finished.display()
+        );
+        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+        assert_eq!(pairing.poll(Instant::now()), NearbyEvent::Idle);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Joined(MintedIdentity {
+                fingerprint: hex::encode([10; 32]),
+                path: record,
+            })
+        );
+        assert!(
+            finished.exists(),
+            "the helper was stopped before it finished"
+        );
+    }
+
+    #[test]
+    fn a_refused_commit_reports_permission_denied() {
+        let fixture = fixture();
+        let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
+        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+        let NearbyEvent::Failed(failure) = poll_until_over(&mut pairing) else {
+            panic!("the refused commit is a failure");
+        };
+        assert_eq!(
+            failure,
+            NearbyFailure {
+                cause: NearbyCause::PermissionDenied,
+                detail: Some("Permission denied (os error 13)".into()),
+            }
+        );
+        assert!(failure.title().contains("Permission denied"), "{failure:?}");
+    }
+
+    #[test]
+    fn an_unparsed_error_is_reported_verbatim_and_recorded() {
+        let fixture = fixture();
+        let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
+        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+        let expected = NearbyFailure {
+            cause: NearbyCause::Unknown,
+            detail: Some("Not authorized".into()),
+        };
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Failed(expected.clone())
+        );
+        assert_eq!(
+            read_progress(&fixture.status),
+            NearbyProgress::Failed(expected)
+        );
+    }
+
+    #[test]
+    fn a_stuck_helper_times_out_after_showing_its_code() {
+        let fixture = fixture();
+        let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
+        let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+        tilo_test_env::wait_until("the verification code to be shown while waiting", || {
+            match pairing.poll(Instant::now()) {
+                NearbyEvent::Idle => false,
+                NearbyEvent::Code(code) => {
+                    assert_eq!(code, "424242");
+                    true
                 }
-            );
-            assert!(failure.title().contains("Permission denied"), "{failure:?}");
-        }
-        {
-            let fixture = fixture();
-            let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let expected = NearbyFailure {
-                cause: NearbyCause::Unknown,
-                detail: Some("Not authorized".into()),
-            };
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(expected.clone())
-            );
-            assert_eq!(
-                read_progress(&fixture.status),
-                NearbyProgress::Failed(expected)
-            );
-        }
-        {
-            let fixture = fixture();
-            let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            tilo_test_env::wait_until("the verification code to be shown while waiting", || {
-                match pairing.poll(Instant::now()) {
-                    NearbyEvent::Idle => false,
-                    NearbyEvent::Code(code) => {
-                        assert_eq!(code, "424242");
-                        true
-                    }
-                    event => panic!("the pairing ended before its code: {event:?}"),
-                }
-            });
-            let over = pairing.deadline;
-            let event = poll_until_over_at(&mut pairing, Some(over));
-            let expected = NearbyFailure::new(NearbyCause::TimedOut);
-            assert_eq!(event, NearbyEvent::Failed(expected.clone()));
-            assert!(pairing.child.is_none(), "the stuck helper was stopped");
-            assert_eq!(
-                read_progress(&fixture.status),
-                NearbyProgress::Failed(expected)
-            );
-        }
-        {
-            let fixture = fixture();
-            // The leader reports and exits while a worker it started keeps
-            // the inherited stderr open for longer than the test waits, so
-            // a report that waited on the pipe never comes.
-            let script = format!(
-                r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
-                tilo_test_env::hang_bound()
-                    .as_secs()
-                    .saturating_mul(2)
-                    .max(600)
-            );
-            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure {
-                    cause: NearbyCause::PermissionDenied,
-                    detail: Some("Permission denied (os error 13)".into()),
-                })
-            );
-        }
-        {
-            let fixture = fixture();
-            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-            assert_eq!(
-                poll_until_over(&mut pairing),
-                NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
-            );
-        }
+                event => panic!("the pairing ended before its code: {event:?}"),
+            }
+        });
+        let over = pairing.deadline;
+        let event = poll_until_over_at(&mut pairing, Some(over));
+        let expected = NearbyFailure::new(NearbyCause::TimedOut);
+        assert_eq!(event, NearbyEvent::Failed(expected.clone()));
+        assert!(pairing.child.is_none(), "the stuck helper was stopped");
+        assert_eq!(
+            read_progress(&fixture.status),
+            NearbyProgress::Failed(expected)
+        );
+    }
+
+    #[test]
+    fn a_worker_holding_stderr_does_not_delay_the_failure() {
+        let fixture = fixture();
+        // The leader reports and exits while a worker it started keeps
+        // the inherited stderr open for longer than the test waits, so
+        // a report that waited on the pipe never comes.
+        let script = format!(
+            r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
+            tilo_test_env::hang_bound()
+                .as_secs()
+                .saturating_mul(2)
+                .max(600)
+        );
+        let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Failed(NearbyFailure {
+                cause: NearbyCause::PermissionDenied,
+                detail: Some("Permission denied (os error 13)".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_helper_exiting_without_an_identity_is_invalid() {
+        let fixture = fixture();
+        let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
+        assert_eq!(
+            poll_until_over(&mut pairing),
+            NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
+        );
     }
 
     /// The onboarding view polls the pairing from the compositor's loop;

@@ -436,21 +436,18 @@ impl Fixture {
     }
 }
 
+/// One client walks through every transition of its feedback.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario walks one client through every transition of its feedback"
-)]
 fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scanned_out() {
     let mut fixture = Fixture::new();
     let plane = Arc::clone(&fixture.plane);
 
-    // Phase `default_first`: a surface that is not fullscreen gets the
+    // A surface that is not fullscreen gets the
     // default feedback.
     assert_eq!(fixture.batches(), 1, "one batch when the surface asked");
     fixture.assert_default("a windowed surface");
 
-    // Phase `fullscreen_but_translucent`: an ARGB buffer without an opaque
+    // An ARGB buffer without an opaque
     // region would be refused by the presenter, so it is not offered the
     // plane.
     fixture.toplevel.set_fullscreen(None);
@@ -459,17 +456,17 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     assert!(fixture.frame(Some(&plane)), "the client is the candidate");
     assert_eq!(fixture.batches(), 1, "nothing to tell a translucent client");
 
-    // Phase `fullscreen_and_opaque`: the same buffer declared opaque.
+    // The same buffer declared opaque.
     fixture.commit(Fourcc::Argb8888, Opaque::Whole);
     assert!(fixture.frame(Some(&plane)));
     assert_eq!(fixture.batches(), 2, "the client is told");
     fixture.assert_scanout("a fullscreen, opaque client");
 
-    // Phase `unchanged_frames_resend_nothing`.
+    // Unchanged frames resend nothing.
     assert!(fixture.frame(Some(&plane)));
     assert_eq!(fixture.batches(), 2, "the same offer is not resent");
 
-    // Phase `chrome_over_it`: the on-screen keyboard rises over the client.
+    // The on-screen keyboard rises over the client.
     store().publish_rgba(KEYBOARD, &[0, 0, 0, 255], 1, 1);
     fixture
         .frames
@@ -478,7 +475,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     assert_eq!(fixture.batches(), 3);
     fixture.assert_default("chrome over the client");
 
-    // Phase `chrome_gone`.
+    // The keyboard goes down again.
     fixture
         .frames
         .set_osk_surface(Some(KEYBOARD), None, None, false);
@@ -486,7 +483,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     assert_eq!(fixture.batches(), 4);
     fixture.assert_scanout("the keyboard down again");
 
-    // Phase `a_popup_over_it`.
+    // A popup over it.
     let popup = 9_907_732;
     store().publish_rgba(popup, &[0, 0, 0, 255], 1, 1);
     fixture
@@ -498,24 +495,24 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("the popup closed");
 
-    // Phase `turned_translucent`: its next buffer drops the region.
+    // Its next buffer drops the region.
     fixture.commit(Fourcc::Argb8888, Opaque::None);
     assert!(fixture.frame(Some(&plane)));
     fixture.assert_default("a translucent buffer");
 
-    // Phase `xrgb_is_opaque_by_format`.
+    // XRGB is opaque by its format.
     fixture.commit(Fourcc::Xrgb8888, Opaque::None);
     assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("an XRGB buffer");
 
-    // Phase `no_scanout_plane`: headless, lavapipe, a rotated or calibrated
+    // Headless, lavapipe, a rotated or calibrated
     // output — the backend reports no plane, and the client falls back.
     let before = fixture.batches();
     assert!(fixture.frame(None), "still the candidate");
     assert_eq!(fixture.batches(), before + 1);
     fixture.assert_default("an output without a scanout plane");
 
-    // Phase `a_plane_that_scans_out_nothing_importable`: only a tiled
+    // Only a tiled
     // modifier — offering it would hand the client a buffer the compositor
     // cannot draw once anything covers it.
     let tiled_only = Arc::new(ScanoutPlane {
@@ -535,7 +532,7 @@ fn a_fullscreen_opaque_client_gets_a_scanout_tranche_until_it_could_not_be_scann
     assert!(fixture.frame(Some(&plane)));
     fixture.assert_scanout("a plane with linear formats again");
 
-    // Phase `left_fullscreen`: the frame still draws the surface on top (the
+    // The frame still draws the surface on top (the
     // shell leaves fullscreen on its next pass), but it is no longer the
     // fullscreen client, so it is not offered the plane.
     fixture.toplevel.unset_fullscreen();

@@ -203,33 +203,41 @@ fn assert_every_texel(rgba: &[u8], alpha: u8, what: &str) {
     }
 }
 
+/// One surface commits in turn; each row is a commit and the alpha its
+/// frame must have. The commit that keeps the region relies on the one
+/// before it, as `wl_surface` state does.
 #[test]
 fn an_argb_commit_is_opaque_exactly_when_its_opaque_region_covers_the_surface() {
     let mut fixture = Fixture::new();
-
-    // Phase `argb_with_an_opaque_region_covering_the_surface`: a fullscreen
-    // browser. Its alpha is padding, so it is drawn opaque — and on DRM
-    // scanned out as XRGB8888.
-    let frame = fixture.commit(Fourcc::Argb8888, Opaque::Set(0, 0, WIDTH, HEIGHT));
-    assert_every_texel(&frame, 0xFF, "a covering opaque region");
-
-    // Phase `the_region_persists`: a later commit that leaves the region
-    // alone keeps the one set before, as `wl_surface` state does.
-    let frame = fixture.commit(Fourcc::Argb8888, Opaque::Keep);
-    assert_every_texel(&frame, 0xFF, "the region an earlier commit set");
-
-    // Phase `argb_partly_translucent`: an opaque region that leaves a strip
-    // out (rounded corners, a shadow) keeps the alpha, so the frame is
-    // composited over what is below.
-    let frame = fixture.commit(Fourcc::Argb8888, Opaque::Set(0, 0, WIDTH, HEIGHT - 1));
-    assert_every_texel(&frame, 0x80, "a partial opaque region");
-
-    // Phase `argb_without_an_opaque_region`.
-    let frame = fixture.commit(Fourcc::Argb8888, Opaque::Unset);
-    assert_every_texel(&frame, 0x80, "no opaque region");
-
-    // Phase `xrgb_unchanged`: its alpha byte is padding with or without a
-    // region.
-    let frame = fixture.commit(Fourcc::Xrgb8888, Opaque::Unset);
-    assert_every_texel(&frame, 0xFF, "an XRGB buffer");
+    let commits = [
+        // A fullscreen browser. Its alpha is padding, so it is drawn opaque,
+        // and on DRM scanned out as XRGB8888.
+        (
+            Fourcc::Argb8888,
+            Opaque::Set(0, 0, WIDTH, HEIGHT),
+            0xFF,
+            "a covering opaque region",
+        ),
+        (
+            Fourcc::Argb8888,
+            Opaque::Keep,
+            0xFF,
+            "the region an earlier commit set",
+        ),
+        // A strip left out (rounded corners, a shadow) keeps the alpha, so
+        // the frame is composited over what is below.
+        (
+            Fourcc::Argb8888,
+            Opaque::Set(0, 0, WIDTH, HEIGHT - 1),
+            0x80,
+            "a partial opaque region",
+        ),
+        (Fourcc::Argb8888, Opaque::Unset, 0x80, "no opaque region"),
+        // Its alpha byte is padding with or without a region.
+        (Fourcc::Xrgb8888, Opaque::Unset, 0xFF, "an XRGB buffer"),
+    ];
+    for (fourcc, opaque, alpha, what) in commits {
+        let frame = fixture.commit(fourcc, opaque);
+        assert_every_texel(&frame, alpha, what);
+    }
 }

@@ -344,89 +344,89 @@ fn paint_direct(
 }
 
 #[test]
-fn hdr_layers_composite_in_linear_light_on_every_output_path() {
+fn direct_presenter_composites_on_the_gpu() {
     let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
     let (scene, layers) = scene();
     assert_eq!(layers.len(), 2, "both HDR surfaces are recorded");
     assert_ne!(layers[0].channel, layers[1].channel);
     let probes = probes();
-
-    // Phase `direct_presenter_composites_on_the_gpu`.
-    {
-        let target = target(&bridge, WIDTH, HEIGHT);
-        paint_direct(&mut bridge, &scene, &target, &layers, 1);
-        let nits = read_nits(&bridge, &target);
-        for probe in &probes {
-            let (x, y) = probe.at;
-            assert_close(
-                &format!("GPU composite, {}", probe.name),
-                nits[(y * WIDTH + x) as usize],
-                probe.hdr,
-                0.04,
-                0.5,
-            );
-        }
-    }
-
-    // Phase `without_the_composite_the_sdr_rendition_shows`.
-    // Captures, SDR outputs and any pass that does not composite render the
-    // scene as it is: the tone-mapped rendition at SDR white, not a hole.
-    {
-        let target = target(&bridge, WIDTH, HEIGHT);
-        paint_direct(&mut bridge, &scene, &target, &[], 2);
-        let nits = read_nits(&bridge, &target);
-        let [r, g, b] = nits[(20 * WIDTH + 24) as usize];
-        assert!(
-            r <= SDR_WHITE * 1.01 && r > 1.0 && g > 1.0 && b > 0.1,
-            "the PQ surface shows its SDR rendition: {:?}",
-            [r, g, b]
+    let target = target(&bridge, WIDTH, HEIGHT);
+    paint_direct(&mut bridge, &scene, &target, &layers, 1);
+    let nits = read_nits(&bridge, &target);
+    for probe in &probes {
+        let (x, y) = probe.at;
+        assert_close(
+            &format!("GPU composite, {}", probe.name),
+            nits[(y * WIDTH + x) as usize],
+            probe.hdr,
+            0.04,
+            0.5,
         );
     }
+}
 
-    // Phase `readback_presenter_composites_on_the_cpu_for_hdr_and_sdr_outputs`.
-    {
-        let (first, second) = bridge
-            .paint_with_hdr_layers(&scene, &layers)
-            .expect("both renders complete");
-        let first = first.to_vec();
-        for probe in &probes {
-            let (x, y) = probe.at;
-            let offset = ((y * WIDTH + x) * 4) as usize;
-            let pixel =
-                |buffer: &[u8]| -> [u8; 4] { buffer[offset..offset + 4].try_into().unwrap() };
-            let hdr = composite_hdr_pixel(
-                pixel(&first),
-                pixel(&second),
-                x,
-                y,
-                &layers,
-                CompositeTarget::Pq {
-                    sdr_white_nits: SDR_WHITE,
-                },
-            );
-            assert_close(
-                &format!("CPU composite, {}", probe.name),
-                hdr,
-                probe.hdr,
-                0.02,
-                0.5,
-            );
-            let sdr = composite_hdr_pixel(
-                pixel(&first),
-                pixel(&second),
-                x,
-                y,
-                &layers,
-                CompositeTarget::Sdr,
-            );
-            assert_close(
-                &format!("SDR output tone-map, {}", probe.name),
-                sdr,
-                probe.sdr,
-                0.02,
-                0.004,
-            );
-        }
+/// Captures, SDR outputs and any pass that does not composite render the
+/// scene as it is: the tone-mapped rendition at SDR white, not a hole.
+#[test]
+fn without_the_composite_the_sdr_rendition_shows() {
+    let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
+    let (scene, _layers) = scene();
+    let target = target(&bridge, WIDTH, HEIGHT);
+    paint_direct(&mut bridge, &scene, &target, &[], 2);
+    let nits = read_nits(&bridge, &target);
+    let [r, g, b] = nits[(20 * WIDTH + 24) as usize];
+    assert!(
+        r <= SDR_WHITE * 1.01 && r > 1.0 && g > 1.0 && b > 0.1,
+        "the PQ surface shows its SDR rendition: {:?}",
+        [r, g, b]
+    );
+}
+
+#[test]
+fn readback_presenter_composites_on_the_cpu_for_hdr_and_sdr_outputs() {
+    let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
+    let (scene, layers) = scene();
+    let probes = probes();
+    let (first, second) = bridge
+        .paint_with_hdr_layers(&scene, &layers)
+        .expect("both renders complete");
+    let first = first.to_vec();
+    for probe in &probes {
+        let (x, y) = probe.at;
+        let offset = ((y * WIDTH + x) * 4) as usize;
+        let pixel = |buffer: &[u8]| -> [u8; 4] { buffer[offset..offset + 4].try_into().unwrap() };
+        let hdr = composite_hdr_pixel(
+            pixel(&first),
+            pixel(&second),
+            x,
+            y,
+            &layers,
+            CompositeTarget::Pq {
+                sdr_white_nits: SDR_WHITE,
+            },
+        );
+        assert_close(
+            &format!("CPU composite, {}", probe.name),
+            hdr,
+            probe.hdr,
+            0.02,
+            0.5,
+        );
+        let sdr = composite_hdr_pixel(
+            pixel(&first),
+            pixel(&second),
+            x,
+            y,
+            &layers,
+            CompositeTarget::Sdr,
+        );
+        assert_close(
+            &format!("SDR output tone-map, {}", probe.name),
+            sdr,
+            probe.sdr,
+            0.02,
+            0.004,
+        );
     }
 }
 
