@@ -94,6 +94,20 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
+    /// `delivery(r)`: how the outside effect `r`'s actions queued last stands (sending a mail),
+    /// `.none` when they queued none: waiting to go online, sending, sent, rejected with the
+    /// service's reason, or outcome unknown. A view that reads it runs again when it moves.
+    pub(super) fn builtin_delivery(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("delivery", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::Delivery,
+            vec![r],
+            Ty::Option(Box::new(host_ty("Delivery"))),
+        )
+    }
+
     /// `members(r)`: the workspace's members who can read `r` now, as the platform's
     /// membership and grants decide, each a `Principal` (`name()`, `kind()`, `role()`). A view
     /// that reads it runs again when membership or grants change.
