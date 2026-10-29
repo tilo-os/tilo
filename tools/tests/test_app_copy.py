@@ -49,6 +49,8 @@ class AppCopyTests(unittest.TestCase):
             DeviceInfo { icon: "net-device-icon".into() };
             self.push_confirm(body, package,
                 ("settings-confirm-id", "settings-cancel-id"), action);
+            Self::push_confirm(actions, body, package,
+                ("settings-install-id", "settings-dismiss-id"), action);
         }
         '''
         self.assertEqual(self.keys(source), {"settings-button-label"})
@@ -127,6 +129,20 @@ class AppCopyTests(unittest.TestCase):
             self.assertEqual(copy.missing_copy(root), [
                 "apps/settings/src/view.rs:1: de-DE lacks agent-absent",
                 "apps/settings/src/view.rs:1: en-US lacks agent-absent",
+            ])
+
+    def test_a_crate_resolving_at_its_root_is_checked_in_its_own_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            setup = "setup-done = Done\n"
+            self.crate(root, "crates/session/setup", {"en-US": setup, "de-DE": setup}, "")
+            (root / "crates/session/setup/Cargo.toml").write_text('[package]\nname = "tilo-setup"\n')
+            self.crate(root, "crates/session/shell", {"en-US": "shell-x = X\n"},
+                       'fn page() { tilo_setup::t("setup-done"); tilo_setup::t("setup-gone"); }\n')
+            self.assertEqual(copy.missing_copy(root), [
+                "crates/session/shell/src/view.rs:1: de-DE lacks setup-gone (crates/session/setup)",
+                "crates/session/shell/src/view.rs:1: en-US lacks setup-gone (crates/session/setup)",
             ])
 
     def test_every_actual_source_key_is_in_its_catalogues(self):

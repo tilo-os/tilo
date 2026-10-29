@@ -7,8 +7,9 @@ untranslatable identifier to the screen. Keys passed straight to a resolver
 `locales/en-US.ftl`; Settings also routes keys through conditionals and
 tables, so its key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
-A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`) is
-checked in that crate's catalogue, the one it is looked up in.
+A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, or
+`tilo_onboarding::t` for a crate that resolves at its root) is checked in that
+crate's catalogue, the one it is looked up in.
 """
 
 from __future__ import annotations
@@ -30,9 +31,11 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
 # next; one that starts with `\b` or an alternation is tried at every offset of some 100 MB of
 # source. A leading `\b` is checked by `starts_word` instead.
 RESOLVER = re.compile(r"t(?:_args|r|r_args)?\s*\(")
-# `<crate>::i18n::t(`: found by its literal part, then the crate name read backwards
-# (`\b([A-Za-z_]\w*)` before it), which a search from every position took seconds per tree for.
-QUALIFIED = re.compile(r"::i18n::(?:t|t_args|tr|tr_args)\s*\(")
+# `<crate>::i18n::t(`, or `<crate>::t(` for a crate whose catalogue resolves at its root
+# (`ui::embedded_catalog!(pub fn, ..)`): found by its literal part, then the crate name read
+# backwards (`\b([A-Za-z_]\w*)` before it), which a search from every position took seconds per
+# tree for.
+QUALIFIED = re.compile(r"::(?:i18n::)?(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALLS = (re.compile(r"Button::new\s*\("), re.compile(r"device_read::thread\s*\("))
 MACHINE_METHOD = re.compile(r"\.(?:with_id|thread_name|name|start_job)\s*\(")
@@ -187,12 +190,15 @@ def used_keys(text: str, namespaces: set[str],
     # Navigation slugs and control-ID pairs are passed separately from copy.
     for function in (f for f in SLUG.finditer(pruned.code) if starts_word(pruned.code, f.start())):
         machine.append((function.end(), rust.matching(pruned.code, function.end() - 1)))
-    for call in re.finditer(r"\.push_confirm\s*\(", pruned.code):
+    # A confirmation's control IDs travel as a tuple argument of `push_confirm`.
+    for call in re.finditer(r"(?:\.|::)push_confirm\s*\(", pruned.code):
         limit = rust.matching(pruned.code, call.end() - 1) - 1
-        start, end = first_argument(pruned.code, call.end(), limit)
-        start, end = first_argument(pruned.code, end + 1, limit)
-        start, end = first_argument(pruned.code, end + 1, limit)
-        machine.append((start, end))
+        position = call.end()
+        while position < limit:
+            start, end = first_argument(pruned.code, position, limit)
+            if pruned.code[start:end].lstrip().startswith("("):
+                machine.append((start, end))
+            position = end + 1
     found = []
     elsewhere_spans, machine_spans = Spans(elsewhere), Spans(machine)
     for literal in literals:
