@@ -348,9 +348,10 @@ impl Pending {
     reason = "test support: a fixture that cannot be written fails the calling test"
 )]
 pub mod fixtures {
-    use super::*;
+    use super::{BrowserDeclaration, Prepared, root};
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
 
     pub fn fixture() -> (tempfile::TempDir, PathBuf, BrowserDeclaration) {
         let (home, identity, _) = crate::portable_home::fixtures::fixture();
