@@ -19,6 +19,24 @@ tilo-dialogs.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
 tilo-lockdown-policy = { path = "../tilo-lockdown-policy" }
 tilo-paths.workspace = true
+# Naming an unsandboxed requester by the installed app it runs.
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+# The person's default apps, for the links the portal opens.
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+percent-encoding.workspace = true
+base64.workspace = true
+tilo-content-types = { path = "../../system/content-types" }
+tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
+# App master secrets: sealed legacy store, the device proof the Secret
+# Service asks of its managers.
+tilo-seal = { path = "../../system/tilo-seal" }
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+hex.workspace = true
+# Print jobs go to `lp` as argv, bounded in time and output.
+bounded-command = { path = "../../system/bounded-command" }
+rand.workspace = true
+zeroize.workspace = true
+rustix = { workspace = true, features = ["process"] }
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The theme the legacy toolkits' appearance keys are projected from.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }

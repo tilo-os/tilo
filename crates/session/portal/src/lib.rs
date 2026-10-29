@@ -27,8 +27,9 @@
 #![allow(
     clippy::unused_self,
     clippy::used_underscore_binding,
+    clippy::needless_pass_by_value,
     reason = "the interfaces mirror the portal's fixed D-Bus signatures: properties take the \
-              object and methods name arguments they ignore"
+              object, methods take their arguments by value and name some they ignore"
 )]
 
 use std::collections::HashMap;
@@ -43,23 +44,38 @@ use tilo_service::{Questions, Service, Started, decode, offer, reading};
 use zbus::zvariant::OwnedValue;
 
 pub mod access;
+pub mod account;
+pub mod app_chooser;
 pub mod appearance;
 pub mod auth;
+pub mod background;
 pub mod consent;
+mod dispatch;
+pub mod documents;
+pub mod dynamic_launcher;
+pub mod email;
 pub mod file_chooser;
+pub mod host;
 pub mod inhibit;
 pub mod lifecycle;
 pub mod lockdown;
+pub mod print;
 pub mod reply;
+pub mod requester;
+pub mod screensaver;
 pub mod screenshot;
+pub mod secret;
 pub mod settings;
+pub mod usb;
+pub mod wallpaper;
 
 #[cfg(test)]
 mod dbus_tests;
 
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
-pub use consent::Consents;
+pub use consent::{Consents, WorkspaceGrants};
 pub use inhibit::{Inhibition, Inhibitions};
+pub use requester::Requesters;
 pub use settings::{PortalSetting, Settings};
 
 /// The bus name the backend serves under, as `tilo.portal` names it.
@@ -129,6 +145,9 @@ pub struct Portal {
     questions: Questions,
     authenticator: PortalAuthenticator,
     capture: Arc<dyn Capture>,
+    host: Arc<dyn host::Host>,
+    app_states: background::AppStates,
+    autostart: background::Autostart,
     consents: Consents,
     settings: Settings,
     inhibitions: Inhibitions,
@@ -149,6 +168,9 @@ impl Portal {
             questions,
             authenticator,
             capture: Arc::new(NoCapture),
+            host: Arc::new(host::System),
+            app_states: background::AppStates::default(),
+            autostart: background::Autostart::default(),
             consents,
             settings: Settings::default(),
             inhibitions: Inhibitions::default(),
@@ -161,6 +183,27 @@ impl Portal {
     pub fn with_capture(mut self, capture: Arc<dyn Capture>) -> Self {
         self.capture = capture;
         self
+    }
+
+    /// The same, acting on the device through `host`.
+    #[must_use]
+    pub fn with_host(mut self, host: Arc<dyn host::Host>) -> Self {
+        self.host = host;
+        self
+    }
+
+    /// The same, writing the autostart entries apps ask for through
+    /// `autostart`.
+    #[must_use]
+    pub fn with_autostart(mut self, autostart: background::Autostart) -> Self {
+        self.autostart = autostart;
+        self
+    }
+
+    /// The apps running now, as the session tells the frontend.
+    #[must_use]
+    pub const fn app_states(&self) -> &background::AppStates {
+        &self.app_states
     }
 
     /// The same, keeping access answered for good in `consents`.
@@ -212,6 +255,43 @@ impl Portal {
         server
             .at(OBJECT_PATH, lockdown::LockdownBackend::for_session())
             .await?;
+        server
+            .at(OBJECT_PATH, app_chooser::AppChooser::new(self.clone()))
+            .await?;
+        server
+            .at(OBJECT_PATH, account::Account::new(self.clone()))
+            .await?;
+        server
+            .at(OBJECT_PATH, email::Email::new(self.clone()))
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                dynamic_launcher::DynamicLauncher::new(self.clone(), connection.clone()),
+            )
+            .await?;
+        server
+            .at(OBJECT_PATH, wallpaper::Wallpaper::new(self.clone()))
+            .await?;
+        server
+            .at(OBJECT_PATH, background::Background::new(self.clone()))
+            .await?;
+        screensaver::ScreenSaver::new(self.inhibitions.clone())
+            .serve_on(connection)
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                secret::Secret::on_session(self.clone(), connection.clone()),
+            )
+            .await?;
+        server
+            .at(
+                OBJECT_PATH,
+                print::Print::new(self.clone(), Arc::new(print::Cups)),
+            )
+            .await?;
+        server.at(OBJECT_PATH, usb::Usb::new(self.clone())).await?;
         self.requests.close_with_their_owners(connection);
         settings::emit_changes(connection, self.settings.subscribe());
         Ok(())
@@ -223,7 +303,55 @@ impl Portal {
     /// The bus refused an interface or the name.
     pub async fn serve(&self, connection: &zbus::Connection) -> zbus::Result<()> {
         self.serve_on(connection).await?;
+        // Another desktop's screensaver may own its name; the portal serves
+        // without it.
+        if let Err(error) = connection.request_name(screensaver::BUS_NAME).await {
+            tracing::warn!(%error, "another screensaver owns its name");
+        }
         connection.request_name(BUS_NAME).await
+    }
+
+    /// Ask the person question `kind` for `caller` on behalf of request
+    /// `path`, with `details` for the sheet.
+    ///
+    /// # Errors
+    /// [`reply::Ended::Cancelled`] when they declined.
+    async fn ask(
+        &self,
+        caller: &PortalCaller,
+        path: &str,
+        kind: &str,
+        details: impl serde::Serialize,
+    ) -> Result<tilo_service::Answer, reply::Ended> {
+        self.questions
+            .ask(tilo_service::Question {
+                handle: question_handle(path),
+                kind: kind.into(),
+                app_id: Some(caller.app_id.clone()),
+                label: caller.app_id.clone(),
+                details: serde_json::to_value(details).unwrap_or_default(),
+            })
+            .await
+            .ok_or(reply::Ended::Cancelled)
+    }
+
+    /// Authenticate a call that names no app (it acts on a request or a
+    /// store the frontend owns) as the frontend's: its unique name.
+    ///
+    /// # Errors
+    /// Access denied to anyone else.
+    async fn frontend(
+        &self,
+        header: &zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<zbus::names::OwnedUniqueName> {
+        let sender = header
+            .sender()
+            .cloned()
+            .map(zbus::names::OwnedUniqueName::from);
+        self.authenticator
+            .authenticate_frontend(sender.as_ref())
+            .await
+            .map_err(|error| zbus::fdo::Error::AccessDenied(error.to_string()))
     }
 
     /// Authenticate a call carrying request `handle`, for `app_id`.
@@ -248,11 +376,28 @@ impl Portal {
     }
 }
 
-impl Service for Portal {
+/// What one part of the backend publishes: its resources under
+/// [`PORTAL_RESOURCE`], their readings and their actions.
+pub(crate) trait Published {
+    fn resources(&self) -> Vec<ResourceSpec>;
+
+    /// The reading of `resource`; `None` when it is not this part's.
+    fn read(&self, resource: &str) -> Option<Value>;
+
+    /// Carry out `action` of `resource`, given everything `published`;
+    /// `None` when the resource is not this part's.
+    fn invoke(
+        &self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Option<Result<Started, DoorError>>;
+}
+
+impl Published for Consents {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let consents = self
-            .consents
-            .remembered()
+        self.remembered()
             .into_iter()
             .map(|(app, capability)| {
                 offer::<ConsentEffect>(ResourceSpec::new(
@@ -265,30 +410,65 @@ impl Service for Portal {
                     badge: None,
                     preview: None,
                 })
-            });
+            })
+            .collect()
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        let (app, capability) = resource
+            .strip_prefix(CONSENT_PREFIX)?
+            .split_once('\u{1f}')?;
+        self.remembered()
+            .contains(&(app.to_owned(), capability.to_owned()))
+            .then(|| serde_json::json!({ "app_id": app, "capability": capability }))
+    }
+
+    fn invoke(
+        &self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Option<Result<Started, DoorError>> {
+        let consent = resource.strip_prefix(CONSENT_PREFIX)?;
+        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
+        Some(
+            decode(published, resource, action, arguments).and_then(|ConsentEffect::Forget| {
+                let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
+                self.forget(app, capability)
+                    .then(|| Started::Done(ActionOutput::default()))
+                    .ok_or_else(unknown)
+            }),
+        )
+    }
+}
+
+impl Portal {
+    /// Every part that publishes something.
+    fn parts(&self) -> [&dyn Published; 3] {
+        [&self.consents, &self.inhibitions, &self.autostart]
+    }
+}
+
+impl Service for Portal {
+    fn resources(&self) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new(PORTAL_RESOURCE, "portal", "Portal")
-                .with_children(consents)
-                .with_children(self.inhibitions.resources()),
+                .with_children(self.parts().into_iter().flat_map(Published::resources)),
         ]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
-        if let Some(consent) = resource.strip_prefix(CONSENT_PREFIX) {
-            let (app, capability) = consent.split_once('\u{1f}')?;
-            return self
-                .consents
-                .remembered()
-                .contains(&(app.to_owned(), capability.to_owned()))
-                .then(|| serde_json::json!({ "app_id": app, "capability": capability }));
-        }
         if resource == PORTAL_RESOURCE {
             return Some(serde_json::json!({
                 "consents": reading(&self.consents.remembered()),
                 "inhibitions": self.inhibitions.reading(),
+                "autostart": self.autostart.apps(),
             }));
         }
-        self.inhibitions.read(resource)
+        self.parts()
+            .into_iter()
+            .find_map(|part| part.read(resource))
     }
 
     fn invoke(
@@ -297,20 +477,15 @@ impl Service for Portal {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        let unknown = || DoorError::Unknown(tilo_actions::ActionAddress::new(resource, action));
         let published = self.resources();
-        if let Some(consent) = resource.strip_prefix(CONSENT_PREFIX) {
-            let ConsentEffect::Forget = decode(&published, resource, action, arguments)?;
-            let (app, capability) = consent.split_once('\u{1f}').ok_or_else(unknown)?;
-            return self
-                .consents
-                .forget(app, capability)
-                .then(|| Started::Done(ActionOutput::default()))
-                .ok_or_else(unknown);
-        }
-        self.inhibitions
-            .invoke(&published, resource, action, arguments)
-            .unwrap_or_else(|| Err(unknown()))
+        self.parts()
+            .into_iter()
+            .find_map(|part| part.invoke(&published, resource, action, arguments))
+            .unwrap_or_else(|| {
+                Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
+                    resource, action,
+                )))
+            })
     }
 }
 
@@ -320,6 +495,21 @@ pub(crate) fn option<T: TryFrom<OwnedValue>>(
     key: &str,
 ) -> Option<T> {
     T::try_from(options.get(key)?.try_clone().ok()?).ok()
+}
+
+/// Text option `key` of a portal call: at most `max` bytes, no control
+/// characters, `None` when absent or not such text.
+pub(crate) fn text_option(
+    options: &HashMap<String, OwnedValue>,
+    key: &str,
+    max: usize,
+) -> Option<String> {
+    option::<String>(options, key).filter(|text| plain_text(text, max))
+}
+
+/// Whether `text` is at most `max` bytes with no control characters.
+pub(crate) fn plain_text(text: &str, max: usize) -> bool {
+    text.len() <= max && !text.chars().any(char::is_control)
 }
 
 /// A user-private persistent root. Never a predictable shared directory:

@@ -74,10 +74,16 @@ async fn bed() -> Bed {
     let bus = SessionBus::start();
     let backend = bus.connect().await;
     let questions = Questions::new();
+    // This process is every connection's; the test names it as the
+    // requester resolver names an app started outside the session.
+    let own = std::process::id();
     let authenticator = PortalAuthenticator::session_bus(
         backend.clone(),
         Arc::new(|app: &str, _: Option<&str>| Some(PortalCaller::new(app))),
-    );
+    )
+    .with_identify(Arc::new(move |pid| {
+        (pid == own).then(|| PortalCaller::new("/usr/bin/unsandboxed"))
+    }));
     let portal = Portal::new(questions.clone(), authenticator)
         .with_consents(crate::consent::Consents::new(questions.clone(), None));
     portal.serve(&backend).await.expect("served");
@@ -273,4 +279,189 @@ async fn a_departed_frontend_takes_its_requests_along() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("the question outlived its frontend");
+}
+
+/// The request path the frontend makes for a call by `requester`.
+fn request_of(requester: &zbus::Connection, token: &str) -> String {
+    let name = requester.unique_name().expect("unique name");
+    format!(
+        "/org/freedesktop/portal/desktop/request/{}/{token}",
+        name.trim_start_matches(':').replace('.', "_")
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_the_frontend_could_not_name_is_named_by_its_process() {
+    let bed = bed().await;
+    let request = request_of(&bed.stranger, "t1");
+    let handle = question_handle(&request);
+    let arguments = (
+        ObjectPath::try_from(request.as_str()).expect("request path"),
+        "",
+        "",
+        "Open",
+        HashMap::<String, OwnedValue>::new(),
+    );
+    let call = bed.frontend.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.FileChooser"),
+        "OpenFile",
+        &arguments,
+    );
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        let question = bed.questions.question(&handle).expect("asked");
+        assert_eq!(question.app_id.as_deref(), Some("/usr/bin/unsandboxed"));
+        assert!(bed.questions.decline(&handle));
+    };
+    let (reply, ()) = tokio::join!(call, answering);
+    let (response, _): Reply = reply.expect("replied").body().deserialize().expect("reply");
+    assert_eq!(response, 1, "asked, then declined: not refused unasked");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_app_chosen_is_one_offered_when_the_person_answered() {
+    let bed = bed().await;
+    let request = "/org/freedesktop/portal/desktop/request/1_9/open";
+    let handle = question_handle(request);
+    let arguments = (
+        ObjectPath::try_from(request).expect("request path"),
+        "org.example.Editor",
+        "",
+        vec!["org.example.Viewer"],
+        HashMap::<String, OwnedValue>::new(),
+    );
+    let choose = bed.frontend.call_method(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.AppChooser"),
+        "ChooseApplication",
+        &arguments,
+    );
+    let answering = async {
+        asked(&bed.questions, &handle).await;
+        let update = |from: zbus::Connection| async move {
+            from.call_method(
+                Some(BUS_NAME),
+                OBJECT_PATH,
+                Some("org.freedesktop.impl.portal.AppChooser"),
+                "UpdateChoices",
+                &(
+                    ObjectPath::try_from(request).expect("request path"),
+                    vec!["org.example.Viewer", "org.example.Painter"],
+                ),
+            )
+            .await
+        };
+        assert!(
+            update(bed.stranger.clone()).await.is_err(),
+            "only its frontend"
+        );
+        update(bed.frontend.clone()).await.expect("updated");
+        let question = bed.questions.question(&handle).expect("still asked");
+        let offered: crate::app_chooser::AppChooserQuestion =
+            serde_json::from_value(question.details).expect("details");
+        assert_eq!(offered.choices.len(), 2);
+        assert!(bed.questions.answer(
+            &handle,
+            Answer {
+                choice: Some(1),
+                ..Answer::default()
+            }
+        ));
+    };
+    let (reply, ()) = tokio::join!(choose, answering);
+    let (response, results): Reply = reply.expect("replied").body().deserialize().expect("reply");
+    assert_eq!(response, 0);
+    let choice: String = results["choice"].clone().try_into().expect("choice");
+    assert_eq!(choice, "org.example.Painter");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screensaver_hold_is_published_and_ends_with_its_client() {
+    let bed = bed().await;
+    let player = bed.stranger.clone();
+    let cookie: u32 = player
+        .call_method(
+            Some(crate::screensaver::BUS_NAME),
+            "/org/freedesktop/ScreenSaver",
+            Some("org.freedesktop.ScreenSaver"),
+            "Inhibit",
+            &("Film player", "Playing a film"),
+        )
+        .await
+        .expect("held")
+        .body()
+        .deserialize()
+        .expect("cookie");
+    assert_ne!(cookie, 0);
+    let held = bed.portal.inhibitions().held();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].1, "Film player");
+    let published = tilo_service::Service::resources(&bed.portal);
+    assert_eq!(published[0].children.len(), 1, "the person sees the hold");
+    drop(bed.stranger);
+    drop(player);
+    for _ in 0..500 {
+        if bed.portal.inhibitions().held().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the hold outlived its client");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn print_is_served_as_its_interface_declares() {
+    let bed = bed().await;
+    let print = zbus::Proxy::new(
+        &bed.frontend,
+        BUS_NAME,
+        OBJECT_PATH,
+        "org.freedesktop.impl.portal.Print",
+    )
+    .await
+    .expect("proxy");
+    let version: u32 = print.get_property("version").await.expect("version");
+    assert_eq!(version, 3);
+    let options = HashMap::<String, OwnedValue>::new();
+    let arguments = (
+        ObjectPath::try_from(REQUEST).expect("request path"),
+        "org.example.Editor",
+        "",
+        "Letter",
+        options.clone(),
+        options.clone(),
+        options,
+    );
+    let (response, _): Reply = bed
+        .stranger
+        .call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.Print"),
+            "PreparePrint",
+            &arguments,
+        )
+        .await
+        .expect("replied")
+        .body()
+        .deserialize()
+        .expect("reply");
+    assert_eq!(response, 2, "not the frontend: refused");
+    let malformed = bed
+        .frontend
+        .call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.Print"),
+            "PreparePrint",
+            &("not a request",),
+        )
+        .await;
+    assert!(
+        malformed.is_err(),
+        "a body that does not decode is an error"
+    );
 }

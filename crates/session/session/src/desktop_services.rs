@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use tilo_network_secret_agent::store::{RoamingWifiSlot, VaultStore};
-use tilo_portal::{Portal, PortalAuthenticator, PortalCaller, settings};
+use tilo_portal::{Portal, PortalAuthenticator, PortalCaller, Requesters, settings};
 use tilo_service::{Questions, Service};
 
 /// Where a bus is.
@@ -51,6 +51,7 @@ pub struct DesktopServices {
         Arc<tilo_tray_host::Tray>,
         tilo_tray_host::watcher::WatcherHandle,
     )>,
+    session: Option<(zbus::Connection, tilo_notifications_service::Server)>,
 }
 
 impl DesktopServices {
@@ -99,6 +100,7 @@ impl DesktopServices {
             roaming,
             _session: session,
             tray,
+            session,
         })
     }
 
@@ -133,6 +135,29 @@ impl DesktopServices {
     #[must_use]
     pub const fn roaming_wifi(&self) -> &RoamingWifiSlot {
         &self.roaming
+    }
+
+    /// Tell the portal which apps run now, each running in the background,
+    /// with a window, or in use (`tilo_portal::background`'s states), so
+    /// the frontend can tell an app that went windowless; the frontend is
+    /// told when that changed.
+    pub fn set_running_apps(&self, apps: impl IntoIterator<Item = (String, u32)>) {
+        let Some(portal) = &self.portal else {
+            return;
+        };
+        if !portal.app_states().set(apps) {
+            return;
+        }
+        if let Some((connection, _)) = &self.session {
+            let connection = connection.clone();
+            self.runtime.spawn(async move {
+                if let Err(error) =
+                    tilo_portal::background::Background::running_changed(&connection).await
+                {
+                    tracing::debug!(%error, "running apps not announced");
+                }
+            });
+        }
     }
 
     /// The runtime they run on.
@@ -207,6 +232,10 @@ async fn on_session_bus(
         PortalAuthenticator::session_bus(connection.clone(), resolver),
     )
     .with_capture(capture);
+        // An app the frontend could not name is named by its process.
+        PortalAuthenticator::session_bus(connection.clone(), resolver)
+            .with_identify(Requesters::host().resolver()),
+    );
     // The appearance is also written to dconf, the environment's own: only
     // a portal on the environment's bus speaks for it.
     if *bus == Bus::Default {

@@ -20517,7 +20517,14 @@ dependencies = [
 name = "tilo-portal"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bounded-command",
+ "desktop-policy",
  "futures-util",
+ "hex",
+ "percent-encoding",
+ "rand 0.10.3",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "settings-store",
@@ -20525,6 +20532,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-accessibility-settings",
  "tilo-actions",
+ "tilo-content-types",
+ "tilo-desktop-entry",
  "tilo-dialogs",
  "tilo-files",
  "tilo-lock",
@@ -20532,13 +20541,17 @@ dependencies = [
  "tilo-paths",
  "tilo-power-mgmt",
  "tilo-resource",
+ "tilo-seal",
+ "tilo-secrets",
  "tilo-service",
  "tilo-ui",
+ "tilo-wallpapers",
  "tokio",
  "tracing",
  "url",
  "workspace-hack",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]

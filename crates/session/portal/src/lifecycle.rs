@@ -146,6 +146,15 @@ impl Requests {
         }
     }
 
+    /// Whether request `path` is live and was made by `owner`.
+    #[must_use]
+    pub fn is_owned(&self, path: &str, owner: &str) -> bool {
+        self.live
+            .lock_recover()
+            .get(path)
+            .is_some_and(|entry| entry.owner == owner)
+    }
+
     /// Whether request `path` is live.
     #[must_use]
     pub fn is_live(&self, path: &str) -> bool {

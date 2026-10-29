@@ -23,6 +23,8 @@ use crate::{Portal, PortalCaller, lockdown, option, question_handle};
 pub const SCREENSHOT_QUESTION: &str = "portal.screenshot";
 /// The capability a non-interactive screenshot needs.
 pub const SCREENSHOT_CAPABILITY: &str = "screenshot";
+/// The kind of the question picking a colour off the screen asks.
+pub const PICK_COLOR_QUESTION: &str = "portal.pick-color";
 
 /// What the sheet shows for an interactive screenshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,25 +165,62 @@ impl Screenshot {
         .await
     }
 
-    /// Picking a colour off the screen needs a picker the session does not
-    /// draw yet: the request fails rather than answering a colour nobody
-    /// picked.
+    /// The person picks a colour off the screen: a question of kind
+    /// [`PICK_COLOR_QUESTION`], which the session's picker answers with the
+    /// colour's red, green and blue, each from 0 to 1, as its typed values.
     async fn pick_color(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
         app_id: String,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
     ) -> Reply {
         answer(async {
-            self.portal
-                .authenticate(&header, handle.as_str(), &app_id, Some(&parent_window))
+            let path = handle.as_str();
+            let auth = self
+                .portal
+                .authenticate(&header, path, &app_id, Some(&parent_window))
                 .await?;
-            Err(Ended::Failed)
+            let question = ScreenshotQuestion {
+                parent_window: Some(parent_window.trim())
+                    .filter(|window| !window.is_empty())
+                    .map(str::to_owned),
+                modal: true,
+            };
+            let asked = self
+                .portal
+                .ask(&auth.caller, path, PICK_COLOR_QUESTION, question);
+            let answered = self
+                .portal
+                .requests
+                .run(connection, path, auth.owner.as_str(), asked)
+                .await?;
+            let color = color_of(&answered.values).ok_or(Ended::Failed)?;
+            let mut results = Results::new();
+            results.insert(
+                "color".into(),
+                OwnedValue::try_from(zbus::zvariant::Value::new(color)).or_fail()?,
+            );
+            Ok(results)
         })
         .await
     }
+}
+
+/// Red, green and blue from three typed values, each a number from 0 to 1.
+fn color_of(values: &[zeroize::Zeroizing<String>]) -> Option<(f64, f64, f64)> {
+    let channel = |index: usize| {
+        values
+            .get(index)?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| (0.0..=1.0).contains(value))
+    };
+    (values.len() == 3).then_some(())?;
+    Some((channel(0)?, channel(1)?, channel(2)?))
 }
 
 #[cfg(test)]
@@ -210,5 +249,19 @@ mod tests {
             Decision::Granted
         );
         assert_eq!(decision(&HashMap::new()), Decision::Access);
+    }
+
+    #[test]
+    fn a_picked_colour_is_three_channels_from_zero_to_one() {
+        let typed = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| zeroize::Zeroizing::new((*value).to_owned()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(color_of(&typed(&["1", "0.5", "0"])), Some((1.0, 0.5, 0.0)));
+        assert_eq!(color_of(&typed(&["1", "0.5"])), None);
+        assert_eq!(color_of(&typed(&["1", "2", "0"])), None);
+        assert_eq!(color_of(&typed(&["1", "NaN", "0"])), None);
     }
 }

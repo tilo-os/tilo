@@ -85,7 +85,13 @@ impl Inhibitions {
             .collect()
     }
 
-    fn hold(&self, path: &str, app_id: &str, flags: u32, reason: Option<String>) -> bool {
+    pub(crate) fn hold(
+        &self,
+        path: &str,
+        app_id: &str,
+        flags: u32,
+        reason: Option<String>,
+    ) -> bool {
         let mut held = self.held.lock_recover();
         if held.contains_key(path) {
             return false;
@@ -110,25 +116,6 @@ impl Inhibitions {
         self.held.lock_recover().remove(path).is_some()
     }
 
-    pub(crate) fn resources(&self) -> Vec<ResourceSpec> {
-        self.held
-            .lock_recover()
-            .iter()
-            .map(|(path, held)| {
-                offer::<InhibitionEffect>(ResourceSpec::new(
-                    format!("{INHIBITION_PREFIX}{path}"),
-                    "portal.inhibition",
-                    held.app_id.clone(),
-                ))
-                .with_presentation(ResourcePresentation {
-                    detail: held.reason.clone(),
-                    badge: None,
-                    preview: None,
-                })
-            })
-            .collect()
-    }
-
     fn reading_of(held: &Inhibition) -> Value {
         serde_json::json!({
             "app_id": held.app_id,
@@ -147,16 +134,37 @@ impl Inhibitions {
                 .collect(),
         )
     }
+}
+
+impl crate::Published for Inhibitions {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        self.held
+            .lock_recover()
+            .iter()
+            .map(|(path, held)| {
+                offer::<InhibitionEffect>(ResourceSpec::new(
+                    format!("{INHIBITION_PREFIX}{path}"),
+                    "portal.inhibition",
+                    held.app_id.clone(),
+                ))
+                .with_presentation(ResourcePresentation {
+                    detail: held.reason.clone(),
+                    badge: None,
+                    preview: None,
+                })
+            })
+            .collect()
+    }
 
     /// The reading of an inhibition's resource.
-    pub(crate) fn read(&self, resource: &str) -> Option<Value> {
+    fn read(&self, resource: &str) -> Option<Value> {
         let path = resource.strip_prefix(INHIBITION_PREFIX)?;
         self.held.lock_recover().get(path).map(Self::reading_of)
     }
 
     /// Carry out an action on an inhibition's resource; `None` when the
     /// resource is no inhibition.
-    pub(crate) fn invoke(
+    fn invoke(
         &self,
         published: &[ResourceSpec],
         resource: &str,
@@ -252,6 +260,7 @@ impl Inhibit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Published as _;
 
     #[test]
     fn a_hold_counts_until_released_and_only_for_its_flags() {
