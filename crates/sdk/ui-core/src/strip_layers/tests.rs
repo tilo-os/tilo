@@ -22,6 +22,7 @@ fn strip(scroll_x: u32) -> StripBlit {
         dest_w: 800,
         dest_h: 400,
         scroll_x,
+        scroll_y: 0,
     }
 }
 
@@ -65,8 +66,9 @@ fn a_pan_copies_what_stays_and_rasterises_what_it_uncovered() {
         WorkspaceWork::Pan {
             copies: vec![BandCopy {
                 src_x: 112,
+                src_y: 50,
                 dst_x: 100,
-                y: 50,
+                dst_y: 50,
                 width: 788,
                 height: 400,
             }],
@@ -102,8 +104,9 @@ fn a_pan_copies_what_stays_and_rasterises_what_it_uncovered() {
         copies,
         vec![BandCopy {
             src_x: 100,
+            src_y: 50,
             dst_x: 110,
-            y: 50,
+            dst_y: 50,
             width: 790,
             height: 400,
         }]
@@ -116,6 +119,66 @@ fn a_pan_copies_what_stays_and_rasterises_what_it_uncovered() {
             width: 10,
             height: 400,
         }]
+    );
+}
+
+#[test]
+fn a_pan_along_both_axes_copies_what_stays_and_rasterises_the_uncovered_edges() {
+    let at = |scroll_x, scroll_y| StripBlit {
+        scroll_y,
+        ..strip(scroll_x)
+    };
+    let shown = Shown::of(&cache(Color::BLACK, vec![at(40, 100)]), 7);
+    let work = plan(
+        Some(&shown),
+        &cache(Color::BLACK, vec![at(52, 80)]),
+        SIZE,
+        true,
+    );
+    assert!(!work.backdrop && !work.chrome);
+    // Content moved 12 left and 20 down: what stays is copied there, the
+    // right columns and the top rows the move uncovered are rasterised.
+    assert_eq!(
+        work.workspace,
+        WorkspaceWork::Pan {
+            copies: vec![BandCopy {
+                src_x: 112,
+                src_y: 50,
+                dst_x: 100,
+                dst_y: 70,
+                width: 788,
+                height: 380,
+            }],
+            uncovered: vec![
+                FineDamageRect {
+                    x: 888,
+                    y: 50,
+                    width: 12,
+                    height: 400,
+                },
+                FineDamageRect {
+                    x: 100,
+                    y: 50,
+                    width: 788,
+                    height: 20,
+                },
+            ],
+        }
+    );
+    assert_eq!(work.raster_pixels(SIZE), 12 * 400 + 788 * 20);
+    let WorkspaceWork::Pan { copies, .. } = &work.workspace else {
+        unreachable!("checked above");
+    };
+    assert_eq!(
+        copies[0].device_copy(),
+        crate::scroll_copy::DeviceCopy {
+            x: 112,
+            y: 50,
+            width: 788,
+            height: 380,
+            dx: -12,
+            dy: 20,
+        }
     );
 }
 
@@ -226,8 +289,9 @@ fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
         WorkspaceWork::Pan {
             copies: vec![BandCopy {
                 src_x: 100,
+                src_y: 50,
                 dst_x: 100,
-                y: 50,
+                dst_y: 50,
                 width: 800,
                 height: 400,
             }],
@@ -256,8 +320,9 @@ fn a_changed_window_group_rasterises_only_where_it_is_on_screen() {
         copies,
         &vec![BandCopy {
             src_x: 112,
+            src_y: 50,
             dst_x: 100,
-            y: 50,
+            dst_y: 50,
             width: 788,
             height: 400,
         }],
@@ -324,8 +389,9 @@ fn a_pan_copies_its_rows_and_draws_a_changed_group_where_it_stands() {
         copies,
         &vec![BandCopy {
             src_x: 100,
+            src_y: 50,
             dst_x: 100,
-            y: 50,
+            dst_y: 50,
             width: 800,
             height: 400,
         }],
@@ -373,8 +439,9 @@ fn where_a_panning_strip_meets_a_still_one_the_shared_band_is_rasterised() {
         copies,
         &vec![BandCopy {
             src_x: 112,
+            src_y: 50,
             dst_x: 100,
-            y: 50,
+            dst_y: 50,
             width: 788,
             height: 380,
         }]
