@@ -371,6 +371,10 @@ pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     pub(crate) native_app_opening: super::launcher::NativeAppOpening,
+    /// Layout changes to take back by run, and windows opened for a
+    /// resource that are still to be opened at it
+    /// ([`super::desktop_layout`]).
+    pub(crate) desktop_layout: super::desktop_layout::Journal,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same [`WorkspaceTreeHandle`]. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -779,6 +783,7 @@ impl ChromeState {
             tree_handle,
             hosted_inputs,
             native_app_opening: super::launcher::NativeAppOpening::default(),
+            desktop_layout: super::desktop_layout::Journal::default(),
             identity_source,
             overlays: OverlayFlags::default(),
             projection_follow: ProjectionFollow::Person,
@@ -2811,12 +2816,9 @@ impl ChromeState {
     /// The model's refusal: no active workspace, or a name that is empty, too
     /// long or holds control characters.
     pub fn create_strip(&mut self, name: &str) -> Result<crate::shell::state::StripId, String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
-            name: name.to_owned(),
-        };
-        let strip = self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(strip)
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::create_strip(self, room, name, &person, true)
     }
 
     /// Rename `strip` of the active workspace.
@@ -2830,13 +2832,9 @@ impl ChromeState {
         strip: crate::shell::state::StripId,
         name: &str,
     ) -> Result<(), String> {
-        let command = tilo_desktop_model::commands::DesktopCommand::RenameStrip {
-            strip: strip.raw(),
-            name: name.to_owned(),
-        };
-        self.tree_mut().commit_strip_command(&command)?;
-        self.bump();
-        Ok(())
+        let room = super::desktop_layout::shown_room(self)?;
+        let person = super::desktop_layout::Actor::person(self, room);
+        super::desktop_layout::rename_strip(self, room, strip, name, &person)
     }
 
     /// Move `strip` of the active workspace to just before `before`, or to

@@ -10112,6 +10112,8 @@ pub fn run() {
     crate::shell::workspace_layouts::wake_with(Arc::clone(&session_wake));
     // So do the reads and writes apps ask of the workspace activity model.
     crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
+    // So do the layout changes agents ask of the desktop.
+    crate::shell::desktop_door::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.

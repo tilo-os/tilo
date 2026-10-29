@@ -126,6 +126,14 @@ impl fmt::Display for FetchError {
         match self {
             Self::InvalidUrl(reason) => write!(f, "not a web address: {reason}"),
             Self::Refused(refusal) => refusal.fmt(f),
+            Self::Status(429) => f.write_str(
+                "the server is limiting how often it answers (HTTP 429): try again later",
+            ),
+            Self::Status(status @ (401 | 403)) => write!(
+                f,
+                "the server refused to show this without signing in (HTTP {status})"
+            ),
+            Self::Status(404) => f.write_str("there is no page at this address (HTTP 404)"),
             Self::Status(status) => write!(f, "the server answered HTTP {status}"),
             Self::TooLarge(limit) => write!(
                 f,

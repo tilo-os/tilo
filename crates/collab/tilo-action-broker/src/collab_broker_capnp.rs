@@ -401,6 +401,19 @@ impl BrokerActor {
         self.is_agent
     }
 
+    /// The issue whose run this agent works in, by its address: what a host
+    /// groups the run's changes under, so they are undone as one.
+    #[must_use]
+    pub fn issue(&self) -> Option<&str> {
+        self.issue.as_deref()
+    }
+
+    /// The person this agent acts for, when one delegated it.
+    #[must_use]
+    pub fn acting_for_person(&self) -> Option<&str> {
+        self.for_person.as_deref()
+    }
+
     /// The grant subject this actor is when it is not a person.
     fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {

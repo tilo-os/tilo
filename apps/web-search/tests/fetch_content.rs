@@ -30,7 +30,7 @@ async fn serve() -> String {
                     match stream.read(&mut buffer).await {
                         Ok(0) | Err(_) => return,
                         Ok(read) => {
-                            request.extend_from_slice(buffer.get(..read).unwrap_or_default())
+                            request.extend_from_slice(buffer.get(..read).unwrap_or_default());
                         }
                     }
                 }

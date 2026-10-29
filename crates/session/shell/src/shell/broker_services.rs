@@ -814,9 +814,51 @@ fn stage_launch_content(
         &caller.app_id,
         content_hash,
     )?;
+    stage_content_bytes(app_id, content_hash, &bytes, workspace).map(Some)
+}
+
+/// The workspace content `hash` of `room`: what content puts, agents' and
+/// apps', keep under the room's neutral scope, which every app of the room
+/// reads by reference.
+///
+/// # Errors
+///
+/// Why it cannot be read here: still arriving, nowhere, or the store is
+/// unreachable.
+pub(crate) fn read_room_content(room: &str, hash: &str) -> Result<Vec<u8>, String> {
+    use runtime_fs::blobs::ReadOutcome;
+    let result = with_session_blobs(|client| {
+        client
+            .scope(room, tilo_action_broker::services::CONTENT_PUT_SCOPE)
+            .and_then(|scoped| scoped.read_all(hash))
+    });
+    match result {
+        Ok(ReadOutcome::Ready { bytes, .. }) => Ok(bytes),
+        Ok(ReadOutcome::Pending) => Err(format!(
+            "tilo.content:{hash} is still arriving on this device"
+        )),
+        Ok(ReadOutcome::Unavailable) => Err(format!(
+            "tilo.content:{hash} is not in this workspace's content"
+        )),
+        Err(error) => Err(format!("the workspace content store: {error}")),
+    }
+}
+
+/// Stage `bytes`, whose hash is `content_hash`, as a read-only file granted
+/// to `app_id` in `workspace`; its path.
+///
+/// # Errors
+///
+/// The bytes do not match the hash or are too large, or staging failed.
+pub(crate) fn stage_content_bytes(
+    app_id: &str,
+    content_hash: &str,
+    bytes: &[u8],
+    workspace: &mut super::state::Workspace,
+) -> Result<std::path::PathBuf, String> {
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
-        || !tilo_content::verify(content_hash, &bytes)
+        || !tilo_content::verify(content_hash, bytes)
     {
         return Err("launch content failed integrity validation".into());
     }
@@ -832,7 +874,7 @@ fn stage_launch_content(
     .map_err(|error| format!("protect launch staging: {error}"))?;
     // Content travels without the name its sender gave it: its bytes say
     // what it is, and so what the opened app takes it as.
-    let (extension, _) = tilo_content::opened_as(&bytes);
+    let (extension, _) = tilo_content::opened_as(bytes);
     let path = dir.join(format!("{content_hash}.{extension}"));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -841,7 +883,7 @@ fn stage_launch_content(
     {
         Ok(mut file) => {
             use std::io::Write;
-            file.write_all(&bytes)
+            file.write_all(bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|error| format!("stage launch content: {error}"))?;
         }
@@ -869,7 +911,7 @@ fn stage_launch_content(
             scope: super::state::GRANT_SESSION,
         },
     );
-    Ok(Some(path))
+    Ok(path)
 }
 
 /// Launches installed apps. With the session's workspace tree it can record
@@ -2273,6 +2315,7 @@ pub fn native_services(
             .chain([
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
+                super::desktop_door::broker_door(),
                 super::crash_records::broker_door(),
             ])
             .collect(),
