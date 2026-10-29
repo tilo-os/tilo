@@ -474,20 +474,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::Notifications],
-        build: |app, _| {
-            notifications::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    Box::new(notifications::NotificationsPane::new(
-                        app.host().clone(),
-                        area,
-                    )) as Box<dyn ui::widget::Widget>
-                },
-            )
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::DefaultApps],
         build: |app, _| {
             personal_apps::area(app).map_or_else(
@@ -600,13 +586,13 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("a11y.mouse_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::mouse_keys),
     crate::setting::setting_row!("a11y.visual_alerts", crate::accessibility_settings::AccessibilitySettings => accessibility::visual_alerts),
     crate::setting::setting_row!("a11y.switch_control", crate::accessibility_settings::AccessibilitySettings => accessibility::switch_control),
-    crate::setting::setting_entry!("notifications.dnd", crate::prefs::NotificationPrefs => notifications::dnd),
-    crate::setting::setting_entry!("notifications.banners", crate::prefs::NotificationPrefs => notifications::banners),
-    crate::setting::setting_entry!("notifications.previews", crate::prefs::NotificationPrefs => notifications::previews),
-    crate::setting::setting_entry!("notifications.lock_screen", crate::prefs::NotificationPrefs => notifications::lock_screen),
-    crate::setting::setting_entry!("notifications.sounds", crate::prefs::NotificationPrefs => notifications::play_sounds),
-    crate::setting::setting_entry!("notifications.badges", crate::prefs::NotificationPrefs => notifications::badges),
-    crate::setting::setting_entry!("notifications.quiet_hours", crate::prefs::NotificationPrefs => notifications::quiet_hours),
+    crate::setting::setting_row!("notifications.dnd", crate::prefs::NotificationPrefs => notifications::dnd),
+    crate::setting::setting_row!("notifications.banners", crate::prefs::NotificationPrefs => notifications::banners),
+    crate::setting::setting_row!("notifications.previews", crate::prefs::NotificationPrefs => notifications::previews),
+    crate::setting::setting_row!("notifications.lock_screen", crate::prefs::NotificationPrefs => notifications::lock_screen),
+    crate::setting::setting_row!("notifications.sounds", crate::prefs::NotificationPrefs => notifications::play_sounds),
+    crate::setting::setting_row!("notifications.badges", crate::prefs::NotificationPrefs => notifications::badges),
+    crate::setting::setting_row!("notifications.quiet_hours", crate::prefs::NotificationPrefs => notifications::quiet_hours),
     crate::setting::setting_entry!("spelling.check", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::check_spelling),
     crate::setting::setting_entry!("spelling.autocorrect", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::auto_correct),
     crate::setting::setting_entry!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
