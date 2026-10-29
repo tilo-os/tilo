@@ -80,23 +80,10 @@ impl Question {
     }
 }
 
-/// What the cards show: the question and the answer the keyboard is on.
+/// What the cards show: the question.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Shown {
     question: Question,
-    /// Index into [`Question::answers`].
-    focus: usize,
-}
-
-impl Question {
-    /// The answers in the order the keyboard and a reader meet them.
-    fn answers(&self) -> Vec<ConfirmEffect> {
-        let mut answers = vec![ConfirmEffect::Keep, ConfirmEffect::Revert];
-        if self.tool.is_some() {
-            answers.push(ConfirmEffect::KeepAndTrust);
-        }
-        answers
-    }
 }
 
 /// What the shell lends the question: whether it is up, what it asks, and
@@ -180,10 +167,7 @@ impl ResourceApp for DisplayConfirmApp {
                 .map(|question| (*question).clone())
                 .unwrap_or_default(),
         };
-        let shown = cx.local(Shown {
-            question: initial,
-            focus: 0,
-        });
+        let shown = cx.local(Shown { question: initial });
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
         }
@@ -268,9 +252,7 @@ fn cards(cx: &mut ViewCx<DisplayConfirm>, shown: &Shown) -> Element {
         Ok(layout.available())
     });
     for (index, _) in question.displays.iter().enumerate() {
-        // Only the first card has the keyboard.
-        let focus = (index == 0).then_some(shown.focus);
-        let card = card(cx, question, index, focus);
+        let card = card(cx, question, index);
         // The other displays show the same question for the eye: the
         // keyboard and assistive technology meet it once.
         manual = manual.child(if index == 0 {
@@ -282,20 +264,11 @@ fn cards(cx: &mut ViewCx<DisplayConfirm>, shown: &Shown) -> Element {
     Box::new(manual)
 }
 
-/// The question on display `index`, with the keyboard on answer `focus`
-/// of [`Question::answers`] when it has it.
-fn card(
-    cx: &ViewCx<DisplayConfirm>,
-    question: &Question,
-    index: usize,
-    focus: Option<usize>,
-) -> Element {
+/// The question on display `index`.
+fn card(cx: &ViewCx<DisplayConfirm>, question: &Question, index: usize) -> Element {
     let actions = cx.actions();
-    let focused = focus.and_then(|focus| question.answers().get(focus).copied());
     let button = |effect: ConfirmEffect, id: &str, label: &str| {
-        let mut button =
-            Button::new(&format!("{id}-{index}"), label).with_enabled(!question.answering);
-        button.set_focus(focused == Some(effect));
+        let button = Button::new(&format!("{id}-{index}"), label).with_enabled(!question.answering);
         match actions.effect(&effect) {
             Some(binding) => button.on_action(binding),
             None => button,
@@ -344,10 +317,12 @@ fn card(
     )
 }
 
-/// Escape reverts from anywhere on the question; Tab walks its answers and
-/// Enter or Space gives the one with the keyboard, Keep until the person
-/// moves on, as the question says. The question is modal and keeps the
-/// keyboard to itself, as a dialog does.
+/// Escape reverts from anywhere on the question. The question is modal and
+/// keeps the keyboard to itself, as a dialog does: it traps focus, which
+/// starts on Keep (so Enter keeps, as the question says), Tab walks Keep,
+/// Revert and the answer that also stops the asking, and Enter or Space
+/// gives the answer with the keyboard. The other displays' copies are out of
+/// the focus order ([`Mirror`]).
 struct Answering {
     content: Element,
     dispatch: Dispatcher<DisplayConfirm>,
@@ -367,48 +342,19 @@ impl ui::widget::Decorator for Answering {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
-        let pressed = match event {
-            WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == ui::winit::event::ElementState::Pressed =>
-            {
-                Some(key.logical_key.clone())
-            }
-            _ => None,
-        };
-        let Some(Key::Named(key)) = pressed else {
-            self.content.handle_event(event, ctx);
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ui::winit::event::ElementState::Pressed
+            && key.logical_key == Key::Named(NamedKey::Escape)
+        {
+            self.dispatch.effect(&ConfirmEffect::Revert);
+            *ctx.handled = true;
             return;
-        };
-        let Shown { question, focus } = self.shown.get();
-        let answers = question.answers();
-        match key {
-            NamedKey::Escape => self.dispatch.effect(&ConfirmEffect::Revert),
-            NamedKey::Tab => {
-                let count = answers.len();
-                let next = if ctx.modifiers.state().shift_key() {
-                    focus
-                        .checked_sub(1)
-                        .unwrap_or_else(|| count.saturating_sub(1))
-                } else {
-                    focus
-                        .checked_add(1)
-                        .filter(|&next| next < count)
-                        .unwrap_or(0)
-                };
-                self.shown.update(|shown| shown.focus = next);
-            }
-            NamedKey::Enter | NamedKey::Space => {
-                if !question.answering {
-                    let answer = answers.get(focus).copied().unwrap_or(ConfirmEffect::Keep);
-                    self.dispatch.effect(&answer);
-                }
-            }
-            _ => {
-                self.content.handle_event(event, ctx);
-                return;
-            }
         }
-        *ctx.handled = true;
+        self.content.handle_event(event, ctx);
+    }
+
+    fn traps_focus(&self) -> bool {
+        true
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
