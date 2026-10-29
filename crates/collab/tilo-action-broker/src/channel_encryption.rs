@@ -897,6 +897,19 @@ impl ChannelEncryption {
             return;
         }
         if !self.peers.contains_key(&channel)
+            && self
+                .directory
+                .hosted_channel_keys(room, channel, route, false)
+                .is_some()
+        {
+            // This device's own host takes part in the room's channels with
+            // this device's leaf and answers the request itself. A second
+            // peer here would found another group under the same device key
+            // (it never sees the host's genesis), and the host's own leaf
+            // would then be dropped as a member that lost its state.
+            return;
+        }
+        if !self.peers.contains_key(&channel)
             && request.verify().is_ok()
             && self
                 .allowed(room, channel, route, wall)
