@@ -872,7 +872,7 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
     let centre = quick_settings_target(&host, "quick_settings_power").center();
     click(&mut host, &taffy, host_node, centre);
     assert!(!chrome.borrow().overlays.quick_settings);
-    assert!(!host.power_menu_semantic_rects().is_empty());
+    assert!(host.power_menu_open());
 }
 
 /// Tab visits every root stop in turn, and at each one exactly one node of

@@ -27,7 +27,7 @@ mode = "off"
 
 [sandbox.services]
 collab = "optional@11"
-shell-ui = "optional@17"
+shell-ui = "optional@18"
 
 [entrypoint]
 bin = "bin/messages"

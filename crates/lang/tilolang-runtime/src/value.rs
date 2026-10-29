@@ -310,6 +310,16 @@ pub enum Value {
     /// An action offered in a component's prop (`ui.MenuButton(actions: actions(r))`): how
     /// its control shows it, and the event of the node that runs it (host-internal).
     Offered(Rc<tilolang::toolkit::Offered>),
+    /// An argument of an action reference computed from view state (`set(open, not open)`,
+    /// `send(c, "{draft}!")`): the function `e_<id>` of `module` over `args`, run when the
+    /// event fires, after the view state among `args` is read. A `scalar` result is boxed
+    /// where a slot takes it.
+    AtEvent {
+        module: ModuleHash,
+        id: String,
+        args: Vec<Value>,
+        scalar: bool,
+    },
 }
 
 impl Value {
@@ -372,6 +382,7 @@ impl Value {
             Self::State { .. } => "view state",
             Self::Map(_) => "map",
             Self::Offered(_) => "offered action",
+            Self::AtEvent { .. } => "argument computed at the event",
         }
     }
 }
@@ -434,6 +445,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::Coll(_)
         | Value::Event
         | Value::State { .. }
+        | Value::AtEvent { .. }
         | Value::Map(_)
         | Value::Offered(_) => {
             return Err(format!("a {} cannot be stored", v.kind_name()));

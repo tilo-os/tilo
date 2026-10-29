@@ -5326,15 +5326,47 @@ mod tests {
         );
     }
 
+    /// An in-memory content index holding one entry of the Reader app in
+    /// `room`: `resource`, titled `title`.
+    fn reader_index_holding(
+        room: &str,
+        resource: &str,
+        title: &str,
+    ) -> std::sync::Arc<crate::shell::search::app_content_index::AppContentIndex> {
+        use crate::shell::search::app_content_index::{AppContentIndex, SlotKey};
+        use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+        let index = std::sync::Arc::new(AppContentIndex::in_memory());
+        index.apply(
+            &SlotKey::new("so.tilo.reader", room, "tab:0001"),
+            IndexDelta {
+                reset: true,
+                upsert: vec![IndexEntry {
+                    key: resource.into(),
+                    resource: resource.into(),
+                    action: None,
+                    title: title.into(),
+                    subtitle: None,
+                    group: None,
+                    icon: None,
+                    boost: 0,
+                    fields: Vec::new(),
+                    secret: false,
+                    references: Vec::new(),
+                }],
+                ..IndexDelta::default()
+            },
+        );
+        index
+    }
+
     /// An app's content found while it runs says no more than the same entry
     /// found after it closes: one row, under the person's content, which
     /// opens it. A live row of an app the index does not hold keeps the
     /// app's own kind.
     #[test]
     fn a_running_apps_indexed_content_is_the_indexed_row_and_nothing_more() {
-        use crate::shell::search::app_content_index::{AppContentIndex, SlotKey};
         use crate::shell::search::providers::AppContentProvider;
-        use ui::search::index_publication::{IndexDelta, IndexEntry};
 
         let chrome = chrome();
         let room = chrome.borrow().tree().desktop.workspaces[0]
@@ -5378,31 +5410,8 @@ mod tests {
         );
 
         // The index keeps one of the two: the other is the app's own.
-        let index = std::sync::Arc::new(AppContentIndex::in_memory());
-        index.apply(
-            &SlotKey::new("so.tilo.reader", &room, "tab:0001"),
-            IndexDelta {
-                reset: true,
-                upsert: vec![IndexEntry {
-                    key: "book:42".into(),
-                    resource: "book:42".into(),
-                    action: None,
-                    title: "Book of Tilo".into(),
-                    subtitle: None,
-                    group: None,
-                    icon: None,
-                    boost: 0,
-                    fields: Vec::new(),
-                    secret: false,
-                    references: Vec::new(),
-                }],
-                ..IndexDelta::default()
-            },
-        );
-        provider.set_app_content(Rc::new(AppContentProvider::new(
-            std::sync::Arc::clone(&index),
-            broker,
-        )));
+        let index = reader_index_holding(&room, "book:42", "Book of Tilo");
+        provider.set_app_content(Rc::new(AppContentProvider::new(index, broker)));
 
         let doc = AutoCommit::new();
         let wanted = [ResourceKind::Custom("Resources".into())];

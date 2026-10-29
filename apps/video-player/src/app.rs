@@ -1,7 +1,8 @@
 //! The local video-player app: an edge-to-edge reusable
 //! [`ui::widget::VideoPlayer`] driven by a shared [`media::MediaEngine`].
 //!
-//! `PlayerApp` is the root widget. The video fills the whole surface — there is
+//! `PlayerApp` is the window, over the [`PlayerState`] the view shares with
+//! its effect handler. The video fills the whole surface — there is
 //! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
 //! video immersive). The library's toggle, the media title and Open are slots
 //! in the window's bar (`window_bar`), which steps aside with the rest of the
@@ -23,14 +24,20 @@ mod requests;
 mod rows;
 mod shots;
 mod status;
+mod window;
 mod window_bar;
+
+pub use window::PlayerApp;
+pub(crate) use window::window;
 
 use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
 };
 
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::percent;
@@ -48,13 +55,13 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{
-    Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, SidebarDrawer, VideoPlayer,
-    Widget,
+    Button, ButtonFace, Element, FloatingSurfaceProvider, FullscreenProvider, SidebarDrawer,
+    VideoPlayer, Widget,
 };
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, RunMode,
-    Setting, SurfaceCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, Live,
+    RunMode, Setting, ViewCx,
 };
 use ui::tilo_resource::{ActionDecl, Id};
 
@@ -172,13 +179,16 @@ fn configured_player(mode: RunMode, preferences: PlaybackPreferences) -> VideoPl
     };
     let mut player = VideoPlayer::new()
         .with_engine(engine)
-        .with_test_id("video_surface");
+        .with_test_id(VIDEO_SURFACE);
     if mode.is_live() {
         player.enable_mpris("tilo_video_player", "Video Player");
     }
     configure_player_settings(&mut player, preferences);
     player
 }
+
+/// The test id of the picture and its controls.
+const VIDEO_SURFACE: &str = "video_surface";
 
 /// How often a playing video's resume point is written while it plays.
 const RESUME_WRITE_INTERVAL_MS: u64 = 3_000;
@@ -266,7 +276,10 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     clippy::struct_excessive_bools,
     reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
 )]
-pub struct PlayerApp {
+/// The player and everything the window shows of it: what the window lays
+/// out and the view's effect handler, effect statuses and live rows answer
+/// with.
+pub(crate) struct PlayerState {
     player: VideoPlayer,
     title: String,
     rect: Rect,
@@ -341,7 +354,7 @@ pub struct PlayerApp {
     shot_loading: bool,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// Where the shared library's edits and the player's own controls go:
-    /// the framework's door, handed over when the surface is attached.
+    /// the framework's door, handed over when the view attaches the window.
     dispatcher: Option<Dispatcher<PlayerResource>>,
     /// The window bar's entries, carrying the effects they request.
     bar: ui::framework::BarCommands<crate::actions::VideoEffect>,
@@ -563,11 +576,11 @@ struct DecoderMetadata {
     chapters: Vec<crate::actions::ChapterState>,
 }
 
-impl PlayerApp {
+impl PlayerState {
     /// A player with a fresh engine and no media loaded, for a window built
     /// in `mode`, on the default preferences until a live window reads this
     /// device's settings when it is attached.
-    pub fn new(mode: RunMode) -> Self {
+    pub(crate) fn new(mode: RunMode) -> Self {
         // Tests exercise the real request and completion paths; a recording
         // host answers every picker so no desktop file chooser ever opens.
         #[cfg(test)]
@@ -660,7 +673,7 @@ impl PlayerApp {
     /// playback another device handed over when it says where that stood.
     /// The handoff's position and play state land after the open, so local
     /// autoplay preferences cannot override them.
-    pub fn open_launch(&mut self, launch: &LaunchInput<'_>) {
+    pub(crate) fn open_launch(&mut self, launch: &LaunchInput<'_>) {
         let Some(argument) = launch.argument() else {
             return;
         };
@@ -706,7 +719,7 @@ impl PlayerApp {
     /// Take part in the framework: its door for edits and controls, and in
     /// a live window this device's settings and what the launch named. A
     /// capture keeps what its launch named for the scenario to stage.
-    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<PlayerResource>) {
+    pub(crate) fn attach_framework(&mut self, cx: &ViewCx<PlayerResource>) {
         self.dispatcher = Some(cx.dispatcher());
         match cx.mode() {
             RunMode::Live => {
@@ -969,48 +982,12 @@ impl PlayerApp {
     }
 }
 
-impl Default for PlayerApp {
-    fn default() -> Self {
-        Self::new(RunMode::Live)
-    }
-}
-
-impl FloatingSurfaceProvider for PlayerApp {
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_pip.take()
-    }
-}
-
-impl FullscreenProvider for PlayerApp {
-    fn fullscreen_intent(&self) -> Option<bool> {
-        FullscreenProvider::fullscreen_intent(&self.player)
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        FullscreenProvider::fullscreen_params(&self.player)
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        FullscreenProvider::on_fullscreen_changed(&mut self.player, active);
-    }
-}
-
-impl Widget for PlayerApp {
+/// The window passes the player and its library take part in; the window
+/// runs them over the state it shares.
+impl PlayerState {
     fn has_pending_visual_work(&self) -> bool {
-        self.capture_pending()
-            || self
-                .children()
-                .iter()
-                .any(|child| child.has_pending_visual_work())
+        self.capture_pending() || self.player.has_pending_visual_work()
     }
-
-    ui::provides!(
-        dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls,
-    );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
@@ -1029,23 +1006,21 @@ impl Widget for PlayerApp {
         self.publish_playhead();
     }
 
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+    fn settle(&self) {
         self.run_window_toolbar();
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
+    /// The window's root node with the player stretched over what the
+    /// docked library leaves, and the player's node. The window maps both.
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme) -> (NodeId, NodeId) {
         self.drawer.scale_for(theme);
         self.content_inset_stale = false;
         // Edge-to-edge: the player fills the whole surface beside the docked
-        // library. The app keeps itself in the node map (so it can intercept
-        // the floating Open pill) by owning a single-child root that
-        // stretches the player over what the library leaves.
-        let player_node = self.player.build_layout(taffy, theme, node_map);
+        // library. The window keeps itself in the node map (so it can
+        // intercept the floating Open pill) by owning a single-child root
+        // that stretches the player over what the library leaves; the
+        // player's node is mapped to the window's host of it.
+        let player_node = self.player.build_layout(taffy, theme, &mut HashMap::new());
         let root = parent_node(
             taffy,
             Style {
@@ -1063,8 +1038,7 @@ impl Widget for PlayerApp {
             },
             &[player_node],
         );
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        (root, player_node)
     }
 
     /// The docked library's width, as the leading padding the player is
@@ -1086,12 +1060,6 @@ impl Widget for PlayerApp {
         let mut style = style.clone();
         style.padding.left = inset;
         taffy.set_style(node, style).is_ok()
-    }
-
-    /// The player's place follows the docked library, which follows the
-    /// window's width.
-    fn composition_follows_allocation(&self) -> bool {
-        true
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1133,7 +1101,9 @@ impl Widget for PlayerApp {
         self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    /// Take `event` where the window answers it itself; whether it is the
+    /// player's.
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -1144,7 +1114,7 @@ impl Widget for PlayerApp {
             }
             self.dirty = true;
             *ctx.handled = true;
-            return;
+            return false;
         }
         // The library drawer reads its own dismissals (a press on the scrim,
         // Escape); the library's hide action is what closes it, so the
@@ -1158,7 +1128,7 @@ impl Widget for PlayerApp {
             }
             self.dirty = true;
             *ctx.handled = true;
-            return;
+            return false;
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -1168,7 +1138,7 @@ impl Widget for PlayerApp {
             && self.handle_app_pointer(&mut ctx.state)
         {
             *ctx.handled = true;
-            return;
+            return false;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.library_visible
@@ -1183,33 +1153,19 @@ impl Widget for PlayerApp {
             self.library_scroll = (self.library_scroll - step).clamp(0.0, self.library_max_scroll);
             self.dirty = true;
             *ctx.handled = true;
-            return;
+            return false;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
             && self.route_key_input(&event.logical_key, event.state, *ctx.modifiers)
         {
             *ctx.handled = true;
-            return;
+            return false;
         }
-        // Forward everything else to the player (its controls + shortcuts).
-        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(&player_node) = children.first() {
-            self.player
-                .handle_event(event, &mut ctx.reborrow(ctx.path, player_node));
-        }
+        // Everything else is the player's (its controls + shortcuts).
+        true
     }
 
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.player as &dyn Widget]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.player as &mut (dyn Widget + '_)]
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut children = Vec::new();
         if self.library_visible {
@@ -1286,15 +1242,13 @@ impl Widget for PlayerApp {
                     }),
             );
         }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name(if self.player.has_media() {
-                    self.title.clone()
-                } else {
-                    "Video Player".into()
-                })
-                .with_children(children),
-        )
+        AccessNode::new(Role::Group)
+            .with_name(if self.player.has_media() {
+                self.title.clone()
+            } else {
+                "Video Player".into()
+            })
+            .with_children(children)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -1471,18 +1425,6 @@ impl Widget for PlayerApp {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "PlayerApp"
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty || self.player.needs_redraw()
     }
@@ -1509,14 +1451,6 @@ impl Widget for PlayerApp {
         self.mode == RunMode::Live && self.current_media_ref.is_some()
     }
 }
-
-impl ui::widget::controls::ActionControls for PlayerApp {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
-    }
-}
-
-impl PlayerApp {}
 
 #[cfg(test)]
 mod tests;

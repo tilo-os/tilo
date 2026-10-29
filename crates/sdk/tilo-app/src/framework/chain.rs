@@ -659,7 +659,13 @@ impl<P: Chained> ChainState<P> {
         }
         self.hold_kept(edit.part).map_err(ActionError::Refused)?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, &edit.action::<P>(), encoded, invoker, None)?;
+        self.write(
+            edit.part,
+            &super::history::part_action::<P>(edit),
+            encoded,
+            invoker,
+            None,
+        )?;
         let now = self
             .room
             .store

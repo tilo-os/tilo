@@ -333,6 +333,8 @@ tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
+# The sheets over the desktop (the power menu), as apps this process mounts.
+tilo-sheets = { path = "../sheets" }
 # The share session, encoders, viewer registry and counters of a window
 # shared with the workspace's other devices.
 tilo-window-share = { path = "../window-share" }

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use sha2::{Digest as _, Sha256};
 use ui::lock::MutexRecover as _;
 
-use super::{FileExplorerWidget, OpFollowUp, TRANSFER_SHOWN_AFTER, clash, hex_prefix};
+use super::{FilesState, OpFollowUp, TRANSFER_SHOWN_AFTER, clash, hex_prefix};
 use crate::config;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, sort_entries};
@@ -142,7 +142,7 @@ pub(super) fn archive_rows(archive: &Path, rows: Vec<crate::archive::Entry>) -> 
         .collect()
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// The archives the selection holds.
     pub(super) fn selected_archives(&self) -> Vec<PathBuf> {
         self.selected_paths()

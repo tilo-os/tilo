@@ -55,14 +55,18 @@ locally.
 | 0 | The commit path (broker client, managed sender) in crate `collaboration`, without the toolkit | done |
 | 1 | The patch protocol; the app half without the toolkit; the UI half (`tilo-ui-host`) | done, in one process |
 | 2a | Undo, history steps and save state in `collaboration`, shared with native apps | done |
-| 2b | The tilolang host process: launch kind, sandbox, instances, `RoomRecord` holding each record | process done; the shell starting hosts and handing them instances is in progress |
+| 2b | The tilolang host process: launch kind, sandbox, instances, `RoomRecord` holding each record; the shell starting one host per workspace and author and handing it each window's instance; the window as presentation only | done |
 | 2c / 3 | The UI host draws every app's windows | next |
 | 4 | Measure against the goal, including a slow device (2 cores, 4 GB) | partly: 2.7 MiB per extra instance, first frame 2.4 ms median |
 | 5 | Thin mode | later |
 
 Decisions made on the way:
 - The record store (`RecordStore`) stays with native apps. The tilolang host holds records
-  through `RoomRecord`, using the same undo log, history and save code.
+  through `RoomRecord`, using the same history and save code.
+- One undo, one history: the history verbs every app publishes (Undo, Redo, History, Restore,
+  Checkpoint, Diff) live in `collaboration::history_source::verbs`, below the toolkit. Native
+  apps and tilolang instances publish and answer the same verbs; the window's own Undo is the
+  `undo` verb as the person's.
 - Rust visibility isn't the security boundary inside an app's process; the broker checks every
   route and commit. Functions public only for ui-core are hidden from docs.
 - A window's pixel buffers (about 16 MiB at 1280×800) belong to the UI host and don't count

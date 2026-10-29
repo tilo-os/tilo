@@ -18,7 +18,7 @@ fn native_fixture_reloads_real_files_and_refuses_existing_directory() {
         manifest["order_hash"],
         "b8b390ea86922b9297a211bf10ab47e3a9cff0c70b81a976448714323f35f863"
     );
-    let mut h = H::new(Some(&directory), 1200.0, 720.0);
+    let h = H::new(Some(&directory), 1200.0, 720.0);
     let snapshot =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();
@@ -58,7 +58,7 @@ fn native_fixture_reloads_real_files_and_refuses_existing_directory() {
         assert!(crate::native_fixture::seed(&alias).is_err());
     }
     std::fs::remove_file(directory.join("entry-0000.png")).unwrap();
-    h.w.navigate(directory);
+    h.w.state().navigate(directory);
     let changed =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();
@@ -100,7 +100,10 @@ fn native_observer_follows_actual_wheel_and_selection() {
             .unwrap();
     assert_eq!(selected["selected_indices"].as_array().unwrap().len(), 1);
     let index = selected["selected_indices"][0].as_u64().unwrap() as usize;
-    assert_eq!(selected["selected_names"][0], h.w.entries()[index].name);
+    assert_eq!(
+        selected["selected_names"][0],
+        h.w.state().entries()[index].name
+    );
     assert_eq!(selected["order_hash"], initial["order_hash"]);
     assert_eq!(selected["offset_y"], moved["offset_y"]);
     h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, 3.0));
@@ -143,7 +146,7 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
             .unwrap();
     assert_eq!(snapshot["last_cursor"], serde_json::json!([500.0, 200.0]));
     // Force the production content composition to replace the Scrollable.
-    h.w.set_view_mode(crate::model::ViewMode::Grid);
+    h.w.state().set_view_mode(crate::model::ViewMode::Grid);
     h.lay_out(1200.0, 720.0);
     let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     h.dispatch(&wheel);
@@ -162,7 +165,7 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
 }
 
 fn native_observer_is_not_ready_before_layout_or_on_load_error() {
-    let mut widget = FileExplorerWidget::with_persistence(None, None);
+    let widget = FileExplorerWidget::with_persistence(None, None);
     let doc = automerge::AutoCommit::new();
     assert_eq!(
         widget
@@ -171,7 +174,7 @@ fn native_observer_is_not_ready_before_layout_or_on_load_error() {
         false
     );
     let temp = tempfile::tempdir().unwrap();
-    widget.navigate(temp.path().join("absent"));
+    widget.state().navigate(temp.path().join("absent"));
     let snapshot = widget
         .native_input_snapshot(&doc, &automerge::ROOT)
         .unwrap();
@@ -205,7 +208,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
     let expected = ui::widget::controls::control_action_bindings(&h.w)
         .iter()
         .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
-    let body_expected = ui::widget::controls::control_action_bindings(&h.w.nav)
+    let body_expected = ui::widget::controls::control_action_bindings(&h.w.chrome().nav)
         .iter()
         .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
     ACCESSIBILITY_BUILDS.with(|count| count.set(0));
@@ -215,7 +218,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
             expected
         );
         assert_eq!(
-            ui::widget::controls::has_action_control_bindings(&h.w.nav),
+            ui::widget::controls::has_action_control_bindings(&h.w.chrome().nav),
             body_expected,
             "also exercise the file body without a toolbar emitter short-circuit"
         );
@@ -226,7 +229,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
             expected
         );
         assert_eq!(
-            ui::widget::controls::has_action_control_bindings(&h.w.nav),
+            ui::widget::controls::has_action_control_bindings(&h.w.chrome().nav),
             body_expected,
             "also exercise the file body without a toolbar emitter short-circuit"
         );
@@ -257,9 +260,9 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
 }
 
 fn control_presence_files_collaboration_panel_matches_inventory() {
-    let mut h = H::new(None, 1200.0, 720.0);
+    let h = H::new(None, 1200.0, 720.0);
     for modal in [false, true, false] {
-        h.w.collab_panel = modal.then(|| CollabPanel {
+        h.w.state().collab_panel = modal.then(|| CollabPanel {
             title: "Review".into(),
             summary: "Summary".into(),
             lines: vec![],

@@ -629,15 +629,6 @@ mod tests {
             assert_eq!(exact_catalog(&policy, &chrome, "lock").enumerate().len(), 1);
             assert!(policy.admit(os_actions::SessionAction::Lock).is_ok());
             assert!(policy.admit(os_actions::SessionAction::Logout).is_ok());
-
-            let mut menu = crate::shell::power_menu::PowerMenu::for_session(true);
-            let offered = menu.row_count();
-            menu.detach_from_host();
-            assert_eq!(
-                menu.row_count(),
-                offered - 4,
-                "the flyout drops suspend, switch user, restart and shut down"
-            );
         }
     }
 

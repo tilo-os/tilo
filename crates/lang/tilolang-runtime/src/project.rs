@@ -81,7 +81,11 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
                 .collect(),
         ),
         Value::Offered(offered) => json!({ "action": offered.label }),
-        Value::Node(_) | Value::Rec(_) | Value::Event | Value::State { .. } => {
+        Value::Node(_)
+        | Value::Rec(_)
+        | Value::Event
+        | Value::State { .. }
+        | Value::AtEvent { .. } => {
             json!({ "kind": v.kind_name() })
         }
     }

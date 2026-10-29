@@ -42,7 +42,7 @@ mod tests {
             files.sync(&document, &ROOT);
             assert_eq!(document.keys(&ROOT).count(), 0, "initial UI state is local");
 
-            files.set_rename_buffer("draft.txt".into());
+            files.state().set_rename_buffer("draft.txt".into());
             files.sync(&document, &ROOT);
             assert_eq!(
                 document.keys(&ROOT).count(),
@@ -57,19 +57,20 @@ mod tests {
             std::fs::write(directory.path().join("old.txt"), b"x").unwrap();
 
             let mut files = FileExplorerWidget::new();
-            files.navigate(directory.path().to_path_buf());
+            files.state().navigate(directory.path().to_path_buf());
             let document = AutoCommit::new();
             files.sync(&document, &ROOT);
 
             let index = files
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|entry| entry.name == "old.txt")
                 .unwrap();
-            files.select(Some(index));
-            assert!(files.apply_command(FileCommand::Rename));
-            files.set_rename_buffer("new.txt".into());
-            assert!(files.apply_command(FileCommand::RenameCommit));
+            files.state().select(Some(index));
+            assert!(files.state().apply_command(FileCommand::Rename));
+            files.state().set_rename_buffer("new.txt".into());
+            assert!(files.state().apply_command(FileCommand::RenameCommit));
 
             assert!(directory.path().join("new.txt").exists());
             assert_eq!(
@@ -84,11 +85,11 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
             let mut files = FileExplorerWidget::new();
-            files.navigate(directory.path().to_path_buf());
+            files.state().navigate(directory.path().to_path_buf());
             let document = AutoCommit::new();
             files.sync(&document, &ROOT);
 
-            let resources = files.published_rows();
+            let resources = files.state().published_rows();
             assert!(
                 resources
                     .iter()
@@ -118,7 +119,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();
-        files.navigate(directory.path().to_path_buf());
+        files.state().navigate(directory.path().to_path_buf());
         let synced = document.clone();
         files.sync(&synced, &ROOT);
         crate::files_app::published::tree(&files, &synced)

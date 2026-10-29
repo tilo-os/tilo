@@ -105,7 +105,7 @@ impl Applications {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Whether the Applications place is shown.
     pub(super) fn is_applications_view(&self) -> bool {
         crate::applications::is_location(&self.current_path)

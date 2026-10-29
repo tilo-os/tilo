@@ -26,7 +26,7 @@ impl MountedCloud {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     pub(super) fn converted_description(&self, path: &Path) -> Option<String> {
         let description = self.mounted_cloud.descriptions.get(path)?.as_ref()?;
         if !description.converted || description.content_writable {

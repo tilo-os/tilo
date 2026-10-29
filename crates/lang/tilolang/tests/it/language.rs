@@ -171,22 +171,42 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     );
     let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
-    // Read any other way, it would be the value the view drew with, which a press outruns.
-    let drawn = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, \"{{draft}}!\"))\n}}"
+    // An argument computed from view state is a function of the module, run at the press on
+    // the view state as it is then: a toggle, a count, a draft with more around it.
+    let computed = format!(
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens open: Bool = false\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, \"{{draft}}!\"))\n        button(\"Toggle\", on: set(open, not open))\n        button(\"More\", on: set(n, n + 1))\n    }}\n}}"
+    );
+    let compiled = crate::common::compile_with(&computed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let at_event: Vec<(&str, Vec<&str>, &str)> = compiled
+        .meta
+        .at_event
+        .iter()
+        .map(|f| {
+            let params = f.params.iter().map(|p| p.name.as_str()).collect();
+            (f.name.as_str(), params, f.result.as_str())
+        })
+        .collect();
+    assert_eq!(
+        at_event
+            .iter()
+            .map(|(_, params, result)| (params.clone(), *result))
+            .collect::<Vec<_>>(),
+        [
+            (vec!["draft"], "Text"),
+            (vec!["open"], "Bool"),
+            (vec!["n"], "Int"),
+        ],
+        "each takes the view state it reads: {at_event:?}"
+    );
+    // Its discipline is a fn's, as a parameter default's: it computes, it changes nothing.
+    let acting = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, said(t, draft)))\n}}\naction said(t: Talk, d: Text) -> Text {{\n    d\n}}"
     );
     assert!(
-        codes(&drawn).iter().any(|c| c == "E111"),
+        codes(&acting).iter().any(|c| c == "E043"),
         "{:?}",
-        codes(&drawn)
-    );
-    let counted = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens n: Int = 1\n    button(\"More\", on: set(n, n + 1))\n}}"
-    );
-    assert!(
-        codes(&counted).iter().any(|c| c == "E111"),
-        "{:?}",
-        codes(&counted)
+        codes(&acting)
     );
     // A flow or an action reads its own arguments as they are.
     ok(

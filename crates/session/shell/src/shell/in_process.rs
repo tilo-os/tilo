@@ -669,6 +669,77 @@ impl InProcessApps {
 }
 
 impl InProcessApps {
+    /// Mount `definition` as a sheet the shell shows over the desktop
+    /// ([`mount_sheet`]), as this person on this device, with the
+    /// collaboration route that publishes its actions in `room`.
+    ///
+    /// # Errors
+    /// The app refuses the context.
+    pub(crate) fn mount_sheet(
+        &self,
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        instance: u64,
+        lend: impl FnOnce(&mut HostContext),
+    ) -> Result<
+        (
+            AppComponent,
+            Option<ui::collaboration::CollaborationManager>,
+        ),
+        LaunchError,
+    > {
+        let component = mount_sheet(
+            definition,
+            &self.author.0,
+            &self.device_id,
+            room,
+            instance,
+            lend,
+        )?;
+        let collaboration = self.collaboration(&component, room);
+        Ok((component, collaboration))
+    }
+}
+
+/// Mount `definition` as a sheet the shell shows over the desktop, as
+/// `author` on `device`. A sheet keeps nothing worth a record on disk: its
+/// record and its view live in memory, so it is there the moment the shell
+/// asks for it and never waits on the store. `lend` hands it what the shell
+/// lends it.
+///
+/// # Errors
+/// The app refuses the context.
+pub(crate) fn mount_sheet(
+    definition: &'static ApplicationDefinition,
+    author: &str,
+    device: &str,
+    room: &str,
+    instance: u64,
+    lend: impl FnOnce(&mut HostContext),
+) -> Result<AppComponent, LaunchError> {
+    let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
+    let records = RecordOwners::with_store(Rc::clone(&store))
+        .open(definition.app_id(), room)
+        .map_err(LaunchError::Record)?;
+    let views = InstanceViewStore::with_store(store, device, room)
+        .map_err(LaunchError::Restore)?
+        .without_persistence();
+    let inputs = HostContextInputs {
+        records,
+        views: Rc::new(views),
+        device_id: device.to_owned(),
+        instance_id: instance,
+        permissions: SharedPermissions::new(PermissionContext::member(author, Role::Owner)),
+        author: UserId(author.to_owned()),
+        action_context: tilo_actions::ActionContext::default(),
+    };
+    let mut context =
+        HostContext::prepare_new_record(definition, inputs, RecordId::room_default())?;
+    lend(&mut context);
+    definition.instantiate(context, LaunchTarget::New, RestoreInput::None)
+}
+
+impl InProcessApps {
     /// Consume enrollment-owned authenticated feedback startup custody.
     /// A different profile person or replacement of existing custody is refused.
     /// # Errors

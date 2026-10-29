@@ -280,7 +280,7 @@ fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
 
 fn file_explorer_widget_constructs_with_sensible_default_path() {
     let w = FileExplorerWidget::new();
-    let cwd = w.current_path();
+    let cwd = w.state().current_path();
     // Must match `model::initial_path` resolution.
     assert_eq!(cwd, file_explorer::model::initial_path());
 }
@@ -302,86 +302,92 @@ fn navigation_selection_loading_and_terminal_commands() {
 }
 
 fn back_button_moves_to_parent_and_noops_at_root() {
-    let mut w = FileExplorerWidget::new();
-    let start_parent = w.current_path().parent().map(std::path::Path::to_path_buf);
-    w.back();
-    assert_eq!(
-        Some(w.current_path()),
-        start_parent.or_else(|| Some(w.current_path()))
-    );
+    let w = FileExplorerWidget::new();
+    let start_parent = w
+        .state()
+        .current_path()
+        .parent()
+        .map(std::path::Path::to_path_buf);
+    w.state().back();
+    let now = w.state().current_path();
+    assert_eq!(Some(now.clone()), start_parent.or(Some(now)));
 
     // At root, back is a no-op.
-    let mut w2 = FileExplorerWidget::new();
-    w2.navigate(PathBuf::from("/"));
-    let before = w2.current_path();
-    w2.back();
-    assert_eq!(w2.current_path(), before, "back at / is a no-op");
+    let w2 = FileExplorerWidget::new();
+    w2.state().navigate(PathBuf::from("/"));
+    let before = w2.state().current_path();
+    w2.state().back();
+    assert_eq!(w2.state().current_path(), before, "back at / is a no-op");
 }
 
 fn refresh_rereads_same_directory() {
-    let mut w = FileExplorerWidget::new();
-    let cwd = w.current_path();
-    w.refresh();
-    assert_eq!(w.current_path(), cwd);
+    let w = FileExplorerWidget::new();
+    let cwd = w.state().current_path();
+    w.state().refresh();
+    assert_eq!(w.state().current_path(), cwd);
 }
 
 fn double_click_dir_navigates_into_it() {
-    let mut w = FileExplorerWidget::new();
+    let w = FileExplorerWidget::new();
     // Find a directory in current entries, if any. If no dirs, skip (test env-dep).
     let dir_idx = w_first_dir_index(&w);
     if let Some(idx) = dir_idx {
         let path = w_entry_path(&w, idx);
-        let _ = w.select(Some(idx)); // first click
-        let triggered = w.select(Some(idx)); // second click within 500 ms
+        let _ = w.state().select(Some(idx)); // first click
+        let triggered = w.state().select(Some(idx)); // second click within 500 ms
         assert_eq!(triggered, Some(path.clone()));
         // Caller would call navigate(path); simulate:
-        w.navigate(path.clone());
-        assert_eq!(w.current_path(), path);
+        w.state().navigate(path.clone());
+        assert_eq!(w.state().current_path(), path);
     }
 }
 
 fn w_first_dir_index(w: &FileExplorerWidget) -> Option<usize> {
-    w.entries_snapshot().iter().position(|e| e.is_dir)
+    w.state().entries_snapshot().iter().position(|e| e.is_dir)
 }
 fn w_entry_path(w: &FileExplorerWidget, i: usize) -> PathBuf {
-    w.entries_snapshot()[i].path.clone()
+    w.state().entries_snapshot()[i].path.clone()
 }
 
 fn single_click_selects_single_entry() {
-    let mut w = FileExplorerWidget::new();
-    if w.entries_snapshot().len() >= 2 {
-        let triggered = w.select(Some(0));
+    let w = FileExplorerWidget::new();
+    if w.state().entries_snapshot().len() >= 2 {
+        let triggered = w.state().select(Some(0));
         assert!(triggered.is_none());
-        assert_eq!(w.selected_index(), Some(0));
+        assert_eq!(w.state().selected_index(), Some(0));
         // Re-select another clears the double-click window for the first.
-        let _ = w.select(Some(1));
-        assert_eq!(w.selected_index(), Some(1));
+        let _ = w.state().select(Some(1));
+        assert_eq!(w.state().selected_index(), Some(1));
     }
 }
 
 fn error_state_shows_message_and_retry_button() {
-    let mut w = FileExplorerWidget::new();
-    w.navigate(PathBuf::from("/this/path/does/not/exist/for/sure"));
-    assert!(w.error_message().is_some(), "error path should set error");
+    let w = FileExplorerWidget::new();
+    w.state()
+        .navigate(PathBuf::from("/this/path/does/not/exist/for/sure"));
+    assert!(
+        w.state().error_message().is_some(),
+        "error path should set error"
+    );
 }
 
 fn footer_shows_item_count_and_formatted_path() {
     let w = FileExplorerWidget::new();
-    let (count, path_str) = w.footer_text();
-    assert_eq!(count, w.entries_snapshot().len());
+    let (count, path_str) = w.state().footer_text();
+    assert_eq!(count, w.state().entries_snapshot().len());
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), tilo_paths::home().as_deref())
+        file_explorer::model::format_path(&w.state().current_path(), tilo_paths::home().as_deref())
     );
 }
 
 fn view_mode_toggle_switches_between_list_and_grid() {
     use file_explorer::model::ViewMode;
-    let mut w = FileExplorerWidget::new();
-    assert_eq!(w.view_mode(), ViewMode::List);
-    w.set_view_mode(ViewMode::Grid);
-    assert_eq!(w.view_mode(), ViewMode::Grid);
+    let w = FileExplorerWidget::new();
+    assert_eq!(w.state().view_mode(), ViewMode::List);
+    w.state().set_view_mode(ViewMode::Grid);
+    assert_eq!(w.state().view_mode(), ViewMode::Grid);
 }
 
 fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root() {
@@ -442,19 +448,20 @@ fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
 }
 
 fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
-    let mut w = FileExplorerWidget::new();
+    let w = FileExplorerWidget::new();
     let dir = std::path::PathBuf::from("/var/workspace/Projects");
-    w.navigate(dir.clone());
+    w.state().navigate(dir.clone());
     assert_eq!(
-        w.terminal_intent(),
+        w.state().terminal_intent(),
         runtime_portal::tools::ToolIntent::Terminal {
             directory: Some(dir.to_string_lossy().into_owned())
         }
     );
     // A path the request cannot carry still opens Terminal, just not there.
-    w.navigate(std::path::PathBuf::from("/tmp/line\nbreak"));
+    w.state()
+        .navigate(std::path::PathBuf::from("/tmp/line\nbreak"));
     assert_eq!(
-        w.terminal_intent(),
+        w.state().terminal_intent(),
         runtime_portal::tools::ToolIntent::Terminal { directory: None }
     );
 }
@@ -542,15 +549,21 @@ fn grid_mode_uses_responsive_file_view() {
 
 fn loading_state_shown_during_navigation() {
     // Navigation is synchronous, so every return path must clear the flag.
-    let mut w = FileExplorerWidget::new();
-    assert!(!w.is_loading(), "fresh widget not loading");
-    w.navigate(PathBuf::from("/definitely/not/here"));
-    assert!(!w.is_loading(), "after error navigate loading flag clears");
-    assert!(w.error_message().is_some(), "and an error is surfaced");
-    // Successful refresh on a real directory also clears the flag.
-    w.navigate(file_explorer::model::initial_path());
+    let w = FileExplorerWidget::new();
+    assert!(!w.state().is_loading(), "fresh widget not loading");
+    w.state().navigate(PathBuf::from("/definitely/not/here"));
     assert!(
-        !w.is_loading(),
+        !w.state().is_loading(),
+        "after error navigate loading flag clears"
+    );
+    assert!(
+        w.state().error_message().is_some(),
+        "and an error is surfaced"
+    );
+    // Successful refresh on a real directory also clears the flag.
+    w.state().navigate(file_explorer::model::initial_path());
+    assert!(
+        !w.state().is_loading(),
         "after successful navigate loading is clear"
     );
 }
