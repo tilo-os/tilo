@@ -459,7 +459,7 @@ pub(super) fn verify_mapped_after_applications(
         Ok(record) => Some(Ok(record.path)),
         Err(error) => Some(Err(error)),
     });
-    witness.verify_archive_items(paths)?;
+    witness.verify_archive_items_beside(paths, Some(Path::new(".local/share/flatpak")))?;
     let installation = Path::new(".local/share/flatpak");
     let mutable = |record: &Record| {
         matches!(record.kind, Kind::File(_) | Kind::Sparse(_))
@@ -544,7 +544,8 @@ pub(super) fn verify_tree_after_applications(
             if path.starts_with(installation) {
                 continue;
             }
-            if !records.contains(&path)? {
+            // Deploying may also create the installation's missing parents.
+            if !records.contains(&path)? && !installation.starts_with(&path) {
                 return Err(changed("Transferred tree contains an unreviewed entry"));
             }
             let metadata =

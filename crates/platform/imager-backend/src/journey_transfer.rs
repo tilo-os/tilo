@@ -25,7 +25,7 @@ pub struct TransferWorker {
     unavailable: std::convert::Infallible,
 }
 pub enum TransferEvent {
-    CopyProgress(Value),
+    Progress(Value),
     RestoringApplications,
     Finished { state: &'static str, result: Value },
 }
@@ -49,7 +49,7 @@ impl TransferReview {
     pub fn projection(&self) -> Value {
         #[cfg(target_os = "linux")]
         {
-            serde_json::json!({"target":path_projection(self.inner.target_home()),"copies":self.inner.copy_count(),"summary":self.inner.summary().ok(),"recovered":self.inner.recovered()})
+            serde_json::json!({"target":path_projection(self.inner.target_home()),"summary":self.inner.summary(),"recovered":self.inner.recovered()})
         }
         #[cfg(not(target_os = "linux"))]
         match self.unavailable {}
@@ -100,7 +100,7 @@ impl TransferWorker {
             self.inner.try_next().map(|event| {
             use crate::setup::user_transfer::TransferEvent as Native;
             match event {
-                Native::CopyProgress(progress) => TransferEvent::CopyProgress(serde_json::json!({"verified_files":progress.verified_files,"verified_bytes":progress.verified_bytes,"current_relative_path":path_projection(&progress.current_relative_path)})),
+                Native::Progress(progress) => TransferEvent::Progress(serde_json::json!({"phase":progress.phase,"completed":progress.completed,"total":progress.total})),
                 Native::RestoringApplications => TransferEvent::RestoringApplications,
                 Native::Finished(outcome) => {
                     let state = match &outcome {
@@ -110,7 +110,7 @@ impl TransferWorker {
                         Err(_) => "failed",
                     };
                     let result = match outcome {
-                        Ok(report) => serde_json::json!({"copies":report.copies.iter().map(|copy| serde_json::json!({"verified_files":copy.verified_files.len(),"verified_bytes":copy.verified_bytes,"skipped":issue_projection(&copy.skipped),"failed":issue_projection(&copy.failed),"metadata_limitations":copy.metadata_limitations})).collect::<Vec<_>>(),"flatpak_restored":report.flatpak.restored,"flatpak_failed":report.flatpak.failed,"cancelled":report.cancelled}),
+                        Ok(report) => serde_json::json!({"admitted":report.admitted,"flatpak_restored":report.flatpak.restored,"flatpak_failed":report.flatpak.failed,"cancelled":report.cancelled}),
                         Err(error) => serde_json::json!({"error":error}),
                     };
                     TransferEvent::Finished { state, result }
@@ -236,13 +236,6 @@ pub fn read_flatpak_inventory(
 #[cfg(target_os = "linux")]
 fn path_projection(path: &Path) -> Value {
     serde_json::json!({"display":path.to_string_lossy(),"native":crate::migration_store::NativePath::encode(path)})
-}
-#[cfg(target_os = "linux")]
-fn issue_projection(issues: &[(PathBuf, String)]) -> Vec<Value> {
-    issues
-        .iter()
-        .map(|(path, message)| serde_json::json!({"path":path_projection(path),"message":message}))
-        .collect()
 }
 
 pub fn prepare_migration(
