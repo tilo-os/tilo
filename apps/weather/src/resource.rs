@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 use ui::tilo_resource::{Atom, JsonSchema, Refusal, SearchEntry};
 
-use crate::actions::WeatherEffect;
-use crate::app::WeatherApp;
 pub use crate::model::Weather;
 #[cfg(feature = "samples")]
 use crate::model::WeatherModel;
@@ -161,7 +159,7 @@ impl Weather {
 #[cfg(feature = "samples")]
 pub struct SampleForecasts(pub Rc<WeatherModel>);
 
-/// Framework app: the weather widget is the surface over [`Weather`].
+/// Framework app: the weather window is the view of [`Weather`].
 pub struct WeatherShell;
 
 impl ResourceApp for WeatherShell {
@@ -176,7 +174,7 @@ impl ResourceApp for WeatherShell {
     const ICON: Option<&'static str> = Some("weather");
 
     fn view(cx: &mut ViewCx<Weather>) -> Element {
-        cx.surface(WeatherApp::new())
+        crate::app::window(cx)
     }
 
     #[cfg(feature = "samples")]
@@ -238,36 +236,6 @@ impl ResourceApp for WeatherShell {
                 .ok()
             }))
             .collect()
-    }
-}
-
-impl ResourceSurface<Weather, WeatherEffect> for WeatherApp {
-    fn present(&mut self, state: &Rc<Weather>) {
-        self.adopt_resource_state(&state.model());
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Weather>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_capture(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: WeatherEffect,
-        cx: &mut EffectCx<Weather, Self>,
-    ) -> Result<Effected, String> {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.location_rows()
     }
 }
 
