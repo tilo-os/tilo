@@ -424,15 +424,14 @@ input ← ESC ] 133 ; R ; k=<key> ; cmd=<b64> [; agent=1] BEL
 ```
 
 The line shows as if typed and runs; an agent's run takes the agent
-rendering of Tilo's own commands without asking for it. A bash session gets
+rendering of Tilo's own commands without asking for it. The Host's bash gets
 the line typed, as before.
 
-**A full Linux session** is still there: Terminal's target picker has
-"Shell: Linux (bash)" for the current environment, and `linux` or
-`linux:<record>` names one in a `run`'s or an agent's target. The target
-carries the choice (`"shell":"linux"` in `open-session`; a target that names
-none runs ush's shell), so a session reopens in the shell it ran. An
-environment on a relay runs bash there for now.
+An environment session always runs ush's shell; there is no other shell to
+pick. bash is an ordinary program in the session's guest: `bash script.sh`
+runs a script, and `bash` alone starts an interactive bash, as any program
+runs there. A stored target that still names `"shell":"linux"` opens the
+same environment in ush's shell.
 
 ## Command runs
 
@@ -455,12 +454,10 @@ marks its runs with, chosen by Terminal for that session:
 {"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
 ```
 
-`runs` is 16 to 64 letters and digits. ush's own shell writes the marks
-itself. Otherwise an interactive session's shell starts
-the same way on the Host and in a guest: as the session's login shell. A
-`bash` starts on an rc file of `ush`'s own (`/run/ush/shell.bash` in a guest)
-that runs what must come before the person's files (the native editor's
-builtin, in a guest), then what `bash --login` reads (`/etc/profile`, then the
+`runs` is 16 to 64 letters and digits. ush's own shell, which every
+environment session runs, writes the marks itself. The Host target runs the
+person's own login shell instead. A `bash` there starts on an rc file of
+`ush`'s own that runs what `bash --login` reads (`/etc/profile`, then the
 first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`, else
 `~/.bashrc`); any other shell starts with `-l`. With a key, the session
 answers `"runs":true`, and the rc file ends by writing three marks into the
@@ -739,8 +736,7 @@ two people editing one document at once is the CRDT's own collaboration.
 ## Commands
 
 ```
-ush [-c COMMAND] [-v] [--environment RECORD] [--shell ush|linux]
-                                                a shell in an environment
+ush [-c COMMAND] [-v] [--environment RECORD]    ush's shell in an environment
 ush-sh [-c SCRIPT | FILE] [-i]                  ush's own shell, in a guest
 tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
