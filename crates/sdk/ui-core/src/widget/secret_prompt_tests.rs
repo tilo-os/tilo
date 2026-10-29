@@ -634,6 +634,36 @@ fn a_prompt_built_afresh_keeps_what_was_typed_in_the_hosts_buffer() {
 }
 
 #[test]
+fn a_prompt_of_several_fields_built_afresh_keeps_each_in_its_buffer() {
+    let buffers = vec![
+        Arc::new(Mutex::new(String::new())),
+        Arc::new(Mutex::new(String::new())),
+    ];
+    let build = || {
+        let mut prompt = SecretPrompt::with_fields(vec![
+            FieldSpec::text("Identity"),
+            FieldSpec::secret("Password"),
+        ])
+        .with_field_buffers(buffers.clone());
+        Widget::set_focus(&mut prompt, true);
+        prompt
+    };
+    let mut prompt = build();
+    typed(&mut prompt, "ada");
+    dispatch(&mut prompt, &named_key(NamedKey::Tab));
+    typed(&mut prompt, "pw");
+    assert_eq!(buffers[0].lock().expect("buffer").as_str(), "ada");
+    assert_eq!(buffers[1].lock().expect("buffer").as_str(), "pw");
+    drop(prompt);
+    let mut prompt = build().with_error_at(1, Some("Too short".into()));
+    let values: Vec<&str> = prompt.fields().map(|(_, input)| input.value()).collect();
+    assert_eq!(values, ["ada", "pw"], "the next build starts from them");
+    assert_eq!(prompt.error(), Some("Too short"));
+    prompt.wipe();
+    assert!(buffers.iter().all(|buffer| buffer.lock().expect("buffer").is_empty()));
+}
+
+#[test]
 fn a_prompt_built_afresh_shows_the_hosts_error_busy_line_and_caps_lock() {
     let prompt = focused(SecretKind::Secret).with_error(Some("Wrong password".into()));
     assert_eq!(prompt.error(), Some("Wrong password"));

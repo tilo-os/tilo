@@ -454,6 +454,9 @@ pub struct SecretPrompt {
     /// Where the secret field's value is kept outside the prompt, for a
     /// host that builds its tree afresh ([`Self::with_secret_buffer`]).
     secret_buffer: Option<Arc<Mutex<String>>>,
+    /// Where every field's value is kept outside the prompt, field by
+    /// field ([`Self::with_field_buffers`]).
+    field_buffers: Vec<Arc<Mutex<String>>>,
     /// The host's default action, run by Enter in a dialog body's last
     /// field ([`Self::on_submit`]).
     on_submit: Option<Rc<dyn Fn()>>,
@@ -520,6 +523,7 @@ impl SecretPrompt {
             decision: Rc::new(Cell::new(None)),
             theme: Theme::dark(),
             secret_buffer: None,
+            field_buffers: Vec::new(),
             on_submit: None,
             painted: None,
             answer: answer::Answer::default(),
@@ -736,6 +740,40 @@ impl SecretPrompt {
             drop(field.input.take_dirty().map(Zeroizing::new));
         }
         self.secret_buffer = Some(buffer);
+        self
+    }
+
+    /// Keep each field's value in the buffer at its index, and start from
+    /// what they hold: [`Self::with_secret_buffer`] for a prompt of several
+    /// fields (a network's identity and password, a PUK and its new PIN),
+    /// so a host that builds its tree afresh loses none of them. The host
+    /// owns the buffers and zeroes them when the answer is used or dropped.
+    #[must_use]
+    pub fn with_field_buffers(mut self, buffers: Vec<Arc<Mutex<String>>>) -> Self {
+        for (field, buffer) in self.fields.iter_mut().zip(&buffers) {
+            let value =
+                Zeroizing::new(buffer.lock().map(|value| value.clone()).unwrap_or_default());
+            if !value.is_empty() {
+                field.input.set_text(&value);
+            }
+            // Seeding is not an edit: nothing to clear or publish.
+            drop(field.input.take_dirty().map(Zeroizing::new));
+        }
+        self.field_buffers = buffers;
+        self
+    }
+
+    /// Show `error` under the field at `index` from the start, as
+    /// [`Self::with_error`] does for the secret field.
+    #[must_use]
+    pub fn with_error_at(mut self, index: usize, error: Option<String>) -> Self {
+        if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
+            let index = index.min(self.fields.len().saturating_sub(1));
+            for (i, field) in self.fields.iter_mut().enumerate() {
+                Widget::set_invalid(&mut field.input, i == index);
+            }
+            self.error = Some((index, error));
+        }
         self
     }
 
@@ -1204,6 +1242,11 @@ impl SecretPrompt {
         {
             zeroize::Zeroize::zeroize(&mut *value);
         }
+        for buffer in &self.field_buffers {
+            if let Ok(mut value) = buffer.lock() {
+                zeroize::Zeroize::zeroize(&mut *value);
+            }
+        }
         self.caps = CapsLockEstimate::new();
     }
 
@@ -1659,8 +1702,17 @@ impl SecretPrompt {
         }
     }
 
-    /// Mirror the secret field into the host's buffer, if it gave one.
+    /// Mirror the secret field into the host's buffer, and every field
+    /// into its own, if the host gave them.
     fn publish_secret(&self) {
+        for (field, buffer) in self.fields.iter().zip(&self.field_buffers) {
+            if let Ok(mut value) = buffer.lock()
+                && value.as_str() != field.input.value()
+            {
+                zeroize::Zeroize::zeroize(&mut *value);
+                value.push_str(field.input.value());
+            }
+        }
         let Some(buffer) = &self.secret_buffer else {
             return;
         };
@@ -2527,6 +2579,7 @@ impl Drop for SecretPrompt {
         // also covers a field shown as typed (an echoed secret). A host's
         // buffer is the host's: its tree is rebuilt around what it holds.
         self.secret_buffer = None;
+        self.field_buffers = Vec::new();
         self.wipe();
     }
 }

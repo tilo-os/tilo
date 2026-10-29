@@ -126,3 +126,13 @@ display-remote-offline-excluded = Offline, not in the layout
 display-remote-switched-off = Switched off on its device
 display-remote-in-layout = In layout
 display-remote-out-of-layout = Not in layout
+
+## The system sheets the shell asks with on an app's or a service's behalf
+portal-sheet-description = Asked by Tilo, not by the app. Enter answers, Escape declines.
+portal-back = Back
+portal-continue = Continue
+portal-shortcut-not-set = Not set
+portal-usb-row-read-write = Read and write
+portal-usb-row-read-only = Read only
+portal-a11y-name = Name
+portal-a11y-answer = Answer
