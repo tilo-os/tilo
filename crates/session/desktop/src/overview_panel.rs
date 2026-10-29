@@ -147,6 +147,10 @@ pub(crate) struct Naming {
     input: Option<TextInput>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts each read on its own: whether it is open, the motion setting, an interrupted keyboard selection, whether workspaces may be made, and whether it needs drawing"
+)]
 pub struct OverviewPanel {
     open: bool,
     /// The area the overview stands in: the display it covers.
@@ -393,16 +397,14 @@ impl OverviewPanel {
             .places
             .iter()
             .position(|place| place.bounds().contains(p));
-        let control = strip
-            .map(|si| {
-                self.strip_controls(&picture, si)
-                    .iter()
-                    .position(|(_, rect)| rect.contains(p))
-                    .map_or(0, |at| {
-                        u8::try_from(at.saturating_add(1)).unwrap_or(u8::MAX)
-                    })
-            })
-            .unwrap_or(0);
+        let control = strip.map_or(0, |si| {
+            self.strip_controls(&picture, si)
+                .iter()
+                .position(|(_, rect)| rect.contains(p))
+                .map_or(0, |at| {
+                    u8::try_from(at.saturating_add(1)).unwrap_or(u8::MAX)
+                })
+        });
         let rows = u8::from(self.add_hit_rect().is_some_and(|r| r.contains(p)))
             | (u8::from(self.join_hit_rect().is_some_and(|r| r.contains(p))) << 1)
             | (u8::from(
@@ -1222,8 +1224,8 @@ mod tests {
         assert_eq!(panel_curve(0.0), (0.0, PANEL_RISE_PX, PANEL_START_SCALE));
         assert_eq!(panel_curve(1.0), (1.0, 0.0, 1.0));
         let mut last = panel_curve(0.0);
-        for step in 1..=20 {
-            let now = panel_curve(step as f32 / 20.0);
+        for step in 1..=20_u8 {
+            let now = panel_curve(f32::from(step) / 20.0);
             assert!(now.0 >= last.0 && now.1 <= last.1 && now.2 >= last.2);
             last = now;
         }

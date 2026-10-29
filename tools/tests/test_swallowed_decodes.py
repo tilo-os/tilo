@@ -49,6 +49,14 @@ class SwallowedDecodes(unittest.TestCase):
         self.assertEqual(count("fn f(b: &[u8]) -> Result<M> { Ok(Frame::decode(b)?) }"), 0)
         self.assertEqual(count("fn f(b: &[u8]) -> Result<M> { Frame::decode(b).map_err(E::from) }"), 0)
 
+    def test_an_absence_turned_back_into_an_error_is_heard(self):
+        self.assertEqual(
+            count("fn f(r: &str) -> io::Result<u32> {\n    std::str::from_utf8(r)\n        .ok()\n"
+                  "        .and_then(|s| s.parse().ok())\n        .ok_or_else(|| invalid(\"bad\"))\n}"),
+            0,
+        )
+        self.assertEqual(count("fn f(r: &str) -> Option<u32> { r.parse().ok().map(|n| n + 1) }"), 1)
+
     def test_an_allow_comment_marks_an_optional_read(self):
         self.assertEqual(
             count("fn f() -> Option<u32> {\n    // optional-decode: an unset override keeps the default\n"

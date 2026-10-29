@@ -147,11 +147,11 @@ fn a_press_on_revert_answers_the_shell() {
 
 #[test]
 fn an_agent_reverts_at_once_but_keeping_is_the_persons_answer() {
+    use ui::tilo_resource::Effect as _;
     let (mut app, seat) = seated(question(Some("kanshi")));
     app.effect(&ConfirmEffect::Revert).unwrap();
     app.settle();
     assert_eq!(seat.take_asked(), [ConfirmEffect::Revert]);
-    use ui::tilo_resource::Effect as _;
     for declaration in ConfirmEffect::declarations() {
         assert_eq!(
             declaration.attended,

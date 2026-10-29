@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Addressed, Done, LsArgs, McpServer, OneCall, Reply, app_names};
+use super::{ActionHost, Addressed, Done, McpServer, OneCall, Reply, app_names};
 
 /// Where a door starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
@@ -396,11 +396,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let source = resolve_refs(program, &self.programs.lock_recover())?;
         let answer = self.run_in_task(&source, args.confirm).await?;
         let failed = !matches!(
-            answer["state"].as_str(),
+            answer.get("state").and_then(Value::as_str),
             Some("done" | "preview" | "suspended")
         );
-        let apps: Vec<String> = answer["apps"]
-            .as_array()
+        let apps: Vec<String> = answer
+            .get("apps")
+            .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
@@ -582,9 +583,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Some("succeeded") => json!({
                     "ok": value.pointer("/update/output").cloned().unwrap_or(Value::Null)
                 }),
-                Some("failed" | "cancelled") => json!({"failed": super::outcome(&value).text}),
-                // Not finished in time: it may still run, so the program cannot go on as if
-                // it had not.
+                // Failed, cancelled, or not finished in time: it may still run, so the
+                // program cannot go on as if it had not.
                 _ => json!({"failed": super::outcome(&value).text}),
             },
             Err(why) if refusal(&why) => json!({"refused": format!("{action}: {why}")}),
