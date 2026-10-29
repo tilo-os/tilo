@@ -10668,31 +10668,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
-    fn action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::ActionCatalogueParams,
-        mut results: channel_handle::ActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let snapshot = self.state.action_catalogue_json_for(
-            &self.route().cluster_id,
-            &self.verified_identity.broker_actor(),
-            None,
-        );
-        match snapshot {
-            Ok(snapshot) => {
-                results.get().set_catalogue_json(&snapshot);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error)),
-        }
-    }
-
     fn subscribe_action_catalogue(
         self: Rc<Self>,
         _params: channel_handle::SubscribeActionCatalogueParams,
