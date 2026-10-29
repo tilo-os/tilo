@@ -423,6 +423,7 @@ members = [
     "crates/session/polkit-agent",
     "crates/session/quick-settings",
     "crates/session/session-record",
+    "crates/session/session-service",
     "crates/session/sheets",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
