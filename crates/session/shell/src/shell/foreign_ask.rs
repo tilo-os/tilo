@@ -31,7 +31,7 @@ impl ShellNetwork {
     ) -> Result<Pending<Result<ConfirmationReply, ActionHostError>>, ActionHostError> {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
         let local = self
-            .personal_continuity_device
+            .local_device
             .as_ref()
             .and_then(|device| crate::shell::network::decode_lower_hex_32(device.as_str()));
         let Some((endpoint, topic)) =

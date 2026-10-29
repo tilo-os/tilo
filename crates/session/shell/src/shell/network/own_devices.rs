@@ -19,10 +19,7 @@ pub(super) fn own_device_sources(
 impl ShellNetwork {
     /// Where this session finds the person's own devices.
     pub(super) fn own_device_sources(&self) -> personal_device_peers::Sources {
-        own_device_sources(
-            self.personal_continuity_user,
-            self.own_device_fleet.as_ref(),
-        )
+        own_device_sources(self.local_person, self.own_device_fleet.as_ref())
     }
 
     /// The person's other devices, by endpoint key, as the worker last read
@@ -51,7 +48,7 @@ impl ShellNetwork {
     /// revoked devices stop counting as theirs at once, and stay refused
     /// after a restart through the fleet.
     pub(super) fn learn_own_revocations(&self, revocations: &tilo_user_identity::RevocationList) {
-        let Some(person) = self.personal_continuity_user else {
+        let Some(person) = self.local_person else {
             return;
         };
         let Ok(mut peers) = self.personal_device_peers.lock() else {
@@ -84,7 +81,7 @@ impl ShellNetwork {
     /// whichever of their devices enrolled it, and kept in the fleet so the
     /// next session does too.
     pub(super) fn keep_own_device(&self, cert: &tilo_user_identity::DeviceCert) {
-        if self.personal_continuity_user != Some(cert.user_public_key)
+        if self.local_person != Some(cert.user_public_key)
             || !cert.capabilities.is_personal_device()
             || cert.device_public_key == *self.local_peer_id.as_bytes()
         {
@@ -114,9 +111,7 @@ impl ShellNetwork {
         &self,
         write: impl FnOnce(&crate::device_fleet::DeviceFleetStore, &str) + Send + 'static,
     ) {
-        let (Some(person), Some(store)) =
-            (self.personal_continuity_user, self.own_device_fleet.clone())
-        else {
+        let (Some(person), Some(store)) = (self.local_person, self.own_device_fleet.clone()) else {
             return;
         };
         let submitted = crate::shell::durable_writer::global()

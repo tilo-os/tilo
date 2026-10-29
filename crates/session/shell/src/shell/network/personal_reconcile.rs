@@ -54,7 +54,7 @@ impl ShellNetwork {
     /// for does too.
     pub(super) fn reconcile_personal_workspaces_if_changed(&self, in_place: bool) {
         if self.personal_workspaces.is_none()
-            || self.personal_continuity_user.is_none()
+            || self.local_person.is_none()
             || self.personal_reconcile.queued.load(Ordering::Acquire)
         {
             return;

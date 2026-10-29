@@ -1087,8 +1087,7 @@ impl ShellNetwork {
         if let Some(held) = &self.held_personal_rooms_override {
             return held.clone();
         }
-        let (Some(owner), Some(user)) = (self.opened_native_owner(), self.personal_continuity_user)
-        else {
+        let (Some(owner), Some(user)) = (self.opened_native_owner(), self.local_person) else {
             return crate::shell::personal_workspaces::HeldRooms::new();
         };
         owner
@@ -1121,7 +1120,7 @@ impl ShellNetwork {
                 tracing::warn!(%room, %error, "a workspace let go on another device stays");
             }
         }
-        let Some(user) = self.personal_continuity_user else {
+        let Some(user) = self.local_person else {
             return;
         };
         for entry in adoption.enter {
