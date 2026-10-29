@@ -579,7 +579,6 @@ impl FloatingSurfaceProvider for MapsApp {
 impl Widget for MapsApp {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -1202,15 +1201,6 @@ impl ui::widget::controls::ActionControls for MapsApp {
     }
 }
 
-/// The map is the window's header row: the History control the host offers
-/// heads the map control column, so the window draws no History bar above
-/// the map.
-impl ui::widget::WindowHeader for MapsApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.history.set_control(control);
-        self.map_controls.set_history(control);
-    }
-}
 /// A location request answered by a recording host with `outcome` — the
 /// production request path, without the device's location service.
 #[cfg(test)]

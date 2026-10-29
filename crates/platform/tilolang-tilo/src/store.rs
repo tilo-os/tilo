@@ -343,6 +343,9 @@ struct Inner {
     txns: HashMap<u64, TxnState>,
     next_txn: u64,
     subs: Vec<Subscription>,
+    /// The migration being run, by its action id, and the resource it runs on: the action it
+    /// commits records that it ran ([`DynEdit::Migrated`]).
+    migrating: Option<(String, DocId)>,
     next_sub: u64,
     /// What each [`Watch`] has not taken yet.
     watches: Vec<std::rc::Weak<RefCell<Changes>>>,
@@ -736,6 +739,7 @@ impl TiloStore {
                 txns: HashMap::new(),
                 next_txn: 1,
                 subs: Vec::new(),
+                migrating: None,
                 next_sub: 1,
                 watches: Vec::new(),
                 trials: 0,
@@ -1265,6 +1269,29 @@ impl TiloStore {
     #[must_use]
     pub fn contains(&self, doc: &str) -> bool {
         self.inner.borrow().index.contains_key(doc)
+    }
+
+    /// Run what is committed from now on as the migration `migration` (its action id) of the
+    /// resource `doc`, or, with `None`, as anything else.
+    pub fn set_migrating(&self, migrating: Option<(String, DocId)>) {
+        self.mutate().migrating = migrating;
+    }
+
+    /// Whether the migration `migration` (its action id) ran on the resource `doc`.
+    ///
+    /// # Errors
+    /// The room record cannot be had, or holds no such resource.
+    pub fn migrated(&self, doc: &str, migration: &str) -> Result<bool, StoreError> {
+        self.load_record()?;
+        let inner = self.inner.borrow();
+        let (app, _) = inner
+            .index
+            .get(doc)
+            .ok_or_else(|| not_found(format!("resource {doc}")))?;
+        let mirror = inner.mirror()?;
+        let obj = crate::reads::resource_obj(mirror, app, doc)
+            .ok_or_else(|| not_found(format!("resource {doc}")))?;
+        Ok(crate::action::migrated(mirror, &obj, migration))
     }
 
     /// The ids of the resources of the type `ty` of `app`, in id order.
@@ -2484,7 +2511,7 @@ impl Store for TiloStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.mutate();
-        let state = inner
+        let mut state = inner
             .txns
             .remove(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
@@ -2493,6 +2520,15 @@ impl Store for TiloStore {
         };
         if state.edits.is_empty() {
             return Ok(());
+        }
+        // A migration's change records, with what it did, that it ran on its resource.
+        if let Some((migration, doc)) = inner.migrating.clone()
+            && migration == note.action
+        {
+            let edit = DynEdit::Migrated { id: doc, migration };
+            let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
+            inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+            state.edits.push(edit);
         }
         let versioned = app.clone();
         let (action_id, args) = published_name(note);

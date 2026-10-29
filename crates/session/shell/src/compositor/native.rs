@@ -12911,11 +12911,17 @@ pub fn run() {
                 proxy.observe_edit_stamp(&mut state, stamp);
             }
         }
+        // The lock screen draws a keyboard of its own for touch; the system
+        // one never shows over it, where its keys would sit across the lock's
+        // and take the taps meant for them.
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
             state.shell_field_active.then_some(shell_field).flatten(),
-            state.text_input_active() && input_methods.osk_shown() && !receipts_only,
+            state.text_input_active()
+                && input_methods.osk_shown()
+                && !receipts_only
+                && !session_locked,
         );
         dictation_vocabulary.refresh(&mut state);
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);

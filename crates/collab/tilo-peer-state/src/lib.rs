@@ -31,7 +31,8 @@ pub use state::{
     PeerWorkspace, PeerWorkspaceMut, PlaintextChanges, ROOM_HOSTS_KEY, ReceiveOutcome,
     RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument, SeedState,
     StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, committed_document_revision,
-    decide_with_surfaces, default_surfaces, peer_handle, room_hosts_of, seed_room, workspace_seed,
+    decide_with_surfaces, default_surfaces, peer_handle, room_host_actor, room_hosts_of, seed_room,
+    workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

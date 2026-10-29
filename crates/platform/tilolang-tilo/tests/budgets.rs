@@ -211,7 +211,7 @@ fn the_runtime_does_the_work_of_what_it_shows() {
     // TODO(bench): Chat's large list is a channel's messages, not its root's sidebar of
     // channels; the seeder seeds a root's list of one record type, so Chat is measured once it
     // seeds a channel's messages.
-    for app in ["notes", "todo", "today"] {
+    for app in ["notes", "tasks", "today"] {
         gate(app, &bench(app), &mut misses);
     }
     assert!(

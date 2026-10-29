@@ -1,6 +1,6 @@
 //! [`TextInput`] as a described component.
 
-use crate::component::{Bound, Component, Described, Value};
+use crate::component::{Bound, Component, Described, Event, Value};
 use crate::tokens::TextRole;
 
 use super::TextInput;
@@ -21,6 +21,10 @@ pub struct TextInputProps {
     pub title: bool,
     /// Whether it can be typed into now.
     pub enabled: bool,
+    /// Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the
+    /// text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.
+    #[component(event)]
+    pub submit: Event,
 }
 
 impl Default for TextInputProps {
@@ -31,6 +35,7 @@ impl Default for TextInputProps {
             lines: None,
             title: false,
             enabled: true,
+            submit: Event::None,
         }
     }
 }
@@ -45,6 +50,7 @@ impl Described for TextInput {
             lines,
             title,
             enabled,
+            submit,
         } = props;
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -72,6 +78,9 @@ impl Described for TextInput {
                 .with_plain_chrome()
                 .multiline(true)
                 .with_enter_submits(true);
+        }
+        if !submit.is_none() {
+            input = input.on_submit(move |_| submit.fire(None));
         }
         input
     }

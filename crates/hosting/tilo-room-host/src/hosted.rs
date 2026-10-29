@@ -364,6 +364,9 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
         revocations,
         now,
     )?;
+    // This host's copy: it writes under the host's own actor, never the
+    // one its device's replica of the room writes under.
+    peer.write_as_room_host();
     peer.select_admission_v5()
         .map_err(|error| error.to_string())?;
     let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);

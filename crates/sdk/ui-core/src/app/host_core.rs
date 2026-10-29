@@ -52,6 +52,17 @@ impl crate::host_core::HostCore for App {
         }
     }
 
+    fn history_commands_arrived(&mut self) {
+        if self.history_focus.is_none() {
+            self.history_focus = self.capture_focus_identity();
+        }
+        self.layout.node_map.clear();
+        self.bindings.clear();
+        self.focused_node = None;
+        self.layout.request_rebuild();
+        self.layout.layout_dirty = true;
+    }
+
     fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
     }

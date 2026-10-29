@@ -175,14 +175,24 @@ impl RoomRecord {
         person: impl Into<String>,
     ) -> Result<Self, RoomError> {
         use collaboration::native_initial::{self, NativeConstruction};
-        use collaboration::record::save::{open_stored, open_with_committed_read, room_document};
+        use collaboration::record::save::{
+            open_stored, open_with_committed_read, record_document, room_document,
+        };
         let route = manager
             .primary_route()
             .map(|joined| joined.route().clone())
             .ok_or_else(|| RoomError::Open("the connection joined no route".to_owned()))?;
         let room = route.cluster_id.to_string();
-        let store = room_document(documents, &route.app_id, &room)
-            .map_err(|error| RoomError::Open(error.to_string()))?;
+        // The workspace's record of the app, or the one the route names: a member's own.
+        let store = match &route.record {
+            None => room_document(documents, &route.app_id, &room),
+            Some(record) => {
+                let id = collaboration::record::RecordId::parse(record)
+                    .ok_or_else(|| RoomError::Open(format!("`{record}` is no record id")))?;
+                record_document(documents, &route.app_id, &room, &id.storage_key())
+            }
+        }
+        .map_err(|error| RoomError::Open(error.to_string()))?;
         // Construction custody reads the committed history before the record is built, as a
         // native launch's does: only a route whose reads are committed has one.
         let construction = match read {

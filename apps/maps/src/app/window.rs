@@ -381,9 +381,14 @@ impl ui::widget::controls::ActionControls for MapWindow {
     }
 }
 
+/// The map is the window's header row: the History control the host offers
+/// heads the map control column, so the window draws no History bar above
+/// the map.
 impl ui::widget::WindowHeader for MapWindow {
     fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        ui::widget::WindowHeader::set_history_control(&mut *self.app(), control);
+        let mut app = self.app();
+        app.history.set_control(control);
+        app.map_controls.set_history(control);
     }
 }
 

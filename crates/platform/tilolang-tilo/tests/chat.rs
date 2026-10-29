@@ -142,11 +142,16 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
         r.host.set_phrases(|id, args| format!("{id} {args:?}"));
     }
 
-    // The sidebar lists the category's channel.
+    // The sidebar lists the category's channel under the category's heading.
     let sidebar = ada.view(APP);
     let mut shown = Vec::new();
     texts(sidebar.tree(), &mut shown);
     assert!(shown.contains(&"design".to_owned()), "{shown:?}");
+    let section = find(sidebar.tree(), "ui.NavSection").expect("the category's section");
+    assert_eq!(section.props.get("title"), Some(&Value::text("Team")));
+    let mut under = Vec::new();
+    texts(section, &mut under);
+    assert!(under.contains(&"design".to_owned()), "{under:?}");
 
     let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
     let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();

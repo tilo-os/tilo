@@ -5,19 +5,15 @@
 //! process connects through the same handshake and session as any other.
 
 use iroh::protocol::Router;
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
-};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceHostTrust;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::host::{HostConfig, HostIdentity, HostMode, RoomHost};
 use tilo_relay::rooms::{
     ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest,
-    LIST_ROOMS, RoomListing, RoomSummary,
+    LIST_ROOMS, RoomListing, RoomSummary, ask_host,
 };
-use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -99,19 +95,17 @@ async fn subscribe(client: &RelayClient, workspace_id: u64) {
     .await;
 }
 
-/// The host operation `action` with `argument`, asked by `client` of the
-/// host device `host` on `workspace_id`, and what it produced.
+/// The host operation `action` with `argument`, asked by `client` of its
+/// host directly, and what it produced.
 async fn host_action<T: serde::de::DeserializeOwned>(
     client: &RelayClient,
-    host: &TestDevice,
-    workspace_id: u64,
     action: &str,
     argument: serde_json::Value,
 ) -> T {
     let serde_json::Value::Object(argument) = argument else {
         panic!("arguments are an object");
     };
-    let message = RemoteActionMessage::Invoke(InvokeRequest {
+    let invoke = InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: HOST_ACTIONS_PROVIDER.into(),
@@ -124,36 +118,12 @@ async fn host_action<T: serde::de::DeserializeOwned>(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
-    });
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host.device_pubkey(),
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame: RemoteActionFrame::new(message).encode().unwrap(),
-        })
-        .unwrap();
-    let answer = tilo_test_env::within("the host answers its action", async {
-        loop {
-            match client.recv().await.expect("the session stays open") {
-                Envelope::RemoteAction { frame, .. } => {
-                    break RemoteActionFrame::decode(&frame).unwrap().message;
-                }
-                Envelope::RemoteActionUndeliverable { reason, .. } => {
-                    panic!("the host did not take the action: {reason}")
-                }
-                _ => {}
-            }
-        }
-    })
-    .await;
-    let RemoteActionMessage::Receipt(receipt) = answer else {
-        panic!("an invocation is answered with a receipt");
     };
-    let ReceiptStatus::Completed { output } = receipt.status else {
-        panic!("the host's own actions complete: {:?}", receipt.status);
+    let status = tilo_test_env::within("the host answers its action", ask_host(client, invoke))
+        .await
+        .expect("the host answers");
+    let ReceiptStatus::Completed { output } = status else {
+        panic!("the host's own actions complete: {status:?}");
     };
     serde_json::from_value(output.value.unwrap_or_default()).unwrap()
 }
@@ -191,19 +161,15 @@ async fn own_session(user: &TestUser, device: &TestDevice, hosted: &Hosted) -> R
 /// enters `room` on a session of its own.
 async fn own_device_enters(
     alice: &TestUser,
-    (laptop, phone): (&TestDevice, &TestDevice),
+    phone: &TestDevice,
     hosted: &Hosted,
     room: &RoomSummary,
 ) -> RelayClient {
     let session = own_session(alice, phone, hosted).await;
-    subscribe(&session, HOME).await;
-    let listed: Vec<RoomListing> =
-        host_action(&session, laptop, HOME, LIST_ROOMS, serde_json::json!({})).await;
+    let listed: Vec<RoomListing> = host_action(&session, LIST_ROOMS, serde_json::json!({})).await;
     assert!(listed.iter().any(|listed| listed.room == room.room));
     let entered: EnteredRoom = host_action(
         &session,
-        laptop,
-        HOME,
         ENTER_ROOM,
         serde_json::json!({ "room": room.room }),
     )
@@ -320,7 +286,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
 
     // Alice's phone, her own device, lists the laptop's rooms and enters
     // one on a session of its own: neither device is a certified host.
-    let session = own_device_enters(&alice, (&laptop, &phone), &hosted, &room).await;
+    let session = own_device_enters(&alice, &phone, &hosted, &room).await;
     let members = hosted
         .host
         .rooms()
