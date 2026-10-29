@@ -131,6 +131,15 @@ pub fn kind_type_name(kind: &str) -> String {
         .collect()
 }
 
+/// The type name of the resource kind `kind` from its last two segments: `tilo.workspace.emoji`
+/// is `WorkspaceEmoji`.
+fn longer_type_name(kind: &str) -> String {
+    let mut segments = kind.rsplit('.');
+    let last = segments.next().unwrap_or(kind);
+    let before = segments.next().unwrap_or_default();
+    format!("{}{}", kind_type_name(before), kind_type_name(last))
+}
+
 /// The app a tilolang resource kind belongs to and its type: `tl.<app>.<Type>`.
 fn tilolang_kind(kind: &str) -> Option<(&str, &str)> {
     let rest = kind.strip_prefix("tl.")?;
@@ -176,12 +185,22 @@ pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
             ..PackageMeta::default()
         },
     };
-    // A resource with stored fields is a type; one without is where loose verbs are.
+    // A resource with stored fields is a type; one without is where loose verbs are. A
+    // resource whose name a record or enum of the app already has is named by more of its kind
+    // (`tilo.workspace.emoji`, holding `Emoji` records, is `WorkspaceEmoji`).
+    let named: Vec<&str> = surfaces
+        .iter()
+        .flat_map(|surface| surface.types.iter().map(|ty| ty.name.as_str()))
+        .collect();
     for surface in surfaces {
         if !surface.fields.is_empty() {
-            reader
-                .kinds
-                .insert(surface.kind.clone(), kind_type_name(&surface.kind));
+            let short = kind_type_name(&surface.kind);
+            let name = if named.contains(&short.as_str()) {
+                longer_type_name(&surface.kind)
+            } else {
+                short
+            };
+            reader.kinds.insert(surface.kind.clone(), name);
         }
     }
     for surface in surfaces {

@@ -66,6 +66,12 @@ fn native_chat_describes_as_tilolang_types() {
     ] {
         assert!(message.contains(line), "`{line}` in:\n{message}");
     }
+    // A resource named as one of its records is named by more of its kind.
+    assert!(
+        text.contains("type WorkspaceEmoji {\n    emoji: Map<Emoji>\n}"),
+        "{text}"
+    );
+    assert_eq!(text.matches("type Emoji {").count(), 1, "{text}");
     // Reactions are the platform's and not read by tilolang code.
     assert!(!message.contains("reactions"), "{message}");
     assert!(
