@@ -72,10 +72,8 @@ fn a_picked_reference_goes_in_as_a_reference_with_how_it_reads() {
     );
     type_text(&mut input, "now");
     let rich = last_value(&edits).expect("each edit reports the rich text");
-    assert_eq!(
-        crate::widget::rich_doc::plain_text(&rich),
-        "see #release notes now"
-    );
+    // The run as written: how a reference reads depends on its reader.
+    assert_eq!(rich.blocks[0].text, "see #release notes now");
     let block = &rich.blocks[0];
     assert_eq!(block.marks.len(), 1, "{:?}", block.marks);
     let mark = &block.marks[0];
