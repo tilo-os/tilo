@@ -695,6 +695,10 @@ fn fraction(value: f64) -> Result<f64, String> {
 /// Apply `effect` to `input`, refusing what it cannot be: what the keyboard
 /// drawing inspects, and the source it applies. The keyboard editor changes
 /// the sources ([`keyboard_editor::apply_scoped`]).
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per input choice keeps every validation in one place"
+)]
 fn apply(input: &mut Input, effect: InputEffect, catalog: &[CatalogEntry]) -> Result<(), String> {
     use InputEffect as E;
     let installed = |source: &str| catalog.iter().any(|entry| entry.id == source);
@@ -1284,7 +1288,7 @@ impl InputArea {
         *self.showing.borrow_mut() = Rc::downgrade(&showing);
         self.next_device_poll.set(None);
         self.read_devices(showing.watch.as_deref());
-        let scopes = self.keyboard_scopes();
+        let scopes = self.scopes_read();
         if let [(only, _)] = scopes.as_slice() {
             let mut editor = self.editor.get();
             if &editor.scope != only {
@@ -1372,7 +1376,7 @@ impl InputArea {
     /// The keyboard the editor edits is one attached: when it went away,
     /// the editor edits the first offered.
     fn fit_scope(&self) {
-        let scopes = self.keyboard_scopes();
+        let scopes = self.scopes_read();
         let mut editor = self.editor.get();
         if !scopes.iter().any(|(id, _)| id == &editor.scope) {
             editor.scope = scopes
@@ -1431,6 +1435,12 @@ impl InputArea {
     /// The attached devices as last read, never reading them.
     fn devices_read(&self) -> Option<InputHardwareSnapshot> {
         self.devices.borrow().1.clone()
+    }
+
+    /// The keyboards the editor offers, as the attached devices were last
+    /// read.
+    fn scopes_read(&self) -> Vec<(String, String)> {
+        keyboard_editor::scopes(self.devices_read().as_ref(), self.osk_always)
     }
 
     /// One live row for the keyboard drawing, and one per attached drawing

@@ -244,6 +244,67 @@ fn native_observer_reports_the_selected_category_and_layout_class() {
     assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
 }
 
+/// Settings mounted in its view, as it runs: the Keyboard page is view
+/// code over its sections, which a window outside the view does not show.
+type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
+
+fn mounted(w: u32, h: u32) -> App {
+    let mut app = App::new().expect("Settings mounts");
+    app.harness().resize((w, h)).unwrap();
+    app.settle();
+    app
+}
+
+/// `visit` the mounted window.
+fn window<O>(app: &mut App, visit: impl FnOnce(&mut SettingsWindow) -> O) -> O {
+    app.with_widget::<SettingsWindow, _>(visit)
+        .expect("the window is mounted")
+}
+
+fn observe(app: &mut App, input: ui::widget::PhysicalInput) {
+    window(app, |window| window.observe_physical_input(input));
+}
+
+fn app_heads(app: &mut App) -> Vec<ChangeHash> {
+    app.harness().state_mut().doc.get_heads()
+}
+
+/// Open `category`'s page as its sidebar row does.
+fn show(app: &mut App, category: Category) {
+    crate::effects::show_pane(app, category);
+    app.settle();
+    // The keyboard is drawn off the UI thread; the page shows it once it is.
+    if category == Category::Keyboard {
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
+                    keyboard_map_value(harness.root_widget()).is_some()
+                }),
+            "the keyboard is drawn"
+        );
+    }
+}
+
+/// [`bar_search`] in the mounted window.
+fn app_bar_search(app: &mut App, search: &mut ui::widget::SearchDriver, query: &str) {
+    window(app, |window| {
+        if search.in_place() == ui::widget::InPlace::Nothing {
+            search.open(ui::window_toolbar::SearchOffer::of(window).into());
+        }
+        assert!(
+            search.drive(
+                window,
+                query,
+                ui::widget::FindOptions::default(),
+                None,
+                false
+            ),
+            "the bar's search reached the sidebar"
+        );
+    });
+    app.harness().relayout();
+}
+
 fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
     if let Some(map) = widget
         .as_any()
@@ -257,7 +318,7 @@ fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
         .find_map(|child| keyboard_map_pressed(child, key))
 }
 
-fn dispatch_preview_key(h: &mut Framed<SettingsWindow>, state: ElementState) {
+fn dispatch_preview_key(h: &mut App, state: ElementState) {
     let logical = winit::keyboard::Key::Character("z".into());
     dispatch_preview_event(
         h,
@@ -276,53 +337,77 @@ fn dispatch_preview_key(h: &mut Framed<SettingsWindow>, state: ElementState) {
     );
 }
 
-fn dispatch_preview_event(h: &mut Framed<SettingsWindow>, event: &WindowEvent) {
-    Framed::harness_mut(h).dispatch_to_root(event);
+fn dispatch_preview_event(h: &mut App, event: &WindowEvent) {
+    h.harness().dispatch_to_root(event);
 }
 
 #[test]
 fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = wide(&config);
-    select(&mut h, Category::Keyboard);
-    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
-    assert!(h.found_settings().is_empty(), "the keyboard pane stays");
+    let _env = tilo_test_env::lock();
+    let mut h = mounted(1200, 1800);
+    show(&mut h, Category::Keyboard);
+    app_bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
+    assert!(
+        window(&mut h, |w| w.found_settings().is_empty()),
+        "the keyboard pane stays"
+    );
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
     let compiled = crate::keyboard_preview::compilation_count();
-    let original_heads = heads(&mut h);
-    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    let original_heads = app_heads(&mut h);
+    assert_eq!(
+        keyboard_map_pressed(h.harness().root_widget(), key),
+        Some(false)
+    );
     dispatch_preview_key(&mut h, ElementState::Pressed);
     if draws_native_legends() {
-        assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
+        assert_eq!(
+            keyboard_map_pressed(h.harness().root_widget(), key),
+            Some(true)
+        );
     }
     assert_eq!(
-        heads(&mut h),
+        app_heads(&mut h),
         original_heads,
         "pressed positions stay ephemeral"
     );
     // The same held physical position survives an ordinary recomposition
     // while the bar's search keeps the list narrowed.
-    rebuild(&mut h);
+    h.harness().relayout();
     if draws_native_legends() {
-        assert_eq!(keyboard_map_pressed(&*h, key), Some(true));
+        assert_eq!(
+            keyboard_map_pressed(h.harness().root_widget(), key),
+            Some(true)
+        );
     }
     assert_eq!(
         crate::keyboard_preview::compilation_count(),
         compiled,
         "recomposition must retain the bounded compiled preview"
     );
-    assert_eq!(snapshot(&h)["search_query"], "zqx");
+    assert_eq!(
+        h.harness().native_input_snapshot().unwrap()["search_query"],
+        "zqx"
+    );
     dispatch_preview_key(&mut h, ElementState::Released);
-    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    assert_eq!(
+        keyboard_map_pressed(h.harness().root_widget(), key),
+        Some(false)
+    );
     dispatch_preview_key(&mut h, ElementState::Pressed);
     dispatch_preview_event(&mut h, &WindowEvent::Focused(false));
-    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    assert_eq!(
+        keyboard_map_pressed(h.harness().root_widget(), key),
+        Some(false)
+    );
     dispatch_preview_event(&mut h, &WindowEvent::Focused(true));
     dispatch_preview_key(&mut h, ElementState::Pressed);
-    select(&mut h, Category::About);
-    assert_eq!(keyboard_map_pressed(&*h, key), None);
-    select(&mut h, Category::Keyboard);
-    assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
+    show(&mut h, Category::About);
+    assert_eq!(keyboard_map_pressed(h.harness().root_widget(), key), None);
+    show(&mut h, Category::Keyboard);
+    assert_eq!(
+        keyboard_map_pressed(h.harness().root_widget(), key),
+        Some(false)
+    );
 }
 
 fn keyboard_map_symbols(
@@ -353,8 +438,8 @@ fn keyboard_map_value(widget: &dyn Widget) -> Option<String> {
 
 #[test]
 fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_capture() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = wide(&config);
+    let _env = tilo_test_env::lock();
+    let mut h = mounted(1200, 1800);
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
     let snapshot = |text: &str| {
         std::sync::Arc::new(winit::keyboard::KeyboardLayout {
@@ -372,11 +457,16 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
         })
     };
     let original = snapshot("z");
-    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(original)));
-    crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(&h).unwrap());
-    select(&mut h, Category::Keyboard);
-    assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "z");
-    let value = keyboard_map_value(&*h).unwrap();
+    observe(&mut h, ui::widget::PhysicalInput::Layout(Some(original)));
+    window(&mut h, |w| {
+        crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(w).unwrap());
+    });
+    show(&mut h, Category::Keyboard);
+    assert_eq!(
+        keyboard_map_symbols(h.harness().root_widget(), key).unwrap()[0].text,
+        "z"
+    );
+    let value = keyboard_map_value(h.harness().root_widget()).unwrap();
     if draws_native_legends() {
         assert!(value.contains("AD06: z"));
     }
@@ -384,33 +474,44 @@ fn focused_seat_configuration_survives_page_recomposition_without_off_page_key_c
         !value.contains("AD06: y"),
         "live accessibility must not claim the preferred US symbol"
     );
-    select(&mut h, Category::About);
+    show(&mut h, Category::About);
     let active = snapshot("Z");
-    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(active)));
-    h.observe_physical_input(ui::widget::PhysicalInput::Key {
-        key,
-        state: ElementState::Pressed,
-    });
-    select(&mut h, Category::Keyboard);
-    assert_eq!(keyboard_map_symbols(&*h, key).unwrap()[0].text, "Z");
-    assert!(!draws_native_legends() || keyboard_map_value(&*h).unwrap().contains("AD06: Z"));
+    observe(&mut h, ui::widget::PhysicalInput::Layout(Some(active)));
+    observe(
+        &mut h,
+        ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        },
+    );
+    show(&mut h, Category::Keyboard);
     assert_eq!(
-        keyboard_map_pressed(&*h, key),
+        keyboard_map_symbols(h.harness().root_widget(), key).unwrap()[0].text,
+        "Z"
+    );
+    assert!(
+        !draws_native_legends()
+            || keyboard_map_value(h.harness().root_widget())
+                .unwrap()
+                .contains("AD06: Z")
+    );
+    assert_eq!(
+        keyboard_map_pressed(h.harness().root_widget(), key),
         Some(false),
         "off-page presses never enter the map"
     );
-    let original_heads = heads(&mut h);
-    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
+    let original_heads = app_heads(&mut h);
+    observe(&mut h, ui::widget::PhysicalInput::Focused(false));
     assert_eq!(
-        keyboard_map_symbols(&*h, key),
+        keyboard_map_symbols(h.harness().root_widget(), key),
         None,
         "actual blur revokes native configuration"
     );
-    let value = keyboard_map_value(&*h).unwrap();
+    let value = keyboard_map_value(h.harness().root_widget()).unwrap();
     assert!(!value.contains("AD06: y"));
     assert!(!value.contains("AD06: Z"));
     assert_eq!(
-        heads(&mut h),
+        app_heads(&mut h),
         original_heads,
         "configuration and press feedback stay out of CRDT state"
     );
@@ -426,31 +527,36 @@ fn narrow_keyboard_map_stays_prominent_and_live_readable() {
     fn find_rect(widget: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
         Some(ui::widget::find_test_id(widget, id)?.get_rect())
     }
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = hosted(&config, 440.0, 1800.0);
-    crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(&h).unwrap());
-    select(&mut h, Category::Keyboard);
-    let map = find_rect(&*h, "input.keyboard_map").unwrap();
+    let _env = tilo_test_env::lock();
+    let mut h = mounted(440, 1800);
+    window(&mut h, |w| {
+        crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(w).unwrap());
+    });
+    show(&mut h, Category::Keyboard);
+    let map = find_rect(h.harness().root_widget(), "input.keyboard_map").unwrap();
     assert!(map.width() > 300.0, "the visual map remains prominent");
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
     for text in ["λ", "Λ"] {
-        h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
-            std::sync::Arc::new(winit::keyboard::KeyboardLayout {
-                depressed: 1,
-                latched: 0,
-                locked: 0,
-                group: 1,
-                keys: vec![winit::keyboard::KeyboardLayoutKey {
-                    physical: key,
-                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
-                        name: text.into(),
-                        text: text.into(),
+        observe(
+            &mut h,
+            ui::widget::PhysicalInput::Layout(Some(std::sync::Arc::new(
+                winit::keyboard::KeyboardLayout {
+                    depressed: 1,
+                    latched: 0,
+                    locked: 0,
+                    group: 1,
+                    keys: vec![winit::keyboard::KeyboardLayoutKey {
+                        physical: key,
+                        symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                            name: text.into(),
+                            text: text.into(),
+                        }],
                     }],
-                }],
-            }),
-        )));
-        rebuild(&mut h);
-        let value = keyboard_map_value(&*h).unwrap();
+                },
+            ))),
+        );
+        h.harness().relayout();
+        let value = keyboard_map_value(h.harness().root_widget()).unwrap();
         assert!(
             !draws_native_legends() || value.contains(&format!("AD01: {text}")),
             "native symbols update the map's accessible value: {value}"
@@ -460,36 +566,45 @@ fn narrow_keyboard_map_stays_prominent_and_live_readable() {
             "no preview fallback in live mode"
         );
     }
-    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
-    rebuild(&mut h);
-    assert!(!keyboard_map_value(&*h).unwrap().contains("AD01: Λ"));
+    observe(&mut h, ui::widget::PhysicalInput::Focused(false));
+    h.harness().relayout();
+    assert!(
+        !keyboard_map_value(h.harness().root_widget())
+            .unwrap()
+            .contains("AD01: Λ")
+    );
 }
 
 #[test]
 fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = wide(&config);
-    crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(&h).unwrap());
-    select(&mut h, Category::Keyboard);
+    let _env = tilo_test_env::lock();
+    let mut h = mounted(1200, 1800);
+    window(&mut h, |w| {
+        crate::panes::mouse_keyboard::show_live_map(crate::panes::mouse_keyboard::area(w).unwrap());
+    });
+    show(&mut h, Category::Keyboard);
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyQ);
-    h.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
-    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
-        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
-            depressed: 1,
-            latched: 2,
-            locked: 4,
-            group: 1,
-            keys: vec![winit::keyboard::KeyboardLayoutKey {
-                physical: key,
-                symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
-                    name: "Greek_LAMBDA".into(),
-                    text: "Λ".into(),
+    observe(&mut h, ui::widget::PhysicalInput::Focused(true));
+    observe(
+        &mut h,
+        ui::widget::PhysicalInput::Layout(Some(std::sync::Arc::new(
+            winit::keyboard::KeyboardLayout {
+                depressed: 1,
+                latched: 2,
+                locked: 4,
+                group: 1,
+                keys: vec![winit::keyboard::KeyboardLayoutKey {
+                    physical: key,
+                    symbols: vec![winit::keyboard::KeyboardLayoutSymbol {
+                        name: "Greek_LAMBDA".into(),
+                        text: "Λ".into(),
+                    }],
                 }],
-            }],
-        }),
-    )));
-    let original_heads = heads(&mut h);
-    let actual = h.keyboard_inspection().unwrap();
+            },
+        ))),
+    );
+    let original_heads = app_heads(&mut h);
+    let actual = window(&mut h, |w| w.keyboard_inspection()).unwrap();
     assert_eq!(actual["available"], draws_native_legends());
     assert_eq!(actual["mode"], "live");
     assert!(
@@ -506,49 +621,58 @@ fn keyboard_map_read_matches_actual_focused_native_symbols_and_revokes_on_blur()
             serde_json::json!([])
         }
     );
-    h.observe_physical_input(ui::widget::PhysicalInput::Key {
-        key,
-        state: ElementState::Pressed,
-    });
+    observe(
+        &mut h,
+        ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Pressed,
+        },
+    );
     assert_eq!(
-        h.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        window(&mut h, |w| w.keyboard_inspection()).unwrap()["pressed_physical_keys"],
         if draws_native_legends() {
             serde_json::json!(["AD01"])
         } else {
             serde_json::json!([])
         }
     );
-    h.observe_physical_input(ui::widget::PhysicalInput::Key {
-        key,
-        state: ElementState::Released,
-    });
+    observe(
+        &mut h,
+        ui::widget::PhysicalInput::Key {
+            key,
+            state: ElementState::Released,
+        },
+    );
     assert_eq!(
-        h.keyboard_inspection().unwrap()["pressed_physical_keys"],
+        window(&mut h, |w| w.keyboard_inspection()).unwrap()["pressed_physical_keys"],
         serde_json::json!([])
     );
-    h.observe_physical_input(ui::widget::PhysicalInput::Focused(false));
-    let blurred = h.keyboard_inspection().unwrap();
+    observe(&mut h, ui::widget::PhysicalInput::Focused(false));
+    let blurred = window(&mut h, |w| w.keyboard_inspection()).unwrap();
     assert_eq!(blurred["available"], false);
     assert_eq!(blurred["native_layout_available"], false);
     assert_eq!(blurred["selected_symbols"], serde_json::json!([]));
-    h.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
-    h.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
-        std::sync::Arc::new(winit::keyboard::KeyboardLayout {
-            depressed: 0,
-            latched: 0,
-            locked: 0,
-            group: 0,
-            keys: vec![],
-        }),
-    )));
-    let missing = h.keyboard_inspection().unwrap();
+    observe(&mut h, ui::widget::PhysicalInput::Focused(true));
+    observe(
+        &mut h,
+        ui::widget::PhysicalInput::Layout(Some(std::sync::Arc::new(
+            winit::keyboard::KeyboardLayout {
+                depressed: 0,
+                latched: 0,
+                locked: 0,
+                group: 0,
+                keys: vec![],
+            },
+        ))),
+    );
+    let missing = window(&mut h, |w| w.keyboard_inspection()).unwrap();
     assert_eq!(
         missing["available"], false,
         "missing selected native position is not usable evidence"
     );
     assert_eq!(missing["selected_symbols"], serde_json::json!([]));
     assert_eq!(
-        heads(&mut h),
+        app_heads(&mut h),
         original_heads,
         "reading and physical feedback never edit the document"
     );

@@ -145,7 +145,7 @@ fn personal_dictionary_editor_renders_preserved_words_and_clear_controls() {
             serde_json::Map::new(),
             |_| Ok(()),
         )),
-        service.clone(),
+        service,
         Arc::new(|| Some([1; 32])),
     ));
     let mut app = TestApp::<SettingsShell>::for_person(&"01".repeat(32)).unwrap();

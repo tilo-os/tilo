@@ -701,12 +701,6 @@ impl PageOf<'_> {
             .map_or_else(|| id.to_string(), |entry| entry.label.clone())
     }
 
-    /// The keyboards the editor offers to edit, as the attached devices
-    /// were last read.
-    fn scopes(&self) -> Vec<(String, String)> {
-        scopes(self.area.devices_read().as_ref(), self.area.osk_always)
-    }
-
     /// The drawing of `source` on the keyboard the page shows, once it is
     /// compiled; until then `None`, and it is compiled off the UI thread
     /// ([`InputArea::poll`] moves the page when it lands).
@@ -954,7 +948,7 @@ impl PageOf<'_> {
     fn layouts_section(&self, profile: &KeyboardProfile) -> SettingsSection {
         let scope = self.area.editor.get().scope;
         let mut content = Vec::new();
-        let scopes = self.scopes();
+        let scopes = self.area.scopes_read();
         if scopes.len() > 1 {
             content.push(setting_row(
                 &t("input-keyboard-scope"),
