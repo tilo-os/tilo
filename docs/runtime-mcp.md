@@ -629,9 +629,14 @@ authority and current-instance checks; the Tilo permission system decides what
 is visible and invokable. An agent never confirms by its own word: an action
 that asks for confirmation, or that the agent's role answers with Ask (an
 action reaching outside, such as a browser page action), is put to the person
-on this device, and runs once they allow it. On macOS the standalone runtime
-asks in a native prompt, for that one invocation; where nobody can be asked,
-the action is refused. Risk levels travel in each action's contract, and
+on this device, and runs once they allow it. The sheet shows the invocation
+as a draft, and the person may change its fields first: the confirmation is
+then bound to the arguments they made, the door invokes again with exactly
+those (same invocation id), and the answer names them as `edited_by_person`;
+any other arguments find no confirmation and are refused. On macOS the
+standalone runtime asks in a native prompt, for that one invocation, which
+offers no editing; where nobody can be asked, the action is
+refused. Risk levels travel in each action's contract, and
 `tilo_invoke` is annotated as potentially destructive so clients can prompt.
 
 The concrete launcher uses Unix sockets, process execution, and descriptor

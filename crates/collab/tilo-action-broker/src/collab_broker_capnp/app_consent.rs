@@ -19,7 +19,9 @@ use tilo_actions::remote::{Caller, CallerPrincipal, InvokeRequest, RemoteActionM
 
 use super::action_host::{ConnectionActionHost, RowScope};
 use super::{BrokerActor, CapnpBrokerState};
-use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
+use crate::app_actions::{
+    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+};
 
 /// What happens to an application's invocation before it is served.
 pub(crate) enum ConsentStep {
@@ -38,7 +40,7 @@ pub(crate) struct PendingConsent {
     /// Where the action sits in the tree (its resource kind) and what it
     /// is, which the grant must cover.
     target: (String, tilo_actions::ActionNeed),
-    answer: tokio::sync::oneshot::Receiver<AppActionConsent>,
+    answer: tokio::sync::oneshot::Receiver<AppActionAnswer>,
 }
 
 impl CapnpBrokerState {
@@ -243,9 +245,10 @@ pub(super) fn serve_after_consent(
     use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
     Promise::from_future(async move {
         let mut consent = consent;
+        // A grant question shows no draft: only the choice counts.
         let answer = (&mut consent.answer)
             .await
-            .unwrap_or(AppActionConsent::Deny);
+            .map_or(AppActionConsent::Deny, |answer| answer.consent);
         state.finish_app_action_consent(&consent);
         // The grant is in force before the call it was given for goes on:
         // a call held while it is recorded, refused when it is not.

@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_action_broker::app_actions::{AppActionConsent, AppActionConsentRequest};
+use tilo_action_broker::app_actions::AppActionConsentRequest;
 use tilo_relay_client::{Approver, CertifyError};
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -155,9 +155,11 @@ async fn serve(mut approver: Approver, sheet: &Sheet, person: &str) -> CertifyEr
                 request(&question, person),
                 Box::new(move |answer| {
                     runtime.spawn(async move {
+                        // The question shows no draft, so an answer changes
+                        // nothing in it.
                         let answer = match answer.await {
-                            Ok(AppActionConsent::Deny) | Err(_) => ConfirmationAnswer::Deny,
-                            Ok(_) => ConfirmationAnswer::AllowOnce,
+                            Ok(answer) if answer.allowed() => ConfirmationAnswer::AllowOnce,
+                            Ok(_) | Err(_) => ConfirmationAnswer::Deny,
                         };
                         let _ = answered.send((question.id, answer));
                     });
