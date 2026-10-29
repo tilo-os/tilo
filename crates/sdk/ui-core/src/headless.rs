@@ -12784,9 +12784,9 @@ mod undo_driver_tests {
             );
             let status = d.undo_status();
             assert!(status.can_undo && !status.can_redo);
-            // Each keystroke is its own commit boundary here, so the newest
-            // action inserted one character.
-            assert_eq!(status.undo_summary.as_deref(), Some("+1 -0 chars"));
+            // Typing straight into a widget names no action, so the control
+            // reads as the bare verb.
+            assert_eq!(status.undo_summary, None);
         }
 
         // Case `clicking_a_disabled_control_in_a_scenario_does_nothing`:

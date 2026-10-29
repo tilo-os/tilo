@@ -1,8 +1,8 @@
 //! [`HistorySource::entries`] kept across calls: a long-lived reader of a
 //! growing document reads each change once.
 //!
-//! A change's reading (its summary, op class and text delta, whether it only
-//! marked a group or run) is a function of the changes before it in the
+//! A change's reading (its op class and text delta, whether it only marked a
+//! group or run) is a function of the changes before it in the
 //! document's log: the replica it is read against holds exactly those. Adding
 //! changes to a document only appends to its log
 //! ([`automerge::Automerge::change_hashes`]), so the readings of a log's
@@ -19,8 +19,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_doc::snapshot::DocSnapshot;
 
 use super::{
-    HistorySource, NO_VISIBLE_CHANGE, entry_id_from_hash, genesis_context, is_store_genesis,
-    patch_summary, structural_summary, summarize_patches, timestamp_from_ms,
+    HistorySource, diff_effect, entry_id_from_hash, genesis_context, is_store_genesis,
+    patch_effect, structural_effect, timestamp_from_ms,
 };
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -60,7 +60,6 @@ pub struct HistoryLog {
 #[derive(Clone, PartialEq, Eq)]
 struct Basis {
     max_entries: usize,
-    field_paths: bool,
     /// Whether the document carries the tilo-doc schema.
     structural: bool,
     /// Whether the source passes over some changes.
@@ -87,7 +86,6 @@ struct Logged {
 }
 
 struct Reading {
-    summary: String,
     entry_kind: EntryKind,
     text_delta: Option<(usize, usize)>,
     /// The change only named a version or recorded a run: no row.
@@ -155,7 +153,6 @@ impl HistoryLog {
     fn follow(&mut self, source: &HistorySource, doc: &mut AutoCommit) {
         let basis = Basis {
             max_entries: source.max_entries,
-            field_paths: source.field_paths,
             // What `tilo_doc::snapshot::of` checks before it materialises
             // the whole document.
             structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
@@ -292,26 +289,25 @@ impl HistoryLog {
         let (hash, time_ms) = (meta.hash, meta.time_ms);
         self.push(meta, false);
         let after = self.heads.clone();
-        let (summary, entry_kind, text_delta) = match (&self.snapshot, &current, &patches) {
-            (Some(prev), Some(cur), _) => structural_summary(prev, cur),
-            (_, _, Some(patches)) => summarize_patches(&self.replica, patches, source.field_paths),
-            _ => patch_summary(doc, &before, &after, source.field_paths),
+        let effect = match (&self.snapshot, &current, &patches) {
+            (Some(prev), Some(cur), _) => structural_effect(prev, cur),
+            (_, _, Some(patches)) => patch_effect(&self.replica, patches),
+            _ => diff_effect(doc, &before, &after),
         };
         self.snapshot = current;
         // Naming a version (or recording a cross-app run) is a change but
         // not a row — the name is already on screen as the band's title.
-        // Checked only when there's no other summary, so the common path
-        // pays no extra diff.
-        let marker = summary == NO_VISIBLE_CHANGE && {
+        // Checked only when nothing else shows, so the common path pays no
+        // extra diff.
+        let marker = !effect.visible && {
             let patches = patches.unwrap_or_else(|| doc.diff(&before, &after));
             super::is_history_metadata(&patches)
         };
         let store_genesis = is_store_genesis(doc, time_ms, &hash);
         if let Some(logged) = self.changes.last_mut() {
             logged.reading = Some(Reading {
-                summary,
-                entry_kind,
-                text_delta,
+                entry_kind: effect.entry_kind,
+                text_delta: effect.text_delta,
                 marker,
                 store_genesis,
             });
@@ -379,9 +375,17 @@ impl HistoryLog {
             // package-primary document's, which holds no identity to derive
             // its actor from. The document's own history keeps it, marked,
             // as the version to restore to.
-            let genesis =
-                genesis_actor.as_deref() == Some(logged.actor.as_str()) || reading.store_genesis;
-            if (genesis && !source.record_genesis) || reading.marker {
+            let framework = logged
+                .message
+                .as_deref()
+                .and_then(tilo_actions::FrameworkChange::from_change_message);
+            let genesis = genesis_actor.as_deref() == Some(logged.actor.as_str())
+                || reading.store_genesis
+                || framework == Some(tilo_actions::FrameworkChange::Genesis);
+            if (genesis && !source.record_genesis)
+                || reading.marker
+                || framework.is_some_and(is_bookkeeping)
+            {
                 typing.continues(&logged.actor, None, logged.time_ms);
                 continue;
             }
@@ -397,11 +401,18 @@ impl HistoryLog {
             };
             let summary = if genesis {
                 crate::i18n::I18nManager::lookup_plain("history-genesis")
+            } else if framework == Some(tilo_actions::FrameworkChange::Transfer) {
+                crate::i18n::I18nManager::lookup_plain("history-moved")
             } else {
+                // A change that names no finer action than the document (a
+                // window's direct edit, or one written before it could name
+                // any) says that, as an entry naming nothing does.
                 context
                     .as_ref()
                     .and_then(super::sentence::step_summary)
-                    .unwrap_or_else(|| reading.summary.clone())
+                    .unwrap_or_else(|| {
+                        super::sentence::sentence(context.as_ref().unwrap_or(&Default::default()))
+                    })
             };
             let typed = context
                 .as_ref()
@@ -458,6 +469,18 @@ impl HistoryLog {
         }
         out
     }
+}
+
+/// A change the framework makes on its own that nobody did: the empty
+/// structure every member derives, a newer package taking over the record's
+/// surface, and a run's marker. Part of the document, never a row.
+fn is_bookkeeping(change: tilo_actions::FrameworkChange) -> bool {
+    matches!(
+        change,
+        tilo_actions::FrameworkChange::Structure
+            | tilo_actions::FrameworkChange::Upgrade
+            | tilo_actions::FrameworkChange::Run
+    )
 }
 
 impl HistorySource {

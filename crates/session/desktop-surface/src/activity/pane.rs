@@ -580,7 +580,6 @@ impl RoomActivityPane {
             // back and forth used to fill until nothing anyone did was left.
             source: HistorySource::new()
                 .with_artifact_kind(ArtifactKind::Cluster)
-                .without_field_paths()
                 .passing_over(tilo_desktop_model::desktop_doc::only_sets_active),
             revert_intent,
             name_intent,

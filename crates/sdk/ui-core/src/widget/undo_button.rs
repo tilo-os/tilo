@@ -379,7 +379,7 @@ impl Widget for UndoButton {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.accessible_name())
-                // What this verb would actually do — `"Undo: +12 -3 chars"` —
+                // What this verb would actually do — `"Undo: Renamed the card"` —
                 // or, when there is nothing, why it is unavailable. Never a
                 // description of an action that is not on the stack.
                 .with_description(self.access.status().description(self.kind))

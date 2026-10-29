@@ -6533,7 +6533,7 @@ fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
         .map(|command| command.label)
         .collect();
     assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
-    assert!(recent[0].contains("Edited body"), "{recent:?}");
+    assert!(recent[0].contains("Changed the document"), "{recent:?}");
 }
 
 #[test]

@@ -277,29 +277,11 @@ impl State {
     /// What the history can do for `author` right now, ready to hand to a
     /// widget — see [`UndoStatus`](crate::undo::UndoStatus).
     ///
-    /// The summaries are derived from the bracketed changes themselves through
-    /// [`history_source::change_summary`](crate::history_source::change_summary),
-    /// the same producer the history pane uses, so a control and the timeline
-    /// describe an action the same way. Both read "the action, as performed":
-    /// an undo entry brackets `before → after`, while a redo entry holds the
-    /// *inverse* change, so its summary reads `after → before`.
-    pub fn undo_status(&mut self, author: Option<&UserId>) -> crate::undo::UndoStatus {
-        let undo_span = self
-            .undo
-            .next_undo_as(&self.doc, author)
-            .map(|e| (e.before, e.after));
-        let redo_span = self
-            .undo
-            .next_redo_as(&self.doc, author)
-            .map(|e| (e.after, e.before));
-        crate::undo::UndoStatus {
-            can_undo: undo_span.is_some(),
-            can_redo: redo_span.is_some(),
-            undo_summary: undo_span
-                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
-            redo_summary: redo_span
-                .map(|(from, to)| crate::history_source::change_summary(&mut self.doc, &from, &to)),
-        }
+    /// The summaries are what each step's action record says it did
+    /// ([`crate::undo::step_summary`]), the sentence its history row reads,
+    /// so a control and the timeline describe an action the same way.
+    pub fn undo_status(&self, author: Option<&UserId>) -> crate::undo::UndoStatus {
+        crate::undo::status_snapshot(&self.doc, &self.undo, author)
     }
 
     /// Record an action that has *already* been committed into `doc`
@@ -1357,9 +1339,24 @@ mod tests {
             .unwrap();
         state.doc.splice_text(&obj, 0, 0, text).unwrap();
         assert!(
-            state.commit_action_authored(None, None, Some(author.clone())),
+            state.commit_action_authored_with_context(
+                None,
+                None,
+                Some(author.clone()),
+                Some(typed()),
+            ),
             "the edit must actually have committed"
         );
+    }
+
+    /// The entry [`type_action`] commits its edit with.
+    fn typed() -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext::for_resource("note", "note", "Note").with_described(
+            tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Notes", "note", "type"),
+                [],
+            )),
+        )
     }
 
     #[test]
@@ -1369,8 +1366,8 @@ mod tests {
     )]
     fn undo_status_and_revision_describe_and_bound_every_stack_change() {
         // phase: undo_status_describes_the_action_on_the_stack
-        // The status a widget receives describes the change that is on the
-        // stack, through the same producer the history pane uses.
+        // The status a widget receives describes the step that is on the
+        // stack as its action record says it, as the history pane does.
         {
             let mut state = State::new();
             let a = alice();
@@ -1382,9 +1379,9 @@ mod tests {
             let s = state.undo_status(Some(&a));
             assert!(s.can_undo && !s.can_redo);
             assert_eq!(
-                s.undo_summary.as_deref(),
-                Some("+5 -0 chars"),
-                "the summary counts the characters the action actually inserted"
+                s.undo_summary,
+                Some(crate::history_source::sentence::sentence(&typed())),
+                "the summary is the step's own sentence"
             );
             assert_eq!(s.redo_summary, None, "nothing has been undone yet");
         }
@@ -1401,9 +1398,9 @@ mod tests {
             let s = state.undo_status(Some(&a));
             assert!(!s.can_undo && s.can_redo);
             assert_eq!(
-                s.redo_summary.as_deref(),
-                Some("+5 -0 chars"),
-                "redo puts five characters back"
+                s.redo_summary,
+                Some(crate::history_source::sentence::sentence(&typed())),
+                "redo names the step it puts back"
             );
         }
         // phase: the_revision_moves_on_every_stack_change

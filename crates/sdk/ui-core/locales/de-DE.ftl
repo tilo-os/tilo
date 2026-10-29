@@ -65,22 +65,7 @@ window-stop-sharing-in = Teilen in { $place } beenden
 history-loading = Verlauf wird geladen…
 lazy-loading = Wird geladen…
 history-genesis = Erstellt
-history-edited-field = { $more ->
-    [0] { $path } bearbeitet
-   *[other] { $path } und { $more } weitere bearbeitet
-}
-history-removed-field = { $more ->
-    [0] { $path } entfernt
-   *[other] { $path } und { $more } weitere entfernt
-}
-history-edited-fields = { $count ->
-    [one] 1 Feld bearbeitet
-   *[other] { $count } Felder bearbeitet
-}
-history-removed-fields = { $count ->
-    [one] 1 Feld entfernt
-   *[other] { $count } Felder entfernt
-}
+history-moved = Zwischen Arbeitsbereichen verschoben
 history-review-title = { $resource } wiederherstellen
 history-review-confirm = Version wiederherstellen
 history-review-refresh = Prüfung aktualisieren
