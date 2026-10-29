@@ -1850,6 +1850,63 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
         assert_eq!(names(&recent), ["gamma.txt"]);
     }
 
+    fn several_entries_and_a_type_are_picker_operations() {
+        let (_g, root) = temp_tree();
+        let alpha = semantic::entry_id(&root.join("alpha.txt"));
+        let beta = semantic::entry_id(&root.join("beta.txt"));
+        let mut single = FilePicker::new("", &root, vec![root.clone()])
+            .with_multiple(false)
+            .settled();
+        for entry in [alpha.clone(), beta.clone()] {
+            let state = state_of(&single);
+            single
+                .perform_semantic(
+                    Some(&state),
+                    semantic::PickerOperation::AlsoSelect { entry },
+                )
+                .expect("select");
+        }
+        assert_eq!(
+            single.selected_indices().len(),
+            1,
+            "one file where one is taken"
+        );
+
+        let mut several = FilePicker::new("", &root, vec![root.clone()])
+            .with_multiple(true)
+            .settled();
+        for entry in [alpha, beta] {
+            let state = state_of(&several);
+            several
+                .perform_semantic(
+                    Some(&state),
+                    semantic::PickerOperation::AlsoSelect { entry },
+                )
+                .expect("select");
+        }
+        assert_eq!(several.selected_indices().len(), 2);
+        assert!(several.can_confirm());
+
+        let mut typed = FilePicker::new("", &root, vec![root.clone()])
+            .with_filters(vec![
+                FileFilter::new("Text", &["txt"]),
+                FileFilter::new("Markdown", &["md"]),
+            ])
+            .settled();
+        assert_eq!(typed.filter_labels().len(), 3);
+        let state = state_of(&typed);
+        typed
+            .perform_semantic(Some(&state), semantic::PickerOperation::Filter { index: 1 })
+            .expect("filter");
+        assert_eq!(typed.active_filter_label(), "Markdown");
+        let state = state_of(&typed);
+        assert!(
+            typed
+                .perform_semantic(Some(&state), semantic::PickerOperation::Filter { index: 3 })
+                .is_err()
+        );
+    }
+
     fn the_path_bar_starts_at_home_goes_up_on_a_click_and_takes_a_typed_path() {
         use winit::keyboard::NamedKey;
         let (_g, root) = temp_tree();
@@ -1899,6 +1956,7 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
     recent_leads_the_sidebar_and_lists_what_was_chosen();
     typing_narrows_the_folder_and_enter_searches_every_place();
     search_and_recent_are_picker_operations();
+    several_entries_and_a_type_are_picker_operations();
     the_path_bar_starts_at_home_goes_up_on_a_click_and_takes_a_typed_path();
 }
 
