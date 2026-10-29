@@ -16,6 +16,8 @@ use crate::widget::Widget;
 pub(crate) struct HostTree<'a> {
     pub(crate) state: &'a crate::State,
     pub(crate) root: &'a dyn Widget,
+    /// The app's registered framework History, when it has one.
+    pub(crate) history: Option<&'a dyn crate::history_mode::host::HistoryChromeApi>,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) taffy: &'a TaffyTree<()>,
@@ -49,6 +51,17 @@ impl<'a> HostTree<'a> {
     pub(crate) fn is_history_node(&self, node: NodeId) -> bool {
         self.history_layout
             .is_some_and(|layout| layout.contains(self.taffy, node))
+    }
+
+    /// Whether the app already presents History of its own: a registered
+    /// framework History, or a root (a hosted component, a registered
+    /// framework app) that supplies a shared History surface. The standalone
+    /// History chrome serves only the others; wrapping such a root as well
+    /// would stack two History toolbars and squeeze the app's layout.
+    pub(crate) fn supplies_own_history(&self) -> bool {
+        self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root)
+            || crate::history_mode::capability::provides_document_history(self.root)
     }
 
     /// Read the widget laid out at `node`, through its component binding.

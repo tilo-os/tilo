@@ -10055,6 +10055,7 @@ impl crate::host_core::HostCore for FrameHarness {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root.as_ref(),
+            history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.node_map,
             taffy: &self.taffy,
@@ -10076,6 +10077,7 @@ impl crate::host_core::HostCore for FrameHarness {
             crate::host_core::HostTree {
                 state: &self.state,
                 root: self.root.as_ref(),
+                history: self.history.as_deref(),
                 bindings: &self.bindings,
                 node_map: &self.node_map,
                 taffy: &self.taffy,

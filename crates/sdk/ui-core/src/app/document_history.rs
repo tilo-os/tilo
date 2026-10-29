@@ -189,15 +189,7 @@ impl App {
     pub(super) fn refresh_history_controls(
         &mut self,
     ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
-        let allowed: std::collections::HashSet<_> = self
-            .history_local_resources()
-            .into_iter()
-            .flat_map(|resource| {
-                resource.actions.into_iter().map(move |action| {
-                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
-                })
-            })
-            .collect();
+        let allowed = crate::standalone_history_host::addresses(self.history_local_resources());
         self.document_history.refresh_control_availability(&allowed);
         allowed
             .into_iter()
@@ -220,17 +212,7 @@ impl App {
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
         let resources = self
-            .with_history(|host, context| {
-                let mut resources = host.local_resources(context)?;
-                for widget in host.presentation_roots(context)? {
-                    crate::widget::collect_widget_resources(
-                        widget,
-                        context.document,
-                        &mut resources,
-                    );
-                }
-                Ok::<_, crate::standalone_history_host::HistoryHostError>(resources)
-            })
+            .with_history(StandaloneHistoryHost::door_resources)
             .unwrap_or_default();
         self.history_changed(revision, open);
         let mut resources = resources;
@@ -250,14 +232,8 @@ impl App {
         resources.extend(self.edit_resource_for(address));
         tilo_actions::door::resolve(&resources, address)?;
         Some((|| {
-            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            let encoded = crate::bound_dispatch::encode_resource_invocation(
                 &resources, address, argument, None, false,
-            )?;
-            let encoded = crate::bound_dispatch::encode_resource_action(
-                &resources,
-                address,
-                arguments.as_ref(),
-                None,
             )?;
             self.execute_history_encoded_local(&encoded)
                 .map_err(tilo_actions::DoorError::Failed)?;
@@ -299,19 +275,9 @@ impl App {
         if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
             return self.execute_zoom_operation(encoded);
         }
-        let pane = self
-            .document_history
-            .pane_mut()
-            .ok_or("History is not open")?;
-        let result = crate::widget::start_without_document_writes(
-            pane,
-            &crate::widget::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+        let result = self.document_history.start_pane_operation(
+            encoded,
+            &mut self.state.doc,
             &self.state.root,
         )?;
         if result.is_none() {
@@ -880,12 +846,7 @@ impl App {
             history.remove_fallback_bar();
             self.layout.request_rebuild();
         }
-        // A registered framework owner already supplies its own shared History
-        // surface and custody. The standalone adapter serves unregistered roots.
-        if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-            || crate::history_mode::capability::provides_document_history(self.root_widget.as_ref())
-        {
+        if self.tree().supplies_own_history() {
             return;
         }
         self.history_chrome_enabled = true;
@@ -985,19 +946,12 @@ impl App {
             .ok_or("History is not open")?;
         let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "select");
         let arguments = serde_json::json!({"entries": entries.iter().map(crate::widget::history_group::hex16).collect::<Vec<_>>()});
-        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+        let encoded = crate::bound_dispatch::encode_resource_invocation(
             &resources,
             &address,
             None,
             arguments.as_object(),
             false,
-        )
-        .map_err(|error| error.to_string())?;
-        let encoded = crate::bound_dispatch::encode_resource_action(
-            &resources,
-            &address,
-            arguments.as_ref(),
-            None,
         )
         .map_err(|error| error.to_string())?;
         self.invoke_history_local(&encoded)

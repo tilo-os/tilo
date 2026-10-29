@@ -12,11 +12,6 @@ use crate::standalone_history_host::HISTORY_OPERATION;
 impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
     /// and embedded-component harnesses retain their original content viewport.
-    ///
-    /// As in the App, a root whose framework owner already supplies its own
-    /// shared History surface (a hosted component, a registered framework
-    /// app) keeps that one: wrapping it in the standalone adapter as well
-    /// would stack two History toolbars and squeeze the app's layout.
     pub fn enable_document_history_chrome(&mut self) {
         self.invalidate_local();
         if let Some(history) = &mut self.history {
@@ -24,10 +19,7 @@ impl FrameHarness {
             self.invalidate_layout_tree();
             self.relayout();
         }
-        if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-            || crate::history_mode::capability::provides_document_history(self.root.as_ref())
-        {
+        if self.tree().supplies_own_history() {
             return;
         }
         if !self.history_chrome_enabled {
@@ -151,14 +143,8 @@ impl FrameHarness {
     }
 
     fn refresh_history_resources(&mut self) -> Result<Vec<tilo_actions::ResourceSpec>, String> {
-        self.with_history(|host, context| {
-            let mut resources = host.local_resources(context)?;
-            for root in host.presentation_roots(context)? {
-                crate::widget::collect_widget_resources(root, context.document, &mut resources);
-            }
-            Ok::<_, crate::standalone_history_host::HistoryHostError>(resources)
-        })
-        .map_err(|error| format!("History is unavailable: {error:?}"))
+        self.with_history(crate::standalone_history_host::StandaloneHistoryHost::door_resources)
+            .map_err(|error| format!("History is unavailable: {error:?}"))
     }
 
     /// Local host actions are intentionally separate from `resources()`, the
@@ -225,16 +211,12 @@ impl FrameHarness {
         // The app's registered History owns the door wherever it has one,
         // as in the App: the standalone chrome never stands in for it.
         if let Some(history) = &mut self.history {
-            let resources = [history.door_resource()];
-            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
-                &resources, address, argument, None, false,
-            )
-            .map_err(|error| error.to_string())?;
-            let encoded = crate::bound_dispatch::encode_resource_action(
-                &resources,
+            let encoded = crate::bound_dispatch::encode_resource_invocation(
+                &[history.door_resource()],
                 address,
-                arguments.as_ref(),
+                argument,
                 None,
+                false,
             )
             .map_err(|error| error.to_string())?;
             return history.invoke_door(&encoded);
@@ -243,24 +225,9 @@ impl FrameHarness {
             return Err("History chrome is not enabled".into());
         }
         self.remember_history_content();
-        let resources = self
-            .with_history(|host, context| {
-                let mut resources = host.local_resources(context)?;
-                for root in host.presentation_roots(context)? {
-                    crate::widget::collect_widget_resources(root, context.document, &mut resources);
-                }
-                Ok::<_, crate::standalone_history_host::HistoryHostError>(resources)
-            })
-            .map_err(|error| format!("History is unavailable: {error:?}"))?;
-        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+        let resources = self.refresh_history_resources()?;
+        let encoded = crate::bound_dispatch::encode_resource_invocation(
             &resources, address, argument, None, false,
-        )
-        .map_err(|error| error.to_string())?;
-        let encoded = crate::bound_dispatch::encode_resource_action(
-            &resources,
-            address,
-            arguments.as_ref(),
-            None,
         )
         .map_err(|error| error.to_string())?;
         self.execute_history_operation(&encoded)
@@ -313,22 +280,9 @@ impl FrameHarness {
             self.with_history(|host, context| host.invoke_local(encoded, context))
                 .map_err(|error| format!("History is unavailable: {error:?}"))
         } else {
-            let pane = self
-                .document_history
-                .pane_mut()
-                .ok_or("History is not open")?;
-            crate::widget::start_without_document_writes(
-                pane,
-                &crate::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                &self.state.root,
-            )?
-            .ok_or("Unknown local History operation")?;
+            self.document_history
+                .start_pane_operation(encoded, &mut self.state.doc, &self.state.root)?
+                .ok_or("Unknown local History operation")?;
             self.with_history(
                 super::super::standalone_history_host::StandaloneHistoryHost::process_pane_intents,
             )
@@ -429,15 +383,9 @@ impl FrameHarness {
         // A revoked session is purged by the shared controller before rebuilding.
         let _ = self
             .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
-        let resources = self.refresh_history_resources().unwrap_or_default();
-        let allowed = resources
-            .into_iter()
-            .flat_map(|resource| {
-                resource.actions.into_iter().map(move |action| {
-                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
-                })
-            })
-            .collect();
+        let allowed = crate::standalone_history_host::addresses(
+            self.refresh_history_resources().unwrap_or_default(),
+        );
         self.document_history.refresh_control_availability(&allowed);
         self.document_history
             .sync(&self.state.doc, &self.state.root);

@@ -4192,6 +4192,7 @@ impl crate::host_core::HostCore for App {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
+                history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
             taffy: &self.layout.taffy,
@@ -4213,6 +4214,7 @@ impl crate::host_core::HostCore for App {
             crate::host_core::HostTree {
                 state: &self.state,
                 root: self.root_widget.as_ref(),
+                history: self.history.as_deref(),
                 bindings: &self.bindings,
                 node_map: &self.layout.node_map,
                 taffy: &self.layout.taffy,
