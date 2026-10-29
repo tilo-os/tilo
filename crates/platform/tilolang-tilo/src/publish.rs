@@ -774,23 +774,28 @@ impl Publications {
             }
         }
         if !whole_docs.is_empty() {
-            // Built off the frame; changes from now on stay in the watch until it is taken in.
-            let snapshot = host.store().snapshot();
-            let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
-            self.building = Some((
-                docs,
-                Pending::start(
-                    move || {
-                        whole_docs
-                            .iter()
-                            .map(|whole| whole.build(&snapshot))
-                            .collect()
-                    },
-                    self.wake.clone(),
-                ),
-            ));
+            self.build_off_frame(host, whole_docs);
         }
         touched
+    }
+
+    /// Build `whole_docs` off the frame; changes from now on stay in the watch until they are
+    /// taken in.
+    fn build_off_frame(&mut self, host: &crate::host::Host, whole_docs: Vec<Whole>) {
+        let snapshot = host.store().snapshot();
+        let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
+        self.building = Some((
+            docs,
+            Pending::start(
+                move || {
+                    whole_docs
+                        .iter()
+                        .map(|whole| whole.build(&snapshot))
+                        .collect()
+                },
+                self.wake.clone(),
+            ),
+        ));
     }
 }
 
