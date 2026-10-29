@@ -148,6 +148,18 @@ impl Row<'_> {
         self.control(Box::new(toggle))
     }
 
+    /// A toggle showing `on`, invoking `effect` on the live row `row`, which
+    /// offers it, with each flip: a switch of one item (one workspace).
+    pub fn toggle_on_row(
+        self,
+        on: &LocalState<bool>,
+        row: &ui::tilo_actions::ResourceSpec,
+        effect: impl Binds<SettingsEffect, bool>,
+    ) -> Item {
+        let toggle = self.cx.bind_on_row(row, self.toggle_widget(on), effect);
+        self.control(Box::new(toggle))
+    }
+
     /// A chooser of `options` showing `current`, setting the section's field
     /// `field` to what `value` makes of the chosen option.
     pub fn choice<T, V>(

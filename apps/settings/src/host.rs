@@ -464,6 +464,21 @@ impl PaneCx {
         crate::on_row::binding(&self.door.as_ref()?.dispatcher, row, effect)
     }
 
+    /// `control`, invoking `effect` with each committed value on `row`
+    /// ([`crate::on_row::bind`]); unavailable outside a host.
+    #[must_use]
+    pub fn bind_on_row<I: 'static, C: ActionControl<I>>(
+        &self,
+        row: &ui::tilo_actions::ResourceSpec,
+        control: C,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> C {
+        match &self.door {
+            Some(door) => crate::on_row::bind(&door.dispatcher, row, control, effect),
+            None => control.unavailable(),
+        }
+    }
+
     /// The binding of one fully specified `effect` that `row` offers
     /// ([`crate::on_row::invocation`]); `None` outside a host.
     pub fn row_invocation(

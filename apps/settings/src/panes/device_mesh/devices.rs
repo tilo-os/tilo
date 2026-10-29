@@ -7,9 +7,9 @@ use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Wid
 
 use super::{
     DeviceMeshEffect, DeviceMeshModel, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus,
-    last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
-    replication_description, replication_shown, revoke_shown, role_shown, runtime_status_tone,
-    shows_advanced_services,
+    home_server_row, last_seen_label, mesh_status_shown, peer_health_badge, peer_key,
+    personal_device_key, personal_device_row, replication_description, replication_shown,
+    revoke_shown, role_shown, runtime_status_tone, shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -382,7 +382,8 @@ impl DeviceMeshModel {
         peer: &tilo_relay_protocol::HomePeerRegistration,
     ) -> Vec<crate::widgets::Item> {
         let device = peer.device_node_id.clone();
-        let name = self.cx.bind(
+        let name = self.cx.bind_on_row(
+            &home_server_row(peer).into_resource(),
             EditableLabel::new(&peer.label)
                 .with_id(&peer_key("name", &peer.device_node_id))
                 .with_accessible_name(t("mesh-name"))
@@ -416,11 +417,19 @@ impl DeviceMeshModel {
     /// device's revocation signs, and offers Remove beside Cancel.
     fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<crate::widgets::Item> {
         let home = entry.peer.is_some();
+        // The device's own row offers what removing it does: the personal
+        // device's, else the home server's.
+        let live = match (entry.personal, entry.peer) {
+            (Some(device), _) => personal_device_row(device),
+            (None, Some(peer)) => home_server_row(peer),
+            (None, None) => return Vec::new(),
+        }
+        .into_resource();
         if self.removing.as_deref() != Some(entry.key.as_str()) {
             return vec![crate::widgets::row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(
-                        self.cx.bind_invocation(
+                        self.cx.bind_row(
                             Button::new(
                                 &peer_key("review-remove", &entry.key),
                                 &t(if home {
@@ -430,6 +439,7 @@ impl DeviceMeshModel {
                                 }),
                             )
                             .role(ButtonRole::Destructive),
+                            &live,
                             DeviceMeshEffect::ReviewRemoval {
                                 device: entry.key.clone(),
                             },
@@ -439,12 +449,13 @@ impl DeviceMeshModel {
             ))];
         }
         let confirm: Button = if let Some(peer) = entry.peer {
-            self.cx.bind_invocation(
+            self.cx.bind_row(
                 Button::new(
                     &peer_key("remove", &peer.device_node_id),
                     &t("mesh-remove-home-confirm"),
                 )
                 .role(ButtonRole::Destructive),
+                &home_server_row(peer).into_resource(),
                 DeviceMeshEffect::RemoveHomeServer {
                     device: peer.device_node_id.clone(),
                 },
@@ -452,7 +463,8 @@ impl DeviceMeshModel {
         } else {
             let device = entry.key.clone();
             let reason = self.removal_reason.clone();
-            self.cx.bind(
+            self.cx.bind_on_row(
+                &live,
                 Button::new(
                     &personal_device_key("revoke", &entry.key),
                     &t("mesh-remove-device-confirm"),

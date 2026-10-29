@@ -480,6 +480,12 @@ pub(crate) fn answer(
         model.removing = None;
         return Ok(Effected::Pending);
     }
+    // The host carries out a home relay choice; its caller hears how.
+    if let DeviceMeshEffect::SetHomeRelayHosting { room, on } = &effect {
+        model.choose_home_relay(room, *on, Some(cx.reply()))?;
+        model.changed = true;
+        return Ok(Effected::Pending);
+    }
     model.apply(&effect).map(|()| Effected::done())
 }
 
@@ -594,37 +600,80 @@ impl DeviceMeshArea {
         self.model.get().is_some()
     }
 
-    /// One row per personal device and home server.
+    /// One row per personal device and home server, and per workspace
+    /// the home relay may host.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        let offer = |effect: DeviceMeshEffect| SettingsEffect::from(effect).bound();
         let devices = model
             .personal_devices
             .iter()
             .filter(|device| !device.current && !device.revoked)
-            .map(|device| {
-                LiveRow::new(
-                    format!("settings.personal-device:{}", hex::encode(device.key)),
-                    "settings.personal-device",
-                    device.label.clone(),
-                )
-                .operation(offer(DeviceMeshEffect::RevokeDevice {
-                    device: hex::encode(device.key),
-                    reason: "Retired".into(),
-                }))
-            });
-        let servers = model.home_peers.iter().map(|peer| {
-            LiveRow::new(
-                format!("settings.home-server:{}", peer.device_node_id),
-                "settings.home-server",
-                peer.label.clone(),
-            )
-            .operation(offer(DeviceMeshEffect::RemoveHomeServer {
-                device: peer.device_node_id.clone(),
-            }))
-        });
-        devices.chain(servers).collect()
+            .map(personal_device_row);
+        let servers = model.home_peers.iter().map(home_server_row);
+        devices
+            .chain(servers)
+            .chain(model.home_relay_rows())
+            .collect()
     }
+}
+
+/// The live row of the personal device `key` (hex).
+fn personal_device_row_id(key: &str) -> String {
+    format!("settings.personal-device:{key}")
+}
+
+/// The live row of the home server `node`.
+fn home_server_row_id(node: &str) -> String {
+    format!("settings.home-server:{node}")
+}
+
+/// A trusted personal device's row: asking whether to remove it, and
+/// ending its access for the reason its caller gives.
+fn personal_device_row(device: &crate::device_fleet::DeviceView) -> LiveRow {
+    let key = hex::encode(device.key);
+    LiveRow::new(
+        personal_device_row_id(&key),
+        "settings.personal-device",
+        device.label.clone(),
+    )
+    .operation(
+        SettingsEffect::from(DeviceMeshEffect::ReviewRemoval {
+            device: key.clone(),
+        })
+        .bound(),
+    )
+    .operation(
+        SettingsEffect::from(DeviceMeshEffect::RevokeDevice {
+            device: key,
+            reason: DEFAULT_REVOKE_REASON.into(),
+        })
+        .bound_asking(&["reason"]),
+    )
+}
+
+/// A home server's row: renaming it to the name its caller gives, asking
+/// whether to remove it, and removing it.
+fn home_server_row(peer: &tilo_relay_protocol::HomePeerRegistration) -> LiveRow {
+    let device = peer.device_node_id.clone();
+    LiveRow::new(
+        home_server_row_id(&device),
+        "settings.home-server",
+        peer.label.clone(),
+    )
+    .operation(
+        SettingsEffect::from(DeviceMeshEffect::RenameHomeServer {
+            device: device.clone(),
+            name: peer.label.clone(),
+        })
+        .bound_asking(&["name"]),
+    )
+    .operation(
+        SettingsEffect::from(DeviceMeshEffect::ReviewRemoval {
+            device: device.clone(),
+        })
+        .bound(),
+    )
+    .operation(SettingsEffect::from(DeviceMeshEffect::RemoveHomeServer { device }).bound())
 }
 
 /// Editor for the daemon's real device-mesh configuration.
@@ -1164,7 +1213,7 @@ impl DeviceMeshModel {
                 false
             }
             DeviceMeshEffect::SetHomeRelayHosting { room, on } => {
-                self.choose_home_relay(room, *on)?;
+                self.choose_home_relay(room, *on, None)?;
                 false
             }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
