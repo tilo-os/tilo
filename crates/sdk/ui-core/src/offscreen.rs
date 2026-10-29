@@ -2378,10 +2378,11 @@ mod tests {
     /// measure of a photograph behind a feathered mask.
     #[test]
     fn resilient_render_grows_through_cascading_stage_overflows() {
-        let Ok(mut renderer) = OffscreenRenderer::try_new(320, 320) else {
-            eprintln!("skipping cascading overflow test: no GPU");
-            return;
-        };
+        let mut renderer = tilo_test_env::require_capability!(
+            Gpu,
+            OffscreenRenderer::try_new(320, 320),
+            "cascading overflow test"
+        );
         let side = 320.0;
         let full = Rect::new(0.0, 0.0, side, side);
         let mut scene = Scene::new();
@@ -3226,10 +3227,13 @@ mod tests {
                 eprintln!("skipping sparse coarse test: coarse selection is not requested");
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping sparse coarse test: no shared GPU");
+            if let Err(error) = shared_gpu() {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Gpu,
+                    format_args!("sparse coarse test: {error}"),
+                );
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
-            };
+            }
             const W: u32 = 544;
             const H: u32 = 528;
             let mut retained = OffscreenRenderer::new(W, H);
@@ -3809,8 +3813,11 @@ mod tests {
             );
             return None;
         }
-        if shared_gpu().is_err() {
-            eprintln!("skipping {test_name}: no shared GPU");
+        if let Err(error) = shared_gpu() {
+            tilo_test_env::capability_unavailable(
+                tilo_test_env::Capability::Gpu,
+                format_args!("{test_name}: {error}"),
+            );
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
@@ -3838,8 +3845,11 @@ mod tests {
             );
             return None;
         }
-        if shared_gpu().is_err() {
-            eprintln!("skipping {test_name}: no shared GPU");
+        if let Err(error) = shared_gpu() {
+            tilo_test_env::capability_unavailable(
+                tilo_test_env::Capability::Gpu,
+                format_args!("{test_name}: {error}"),
+            );
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
@@ -4060,10 +4070,13 @@ mod tests {
                 eprintln!("skipping CPU path-tag test: selective path tags are not requested");
                 break 'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping CPU path-tag test: no shared GPU");
+            if let Err(error) = shared_gpu() {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Gpu,
+                    format_args!("CPU path-tag test: {error}"),
+                );
                 break 'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled;
-            };
+            }
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
@@ -4417,10 +4430,13 @@ mod tests {
                 eprintln!("skipping direct path-dispatch test: experiment is not requested");
                 break 'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping direct path-dispatch test: no shared GPU");
+            if let Err(error) = shared_gpu() {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Gpu,
+                    format_args!("direct path-dispatch test: {error}"),
+                );
                 break 'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages;
-            };
+            }
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
@@ -4570,8 +4586,11 @@ mod tests {
                 eprintln!("skipping GPU path recovery test: no experiment is requested");
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }
-            if shared_gpu().is_err() {
-                eprintln!("skipping deferred bump recovery test: no shared GPU");
+            if let Err(error) = shared_gpu() {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Gpu,
+                    format_args!("deferred bump recovery test: {error}"),
+                );
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }
 

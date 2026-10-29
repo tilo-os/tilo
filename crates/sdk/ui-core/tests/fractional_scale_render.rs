@@ -8,7 +8,7 @@
 //! pixels, with a hard vector edge — not the blurry integer-rounded
 //! placement a 1× or 2× compositor would produce.
 //!
-//! Skipped (eprintln + early return) when no wgpu adapter is available,
+//! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one,
 //! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
 
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -36,10 +36,11 @@ fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
             let scale = 1.5_f64;
             // Logical canvas is 60×60; physical surface is logical × scale = 90×90.
             let phys = 90u32;
-            let Some(mut renderer) = OffscreenRenderer::try_new(phys, phys).ok() else {
-                eprintln!("offscreen: no wgpu adapter — skipping fractional-scale render test");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(phys, phys),
+                "fractional-scale render test"
+            );
 
             let mut scene = Scene::new();
             // Draw the square at LOGICAL coordinates but composite through the
@@ -106,10 +107,11 @@ fn fractional_scales_map_logical_edges_to_proportional_physical_edges() {
             // Proves the placement scales with the factor, not a fixed rounding.
             for (scale, edge_in, edge_out) in [(1.25_f64, 60u32, 65u32), (1.75_f64, 85u32, 90u32)] {
                 let phys = ((60.0 * scale).round() as u32) + 4;
-                let Some(mut renderer) = OffscreenRenderer::try_new(phys, phys).ok() else {
-                    eprintln!("offscreen: no wgpu adapter — skipping ({scale}x) case");
-                    return;
-                };
+                let mut renderer = tilo_test_env::require_capability!(
+                    Gpu,
+                    OffscreenRenderer::try_new(phys, phys),
+                    "({scale}x) case"
+                );
 
                 let mut scene = Scene::new();
                 let fill = Color::from_rgb8(99, 102, 241);

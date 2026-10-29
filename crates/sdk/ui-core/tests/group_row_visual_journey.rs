@@ -5,7 +5,7 @@
 //! rasterisation, complementing `window_group_visual_journey.rs`
 //! (single-group paint paths) and `group_row.rs`'s state-only unit tests.
 //!
-//! Skips gracefully when no wgpu adapter is available. Set
+//! Skips without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one. Set
 //! `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
 //! (`group_row_<state>.png`) for by-eye inspection.
 
@@ -118,10 +118,11 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_visual_journey_distinguishes_all_states() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h),
+                "group-row journey"
+            );
 
             let g_a = make_group(
                 100,
@@ -186,10 +187,11 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_fresh_render_is_deterministic() {
             let (w, h) = (600u32, 200u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h),
+                "determinism check"
+            );
             let mut r1 = GroupRow::new(vec![
                 make_group(1, &[(1, "X", AppKind::Editor)]),
                 make_group(2, &[(2, "Y", AppKind::Files)]),
@@ -222,10 +224,11 @@ fn group_row_maximize_and_reorder_paint_visibly() {
     {
         fn group_row_maximized_paints_distinct_pixels_and_fades_siblings() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h),
+                "maximize scene"
+            );
 
             let mut row = GroupRow::new(vec![
                 make_group(
@@ -287,10 +290,11 @@ fn group_row_maximize_and_reorder_paint_visibly() {
 
             // Wide enough that all three 600px groups + gaps fit on-screen.
             let (w, h) = (1900u32, 220u32);
-            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
-                eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
-                return;
-            };
+            let mut renderer = tilo_test_env::require_capability!(
+                Gpu,
+                OffscreenRenderer::try_new(w, h),
+                "reorder shot"
+            );
 
             let mut row = GroupRow::new(vec![
                 make_group(100, &[(1, "Editor", AppKind::Editor)]),
