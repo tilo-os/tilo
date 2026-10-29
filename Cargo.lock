@@ -21490,6 +21490,7 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilolang",
  "tokio",
  "tracing",
  "tracing-subscriber",

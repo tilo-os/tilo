@@ -336,13 +336,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     ) -> ui_core::widget::Chip {
         let dispatch = self.dispatch.clone();
         let (app, record, target) = (app.to_owned(), record.map(str::to_owned), reference.clone());
-        ui_core::widget::Chip::new(reference.label.clone())
-            .with_id(format!("reference:{}", reference.id))
-            .with_lead(super::reference::LEAD)
-            .with_accessible_name(ui_core::i18n::I18nManager::format(
-                "reference-open",
-                &[("label", reference.label.clone().into())],
-            ))
+        ui_core::widget::Chip::reference(reference.label.clone(), &reference.id)
             .on_click(move || dispatch.open_reference(&app, record.as_deref(), &target))
     }
 

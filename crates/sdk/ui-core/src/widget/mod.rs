@@ -3384,6 +3384,8 @@ pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
+pub mod program_step;
+pub use program_step::ProgramStepView;
 pub mod date_field;
 pub mod date_picker;
 pub use date_field::DateField;
@@ -3600,7 +3602,7 @@ pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 mod chip_component;
-pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
 pub use chip_component::ChipProps;
 pub mod conversation;
 pub use conversation::{

@@ -964,6 +964,15 @@ text-menu-numbered-list = Nummerierte Liste
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = { $label } öffnen
 
+# One step of an agent's task: the program it ran, what it answered, what it
+# changed and what it proposes.
+program-step-program = Programm, das der Agent ausgeführt hat
+program-step-show-all = Alle { $count } Zeilen zeigen
+program-step-undo = Rückgängig
+program-step-confirm = Bestätigen
+program-step-decline = Ablehnen
+program-step-waits = Wartet auf deine Bestätigung.
+
 # A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
 signal-meter-unknown = Signalstärke unbekannt
 signal-meter-weak = Schwaches Signal

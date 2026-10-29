@@ -111,7 +111,7 @@ impl Call {
 pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
 
 /// What leads a reference's label on its chip.
-pub const LEAD: ChipLead = ChipLead::Glyph(ui_core::icons::Icon::Link);
+pub const LEAD: ChipLead = ui_core::widget::REFERENCE_LEAD;
 
 /// The workspace this window is in, or why nothing opens from it.
 pub fn room() -> Result<String, String> {
