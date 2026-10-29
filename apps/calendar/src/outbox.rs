@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{EffectAnswer, EffectCx, Effected, SurfaceCx};
+use ui::framework::{EffectAnswer, EffectCx, Effected, RecordEnv};
 
 use crate::account::AccountStore;
 use crate::caldav::{self, MutationResult, RemoveJob, UploadJob};
@@ -115,7 +115,7 @@ pub(crate) fn pending_copies(state: &Calendar) -> Vec<&RemoteCopy> {
 
 /// Carry out the queued uploads and deletes of the calendars `accounts`
 /// holds for as long as the surface lives.
-pub(crate) fn drain(cx: &SurfaceCx<Calendar>, accounts: &DeviceAccounts) {
+pub(crate) fn drain(cx: &RecordEnv<Calendar>, accounts: &DeviceAccounts) {
     let owner = Rc::clone(accounts);
     let held = Rc::clone(accounts);
     cx.outbox(
