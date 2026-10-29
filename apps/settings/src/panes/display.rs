@@ -39,7 +39,7 @@ use crate::area::AreaContext;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
-use crate::prefs::{DisplayPrefs, NightLightPrefs};
+use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
@@ -1532,10 +1532,33 @@ impl DisplayModel {
     /// last answer names a newer one. Observed output timing stays separate
     /// from a requested candidate.
     fn transaction(&self) -> Option<DisplayTransaction> {
-        let shown = self
-            .of_device
-            .then(|| self.pending_change.clone())
-            .flatten();
+        self.newest_transaction(
+            self.of_device
+                .then(|| self.pending_change.clone())
+                .flatten(),
+        )
+    }
+
+    /// The display change being tried as the settings document holds it
+    /// now, whether or not a page took it in since, unless the host's last
+    /// answer names a newer one: what an agent keeps or reverts while
+    /// Displays is closed.
+    fn stored_transaction(&self) -> Option<DisplayTransaction> {
+        self.newest_transaction(
+            self.of_device
+                .then(|| {
+                    self.storage
+                        .settings::<PendingDisplayChange>()
+                        .get()
+                        .transaction()
+                })
+                .flatten(),
+        )
+    }
+
+    /// `shown`, or the change the host's last answer names where that is
+    /// newer.
+    fn newest_transaction(&self, shown: Option<DisplayTransaction>) -> Option<DisplayTransaction> {
         let answered = self
             .host_state
             .as_ref()
@@ -1564,13 +1587,13 @@ impl DisplayModel {
             }),
             DisplayEffect::KeepDisplayChanges => Ok(DisplayCommand::Keep {
                 transaction: self
-                    .transaction()
+                    .stored_transaction()
                     .ok_or("There is no display preview to keep.")?
                     .id,
             }),
             DisplayEffect::RevertDisplayChanges => Ok(DisplayCommand::Revert {
                 transaction: self
-                    .transaction()
+                    .stored_transaction()
                     .ok_or("There is no display preview to revert.")?
                     .id,
             }),
