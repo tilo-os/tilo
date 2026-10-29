@@ -733,7 +733,6 @@ mod tests {
     }
 
     use super::*;
-    use automerge::ReadDoc as _;
 
     fn view(prompt: PairingPrompt) -> PairingPromptView {
         PairingPromptView::new(PairingRequest {
