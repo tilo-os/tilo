@@ -313,8 +313,10 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 6);
-        for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.today] {
+        assert_eq!(w.ids.len(), 8);
+        for app in [
+            &a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.today, &a.board, &a.views,
+        ] {
             let meta = app.meta();
             let root = meta
                 .roots

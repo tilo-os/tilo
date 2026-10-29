@@ -56,9 +56,9 @@ destructive action discard(all: Answers, v: Answer) (icon: .trash, label: "Disca
     all.items.remove(v)
 }
 
-/// The views the person kept, each opening in a window of its own.
+/// Every view, the kept ones a place of their own, each opening in a window of its own.
 view answers_list(all: Answers) {
-    std.list(all, all.items, place: "is:kept", everything: "All views", empty: "No views yet")
+    std.list(all, all.items, everything: "All views", empty: "No views yet")
 }
 
 /// One view in a list: its title, and what was asked.
@@ -68,7 +68,7 @@ view answer_row(v: Answer) {
 
 /// A view's window: the view itself, live, under its title and its actions.
 view answer_page(v: Answer) {
-    std.page(v) {
+    std.page(v, canvas: true) {
         embed(v.source, author: v.author, invocation: .none)
     }
 }
