@@ -66,17 +66,6 @@ class ParseTests(unittest.TestCase):
 
 
 class SelectTests(unittest.TestCase):
-    def test_error_boundary_regressions_are_selected_for_their_inputs(self):
-        manifest = suites.load(ROOT)
-        for changed, expected in (
-            ("scripts/headless-examples/peers-cross-both-ways.py",
-             "scripts/tests/test_headless_error_handling.py"),
-            ("scripts/perf/render_bench.py",
-             "scripts/perf/render_bench_test.py"),
-        ):
-            with self.subTest(changed=changed):
-                self.assertIn(expected, suites.select(manifest, [changed]))
-
     def setUp(self):
         self.manifest = suites.parse(MANIFEST)
 

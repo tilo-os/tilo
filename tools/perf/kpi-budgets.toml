@@ -54,7 +54,7 @@ groups = ["hw"]
 
 # tilo-fs latency benchmarks (crates/system/fs/tests/performance_timing.rs), a
 # debug build on the shared `runner` class. The ceilings are the gate's own
-# SLO constants (tools/perf/test_adapters.py keeps them equal): twice the p99
+# SLO constants: twice the p99
 # of 56 CI runs, derived beside the constants; change both together.
 # Tolerances are wider than the default because single runs
 # of this gate on the shared runner have spread up to 1.8x between nights

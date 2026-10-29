@@ -28,8 +28,7 @@ records of the same KPI and environment, and fails the run on
   `[lanes]` in `tools/perf/kpi-budgets.toml` names the workflow (`compare.py
   --lane`) that produces each group, and a lane may claim a single KPI of
   another lane's group, as VM acceptance claims `render.frame_cpu_ms`. A
-  budget no lane produces does not load, and `tools/perf/test_compare.py`
-  holds each lane's groups equal to the checks that measure them.
+  budget no lane produces does not load.
 
 The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
@@ -198,8 +197,7 @@ To add a benchmark (a KPI group):
 4. List every KPI the group must report in `tools/perf/kpi-budgets.toml`, with
    its unit, its ceilings and `enforce`, and override the tolerances only with a
    measured reason. A listed KPI that stops reporting fails the run.
-5. Add tests for an adapter to `tools/perf/test_adapters.py`. Run the group
-   with `t test perf-<group>` from your tree; only main writes to the store.
+5. Run the group with `t test perf-<group>` from your tree; only main writes to the store.
 
 Pull requests may gate only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,

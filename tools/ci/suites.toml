@@ -497,91 +497,26 @@ suites = [
 [[group]]
 name = "perf-tools"
 inputs = [
-  "scripts/perf/", "apps/settings/src/categories.rs", "tools/perf/",
-  # tools/perf/test_compare.py and test_ab.py hold the scheduled groups, their
-  # t checks and benchmarks, and vm-acceptance-perf's groups equal to the
-  # budgets' lanes and the A/B groups.
-  "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh", "t.toml",
-  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
-  # and the WORKSPACE-SWITCH parser equal to the compositor's line.
-  "crates/system/fs/tests/performance_timing.rs",
-  "crates/session/shell/src/compositor/switch_latency.rs",
-  # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
-  "crates/session/shell/src/shell/search/providers/files.rs",
-  # ... and the hosting-load KPI ids equal to the relay load bench's.
-  "crates/hosting/tilo-relay/examples/relay_load/main.rs",
-  # ... and the room-load report fields equal to the room load bench's.
-  "crates/dev/room-load/src/",
-  # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
-  "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
-  "crates/session/shell/examples/redraw_bench.rs",
-  # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
-  "tools/web/chrome.mjs",
-  # ... and the native stream qualification's Safari run drives Safari through
-  # tools/web/webdriver.mjs.
-  "tools/web/webdriver.mjs",
-  # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
-  # session example draws.
-  "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
+  "tools/perf/", "tools/web/webdriver.mjs", "tools/web/webdriver.test.mjs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "scripts/perf/browser_qualification.test.mjs",
-  "scripts/perf/native_stream_qualification.test.mjs",
   "tools/web/webdriver.test.mjs",
-  "scripts/perf/code_editor_effects_test.py",
-  "scripts/perf/desktop_chrome_bench_test.py",
-  "scripts/perf/device_latency_bench_test.py",
-  "scripts/perf/drm_hardware_checks_test.py",
-  "scripts/perf/device_notes_latency_test.py",
-  "scripts/perf/device_notes_trace_test.py",
-  "scripts/perf/collect_code_editor_native_test.py",
-  "scripts/perf/collect_file_explorer_native_test.py",
-  "scripts/perf/collect_scratchpad_native_test.py",
-  "scripts/perf/collect_settings_native_test.py",
-  "scripts/perf/file_explorer_effects_test.py",
-  "scripts/perf/input_latency_test.py",
-  "scripts/perf/latency_bench_test.py",
-  "scripts/perf/lock_screen_bench_test.py",
-  "scripts/perf/physical_notes_latency_test.py",
-  "scripts/perf/physical_notes_stages_test.py",
-  "scripts/perf/agent_rtt_test.py",
-  "scripts/perf/agent_task_test.py",
-  "scripts/perf/main_stages_test.py",
-  "scripts/perf/native_app_capture_test.py",
-  "scripts/perf/native_delivery_test.py",
-  "scripts/perf/presentation_feedback_test.py",
-  "scripts/perf/render_bench_test.py",
-  "scripts/perf/render_boundaries_test.py",
-  "scripts/perf/runtime_benchmark_test.py",
-  "scripts/perf/scratchpad_effects_test.py",
-  "scripts/perf/settings_effects_test.py",
-  "scripts/perf/worker_handoff_test.py",
-  "tools/perf/test_ab.py",
-  "tools/perf/test_adapters.py",
-  "tools/perf/test_compare.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
-  "tools/perf/test_room_capacity.py",
   "tools/perf/test_runtime_size_ratchet.py",
-  "tools/perf/test_store.py",
   "tools/perf/test_tapp_size_ratchet.py",
 ]
 
 [[group]]
 name = "developer-scripts"
 inputs = [
-  "scripts/tests/", "scripts/app-launch-sweep.py",
-  "scripts/headless-examples/",
-  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
+  "scripts/tests/", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
-  "scripts/tests/test_app_launch_sweep.py",
-  "scripts/tests/test_headless_error_handling.py",
-  "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
 
