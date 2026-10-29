@@ -200,7 +200,8 @@ payment shows finality.
 - Open: the design of the three exceptional states per app; checkpoint cadence; services that
   can't write conditionally (IMAP replaces a draft by uploading a new copy), where either the
   last write wins and the person is told, or both versions are kept.
-- Open: a package changing where its items live. The store maps the older layout to the flat
-  one, but which collection an item belongs in under a new schema is the package's to say: Board
-  keeps each card's column as a field until its existing cards can be placed in their columns'
-  collections by a migration of its own records, which the language does not have yet.
+- A package changing where its items live says so itself. The store maps the older layout to the
+  flat one; which collection an item belongs in under a new schema is the package's to say, with
+  a migration of its own records (authority.md, "Versions"): Board keeps the field that held each
+  card's column `(previously)`, and its migration moves the cards of a board written before into
+  their columns' collections, each keeping its id and history.
