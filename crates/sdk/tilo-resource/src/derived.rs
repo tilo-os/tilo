@@ -502,14 +502,71 @@ impl PublishedDerived {
 }
 
 /// The derived resources a record published last, by resource type.
-struct Kept<R> {
+struct Kept {
     epoch: u64,
-    derived: Rc<[Derived<R>]>,
+    derived: Rc<dyn DerivedList>,
     published: Rc<PublishedDerived>,
 }
 
 thread_local! {
-    static PUBLISHED: RefCell<HashMap<TypeId, Rc<dyn Any>>> = RefCell::new(HashMap::new());
+    static PUBLISHED: RefCell<HashMap<TypeId, Rc<Kept>>> = RefCell::new(HashMap::new());
+}
+
+/// A record's derived resources without their resource type: what
+/// [`published`] reads of them, so that it is compiled once rather than for
+/// every resource type.
+trait DerivedList {
+    fn as_any(&self) -> &dyn Any;
+    fn len(&self) -> usize;
+    /// The id of the one at `index`.
+    fn id(&self, index: usize) -> &str;
+    /// Whether these are the very ones `other` holds, or equal to them.
+    fn same(&self, other: &dyn DerivedList) -> bool;
+    /// Whether the one at `index` equals the one `other` holds at `at`.
+    fn same_at(&self, index: usize, other: &dyn DerivedList, at: usize) -> bool;
+    /// The one at `index`, published.
+    fn publish(&self, index: usize) -> Option<tilo_actions::Resource>;
+    /// The record's nested resources, which depend on its type alone.
+    fn nested(&self) -> Vec<tilo_actions::Resource>;
+}
+
+struct List<R>(Rc<[Derived<R>]>);
+
+impl<R: Resource> DerivedList for List<R> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn id(&self, index: usize) -> &str {
+        self.0.get(index).map_or("", Derived::id)
+    }
+
+    fn same(&self, other: &dyn DerivedList) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|other| Rc::ptr_eq(&self.0, &other.0) || self.0 == other.0)
+    }
+
+    fn same_at(&self, index: usize, other: &dyn DerivedList, at: usize) -> bool {
+        other.as_any().downcast_ref::<Self>().is_some_and(|other| {
+            self.0
+                .get(index)
+                .is_some_and(|next| other.0.get(at) == Some(next))
+        })
+    }
+
+    fn publish(&self, index: usize) -> Option<tilo_actions::Resource> {
+        self.0.get(index).map(Derived::publish)
+    }
+
+    fn nested(&self) -> Vec<tilo_actions::Resource> {
+        crate::child::record_nested_children::<R>()
+    }
 }
 
 /// The nested resources of the record `R` followed by `derived`, published:
@@ -521,30 +578,33 @@ thread_local! {
 /// others are published. The nested resources depend on the type alone.
 #[must_use]
 pub fn published<R: Resource>(derived: impl Into<Rc<[Derived<R>]>>) -> Rc<PublishedDerived> {
-    let derived = derived.into();
+    published_list(TypeId::of::<R>(), Rc::new(List(derived.into())))
+}
+
+/// [`published`] of the derived resources of the resource type `key`.
+#[inline(never)]
+fn published_list(key: TypeId, derived: Rc<dyn DerivedList>) -> Rc<PublishedDerived> {
     let epoch = crate::resource::type_epoch();
     let kept = PUBLISHED
-        .with_borrow(|kept| kept.get(&TypeId::of::<R>()).cloned())
-        .and_then(|kept| kept.downcast::<Kept<R>>().ok())
+        .with_borrow(|kept| kept.get(&key).cloned())
         .filter(|kept| kept.epoch == epoch);
     if let Some(kept) = kept
         .as_ref()
-        .filter(|kept| Rc::ptr_eq(&kept.derived, &derived) || kept.derived == derived)
+        .filter(|kept| derived.same(kept.derived.as_ref()))
     {
         return Rc::clone(&kept.published);
     }
+    let publish = |index: usize| derived.publish(index).map(Rc::new);
     let resources: Rc<[Rc<tilo_actions::Resource>]> = match &kept {
         Some(kept) => {
+            let last_derived = kept.derived.as_ref();
             let nested = kept
                 .published
                 .resources
                 .len()
-                .saturating_sub(kept.derived.len());
-            let at: HashMap<&str, usize> = kept
-                .derived
-                .iter()
-                .enumerate()
-                .map(|(index, last)| (last.id(), index))
+                .saturating_sub(last_derived.len());
+            let at: HashMap<&str, usize> = (0..last_derived.len())
+                .map(|index| (last_derived.id(index), index))
                 .collect();
             let published = |index: usize| {
                 kept.published
@@ -557,23 +617,23 @@ pub fn published<R: Resource>(derived: impl Into<Rc<[Derived<R>]>>) -> Rc<Publis
                 .iter()
                 .take(nested)
                 .cloned()
-                .chain(derived.iter().enumerate().map(|(index, next)| {
-                    let last = if kept.derived.get(index) == Some(next) {
+                .chain((0..derived.len()).filter_map(|index| {
+                    let last = if derived.same_at(index, last_derived, index) {
                         Some(index)
                     } else {
-                        at.get(next.id())
+                        at.get(derived.id(index))
                             .copied()
-                            .filter(|&last| kept.derived.get(last) == Some(next))
+                            .filter(|&last| derived.same_at(index, last_derived, last))
                     };
-                    last.and_then(published)
-                        .unwrap_or_else(|| Rc::new(next.publish()))
+                    last.and_then(published).or_else(|| publish(index))
                 }))
                 .collect()
         }
-        None => crate::child::record_nested_children::<R>()
+        None => derived
+            .nested()
             .into_iter()
             .map(Rc::new)
-            .chain(derived.iter().map(|next| Rc::new(next.publish())))
+            .chain((0..derived.len()).filter_map(publish))
             .collect(),
     };
     let mut offered = HashMap::new();
@@ -581,12 +641,12 @@ pub fn published<R: Resource>(derived: impl Into<Rc<[Derived<R>]>>) -> Rc<Publis
         offered_on(resource, &mut offered);
     }
     let published = Rc::new(PublishedDerived { resources, offered });
-    let kept: Rc<dyn Any> = Rc::new(Kept {
+    let kept = Rc::new(Kept {
         epoch,
         derived,
         published: Rc::clone(&published),
     });
-    PUBLISHED.with_borrow_mut(|all| all.insert(TypeId::of::<R>(), kept));
+    PUBLISHED.with_borrow_mut(|all| all.insert(key, kept));
     published
 }
 

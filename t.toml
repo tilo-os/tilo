@@ -6878,3 +6878,13 @@ on = ["dispatch"]
 default = false
 cache = false
 cost = "minutes"
+
+[[check]]
+name = "i728-wasm"
+run = "cargo build --locked -p tilo-web-desktop --lib --target wasm32-unknown-unknown --profile wasm-split"
+outputs = ["/target/wasm32-unknown-unknown/wasm-split/tilo_web_desktop.wasm"]
+cargo_packages = ["tilo-web-desktop"]
+cargo_dev_dependencies = false
+requirement = { cores = 4, memory = "32GiB" }
+cost = "heavy"
+default = false

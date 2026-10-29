@@ -375,17 +375,25 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
     key: TypeId,
     make: impl FnOnce() -> T,
 ) -> &'static T {
-    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
-    let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table.lock_recover();
-    let entry = *table
-        .entry(key)
-        .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);
-    drop(table);
+    let mut make = Some(make);
+    let entry = leaked_entry(key, &mut || match make.take() {
+        Some(make) => Box::leak(Box::new(make())) as Leaked,
+        None => unreachable_definition(),
+    });
     // One value per (type, T) key is ever inserted, so the downcast holds.
     entry
         .downcast_ref::<T>()
         .unwrap_or_else(|| unreachable_definition())
+}
+
+/// The value kept under `key`, made by `make` the first time. Not generic,
+/// so the table is compiled once rather than for every app and key.
+#[inline(never)]
+fn leaked_entry(key: TypeId, make: &mut dyn FnMut() -> Leaked) -> Leaked {
+    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
+    let table = TABLE.get_or_init(Mutex::default);
+    let mut table = table.lock_recover();
+    *table.entry(key).or_insert_with(make)
 }
 
 #[allow(

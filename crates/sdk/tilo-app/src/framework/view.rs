@@ -108,13 +108,7 @@ impl<R: Resource> ViewCx<R> {
         run: Run,
         storage: Rc<ViewStorage>,
     ) -> Self {
-        // The history verbs every app answers are bindable like its own.
-        let mut published = published;
-        for spec in super::history::specs() {
-            if !published.actions.iter().any(|action| action.id == spec.id) {
-                published = published.with_action(spec);
-            }
-        }
+        let published = with_history_verbs(published);
         let app = dispatch.app_id();
         Self {
             env: RecordEnv {
@@ -130,7 +124,7 @@ impl<R: Resource> ViewCx<R> {
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
             gate: None,
-            action_bindings: Actions::new(app, Rc::new(published)),
+            action_bindings: Actions::new(app, published),
             item: None,
             path: Some(Vec::new()),
             controls: Rc::default(),
@@ -140,6 +134,20 @@ impl<R: Resource> ViewCx<R> {
             bindings: Bindings::new(),
         }
     }
+}
+
+/// `published` with the history verbs every app answers, so they are
+/// bindable like its own. Not generic, so it is compiled once rather than
+/// for every resource.
+#[inline(never)]
+fn with_history_verbs(published: tilo_actions::Resource) -> Rc<tilo_actions::Resource> {
+    let mut published = published;
+    for spec in super::history::specs() {
+        if !published.actions.iter().any(|action| action.id == spec.id) {
+            published = published.with_action(spec);
+        }
+    }
+    Rc::new(published)
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
