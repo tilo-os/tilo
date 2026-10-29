@@ -13,7 +13,7 @@ use smithay::backend::input::{
     TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
 };
 use smithay::utils::{Logical, Size};
-use smithay::wayland::tablet_manager::TabletDescriptor;
+use smithay::wayland::tablet_manager::{TabletDescriptor, TabletPadDescriptor};
 
 /// The pointer button a pen's tip presses for apps that know no tablets.
 pub const BTN_LEFT: u32 = 0x110;
@@ -45,6 +45,8 @@ pub enum InputEvent {
     TouchCancel,
     /// A drawing tablet's tool (pen, eraser, ...) did something.
     Tablet(TabletEvent),
+    /// A drawing tablet's pad (its buttons, rings and strips) did something.
+    TabletPad(TabletPadEvent),
     /// A touchpad gesture.
     Gesture(GestureEvent),
     /// A switch (laptop lid, tablet mode) changed state.
@@ -158,6 +160,35 @@ pub struct TabletEvent {
     /// The pointer button the tip presses for apps that see a pointer;
     /// `None` clicks nothing.
     pub tip_button: Option<u32>,
+}
+
+/// What a tablet pad did.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PadAction {
+    /// The pad was plugged in.
+    Added,
+    /// The pad was unplugged.
+    Removed,
+    /// A button (numbered from zero) changed state.
+    Button { button: u32, pressed: bool },
+    /// A finger on a ring, at `degrees` (clockwise from the top), or lifted
+    /// (`None`).
+    Ring { ring: u32, degrees: Option<f64> },
+    /// A finger on a strip, at `position` (`0.0` top or left to `1.0`), or
+    /// lifted.
+    Strip { strip: u32, position: Option<f64> },
+    /// A group of the pad's controls switched to another mode.
+    Mode { group: u32, mode: u32 },
+}
+
+/// One tablet pad event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabletPadEvent {
+    /// The pad, with its buttons, rings and strips in groups.
+    pub pad: TabletPadDescriptor,
+    /// The tablet the pad belongs to.
+    pub tablet: TabletDescriptor,
+    pub action: PadAction,
 }
 
 impl InputEvent {

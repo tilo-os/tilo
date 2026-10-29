@@ -1,15 +1,24 @@
 use wayland_protocols::wp::tablet::zv2::server::{
+    zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
+    zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2,
+    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+    zwp_tablet_pad_v2::ZwpTabletPadV2,
     zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
     zwp_tablet_tool_v2::ZwpTabletToolV2,
     zwp_tablet_v2::ZwpTabletV2,
 };
-use wayland_server::{backend::ClientId, Client, DataInit, Dispatch, DisplayHandle, Resource, Weak};
+use wayland_server::{
+    backend::ClientId, protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, Resource,
+    Weak,
+};
 
 use crate::input::pointer::CursorImageStatus;
+use crate::utils::Serial;
 use crate::{backend::input::TabletToolDescriptor, wayland::compositor::CompositorHandler};
 
 use super::{
     tablet::TabletUserData,
+    tablet_pad::{TabletPadDescriptor, TabletPadHandle, TabletPadUserData},
     tablet_tool::{TabletToolHandle, TabletToolUserData},
 };
 use super::{
@@ -26,6 +35,8 @@ pub(crate) struct TabletSeat {
     instances: Vec<Weak<ZwpTabletSeatV2>>,
     tablets: HashMap<TabletDescriptor, TabletHandle>,
     tools: HashMap<TabletToolDescriptor, TabletToolHandle>,
+    pads: HashMap<TabletPadDescriptor, TabletPadHandle>,
+    pad_focus: Option<WlSurface>,
 }
 
 impl fmt::Debug for TabletSeat {
@@ -34,6 +45,8 @@ impl fmt::Debug for TabletSeat {
             .field("instances", &self.instances)
             .field("tablets", &self.tablets)
             .field("tools", &self.tools)
+            .field("pads", &self.pads)
+            .field("pad_focus", &self.pad_focus)
             .finish()
     }
 }
@@ -67,6 +80,10 @@ impl TabletSeatHandle {
     ) where
         D: Dispatch<ZwpTabletV2, TabletUserData>,
         D: Dispatch<ZwpTabletToolV2, TabletToolUserData>,
+        D: Dispatch<ZwpTabletPadV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadGroupV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadRingV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadStripV2, TabletPadUserData>,
         D: TabletSeatHandler + 'static,
         D: CompositorHandler,
     {
@@ -80,6 +97,11 @@ impl TabletSeatHandle {
         // Notify new instance about available tools
         for (desc, tool) in inner.tools.iter_mut() {
             tool.new_instance(state, client, dh, seat, desc);
+        }
+
+        // Notify new instance about available pads
+        for pad in inner.pads.values() {
+            pad.new_instance::<D>(client, dh, seat);
         }
 
         inner.instances.push(seat.downgrade());
@@ -204,6 +226,91 @@ impl TabletSeatHandle {
     /// Remove all tablet tool devices
     pub fn clear_tools(&self) {
         self.inner.lock().unwrap().tools.clear();
+    }
+
+    /// Add a new pad to a seat.
+    ///
+    /// Pads are usually added on [input::Event::DeviceAdded](crate::backend::input::InputEvent::DeviceAdded),
+    /// attached to the tablet they belong to (which has to be added first). The pad is focused on the
+    /// surface the seat's pads are focused on, see [`TabletSeatHandle::set_pad_focus`].
+    ///
+    /// Returns new [TabletPadHandle] if pad was not know by this seat, if pad was already know it returns
+    /// existing handle, it allows you to send pad events to clients.
+    pub fn add_pad<D>(
+        &self,
+        dh: &DisplayHandle,
+        pad_desc: &TabletPadDescriptor,
+        tablet: &TabletHandle,
+    ) -> TabletPadHandle
+    where
+        D: Dispatch<ZwpTabletPadV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadGroupV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadRingV2, TabletPadUserData>,
+        D: Dispatch<ZwpTabletPadStripV2, TabletPadUserData>,
+        D: 'static,
+    {
+        let inner = &mut *self.inner.lock().unwrap();
+
+        if let Some(pad) = inner.pads.get(pad_desc) {
+            return pad.clone();
+        }
+
+        let pad = TabletPadHandle::new(pad_desc, tablet);
+        // Create new pad instance for every seat instance
+        for seat in inner.instances.iter() {
+            let Ok(seat) = seat.upgrade() else {
+                continue;
+            };
+
+            if let Ok(client) = dh.get_client(seat.id()) {
+                pad.new_instance::<D>(&client, dh, &seat);
+            }
+        }
+        if let Some(focus) = inner.pad_focus.as_ref() {
+            pad.set_focus(Some(focus), crate::utils::SERIAL_COUNTER.next_serial(), 0);
+        }
+        inner.pads.insert(pad_desc.clone(), pad.clone());
+
+        pad
+    }
+
+    /// Get a handle to a tablet pad
+    pub fn get_pad(&self, pad_desc: &TabletPadDescriptor) -> Option<TabletPadHandle> {
+        self.inner.lock().unwrap().pads.get(pad_desc).cloned()
+    }
+
+    /// Count all tablet pad devices
+    pub fn count_pads(&self) -> usize {
+        self.inner.lock().unwrap().pads.len()
+    }
+
+    /// Remove tablet pad device
+    ///
+    /// Called when pad is no longer available, clients are told it was removed.
+    pub fn remove_pad(&self, pad_desc: &TabletPadDescriptor) {
+        let pad = self.inner.lock().unwrap().pads.remove(pad_desc);
+        if let Some(pad) = pad {
+            pad.removed();
+        }
+    }
+
+    /// Remove all tablet pad devices
+    pub fn clear_pads(&self) {
+        let pads = std::mem::take(&mut self.inner.lock().unwrap().pads);
+        for pad in pads.into_values() {
+            pad.removed();
+        }
+    }
+
+    /// Focus every pad of the seat on a surface, or on none
+    ///
+    /// Compositors usually call this whenever the keyboard focus changes. See [`TabletPadHandle::set_focus`].
+    pub fn set_pad_focus(&self, focus: Option<&WlSurface>, serial: Serial, time: u32) {
+        let inner = &mut *self.inner.lock().unwrap();
+        inner.pad_focus = focus.cloned();
+        for pad in inner.pads.values() {
+            pad.set_focus(focus, serial, time);
+        }
     }
 }
 

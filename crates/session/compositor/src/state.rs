@@ -337,6 +337,9 @@ impl State {
             InputEvent::TouchFrame => self.touch_frame(),
             InputEvent::TouchCancel => self.touch_cancel(),
             InputEvent::Tablet(event) => self.tablet_input(&event, serial, time),
+            InputEvent::TabletPad(event) => {
+                self.tablet_pad(&event, serial, time);
+            }
             InputEvent::Gesture(gesture) => self.gesture(gesture, serial, time),
             InputEvent::Switch { switch, on } => self.policy.switch(switch, on),
         }
@@ -848,6 +851,7 @@ impl SeatHandler for State {
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|surface| self.display.get_client(surface.id()).ok());
         self.selection_focus(client.as_ref());
+        self.pads_follow_keyboard(focused);
     }
 }
 

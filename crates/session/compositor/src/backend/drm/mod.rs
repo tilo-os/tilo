@@ -310,8 +310,12 @@ impl DrmBackend {
                         let extent = pointer_extent(&data.state);
                         libinput::dispatch(&devices, &input_handle, event, &mut data.state, extent);
                     }
-                    input_source::Delivered::Pad { device, event } => {
-                        libinput::dispatch_pad(&devices, &device, &event, &mut data.state);
+                    input_source::Delivered::Pad {
+                        device,
+                        action,
+                        mode,
+                    } => {
+                        libinput::dispatch_pad(&devices, &device, action, mode, &mut data.state);
                     }
                 },
             )

@@ -99,6 +99,10 @@
 use crate::input::{Seat, SeatHandler};
 use wayland_protocols::wp::tablet::zv2::server::{
     zwp_tablet_manager_v2::{self, ZwpTabletManagerV2},
+    zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
+    zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2,
+    zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2,
+    zwp_tablet_pad_v2::ZwpTabletPadV2,
     zwp_tablet_seat_v2::ZwpTabletSeatV2,
     zwp_tablet_tool_v2::ZwpTabletToolV2,
     zwp_tablet_v2::ZwpTabletV2,
@@ -108,10 +112,12 @@ use wayland_server::{backend::GlobalId, Client, DataInit, Dispatch, DisplayHandl
 const MANAGER_VERSION: u32 = 1;
 
 mod tablet;
+mod tablet_pad;
 mod tablet_seat;
 pub(crate) mod tablet_tool;
 
 pub use tablet::{TabletDescriptor, TabletHandle, TabletUserData};
+pub use tablet_pad::{TabletPadDescriptor, TabletPadGroupDescriptor, TabletPadHandle, TabletPadUserData};
 pub use tablet_seat::{TabletSeatHandle, TabletSeatHandler, TabletSeatUserData};
 pub use tablet_tool::{TabletToolHandle, TabletToolUserData};
 
@@ -183,6 +189,10 @@ where
     D: Dispatch<ZwpTabletSeatV2, TabletSeatUserData>,
     D: Dispatch<ZwpTabletV2, TabletUserData>,
     D: Dispatch<ZwpTabletToolV2, TabletToolUserData>,
+    D: Dispatch<ZwpTabletPadV2, TabletPadUserData>,
+    D: Dispatch<ZwpTabletPadGroupV2, TabletPadUserData>,
+    D: Dispatch<ZwpTabletPadRingV2, TabletPadUserData>,
+    D: Dispatch<ZwpTabletPadStripV2, TabletPadUserData>,
     D: SeatHandler + TabletSeatHandler + 'static,
     D: CompositorHandler,
 {
@@ -239,6 +249,18 @@ macro_rules! delegate_tablet_manager {
         ] => $crate::wayland::tablet_manager::TabletManagerState);
         $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
             $crate::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_v2::ZwpTabletV2: $crate::wayland::tablet_manager::TabletUserData
+        ] => $crate::wayland::tablet_manager::TabletManagerState);
+        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            $crate::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_v2::ZwpTabletPadV2: $crate::wayland::tablet_manager::TabletPadUserData
+        ] => $crate::wayland::tablet_manager::TabletManagerState);
+        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            $crate::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2: $crate::wayland::tablet_manager::TabletPadUserData
+        ] => $crate::wayland::tablet_manager::TabletManagerState);
+        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            $crate::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2: $crate::wayland::tablet_manager::TabletPadUserData
+        ] => $crate::wayland::tablet_manager::TabletManagerState);
+        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
+            $crate::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2: $crate::wayland::tablet_manager::TabletPadUserData
         ] => $crate::wayland::tablet_manager::TabletManagerState);
     };
 }
